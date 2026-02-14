@@ -143,7 +143,7 @@ kura_migrator:status(my_repo).
 ```erlang
 %% sys.config
 [{kura, [
-    {migration_paths, ["priv/migrations"]},
+    {migration_paths, [{priv_dir, my_app, "migrations"}]},
     {log_queries, false}
 ]}].
 ```
