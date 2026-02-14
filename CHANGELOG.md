@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-02-14
+
+### Added
+
+- Embedded schemas (`embeds_one`, `embeds_many`) stored as JSONB with `cast_embed/2,3`
+- Many-to-many associations with `join_through` / `join_keys`, preloading, and persistence via `cast_assoc` / `put_assoc`
+- Schemaless changesets — `cast/4` accepts a types map for validation-only workflows
+- `Makefile` for local test lifecycle management (`make test` with Docker Compose)
+- Schemaless changesets guide (`guides/schemaless-changesets.md`)
+
 ## [0.4.1] - 2026-02-14
 
 ### Added
