@@ -243,3 +243,67 @@ apply_action_error_test() ->
     CS = kura_changeset:cast(kura_test_schema, #{}, #{age => <<"bad">>}, [age]),
     {error, ErrCS} = kura_changeset:apply_action(CS, insert),
     ?assertEqual(insert, ErrCS#kura_changeset.action).
+
+%%----------------------------------------------------------------------
+%% Constraint declarations
+%%----------------------------------------------------------------------
+
+unique_constraint_default_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{email => <<"a@b.com">>}, [email]),
+    CS2 = kura_changeset:unique_constraint(CS, email),
+    ?assertEqual(1, length(CS2#kura_changeset.constraints)),
+    [C] = CS2#kura_changeset.constraints,
+    ?assertEqual(unique, C#kura_constraint.type),
+    ?assertEqual(<<"users_email_key">>, C#kura_constraint.constraint),
+    ?assertEqual(email, C#kura_constraint.field),
+    ?assertEqual(<<"has already been taken">>, C#kura_constraint.message).
+
+unique_constraint_custom_opts_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{email => <<"a@b.com">>}, [email]),
+    CS2 = kura_changeset:unique_constraint(CS, email, #{
+        name => <<"users_email_unique">>, message => <<"already exists">>
+    }),
+    [C] = CS2#kura_changeset.constraints,
+    ?assertEqual(<<"users_email_unique">>, C#kura_constraint.constraint),
+    ?assertEqual(<<"already exists">>, C#kura_constraint.message).
+
+foreign_key_constraint_default_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{}, []),
+    CS2 = kura_changeset:foreign_key_constraint(CS, age),
+    [C] = CS2#kura_changeset.constraints,
+    ?assertEqual(foreign_key, C#kura_constraint.type),
+    ?assertEqual(<<"users_age_fkey">>, C#kura_constraint.constraint),
+    ?assertEqual(age, C#kura_constraint.field),
+    ?assertEqual(<<"does not exist">>, C#kura_constraint.message).
+
+foreign_key_constraint_custom_opts_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{}, []),
+    CS2 = kura_changeset:foreign_key_constraint(CS, age, #{
+        name => <<"custom_fk">>, message => <<"ref missing">>
+    }),
+    [C] = CS2#kura_changeset.constraints,
+    ?assertEqual(<<"custom_fk">>, C#kura_constraint.constraint),
+    ?assertEqual(<<"ref missing">>, C#kura_constraint.message).
+
+check_constraint_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{}, []),
+    CS2 = kura_changeset:check_constraint(CS, <<"users_age_positive">>, age),
+    [C] = CS2#kura_changeset.constraints,
+    ?assertEqual(check, C#kura_constraint.type),
+    ?assertEqual(<<"users_age_positive">>, C#kura_constraint.constraint),
+    ?assertEqual(age, C#kura_constraint.field),
+    ?assertEqual(<<"is invalid">>, C#kura_constraint.message).
+
+check_constraint_custom_message_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{}, []),
+    CS2 = kura_changeset:check_constraint(CS, <<"age_check">>, age, #{
+        message => <<"must be positive">>
+    }),
+    [C] = CS2#kura_changeset.constraints,
+    ?assertEqual(<<"must be positive">>, C#kura_constraint.message).
+
+multiple_constraints_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{email => <<"a@b.com">>}, [email]),
+    CS2 = kura_changeset:unique_constraint(CS, email),
+    CS3 = kura_changeset:foreign_key_constraint(CS2, age),
+    ?assertEqual(2, length(CS3#kura_changeset.constraints)).

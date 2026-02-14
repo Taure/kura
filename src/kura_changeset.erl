@@ -10,6 +10,12 @@
     validate_number/3,
     validate_inclusion/3,
     validate_change/3,
+    unique_constraint/2,
+    unique_constraint/3,
+    foreign_key_constraint/2,
+    foreign_key_constraint/3,
+    check_constraint/3,
+    check_constraint/4,
     add_error/3,
     get_change/2,
     get_change/3,
@@ -131,6 +137,50 @@ validate_change(CS, Field, Fun) ->
                 {error, Msg} -> add_error(CS, Field, Msg)
             end
     end.
+
+%%----------------------------------------------------------------------
+%% Constraint declarations
+%%----------------------------------------------------------------------
+
+-spec unique_constraint(#kura_changeset{}, atom()) -> #kura_changeset{}.
+unique_constraint(CS, Field) ->
+    unique_constraint(CS, Field, #{}).
+
+-spec unique_constraint(#kura_changeset{}, atom(), map()) -> #kura_changeset{}.
+unique_constraint(CS = #kura_changeset{schema = SchemaMod, constraints = Constraints}, Field, Opts) ->
+    Table = SchemaMod:table(),
+    Name = maps:get(
+        name, Opts, <<Table/binary, "_", (atom_to_binary(Field, utf8))/binary, "_key">>
+    ),
+    Msg = maps:get(message, Opts, <<"has already been taken">>),
+    C = #kura_constraint{type = unique, constraint = Name, field = Field, message = Msg},
+    CS#kura_changeset{constraints = Constraints ++ [C]}.
+
+-spec foreign_key_constraint(#kura_changeset{}, atom()) -> #kura_changeset{}.
+foreign_key_constraint(CS, Field) ->
+    foreign_key_constraint(CS, Field, #{}).
+
+-spec foreign_key_constraint(#kura_changeset{}, atom(), map()) -> #kura_changeset{}.
+foreign_key_constraint(
+    CS = #kura_changeset{schema = SchemaMod, constraints = Constraints}, Field, Opts
+) ->
+    Table = SchemaMod:table(),
+    Name = maps:get(
+        name, Opts, <<Table/binary, "_", (atom_to_binary(Field, utf8))/binary, "_fkey">>
+    ),
+    Msg = maps:get(message, Opts, <<"does not exist">>),
+    C = #kura_constraint{type = foreign_key, constraint = Name, field = Field, message = Msg},
+    CS#kura_changeset{constraints = Constraints ++ [C]}.
+
+-spec check_constraint(#kura_changeset{}, binary(), atom()) -> #kura_changeset{}.
+check_constraint(CS, Constraint, Field) ->
+    check_constraint(CS, Constraint, Field, #{}).
+
+-spec check_constraint(#kura_changeset{}, binary(), atom(), map()) -> #kura_changeset{}.
+check_constraint(CS = #kura_changeset{constraints = Constraints}, Constraint, Field, Opts) ->
+    Msg = maps:get(message, Opts, <<"is invalid">>),
+    C = #kura_constraint{type = check, constraint = Constraint, field = Field, message = Msg},
+    CS#kura_changeset{constraints = Constraints ++ [C]}.
 
 %%----------------------------------------------------------------------
 %% Error / change helpers
