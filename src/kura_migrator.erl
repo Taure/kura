@@ -21,7 +21,7 @@ in a `schema_migrations` table, and executes DDL within transactions.
 migrate(RepoMod) ->
     ensure_schema_migrations(RepoMod),
     Applied = get_applied_versions(RepoMod),
-    Migrations = discover_migrations(),
+    Migrations = discover_migrations(RepoMod),
     Pending = [{V, M} || {V, M} <- Migrations, not lists:member(V, Applied)],
     Sorted = lists:sort(fun({V1, _}, {V2, _}) -> V1 =< V2 end, Pending),
     run_migrations(RepoMod, Sorted, up, []).
@@ -36,7 +36,7 @@ rollback(RepoMod) ->
 rollback(RepoMod, Steps) ->
     ensure_schema_migrations(RepoMod),
     Applied = get_applied_versions(RepoMod),
-    Migrations = discover_migrations(),
+    Migrations = discover_migrations(RepoMod),
     ToRollback = lists:sublist(lists:reverse(lists:sort(Applied)), Steps),
     MigMap = maps:from_list(Migrations),
     Pairs = [{V, maps:get(V, MigMap)} || V <- ToRollback, maps:is_key(V, MigMap)],
@@ -47,7 +47,7 @@ rollback(RepoMod, Steps) ->
 status(RepoMod) ->
     ensure_schema_migrations(RepoMod),
     Applied = get_applied_versions(RepoMod),
-    Migrations = discover_migrations(),
+    Migrations = discover_migrations(RepoMod),
     [
         {V, M,
             case lists:member(V, Applied) of
@@ -77,9 +77,18 @@ ensure_schema_migrations(RepoMod) ->
 %% Migration discovery
 %%----------------------------------------------------------------------
 
-discover_migrations() ->
-    Paths = application:get_env(kura, migration_paths, [<<"priv/migrations">>]),
-    lists:flatmap(fun discover_in_path/1, Paths).
+discover_migrations(RepoMod) ->
+    case application:get_env(kura, migration_paths) of
+        {ok, Paths} ->
+            lists:flatmap(fun discover_in_path/1, Paths);
+        undefined ->
+            case application:get_application(RepoMod) of
+                {ok, App} ->
+                    discover_in_path({priv_dir, App, "migrations"});
+                undefined ->
+                    []
+            end
+    end.
 
 discover_in_path({priv_dir, App, SubDir}) ->
     case code:priv_dir(App) of
@@ -93,11 +102,38 @@ discover_in_path(Path) ->
         [] ->
             case filelib:wildcard(Path ++ "/m*.erl") of
                 [] -> [];
-                ErlFiles -> parse_migration_files(ErlFiles)
+                ErlFiles -> discover_erl_migrations(ErlFiles)
             end;
         BeamFiles ->
             parse_migration_files(BeamFiles)
     end.
+
+discover_erl_migrations(ErlFiles) ->
+    KuraInclude = filename:join(code:lib_dir(kura), "include"),
+    lists:filtermap(
+        fun(File) ->
+            BaseName = filename:basename(File, ".erl"),
+            case re:run(BaseName, "^m(\\d{14})_(.+)$", [{capture, [1, 2], list}]) of
+                {match, [VersionStr, _Name]} ->
+                    Version = list_to_integer(VersionStr),
+                    Module = list_to_atom(BaseName),
+                    case compile:file(File, [binary, return_errors, {i, KuraInclude}]) of
+                        {ok, Module, Binary} ->
+                            {module, Module} = code:load_binary(Module, File, Binary),
+                            {true, {Version, Module}};
+                        {ok, Module, Binary, _Warnings} ->
+                            {module, Module} = code:load_binary(Module, File, Binary),
+                            {true, {Version, Module}};
+                        {error, Errors, _Warnings} ->
+                            logger:error("Kura: failed to compile migration ~s: ~p", [File, Errors]),
+                            false
+                    end;
+                nomatch ->
+                    false
+            end
+        end,
+        ErlFiles
+    ).
 
 parse_migration_files(Files) ->
     lists:filtermap(
@@ -127,7 +163,6 @@ run_migrations(RepoMod, [{Version, Module} | Rest], Dir, Acc) ->
     case
         pgo:transaction(
             fun() ->
-                _ = code:ensure_loaded(Module),
                 Ops =
                     case Dir of
                         up -> Module:up();

@@ -29,23 +29,17 @@ down() ->
     [{drop_table, <<"users">>}].
 ```
 
-Place migration files in `priv/migrations/` and configure the path in `sys.config`:
+Place migration files in `priv/migrations/`. Kura automatically discovers them using `code:priv_dir/1` based on the application that owns the repo module — no configuration needed.
+
+Migration `.erl` files are compiled at runtime, so you don't need to add them to `extra_src_dirs` or any build config.
+
+If you need custom paths, you can override discovery via `sys.config`:
 
 ```erlang
 {kura, [
     {migration_paths, [{priv_dir, my_app, "migrations"}]}
 ]}.
 ```
-
-The `{priv_dir, App, SubDir}` format resolves the path using `code:priv_dir(App)`, which works correctly in both development and production releases. This is the recommended approach.
-
-You can also use literal paths for development:
-
-```erlang
-{migration_paths, [<<"priv/migrations">>]}
-```
-
-However, literal paths won't resolve correctly in compiled releases where the working directory may differ.
 
 ## DDL Operations
 
