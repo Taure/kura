@@ -81,6 +81,11 @@ discover_migrations() ->
     Paths = application:get_env(kura, migration_paths, [<<"priv/migrations">>]),
     lists:flatmap(fun discover_in_path/1, Paths).
 
+discover_in_path({priv_dir, App, SubDir}) ->
+    case code:priv_dir(App) of
+        {error, bad_name} -> [];
+        PrivDir -> discover_in_path(filename:join(PrivDir, SubDir))
+    end;
 discover_in_path(Path) when is_binary(Path) ->
     discover_in_path(binary_to_list(Path));
 discover_in_path(Path) ->

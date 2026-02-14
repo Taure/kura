@@ -29,7 +29,23 @@ down() ->
     [{drop_table, <<"users">>}].
 ```
 
-Place migration files in `priv/migrations/` (configurable via `{kura, [{migration_paths, [<<"priv/migrations">>]}]}`).
+Place migration files in `priv/migrations/` and configure the path in `sys.config`:
+
+```erlang
+{kura, [
+    {migration_paths, [{priv_dir, my_app, "migrations"}]}
+]}.
+```
+
+The `{priv_dir, App, SubDir}` format resolves the path using `code:priv_dir(App)`, which works correctly in both development and production releases. This is the recommended approach.
+
+You can also use literal paths for development:
+
+```erlang
+{migration_paths, [<<"priv/migrations">>]}
+```
+
+However, literal paths won't resolve correctly in compiled releases where the working directory may differ.
 
 ## DDL Operations
 
