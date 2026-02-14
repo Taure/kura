@@ -96,8 +96,3 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish to Hex
-        if: steps.check_tag.outputs.exists == 'false'
-        run: rebar3 hex publish --yes
-        env:
-          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
