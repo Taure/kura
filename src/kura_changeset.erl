@@ -17,6 +17,9 @@ CS3 = kura_changeset:unique_constraint(CS2, email).
 
 -export([
     cast/4,
+    cast_assoc/2,
+    cast_assoc/3,
+    put_assoc/3,
     validate_required/2,
     validate_format/3,
     validate_length/3,
@@ -239,6 +242,132 @@ apply_action(CS = #kura_changeset{valid = true}, Action) ->
     {ok, apply_changes(CS#kura_changeset{action = Action})};
 apply_action(CS, Action) ->
     {error, CS#kura_changeset{action = Action}}.
+
+%%----------------------------------------------------------------------
+%% Association casting
+%%----------------------------------------------------------------------
+
+-doc "Cast nested association parameters into child changesets.".
+-spec cast_assoc(#kura_changeset{}, atom()) -> #kura_changeset{}.
+cast_assoc(CS, AssocName) ->
+    cast_assoc(CS, AssocName, #{}).
+
+-doc "Cast nested association parameters with options. Opts: `with` — custom changeset function.".
+-spec cast_assoc(#kura_changeset{}, atom(), map()) -> #kura_changeset{}.
+cast_assoc(CS = #kura_changeset{schema = SchemaMod, params = Params, data = Data}, AssocName, Opts) ->
+    case kura_schema:association(SchemaMod, AssocName) of
+        {ok, Assoc} ->
+            NestedParams = maps:get(AssocName, Params, undefined),
+            case NestedParams of
+                undefined ->
+                    CS;
+                _ ->
+                    Existing = maps:get(AssocName, Data, undefined),
+                    WithFun = maps:get(with, Opts, default_cast_fun(Assoc)),
+                    cast_assoc_params(CS, AssocName, Assoc, NestedParams, Existing, WithFun)
+            end;
+        {error, not_found} ->
+            add_error(CS, AssocName, <<"unknown association">>)
+    end.
+
+-doc "Put pre-built changesets or raw maps directly as association changes.".
+-spec put_assoc(#kura_changeset{}, atom(), term()) -> #kura_changeset{}.
+put_assoc(CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}, AssocName, Value) ->
+    case kura_schema:association(SchemaMod, AssocName) of
+        {ok, Assoc} ->
+            Changesets = coerce_assoc_value(Assoc, Value),
+            CS#kura_changeset{assoc_changes = AC#{AssocName => Changesets}};
+        {error, not_found} ->
+            add_error(CS, AssocName, <<"unknown association">>)
+    end.
+
+%%----------------------------------------------------------------------
+%% Internal: association helpers
+%%----------------------------------------------------------------------
+
+default_cast_fun(#kura_assoc{schema = ChildSchema, foreign_key = FK}) ->
+    PK = ChildSchema:primary_key(),
+    AllFields = kura_schema:field_names(ChildSchema),
+    NonVirtual = kura_schema:non_virtual_fields(ChildSchema),
+    Allowed = [F || F <- AllFields, lists:member(F, NonVirtual), F =/= PK, F =/= FK],
+    fun(Data, ChildParams) ->
+        cast(ChildSchema, Data, ChildParams, Allowed)
+    end.
+
+cast_assoc_params(CS, AssocName, Assoc, NestedParams, Existing, WithFun) ->
+    case Assoc#kura_assoc.type of
+        has_many ->
+            cast_has_many(CS, AssocName, Assoc, NestedParams, Existing, WithFun);
+        has_one ->
+            cast_has_one(CS, AssocName, NestedParams, WithFun)
+    end.
+
+cast_has_many(CS, AssocName, Assoc, ParamsList, Existing, WithFun) when is_list(ParamsList) ->
+    ChildSchema = Assoc#kura_assoc.schema,
+    PK = ChildSchema:primary_key(),
+    ExistingLookup =
+        case is_list(Existing) of
+            true ->
+                maps:from_list([{maps:get(PK, E), E} || E <- Existing, maps:is_key(PK, E)]);
+            false ->
+                #{}
+        end,
+    ChildCSs = lists:map(
+        fun(ChildParams) ->
+            NormParams = normalize_params(ChildParams),
+            case maps:find(PK, NormParams) of
+                {ok, PKVal} when PKVal =/= undefined ->
+                    ExistingData = maps:get(PKVal, ExistingLookup, #{}),
+                    ChildCS = WithFun(ExistingData, NormParams),
+                    ChildCS#kura_changeset{action = update};
+                _ ->
+                    ChildCS = WithFun(#{}, NormParams),
+                    ChildCS#kura_changeset{action = insert}
+            end
+        end,
+        ParamsList
+    ),
+    AllValid = lists:all(fun(#kura_changeset{valid = V}) -> V end, ChildCSs),
+    AC = CS#kura_changeset.assoc_changes,
+    CS1 = CS#kura_changeset{assoc_changes = AC#{AssocName => ChildCSs}},
+    case AllValid of
+        true -> CS1;
+        false -> CS1#kura_changeset{valid = false}
+    end;
+cast_has_many(CS, AssocName, _Assoc, _BadParams, _Existing, _WithFun) ->
+    add_error(CS, AssocName, <<"expected a list">>).
+
+cast_has_one(CS, AssocName, ChildParams, WithFun) when is_map(ChildParams) ->
+    NormParams = normalize_params(ChildParams),
+    ChildCS = WithFun(#{}, NormParams),
+    ChildCS1 = ChildCS#kura_changeset{action = insert},
+    AC = CS#kura_changeset.assoc_changes,
+    CS1 = CS#kura_changeset{assoc_changes = AC#{AssocName => ChildCS1}},
+    case ChildCS1#kura_changeset.valid of
+        true -> CS1;
+        false -> CS1#kura_changeset{valid = false}
+    end;
+cast_has_one(CS, AssocName, _BadParams, _WithFun) ->
+    add_error(CS, AssocName, <<"expected a map">>).
+
+coerce_assoc_value(Assoc, Value) when is_list(Value) ->
+    [coerce_single(Assoc, V) || V <- Value];
+coerce_assoc_value(Assoc, Value) when is_map(Value), not is_map_key(valid, Value) ->
+    coerce_single(Assoc, Value);
+coerce_assoc_value(_Assoc, #kura_changeset{} = CS) ->
+    CS;
+coerce_assoc_value(_Assoc, Value) ->
+    Value.
+
+coerce_single(#kura_assoc{schema = ChildSchema, foreign_key = FK}, Map) when is_map(Map) ->
+    PK = ChildSchema:primary_key(),
+    AllFields = kura_schema:field_names(ChildSchema),
+    NonVirtual = kura_schema:non_virtual_fields(ChildSchema),
+    Allowed = [F || F <- AllFields, lists:member(F, NonVirtual), F =/= PK, F =/= FK],
+    CS = cast(ChildSchema, #{}, Map, Allowed),
+    CS#kura_changeset{action = insert};
+coerce_single(_Assoc, #kura_changeset{} = CS) ->
+    CS.
 
 %%----------------------------------------------------------------------
 %% Internal

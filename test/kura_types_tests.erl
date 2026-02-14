@@ -17,6 +17,7 @@ to_pg_type_test_() ->
         ?_assertEqual(<<"TIMESTAMPTZ">>, kura_types:to_pg_type(utc_datetime)),
         ?_assertEqual(<<"UUID">>, kura_types:to_pg_type(uuid)),
         ?_assertEqual(<<"JSONB">>, kura_types:to_pg_type(jsonb)),
+        ?_assertEqual(<<"VARCHAR(255)">>, kura_types:to_pg_type({enum, [a, b]})),
         ?_assertEqual(<<"INTEGER[]">>, kura_types:to_pg_type({array, integer})),
         ?_assertEqual(<<"TEXT[]">>, kura_types:to_pg_type({array, text}))
     ].
@@ -116,6 +117,19 @@ cast_jsonb_test_() ->
         ?_assertMatch({error, _}, kura_types:cast(jsonb, <<"not json">>))
     ].
 
+cast_enum_test_() ->
+    [
+        ?_assertEqual({ok, active}, kura_types:cast({enum, [active, inactive]}, active)),
+        ?_assertEqual({ok, active}, kura_types:cast({enum, [active, inactive]}, <<"active">>)),
+        ?_assertEqual({ok, active}, kura_types:cast({enum, [active, inactive]}, "active")),
+        ?_assertEqual({ok, undefined}, kura_types:cast({enum, [active, inactive]}, undefined)),
+        ?_assertMatch({error, _}, kura_types:cast({enum, [active, inactive]}, banned)),
+        ?_assertMatch({error, _}, kura_types:cast({enum, [active, inactive]}, <<"banned">>)),
+        ?_assertMatch(
+            {error, _}, kura_types:cast({enum, [active, inactive]}, <<"nonexistent_atom_xyz">>)
+        )
+    ].
+
 cast_array_test_() ->
     [
         ?_assertEqual({ok, [1, 2, 3]}, kura_types:cast({array, integer}, [1, 2, 3])),
@@ -139,6 +153,12 @@ dump_jsonb_test() ->
     {ok, Encoded} = kura_types:dump(jsonb, #{<<"key">> => <<"val">>}),
     ?assert(is_binary(Encoded)).
 
+dump_enum_test() ->
+    ?assertEqual({ok, <<"active">>}, kura_types:dump({enum, [active, inactive]}, active)).
+
+dump_enum_undefined_test() ->
+    ?assertEqual({ok, null}, kura_types:dump({enum, [active, inactive]}, undefined)).
+
 dump_array_test() ->
     ?assertEqual({ok, [1, 2, 3]}, kura_types:dump({array, integer}, [1, 2, 3])).
 
@@ -157,6 +177,12 @@ load_jsonb_binary_test() ->
 
 load_jsonb_map_test() ->
     ?assertEqual({ok, #{<<"a">> => 1}}, kura_types:load(jsonb, #{<<"a">> => 1})).
+
+load_enum_test() ->
+    ?assertEqual({ok, active}, kura_types:load({enum, [active, inactive]}, <<"active">>)).
+
+load_enum_null_test() ->
+    ?assertEqual({ok, undefined}, kura_types:load({enum, [active, inactive]}, null)).
 
 load_array_test() ->
     ?assertEqual({ok, [1, 2, 3]}, kura_types:load({array, integer}, [1, 2, 3])).

@@ -25,6 +25,7 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
     | utc_datetime
     | uuid
     | jsonb
+    | {enum, [atom()]}
     | {array, kura_type()}.
 
 %%----------------------------------------------------------------------
@@ -43,6 +44,7 @@ to_pg_type(date) -> <<"DATE">>;
 to_pg_type(utc_datetime) -> <<"TIMESTAMPTZ">>;
 to_pg_type(uuid) -> <<"UUID">>;
 to_pg_type(jsonb) -> <<"JSONB">>;
+to_pg_type({enum, _}) -> <<"VARCHAR(255)">>;
 to_pg_type({array, Inner}) -> <<(to_pg_type(Inner))/binary, "[]">>.
 
 %%----------------------------------------------------------------------
@@ -107,6 +109,31 @@ cast(jsonb, V) when is_list(V) ->
     {ok, V};
 cast(jsonb, V) when is_binary(V) ->
     json_decode(V);
+cast({enum, Values}, V) when is_atom(V) ->
+    case lists:member(V, Values) of
+        true -> {ok, V};
+        false -> {error, <<"is not a valid enum value">>}
+    end;
+cast({enum, Values}, V) when is_binary(V) ->
+    try
+        Atom = binary_to_existing_atom(V, utf8),
+        case lists:member(Atom, Values) of
+            true -> {ok, Atom};
+            false -> {error, <<"is not a valid enum value">>}
+        end
+    catch
+        error:badarg -> {error, <<"is not a valid enum value">>}
+    end;
+cast({enum, Values}, V) when is_list(V) ->
+    try
+        Atom = list_to_existing_atom(V),
+        case lists:member(Atom, Values) of
+            true -> {ok, Atom};
+            false -> {error, <<"is not a valid enum value">>}
+        end
+    catch
+        error:badarg -> {error, <<"is not a valid enum value">>}
+    end;
 cast({array, Inner}, V) when is_list(V) ->
     cast_array(Inner, V, []);
 cast(Type, _V) ->
@@ -142,6 +169,8 @@ dump(uuid, V) when is_binary(V) ->
     {ok, V};
 dump(jsonb, V) when is_map(V); is_list(V) ->
     json_encode(V);
+dump({enum, _}, V) when is_atom(V) ->
+    {ok, atom_to_binary(V, utf8)};
 dump({array, Inner}, V) when is_list(V) ->
     dump_array(Inner, V, []);
 dump(Type, _V) ->
@@ -177,6 +206,12 @@ load(jsonb, V) when is_binary(V) ->
     json_decode(V);
 load(jsonb, V) when is_map(V) ->
     {ok, V};
+load({enum, _}, V) when is_binary(V) ->
+    try
+        {ok, binary_to_existing_atom(V, utf8)}
+    catch
+        error:badarg -> {ok, binary_to_atom(V, utf8)}
+    end;
 load({array, Inner}, V) when is_list(V) ->
     load_array(Inner, V, []);
 load(Type, _V) ->
@@ -308,5 +343,6 @@ load_array(Inner, [H | T], Acc) ->
         {error, _} = Err -> Err
     end.
 
+format_type({enum, _}) -> enum;
 format_type({array, Inner}) -> list_to_atom("array_" ++ atom_to_list(format_type(Inner)));
 format_type(T) when is_atom(T) -> T.
