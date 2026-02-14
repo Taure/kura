@@ -2,8 +2,10 @@
 -moduledoc """
 Runs, rolls back, and reports status of migrations.
 
-Discovers migration modules from configured paths, tracks applied versions
-in a `schema_migrations` table, and executes DDL within transactions.
+Discovers migration modules automatically from the application that owns the
+repo module. Any module named `m<YYYYMMDDHHMMSS>_<name>` in the application's
+module list is treated as a migration. Tracks applied versions in a
+`schema_migrations` table and executes DDL within transactions.
 """.
 
 -include("kura.hrl").
@@ -78,78 +80,30 @@ ensure_schema_migrations(RepoMod) ->
 %%----------------------------------------------------------------------
 
 discover_migrations(RepoMod) ->
-    case application:get_env(kura, migration_paths) of
-        {ok, Paths} ->
-            lists:flatmap(fun discover_in_path/1, Paths);
+    case application:get_application(RepoMod) of
+        {ok, App} ->
+            discover_app_migrations(App);
         undefined ->
-            case application:get_application(RepoMod) of
-                {ok, App} ->
-                    discover_in_path({priv_dir, App, "migrations"});
-                undefined ->
-                    []
-            end
+            []
     end.
 
-discover_in_path({priv_dir, App, SubDir}) ->
-    case code:priv_dir(App) of
-        {error, bad_name} -> [];
-        PrivDir -> discover_in_path(filename:join(PrivDir, SubDir))
-    end;
-discover_in_path(Path) when is_binary(Path) ->
-    discover_in_path(binary_to_list(Path));
-discover_in_path(Path) ->
-    case filelib:wildcard(Path ++ "/m*.beam") of
-        [] ->
-            case filelib:wildcard(Path ++ "/m*.erl") of
-                [] -> [];
-                ErlFiles -> discover_erl_migrations(ErlFiles)
-            end;
-        BeamFiles ->
-            parse_migration_files(BeamFiles)
+discover_app_migrations(App) ->
+    case application:get_key(App, modules) of
+        {ok, Modules} ->
+            lists:filtermap(fun parse_migration_module/1, Modules);
+        undefined ->
+            []
     end.
 
-discover_erl_migrations(ErlFiles) ->
-    KuraInclude = filename:join(code:lib_dir(kura), "include"),
-    lists:filtermap(
-        fun(File) ->
-            BaseName = filename:basename(File, ".erl"),
-            case re:run(BaseName, "^m(\\d{14})_(.+)$", [{capture, [1, 2], list}]) of
-                {match, [VersionStr, _Name]} ->
-                    Version = list_to_integer(VersionStr),
-                    Module = list_to_atom(BaseName),
-                    case compile:file(File, [binary, return_errors, {i, KuraInclude}]) of
-                        {ok, Module, Binary} ->
-                            {module, Module} = code:load_binary(Module, File, Binary),
-                            {true, {Version, Module}};
-                        {ok, Module, Binary, _Warnings} ->
-                            {module, Module} = code:load_binary(Module, File, Binary),
-                            {true, {Version, Module}};
-                        {error, Errors, _Warnings} ->
-                            logger:error("Kura: failed to compile migration ~s: ~p", [File, Errors]),
-                            false
-                    end;
-                nomatch ->
-                    false
-            end
-        end,
-        ErlFiles
-    ).
-
-parse_migration_files(Files) ->
-    lists:filtermap(
-        fun(File) ->
-            BaseName = filename:basename(File, filename:extension(File)),
-            case re:run(BaseName, "^m(\\d{14})_(.+)$", [{capture, [1, 2], list}]) of
-                {match, [VersionStr, _Name]} ->
-                    Version = list_to_integer(VersionStr),
-                    Module = list_to_atom(BaseName),
-                    {true, {Version, Module}};
-                nomatch ->
-                    false
-            end
-        end,
-        Files
-    ).
+parse_migration_module(Module) ->
+    Name = atom_to_list(Module),
+    case re:run(Name, "^m(\\d{14})_(.+)$", [{capture, [1, 2], list}]) of
+        {match, [VersionStr, _Name]} ->
+            Version = list_to_integer(VersionStr),
+            {true, {Version, Module}};
+        nomatch ->
+            false
+    end.
 
 %%----------------------------------------------------------------------
 %% Migration execution

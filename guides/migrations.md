@@ -29,17 +29,9 @@ down() ->
     [{drop_table, <<"users">>}].
 ```
 
-Place migration files in `priv/migrations/`. Kura automatically discovers them using `code:priv_dir/1` based on the application that owns the repo module — no configuration needed.
+Place migration files in `src/migrations/` (or any subdirectory under `src/`). Kura automatically discovers them by scanning the application's compiled modules for names matching the `m<YYYYMMDDHHMMSS>_<name>` pattern — no configuration needed.
 
-Migration `.erl` files are compiled at runtime, so you don't need to add them to `extra_src_dirs` or any build config.
-
-If you need custom paths, you can override discovery via `sys.config`:
-
-```erlang
-{kura, [
-    {migration_paths, [{priv_dir, my_app, "migrations"}]}
-]}.
-```
+Since migrations are regular `.erl` files in `src/`, they are compiled normally by rebar3. If you use `{src_dirs, [{"src", [{recursive, true}]}]}` in your `rebar.config`, subdirectories like `src/migrations/` are included automatically.
 
 ## DDL Operations
 
