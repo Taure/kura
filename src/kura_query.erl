@@ -15,6 +15,7 @@
     distinct/1, distinct/2,
     lock/2,
     prefix/2,
+    preload/2,
     count/1, count/2,
     sum/2,
     avg/2,
@@ -79,6 +80,10 @@ lock(Q, LockExpr) ->
 -spec prefix(#kura_query{}, binary()) -> #kura_query{}.
 prefix(Q, Schema) ->
     Q#kura_query{prefix = Schema}.
+
+-spec preload(#kura_query{}, [atom() | {atom(), list()}]) -> #kura_query{}.
+preload(Q = #kura_query{preloads = P}, Assocs) ->
+    Q#kura_query{preloads = P ++ Assocs}.
 
 %% Aggregates — modify select
 

@@ -12,6 +12,8 @@
     update/1,
     delete/1,
     transaction/1,
+    multi/1,
+    preload/3,
     query/2
 ]).
 
@@ -35,4 +37,6 @@ insert(CS) -> kura_repo_worker:insert(?MODULE, CS).
 update(CS) -> kura_repo_worker:update(?MODULE, CS).
 delete(CS) -> kura_repo_worker:delete(?MODULE, CS).
 transaction(Fun) -> kura_repo_worker:transaction(?MODULE, Fun).
+multi(Multi) -> kura_repo_worker:multi(?MODULE, Multi).
+preload(Schema, Records, Assocs) -> kura_repo_worker:preload(?MODULE, Schema, Records, Assocs).
 query(SQL, Params) -> kura_repo_worker:query(?MODULE, SQL, Params).

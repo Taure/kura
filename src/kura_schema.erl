@@ -2,15 +2,24 @@
 
 -include("kura.hrl").
 
--export([field_names/1, field_types/1, column_map/1, primary_key_field/1, non_virtual_fields/1]).
+-export([
+    field_names/1,
+    field_types/1,
+    column_map/1,
+    primary_key_field/1,
+    non_virtual_fields/1,
+    associations/1,
+    association/2
+]).
 
 -callback table() -> binary().
 -callback fields() -> [#kura_field{}].
 -callback primary_key() -> atom().
 
--optional_callbacks([timestamps/0]).
+-optional_callbacks([timestamps/0, associations/0]).
 
 -callback timestamps() -> [{atom(), kura_types:kura_type()}].
+-callback associations() -> [#kura_assoc{}].
 
 %% Return list of field names for a schema module.
 -spec field_names(module()) -> [atom()].
@@ -56,6 +65,23 @@ primary_key_field(Mod) ->
     case [F || F <- Mod:fields(), F#kura_field.name =:= PK] of
         [Field] -> Field;
         [] -> undefined
+    end.
+
+-spec associations(module()) -> [#kura_assoc{}].
+associations(Mod) ->
+    cache({kura_schema, associations, Mod}, fun() ->
+        code:ensure_loaded(Mod),
+        case erlang:function_exported(Mod, associations, 0) of
+            true -> Mod:associations();
+            false -> []
+        end
+    end).
+
+-spec association(module(), atom()) -> {ok, #kura_assoc{}} | {error, not_found}.
+association(Mod, Name) ->
+    case [A || A <- associations(Mod), A#kura_assoc.name =:= Name] of
+        [Assoc] -> {ok, Assoc};
+        [] -> {error, not_found}
     end.
 
 %%----------------------------------------------------------------------
