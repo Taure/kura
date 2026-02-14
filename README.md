@@ -140,12 +140,12 @@ kura_migrator:status(my_repo).
 
 ## Configuration
 
-Migrations in `priv/migrations/` are discovered automatically — no configuration needed.
+Migrations are discovered automatically from compiled modules — no configuration needed.
+Place migration files in `src/migrations/` and they'll be found by name convention.
 
 ```erlang
-%% sys.config (optional overrides)
+%% sys.config (optional)
 [{kura, [
-    {migration_paths, [{priv_dir, my_app, "migrations"}]},
     {log_queries, false}
 ]}].
 ```
