@@ -148,7 +148,11 @@ kura_migrator:status(my_repo).
 ]}].
 ```
 
+## Examples
+
+- [pet_store](https://github.com/Taure/pet_store) — A sample REST API built with Kura and Nova demonstrating schemas, changesets, queries, migrations, and associations in practice.
+
 ## Requirements
 
-- Erlang/OTP 26+
+- Erlang/OTP 27+
 - PostgreSQL 14+
