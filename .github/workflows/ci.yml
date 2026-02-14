@@ -53,6 +53,9 @@ jobs:
       - name: Check formatting
         run: rebar3 fmt --check
 
+      - name: Xref
+        run: rebar3 xref
+
       - name: Dialyzer
         run: rebar3 dialyzer
 
