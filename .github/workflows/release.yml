@@ -2,8 +2,7 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
 
 permissions:
   contents: write
@@ -29,25 +28,52 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version from app.src
+        id: version
+        run: |
+          VERSION=$(sed -n 's/.*{vsn, *"\([^"]*\)".*/\1/p' src/kura.app.src)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag already exists
+        id: check_tag
+        run: |
+          if git rev-parse "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if already released
+        if: steps.check_tag.outputs.exists == 'true'
+        run: echo "Tag ${{ steps.version.outputs.tag }} already exists, skipping release."
 
       - uses: erlef/setup-beam@v1
+        if: steps.check_tag.outputs.exists == 'false'
         with:
           otp-version: '27'
           rebar3-version: '3.24'
 
       - name: Compile
+        if: steps.check_tag.outputs.exists == 'false'
         run: rebar3 compile
 
       - name: EUnit
+        if: steps.check_tag.outputs.exists == 'false'
         run: rebar3 eunit
 
       - name: Generate docs
+        if: steps.check_tag.outputs.exists == 'false'
         run: rebar3 ex_doc
 
-      - name: Extract changelog for release
+      - name: Extract changelog
+        if: steps.check_tag.outputs.exists == 'false'
         id: changelog
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ steps.version.outputs.version }}"
           BODY=$(awk "/^## \[${VERSION}\]/{flag=1; next} /^## \[/{flag=0} flag" CHANGELOG.md)
           {
             echo 'body<<EOF'
@@ -55,15 +81,23 @@ jobs:
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub Release
+      - name: Create tag
+        if: steps.check_tag.outputs.exists == 'false'
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      - name: Create GitHub Release
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "${{ steps.version.outputs.tag }}" \
             --notes "${{ steps.changelog.outputs.body }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish to Hex
+        if: steps.check_tag.outputs.exists == 'false'
         run: rebar3 hex publish --yes
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
