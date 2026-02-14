@@ -285,7 +285,8 @@ preload_assoc(RepoMod, Records, Schema, AssocName) when is_atom(AssocName) ->
     case Assoc#kura_assoc.type of
         belongs_to -> preload_belongs_to(RepoMod, Records, Assoc);
         has_many -> preload_has_many(RepoMod, Records, Schema, Assoc);
-        has_one -> preload_has_one(RepoMod, Records, Schema, Assoc)
+        has_one -> preload_has_one(RepoMod, Records, Schema, Assoc);
+        many_to_many -> preload_many_to_many(RepoMod, Records, Schema, Assoc)
     end.
 
 preload_belongs_to(RepoMod, Records, #kura_assoc{
@@ -332,6 +333,70 @@ preload_has_one(RepoMod, Records, Schema, #kura_assoc{
     {ok, Related} = all(RepoMod, Q),
     Lookup = maps:from_list([{maps:get(FK, Rel), Rel} || Rel <- Related]),
     [R#{Name => maps:get(maps:get(PK, R), Lookup, nil)} || R <- Records].
+
+preload_many_to_many(RepoMod, Records, Schema, #kura_assoc{
+    name = Name, schema = RelSchema, join_through = JoinThrough, join_keys = {OwnerKey, RelatedKey}
+}) ->
+    PK = Schema:primary_key(),
+    PKValues = lists:usort([maps:get(PK, R) || R <- Records]),
+    case PKValues of
+        [] ->
+            [R#{Name => []} || R <- Records];
+        _ ->
+            JoinTable = resolve_join_table(JoinThrough),
+            OwnerCol = atom_to_binary(OwnerKey, utf8),
+            RelatedCol = atom_to_binary(RelatedKey, utf8),
+            Placeholders = lists:join(<<", ">>, [
+                iolist_to_binary(io_lib:format("$~B", [I]))
+             || I <- lists:seq(1, length(PKValues))
+            ]),
+            JoinSQL = iolist_to_binary([
+                <<"SELECT ">>,
+                OwnerCol,
+                <<", ">>,
+                RelatedCol,
+                <<" FROM ">>,
+                JoinTable,
+                <<" WHERE ">>,
+                OwnerCol,
+                <<" IN (">>,
+                Placeholders,
+                <<")">>
+            ]),
+            #{rows := JoinRows} = pgo_query(RepoMod, JoinSQL, PKValues),
+            RelatedIds = lists:usort([maps:get(RelatedKey, JR) || JR <- JoinRows]),
+            case RelatedIds of
+                [] ->
+                    [R#{Name => []} || R <- Records];
+                _ ->
+                    RelPK = RelSchema:primary_key(),
+                    Q = kura_query:where(kura_query:from(RelSchema), {RelPK, in, RelatedIds}),
+                    {ok, Related} = all(RepoMod, Q),
+                    RelLookup = maps:from_list([{maps:get(RelPK, Rel), Rel} || Rel <- Related]),
+                    Grouped = lists:foldl(
+                        fun(JR, Acc) ->
+                            OKey = maps:get(OwnerKey, JR),
+                            RKey = maps:get(RelatedKey, JR),
+                            case maps:find(RKey, RelLookup) of
+                                {ok, RelRec} ->
+                                    maps:update_with(
+                                        OKey, fun(L) -> L ++ [RelRec] end, [RelRec], Acc
+                                    );
+                                error ->
+                                    Acc
+                            end
+                        end,
+                        #{},
+                        JoinRows
+                    ),
+                    [R#{Name => maps:get(maps:get(PK, R), Grouped, [])} || R <- Records]
+            end
+    end.
+
+resolve_join_table(Table) when is_binary(Table) ->
+    Table;
+resolve_join_table(Mod) when is_atom(Mod) ->
+    Mod:table().
 
 %%----------------------------------------------------------------------
 %% Internal: multi execution
@@ -439,41 +504,102 @@ persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AssocChanges) ->
     maps:fold(
         fun(AssocName, ChildCSs, {ok, AccRow}) ->
             {ok, Assoc} = kura_schema:association(SchemaMod, AssocName),
-            FK = Assoc#kura_assoc.foreign_key,
-            PK = SchemaMod:primary_key(),
-            PKValue = maps:get(PK, AccRow),
-            case is_list(ChildCSs) of
-                true ->
-                    Children = lists:map(
-                        fun(ChildCS) ->
-                            ChildCS1 = kura_changeset:put_change(ChildCS, FK, PKValue),
-                            case ChildCS1#kura_changeset.action of
-                                insert ->
-                                    {ok, Child} = insert_record(RepoMod, ChildCS1),
-                                    Child;
-                                update ->
-                                    {ok, Child} = update_record(RepoMod, ChildCS1),
-                                    Child
-                            end
-                        end,
-                        ChildCSs
-                    ),
-                    {ok, AccRow#{AssocName => Children}};
-                false ->
-                    ChildCS1 = kura_changeset:put_change(ChildCSs, FK, PKValue),
-                    case ChildCSs#kura_changeset.action of
-                        insert ->
-                            {ok, Child} = insert_record(RepoMod, ChildCS1),
-                            {ok, AccRow#{AssocName => Child}};
-                        update ->
-                            {ok, Child} = update_record(RepoMod, ChildCS1),
-                            {ok, AccRow#{AssocName => Child}}
-                    end
+            case Assoc#kura_assoc.type of
+                many_to_many ->
+                    persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs);
+                _ ->
+                    persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs)
             end
         end,
         {ok, ParentRow},
         AssocChanges
     ).
+
+persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
+    FK = Assoc#kura_assoc.foreign_key,
+    PK = SchemaMod:primary_key(),
+    PKValue = maps:get(PK, AccRow),
+    case is_list(ChildCSs) of
+        true ->
+            Children = lists:map(
+                fun(ChildCS) ->
+                    ChildCS1 = kura_changeset:put_change(ChildCS, FK, PKValue),
+                    case ChildCS1#kura_changeset.action of
+                        insert ->
+                            {ok, Child} = insert_record(RepoMod, ChildCS1),
+                            Child;
+                        update ->
+                            {ok, Child} = update_record(RepoMod, ChildCS1),
+                            Child
+                    end
+                end,
+                ChildCSs
+            ),
+            {ok, AccRow#{AssocName => Children}};
+        false ->
+            ChildCS1 = kura_changeset:put_change(ChildCSs, FK, PKValue),
+            case ChildCSs#kura_changeset.action of
+                insert ->
+                    {ok, Child} = insert_record(RepoMod, ChildCS1),
+                    {ok, AccRow#{AssocName => Child}};
+                update ->
+                    {ok, Child} = update_record(RepoMod, ChildCS1),
+                    {ok, AccRow#{AssocName => Child}}
+            end
+    end.
+
+persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
+    #kura_assoc{
+        schema = RelSchema,
+        join_through = JoinThrough,
+        join_keys = {OwnerKey, RelatedKey}
+    } = Assoc,
+    PK = SchemaMod:primary_key(),
+    PKValue = maps:get(PK, AccRow),
+    RelPK = RelSchema:primary_key(),
+    JoinTable = resolve_join_table(JoinThrough),
+    OwnerCol = atom_to_binary(OwnerKey, utf8),
+    RelatedCol = atom_to_binary(RelatedKey, utf8),
+    Children = lists:map(
+        fun(ChildCS) ->
+            case ChildCS#kura_changeset.action of
+                insert ->
+                    {ok, Child} = insert_record(RepoMod, ChildCS),
+                    Child;
+                update ->
+                    {ok, Child} = update_record(RepoMod, ChildCS),
+                    Child;
+                undefined ->
+                    kura_changeset:apply_changes(ChildCS)
+            end
+        end,
+        ChildCSs
+    ),
+    DeleteSQL = iolist_to_binary([
+        <<"DELETE FROM ">>,
+        JoinTable,
+        <<" WHERE ">>,
+        OwnerCol,
+        <<" = $1">>
+    ]),
+    _ = pgo_query(RepoMod, DeleteSQL, [PKValue]),
+    lists:foreach(
+        fun(Child) ->
+            RelPKValue = maps:get(RelPK, Child),
+            InsertSQL = iolist_to_binary([
+                <<"INSERT INTO ">>,
+                JoinTable,
+                <<" (">>,
+                OwnerCol,
+                <<", ">>,
+                RelatedCol,
+                <<") VALUES ($1, $2)">>
+            ]),
+            pgo_query(RepoMod, InsertSQL, [PKValue, RelPKValue])
+        end,
+        Children
+    ),
+    {ok, AccRow#{AssocName => Children}}.
 
 delete_record(RepoMod, SchemaMod, Data) ->
     PK = SchemaMod:primary_key(),

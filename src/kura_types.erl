@@ -26,7 +26,8 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
     | uuid
     | jsonb
     | {enum, [atom()]}
-    | {array, kura_type()}.
+    | {array, kura_type()}
+    | {embed, embeds_one | embeds_many, module()}.
 
 %%----------------------------------------------------------------------
 %% PG DDL type strings
@@ -45,7 +46,8 @@ to_pg_type(utc_datetime) -> <<"TIMESTAMPTZ">>;
 to_pg_type(uuid) -> <<"UUID">>;
 to_pg_type(jsonb) -> <<"JSONB">>;
 to_pg_type({enum, _}) -> <<"VARCHAR(255)">>;
-to_pg_type({array, Inner}) -> <<(to_pg_type(Inner))/binary, "[]">>.
+to_pg_type({array, Inner}) -> <<(to_pg_type(Inner))/binary, "[]">>;
+to_pg_type({embed, _, _}) -> <<"JSONB">>.
 
 %%----------------------------------------------------------------------
 %% Cast: coerce external input → Erlang term
@@ -136,6 +138,10 @@ cast({enum, Values}, V) when is_list(V) ->
     end;
 cast({array, Inner}, V) when is_list(V) ->
     cast_array(Inner, V, []);
+cast({embed, embeds_one, _}, V) when is_map(V) ->
+    {ok, V};
+cast({embed, embeds_many, _}, V) when is_list(V) ->
+    {ok, V};
 cast(Type, _V) ->
     {error, <<"cannot cast to ", (atom_to_binary(format_type(Type), utf8))/binary>>}.
 
@@ -173,6 +179,10 @@ dump({enum, _}, V) when is_atom(V) ->
     {ok, atom_to_binary(V, utf8)};
 dump({array, Inner}, V) when is_list(V) ->
     dump_array(Inner, V, []);
+dump({embed, embeds_one, Mod}, V) when is_map(V) ->
+    json_encode(dump_embed_to_term(Mod, V));
+dump({embed, embeds_many, Mod}, V) when is_list(V) ->
+    json_encode([dump_embed_to_term(Mod, Item) || Item <- V]);
 dump(Type, _V) ->
     {error, <<"cannot dump ", (atom_to_binary(format_type(Type), utf8))/binary>>}.
 
@@ -214,6 +224,22 @@ load({enum, _}, V) when is_binary(V) ->
     end;
 load({array, Inner}, V) when is_list(V) ->
     load_array(Inner, V, []);
+load({embed, embeds_one, Mod}, V) when is_binary(V) ->
+    case json_decode(V) of
+        {ok, Map} when is_map(Map) -> {ok, load_embed_map(Mod, Map)};
+        {ok, _} -> {error, <<"expected a JSON object">>};
+        Err -> Err
+    end;
+load({embed, embeds_one, Mod}, V) when is_map(V) ->
+    {ok, load_embed_map(Mod, V)};
+load({embed, embeds_many, Mod}, V) when is_binary(V) ->
+    case json_decode(V) of
+        {ok, List} when is_list(List) -> {ok, [load_embed_map(Mod, M) || M <- List]};
+        {ok, _} -> {error, <<"expected a JSON array">>};
+        Err -> Err
+    end;
+load({embed, embeds_many, Mod}, V) when is_list(V) ->
+    {ok, [load_embed_map(Mod, M) || M <- V]};
 load(Type, _V) ->
     {error, <<"cannot load ", (atom_to_binary(format_type(Type), utf8))/binary>>}.
 
@@ -345,4 +371,69 @@ load_array(Inner, [H | T], Acc) ->
 
 format_type({enum, _}) -> enum;
 format_type({array, Inner}) -> list_to_atom("array_" ++ atom_to_list(format_type(Inner)));
+format_type({embed, _, Mod}) -> Mod;
 format_type(T) when is_atom(T) -> T.
+
+dump_embed_to_term(Mod, Map) ->
+    Types = kura_schema:field_types(Mod),
+    NonVirtual = kura_schema:non_virtual_fields(Mod),
+    lists:foldl(
+        fun(Field, Acc) ->
+            case maps:find(Field, Map) of
+                {ok, Val} ->
+                    BinKey = atom_to_binary(Field, utf8),
+                    case maps:find(Field, Types) of
+                        {ok, {embed, embeds_one, ChildMod}} when is_map(Val) ->
+                            Acc#{BinKey => dump_embed_to_term(ChildMod, Val)};
+                        {ok, {embed, embeds_many, ChildMod}} when is_list(Val) ->
+                            Acc#{BinKey => [dump_embed_to_term(ChildMod, I) || I <- Val]};
+                        {ok, Type} ->
+                            case dump(Type, Val) of
+                                {ok, Dumped} -> Acc#{BinKey => Dumped};
+                                {error, _} -> Acc#{BinKey => Val}
+                            end;
+                        error ->
+                            Acc#{BinKey => Val}
+                    end;
+                error ->
+                    Acc
+            end
+        end,
+        #{},
+        NonVirtual
+    ).
+
+load_embed_map(Mod, Map) ->
+    Types = kura_schema:field_types(Mod),
+    maps:fold(
+        fun(K, V, Acc) ->
+            AtomKey =
+                if
+                    is_binary(K) ->
+                        try
+                            binary_to_existing_atom(K, utf8)
+                        catch
+                            error:badarg -> K
+                        end;
+                    is_atom(K) ->
+                        K;
+                    true ->
+                        K
+                end,
+            case maps:find(AtomKey, Types) of
+                {ok, {embed, embeds_one, ChildMod}} when is_map(V) ->
+                    Acc#{AtomKey => load_embed_map(ChildMod, V)};
+                {ok, {embed, embeds_many, ChildMod}} when is_list(V) ->
+                    Acc#{AtomKey => [load_embed_map(ChildMod, I) || I <- V]};
+                {ok, Type} ->
+                    case load(Type, V) of
+                        {ok, Loaded} -> Acc#{AtomKey => Loaded};
+                        {error, _} -> Acc#{AtomKey => V}
+                    end;
+                error ->
+                    Acc#{AtomKey => V}
+            end
+        end,
+        #{},
+        Map
+    ).

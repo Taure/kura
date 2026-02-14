@@ -34,9 +34,17 @@
 
 -record(kura_assoc, {
     name :: atom(),
-    type :: belongs_to | has_one | has_many,
+    type :: belongs_to | has_one | has_many | many_to_many,
     schema :: module(),
-    foreign_key :: atom()
+    foreign_key :: atom() | undefined,
+    join_through :: binary() | module() | undefined,
+    join_keys :: {atom(), atom()} | undefined
+}).
+
+-record(kura_embed, {
+    name :: atom(),
+    type :: embeds_one | embeds_many,
+    schema :: module()
 }).
 
 -record(kura_query, {
