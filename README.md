@@ -150,6 +150,10 @@ Place migration files in `src/migrations/` and they'll be found by name conventi
 ]}].
 ```
 
+## Plugins
+
+- [rebar3_kura](https://github.com/Taure/rebar3_kura) — Rebar3 plugin that auto-generates migration files from schema changes. Add a field to your schema, run `rebar3 compile`, and the migration is created for you.
+
 ## Examples
 
 - [pet_store](https://github.com/Taure/pet_store) — A sample REST API built with Kura and Nova demonstrating schemas, changesets, queries, migrations, and associations in practice.
