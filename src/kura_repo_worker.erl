@@ -376,11 +376,16 @@ pgo_query(RepoMod, SQL, Params) ->
 
 emit_log(RepoMod, SQL, Params, Result, DurationUs) ->
     try
-        Config = RepoMod:config(),
-        case maps:find(log, Config) of
+        case application:get_env(kura, log) of
+            {ok, true} ->
+                Event = build_log_event(RepoMod, SQL, Params, Result, DurationUs),
+                (default_logger())(Event);
             {ok, LogFun} when is_function(LogFun, 1) ->
                 Event = build_log_event(RepoMod, SQL, Params, Result, DurationUs),
                 LogFun(Event);
+            {ok, {M, F}} when is_atom(M), is_atom(F) ->
+                Event = build_log_event(RepoMod, SQL, Params, Result, DurationUs),
+                M:F(Event);
             _ ->
                 ok
         end
