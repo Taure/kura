@@ -1,13 +1,15 @@
 -module(kura_query_compiler).
+-moduledoc """
+Compiles `kura_query` records into parameterized PostgreSQL SQL.
+
+This is an internal module. Use `kura_repo_worker` for executing queries.
+""".
 
 -include("kura.hrl").
 
 -export([to_sql/1, insert/3, insert/4, update/4, delete/3, update_all/2, delete_all/1, insert_all/3]).
 
-%%----------------------------------------------------------------------
-%% SELECT compilation
-%%----------------------------------------------------------------------
-
+-doc "Compile a query record into `{SQL, Params}`.".
 -spec to_sql(#kura_query{}) -> {iodata(), [term()]}.
 to_sql(#kura_query{from = From} = Q) when From =/= undefined ->
     Table = resolve_table(From),

@@ -1,4 +1,10 @@
 -module(kura_migrator).
+-moduledoc """
+Runs, rolls back, and reports status of migrations.
+
+Discovers migration modules from configured paths, tracks applied versions
+in a `schema_migrations` table, and executes DDL within transactions.
+""".
 
 -include("kura.hrl").
 
@@ -10,10 +16,7 @@
     compile_operation/1
 ]).
 
-%%----------------------------------------------------------------------
-%% Public API
-%%----------------------------------------------------------------------
-
+-doc "Run all pending migrations in order.".
 -spec migrate(module()) -> {ok, [integer()]} | {error, term()}.
 migrate(RepoMod) ->
     ensure_schema_migrations(RepoMod),
@@ -23,10 +26,12 @@ migrate(RepoMod) ->
     Sorted = lists:sort(fun({V1, _}, {V2, _}) -> V1 =< V2 end, Pending),
     run_migrations(RepoMod, Sorted, up, []).
 
+-doc "Roll back the last migration.".
 -spec rollback(module()) -> {ok, [integer()]} | {error, term()}.
 rollback(RepoMod) ->
     rollback(RepoMod, 1).
 
+-doc "Roll back the last `Steps` migrations.".
 -spec rollback(module(), non_neg_integer()) -> {ok, [integer()]} | {error, term()}.
 rollback(RepoMod, Steps) ->
     ensure_schema_migrations(RepoMod),
@@ -37,6 +42,7 @@ rollback(RepoMod, Steps) ->
     Pairs = [{V, maps:get(V, MigMap)} || V <- ToRollback, maps:is_key(V, MigMap)],
     run_migrations(RepoMod, Pairs, down, []).
 
+-doc "Return the status of all discovered migrations (`:up` or `:pending`).".
 -spec status(module()) -> [{integer(), module(), up | pending}].
 status(RepoMod) ->
     ensure_schema_migrations(RepoMod),
@@ -162,6 +168,7 @@ run_migrations(RepoMod, [{Version, Module} | Rest], Dir, Acc) ->
 %% DDL compilation
 %%----------------------------------------------------------------------
 
+-doc "Compile a single DDL operation to SQL.".
 -spec compile_operation(kura_migration:operation()) -> binary().
 compile_operation({create_table, Name, Columns}) ->
     ColDefs = [compile_column_def(C) || C <- Columns],

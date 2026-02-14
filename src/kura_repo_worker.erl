@@ -1,4 +1,17 @@
 -module(kura_repo_worker).
+-moduledoc """
+CRUD operations, preloading, transactions, and raw queries.
+
+All functions take a repo module as the first argument and execute against
+its connection pool.
+
+```erlang
+kura_repo_worker:start(MyRepo),
+{ok, Users} = kura_repo_worker:all(MyRepo, kura_query:from(my_user)),
+{ok, User} = kura_repo_worker:get(MyRepo, my_user, 1),
+{ok, Inserted} = kura_repo_worker:insert(MyRepo, Changeset).
+```
+""".
 
 -include("kura.hrl").
 
@@ -27,6 +40,7 @@
 %% Pool management
 %%----------------------------------------------------------------------
 
+-doc "Start the connection pool for the given repo module.".
 -spec start(module()) -> ok.
 start(RepoMod) ->
     Config = RepoMod:config(),
@@ -41,14 +55,10 @@ start(RepoMod) ->
         decode_opts => ?DECODE_OPTS
     },
     case pgo:start_pool(Pool, PgoConfig) of
-        {ok, _Pid} -> ok;
-        {error, {already_started, _Pid}} -> ok
+        {ok, _Pid} -> ok
     end.
 
-%%----------------------------------------------------------------------
-%% Query execution
-%%----------------------------------------------------------------------
-
+-doc "Execute a query and return all matching rows.".
 -spec all(module(), #kura_query{}) -> {ok, [map()]} | {error, term()}.
 all(RepoMod, Query) ->
     {SQL, Params} = kura_query_compiler:to_sql(Query),
@@ -65,6 +75,7 @@ all(RepoMod, Query) ->
             Err
     end.
 
+-doc "Fetch a single record by primary key.".
 -spec get(module(), module(), term()) -> {ok, map()} | {error, not_found} | {error, term()}.
 get(RepoMod, SchemaMod, Id) ->
     PK = SchemaMod:primary_key(),
@@ -75,6 +86,7 @@ get(RepoMod, SchemaMod, Id) ->
         {error, _} = Err -> Err
     end.
 
+-doc "Fetch a single record matching all key-value clauses.".
 -spec get_by(module(), module(), [{atom(), term()}]) ->
     {ok, map()} | {error, not_found} | {error, term()}.
 get_by(RepoMod, SchemaMod, Clauses) ->
@@ -92,6 +104,7 @@ get_by(RepoMod, SchemaMod, Clauses) ->
         {error, _} = Err -> Err
     end.
 
+-doc "Execute a query and return exactly one result (adds LIMIT 1).".
 -spec one(module(), #kura_query{}) -> {ok, map()} | {error, not_found} | {error, term()}.
 one(RepoMod, Query) ->
     Q = kura_query:limit(Query, 1),
@@ -101,6 +114,7 @@ one(RepoMod, Query) ->
         {error, _} = Err -> Err
     end.
 
+-doc "Insert a record from a changeset. Returns `{error, Changeset}` with errors on failure.".
 -spec insert(module(), #kura_changeset{}) -> {ok, map()} | {error, #kura_changeset{}}.
 insert(_RepoMod, CS = #kura_changeset{valid = false}) ->
     {error, CS#kura_changeset{action = insert}};
@@ -135,6 +149,7 @@ insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opt
             {error, handle_pg_error(CS#kura_changeset{action = insert}, PgError)}
     end.
 
+-doc "Update a record from a changeset. No-op if there are no changes.".
 -spec update(module(), #kura_changeset{}) -> {ok, map()} | {error, #kura_changeset{}}.
 update(_RepoMod, CS = #kura_changeset{valid = false}) ->
     {error, CS#kura_changeset{action = update}};
@@ -165,10 +180,12 @@ update(RepoMod, CS = #kura_changeset{schema = SchemaMod, data = Data, changes = 
             end
     end.
 
+-doc "Delete the record referenced by the changeset's data.".
 -spec delete(module(), #kura_changeset{}) -> {ok, map()} | {error, term()}.
 delete(RepoMod, #kura_changeset{schema = SchemaMod, data = Data}) ->
     delete_record(RepoMod, SchemaMod, Data).
 
+-doc "Bulk update all rows matching the query, returning the count of affected rows.".
 -spec update_all(module(), #kura_query{}, map()) -> {ok, non_neg_integer()} | {error, term()}.
 update_all(RepoMod, Query, Updates) ->
     {SQL, Params} = kura_query_compiler:update_all(Query, Updates),
@@ -178,6 +195,7 @@ update_all(RepoMod, Query, Updates) ->
         {error, _} = Err -> Err
     end.
 
+-doc "Bulk delete all rows matching the query, returning the count of deleted rows.".
 -spec delete_all(module(), #kura_query{}) -> {ok, non_neg_integer()} | {error, term()}.
 delete_all(RepoMod, Query) ->
     {SQL, Params} = kura_query_compiler:delete_all(Query),
@@ -187,6 +205,7 @@ delete_all(RepoMod, Query) ->
         {error, _} = Err -> Err
     end.
 
+-doc "Bulk insert a list of maps, returning the count of inserted rows.".
 -spec insert_all(module(), module(), [map()]) -> {ok, non_neg_integer()} | {error, term()}.
 insert_all(RepoMod, SchemaMod, Entries) ->
     NonVirtual = kura_schema:non_virtual_fields(SchemaMod),
@@ -206,19 +225,27 @@ insert_all(RepoMod, SchemaMod, Entries) ->
         {error, _} = Err -> Err
     end.
 
+-doc "Execute a function inside a database transaction.".
 -spec transaction(module(), fun(() -> any())) -> any() | {error, any()}.
 transaction(RepoMod, Fun) ->
     Pool = get_pool(RepoMod),
     pgo:transaction(Fun, #{pool => Pool}).
 
+-doc "Execute a `kura_multi` pipeline inside a transaction.".
 -spec multi(module(), term()) ->
     {ok, map()} | {error, atom(), term(), map()}.
 multi(RepoMod, Multi) ->
     Ops = kura_multi:to_list(Multi),
-    transaction(RepoMod, fun() ->
-        execute_multi_ops(RepoMod, Ops, #{})
-    end).
+    try
+        transaction(RepoMod, fun() ->
+            execute_multi_ops(RepoMod, Ops, #{})
+        end)
+    catch
+        throw:{multi_error, Name, Value, Completed} ->
+            {error, Name, Value, Completed}
+    end.
 
+-doc "Execute raw SQL with parameters.".
 -spec query(module(), iodata(), [term()]) -> {ok, list()} | {error, term()}.
 query(RepoMod, SQL, Params) ->
     maybe_log(SQL, Params),
@@ -231,6 +258,7 @@ query(RepoMod, SQL, Params) ->
 %% Preloading
 %%----------------------------------------------------------------------
 
+-doc "Preload associations on one or more records (standalone, outside of queries).".
 -spec preload(module(), module(), map() | [map()], [atom() | {atom(), list()}]) ->
     map() | [map()].
 preload(RepoMod, Schema, Record, Assocs) when is_map(Record) ->
@@ -331,7 +359,7 @@ execute_multi_ops(RepoMod, [{Name, Op} | Rest], Acc) ->
         {ok, Result} ->
             execute_multi_ops(RepoMod, Rest, Acc#{Name => Result});
         {error, Value} ->
-            pgo:break({error, Name, Value, Acc})
+            throw({multi_error, Name, Value, Acc})
     end.
 
 execute_multi_op(RepoMod, {insert, Fun}, Acc) when is_function(Fun, 1) ->

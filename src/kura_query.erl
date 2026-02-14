@@ -1,4 +1,17 @@
 -module(kura_query).
+-moduledoc """
+Composable, functional query builder.
+
+Build queries by piping through `from/1`, `where/2`, `select/2`, `order_by/2`,
+etc. Queries are compiled to parameterized SQL by `kura_query_compiler`.
+
+```erlang
+Q = kura_query:from(my_user),
+Q1 = kura_query:where(Q, {active, true}),
+Q2 = kura_query:order_by(Q1, [{name, asc}]),
+Q3 = kura_query:limit(Q2, 10).
+```
+""".
 
 -include("kura.hrl").
 
@@ -23,18 +36,22 @@
     max/2
 ]).
 
+-doc "Start a query from the given schema module or table atom.".
 -spec from(atom() | module()) -> #kura_query{}.
 from(Source) ->
     #kura_query{from = Source}.
 
+-doc "Set the SELECT fields. Pass atoms for columns or `{agg, field}` tuples for aggregates.".
 -spec select(#kura_query{}, [atom() | term()]) -> #kura_query{}.
 select(Q, Fields) ->
     Q#kura_query{select = Fields}.
 
+-doc "Add a WHERE condition. Conditions: `{field, value}`, `{field, op, value}`, `{'and', [...]}`, etc.".
 -spec where(#kura_query{}, term()) -> #kura_query{}.
 where(Q = #kura_query{wheres = W}, Condition) ->
     Q#kura_query{wheres = W ++ [Condition]}.
 
+-doc "Add a JOIN clause. `On` is `{LeftCol, RightCol}`.".
 -spec join(#kura_query{}, inner | left | right | full, atom(), {atom(), atom()}) -> #kura_query{}.
 join(Q, Type, Table, On) ->
     join(Q, Type, Table, On, undefined).
@@ -45,6 +62,7 @@ join(Q, Type, Table, On) ->
 join(Q = #kura_query{joins = J}, Type, Table, On, As) ->
     Q#kura_query{joins = J ++ [{Type, Table, On, As}]}.
 
+-doc "Set ORDER BY clauses as `[{field, asc | desc}]`.".
 -spec order_by(#kura_query{}, [{atom(), asc | desc}]) -> #kura_query{}.
 order_by(Q, Orders) ->
     Q#kura_query{order_bys = Orders}.
@@ -81,12 +99,12 @@ lock(Q, LockExpr) ->
 prefix(Q, Schema) ->
     Q#kura_query{prefix = Schema}.
 
+-doc "Add associations to preload after query execution.".
 -spec preload(#kura_query{}, [atom() | {atom(), list()}]) -> #kura_query{}.
 preload(Q = #kura_query{preloads = P}, Assocs) ->
     Q#kura_query{preloads = P ++ Assocs}.
 
-%% Aggregates — modify select
-
+-doc "Set query to SELECT COUNT(*).".
 -spec count(#kura_query{}) -> #kura_query{}.
 count(Q) ->
     Q#kura_query{select = [{count, '*'}]}.

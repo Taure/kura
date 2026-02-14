@@ -1,4 +1,17 @@
 -module(kura_changeset).
+-moduledoc """
+Changesets for casting external data, validating fields, and declaring constraints.
+
+A changeset tracks changes against existing data, accumulates errors, and
+declares database constraints for friendly error handling on insert/update.
+
+```erlang
+CS = kura_changeset:cast(my_user, #{}, Params, [name, email]),
+CS1 = kura_changeset:validate_required(CS, [name, email]),
+CS2 = kura_changeset:validate_format(CS1, email, <<"@">>),
+CS3 = kura_changeset:unique_constraint(CS2, email).
+```
+""".
 
 -include("kura.hrl").
 
@@ -26,10 +39,7 @@
     apply_action/2
 ]).
 
-%%----------------------------------------------------------------------
-%% cast/4 — create a changeset from schema, data, params, allowed fields
-%%----------------------------------------------------------------------
-
+-doc "Create a changeset by casting `Params` against `SchemaMod` types, filtering to `Allowed` fields.".
 -spec cast(module(), map(), map(), [atom()]) -> #kura_changeset{}.
 cast(SchemaMod, Data, Params, Allowed) ->
     Types = kura_schema:field_types(SchemaMod),
@@ -45,10 +55,7 @@ cast(SchemaMod, Data, Params, Allowed) ->
         types = Types
     }.
 
-%%----------------------------------------------------------------------
-%% Validations
-%%----------------------------------------------------------------------
-
+-doc "Validate that all `Fields` are present and non-blank.".
 -spec validate_required(#kura_changeset{}, [atom()]) -> #kura_changeset{}.
 validate_required(CS = #kura_changeset{changes = Changes, data = Data, errors = Errors}, Fields) ->
     NewErrors = lists:foldl(
@@ -72,6 +79,7 @@ validate_required(CS = #kura_changeset{changes = Changes, data = Data, errors = 
         valid = (Errors ++ NewErrors) =:= []
     }.
 
+-doc "Validate that `Field` matches the regex `Pattern`.".
 -spec validate_format(#kura_changeset{}, atom(), binary()) -> #kura_changeset{}.
 validate_format(CS, Field, Pattern) ->
     case get_change(CS, Field) of
@@ -86,6 +94,7 @@ validate_format(CS, Field, Pattern) ->
             CS
     end.
 
+-doc "Validate length of `Field`. Opts: `{min, N}`, `{max, N}`, `{is, N}`.".
 -spec validate_length(#kura_changeset{}, atom(), [{atom(), non_neg_integer()}]) ->
     #kura_changeset{}.
 validate_length(CS, Field, Opts) ->
@@ -102,6 +111,7 @@ validate_length(CS, Field, Opts) ->
             CS
     end.
 
+-doc "Validate numeric `Field`. Opts: `{greater_than, N}`, `{less_than, N}`, etc.".
 -spec validate_number(#kura_changeset{}, atom(), [{atom(), number()}]) -> #kura_changeset{}.
 validate_number(CS, Field, Opts) ->
     case get_change(CS, Field) of
@@ -113,6 +123,7 @@ validate_number(CS, Field, Opts) ->
             CS
     end.
 
+-doc "Validate that `Field` value is in the given list of `Values`.".
 -spec validate_inclusion(#kura_changeset{}, atom(), [term()]) -> #kura_changeset{}.
 validate_inclusion(CS, Field, Values) ->
     case get_change(CS, Field) of
@@ -125,6 +136,7 @@ validate_inclusion(CS, Field, Values) ->
             end
     end.
 
+-doc "Validate `Field` with a custom function returning `ok` or `{error, Message}`.".
 -spec validate_change(#kura_changeset{}, atom(), fun((term()) -> ok | {error, binary()})) ->
     #kura_changeset{}.
 validate_change(CS, Field, Fun) ->
@@ -138,10 +150,7 @@ validate_change(CS, Field, Fun) ->
             end
     end.
 
-%%----------------------------------------------------------------------
-%% Constraint declarations
-%%----------------------------------------------------------------------
-
+-doc "Declare a unique constraint on `Field` for friendly DB error mapping.".
 -spec unique_constraint(#kura_changeset{}, atom()) -> #kura_changeset{}.
 unique_constraint(CS, Field) ->
     unique_constraint(CS, Field, #{}).
@@ -156,6 +165,7 @@ unique_constraint(CS = #kura_changeset{schema = SchemaMod, constraints = Constra
     C = #kura_constraint{type = unique, constraint = Name, field = Field, message = Msg},
     CS#kura_changeset{constraints = Constraints ++ [C]}.
 
+-doc "Declare a foreign key constraint on `Field`.".
 -spec foreign_key_constraint(#kura_changeset{}, atom()) -> #kura_changeset{}.
 foreign_key_constraint(CS, Field) ->
     foreign_key_constraint(CS, Field, #{}).
@@ -172,6 +182,7 @@ foreign_key_constraint(
     C = #kura_constraint{type = foreign_key, constraint = Name, field = Field, message = Msg},
     CS#kura_changeset{constraints = Constraints ++ [C]}.
 
+-doc "Declare a check constraint with the given `Constraint` name mapped to `Field`.".
 -spec check_constraint(#kura_changeset{}, binary(), atom()) -> #kura_changeset{}.
 check_constraint(CS, Constraint, Field) ->
     check_constraint(CS, Constraint, Field, #{}).
@@ -182,22 +193,22 @@ check_constraint(CS = #kura_changeset{constraints = Constraints}, Constraint, Fi
     C = #kura_constraint{type = check, constraint = Constraint, field = Field, message = Msg},
     CS#kura_changeset{constraints = Constraints ++ [C]}.
 
-%%----------------------------------------------------------------------
-%% Error / change helpers
-%%----------------------------------------------------------------------
-
+-doc "Add an error to the changeset for `Field`.".
 -spec add_error(#kura_changeset{}, atom(), binary()) -> #kura_changeset{}.
 add_error(CS = #kura_changeset{errors = Errors}, Field, Message) ->
     CS#kura_changeset{errors = Errors ++ [{Field, Message}], valid = false}.
 
+-doc "Get a change value, or `undefined` if the field was not changed.".
 -spec get_change(#kura_changeset{}, atom()) -> term().
 get_change(#kura_changeset{changes = Changes}, Field) ->
     maps:get(Field, Changes, undefined).
 
+-doc "Get a change value, or `Default` if the field was not changed.".
 -spec get_change(#kura_changeset{}, atom(), term()) -> term().
 get_change(#kura_changeset{changes = Changes}, Field, Default) ->
     maps:get(Field, Changes, Default).
 
+-doc "Get the field value from changes (preferred) or data.".
 -spec get_field(#kura_changeset{}, atom()) -> term().
 get_field(#kura_changeset{changes = Changes, data = Data}, Field) ->
     case maps:find(Field, Changes) of
@@ -212,14 +223,17 @@ get_field(#kura_changeset{changes = Changes, data = Data}, Field, Default) ->
         error -> maps:get(Field, Data, Default)
     end.
 
+-doc "Put a change value directly, bypassing casting.".
 -spec put_change(#kura_changeset{}, atom(), term()) -> #kura_changeset{}.
 put_change(CS = #kura_changeset{changes = Changes}, Field, Value) ->
     CS#kura_changeset{changes = Changes#{Field => Value}}.
 
+-doc "Merge changes into data, returning the resulting map (does not validate).".
 -spec apply_changes(#kura_changeset{}) -> map().
 apply_changes(#kura_changeset{data = Data, changes = Changes}) ->
     maps:merge(Data, Changes).
 
+-doc "Apply changes if valid, returning `{ok, Map}` or `{error, Changeset}` with the action set.".
 -spec apply_action(#kura_changeset{}, atom()) -> {ok, map()} | {error, #kura_changeset{}}.
 apply_action(CS = #kura_changeset{valid = true}, Action) ->
     {ok, apply_changes(CS#kura_changeset{action = Action})};
