@@ -1,4 +1,14 @@
 -module(kura_types).
+-moduledoc """
+Type system for casting, dumping, and loading values between Erlang and PostgreSQL.
+
+Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
+`date`, `utc_datetime`, `uuid`, `jsonb`, `{array, Type}`.
+
+- `cast/2` — coerce external input to Erlang terms
+- `dump/2` — convert Erlang terms to pgo-compatible values
+- `load/2` — convert pgo results back to Erlang terms
+""".
 
 -export([to_pg_type/1, cast/2, dump/2, load/2]).
 
@@ -21,6 +31,7 @@
 %% PG DDL type strings
 %%----------------------------------------------------------------------
 
+-doc "Return the PostgreSQL DDL type string for a kura type.".
 -spec to_pg_type(kura_type()) -> binary().
 to_pg_type(id) -> <<"BIGSERIAL">>;
 to_pg_type(integer) -> <<"INTEGER">>;
@@ -38,6 +49,7 @@ to_pg_type({array, Inner}) -> <<(to_pg_type(Inner))/binary, "[]">>.
 %% Cast: coerce external input → Erlang term
 %%----------------------------------------------------------------------
 
+-doc "Coerce external input to an Erlang term for the given type.".
 -spec cast(kura_type(), term()) -> {ok, term()} | {error, binary()}.
 cast(_Type, undefined) ->
     {ok, undefined};
@@ -104,6 +116,7 @@ cast(Type, _V) ->
 %% Dump: Erlang term → pgo-compatible value
 %%----------------------------------------------------------------------
 
+-doc "Convert an Erlang term to a pgo-compatible value for storage.".
 -spec dump(kura_type(), term()) -> {ok, term()} | {error, binary()}.
 dump(_Type, undefined) ->
     {ok, null};
@@ -138,6 +151,7 @@ dump(Type, _V) ->
 %% Load: pgo result → Erlang term
 %%----------------------------------------------------------------------
 
+-doc "Convert a pgo result value back to an Erlang term.".
 -spec load(kura_type(), term()) -> {ok, term()} | {error, binary()}.
 load(_Type, null) ->
     {ok, undefined};
