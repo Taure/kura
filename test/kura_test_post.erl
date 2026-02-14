@@ -26,5 +26,12 @@ associations() ->
         },
         #kura_assoc{
             name = comments, type = has_many, schema = kura_test_comment, foreign_key = post_id
+        },
+        #kura_assoc{
+            name = tags,
+            type = many_to_many,
+            schema = kura_test_tag,
+            join_through = <<"posts_tags">>,
+            join_keys = {post_id, tag_id}
         }
     ].

@@ -11,7 +11,7 @@ associations_returns_empty_for_no_callback_test() ->
 
 associations_returns_list_test() ->
     Assocs = kura_schema:associations(kura_test_post),
-    ?assertEqual(2, length(Assocs)).
+    ?assertEqual(3, length(Assocs)).
 
 association_found_test() ->
     {ok, Assoc} = kura_schema:association(kura_test_post, author),
