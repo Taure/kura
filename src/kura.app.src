@@ -6,10 +6,10 @@
     {applications, [
         kernel,
         stdlib,
+        compiler,
         pgo
     ]},
     {env, [
-        {migration_paths, ["priv/migrations"]},
         {log_queries, false}
     ]},
     {modules, []},
