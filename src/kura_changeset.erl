@@ -39,12 +39,42 @@ CS3 = kura_changeset:unique_constraint(CS2, email).
     get_field/3,
     put_change/3,
     apply_changes/1,
-    apply_action/2
+    apply_action/2,
+    cast_embed/2,
+    cast_embed/3
 ]).
 
--doc "Create a changeset by casting `Params` against `SchemaMod` types, filtering to `Allowed` fields.".
--spec cast(module(), map(), map(), [atom()]) -> #kura_changeset{}.
-cast(SchemaMod, Data, Params, Allowed) ->
+-doc """
+Create a changeset by casting `Params` against type definitions, filtering to `Allowed` fields.
+
+The first argument can be either a schema module (atom) or a types map for schemaless changesets:
+
+```erlang
+%% Schema-based
+CS = kura_changeset:cast(my_user, #{}, Params, [name, email]).
+
+%% Schemaless
+Types = #{email => string, password => string},
+CS = kura_changeset:cast(Types, #{}, Params, [email, password]).
+```
+
+Schemaless changesets are validation-only — they cannot be persisted via `kura_repo`.
+""".
+-spec cast(module() | #{atom() => kura_types:kura_type()}, map(), map(), [atom()]) ->
+    #kura_changeset{}.
+cast(Types, Data, Params, Allowed) when is_map(Types) ->
+    NormParams = normalize_params(Params),
+    {Changes, Errors} = cast_params(NormParams, Allowed, Types, Data),
+    #kura_changeset{
+        valid = Errors =:= [],
+        schema = undefined,
+        data = Data,
+        params = NormParams,
+        changes = Changes,
+        errors = Errors,
+        types = Types
+    };
+cast(SchemaMod, Data, Params, Allowed) when is_atom(SchemaMod) ->
     Types = kura_schema:field_types(SchemaMod),
     NormParams = normalize_params(Params),
     {Changes, Errors} = cast_params(NormParams, Allowed, Types, Data),
@@ -159,6 +189,18 @@ unique_constraint(CS, Field) ->
     unique_constraint(CS, Field, #{}).
 
 -spec unique_constraint(#kura_changeset{}, atom(), map()) -> #kura_changeset{}.
+unique_constraint(#kura_changeset{schema = undefined}, _Field, Opts) when
+    not is_map_key(name, Opts)
+->
+    error(
+        {schemaless_constraint,
+            "unique_constraint on a schemaless changeset requires :name in opts"}
+    );
+unique_constraint(CS = #kura_changeset{schema = undefined, constraints = Constraints}, Field, Opts) ->
+    Name = maps:get(name, Opts),
+    Msg = maps:get(message, Opts, <<"has already been taken">>),
+    C = #kura_constraint{type = unique, constraint = Name, field = Field, message = Msg},
+    CS#kura_changeset{constraints = Constraints ++ [C]};
 unique_constraint(CS = #kura_changeset{schema = SchemaMod, constraints = Constraints}, Field, Opts) ->
     Table = SchemaMod:table(),
     Name = maps:get(
@@ -174,6 +216,20 @@ foreign_key_constraint(CS, Field) ->
     foreign_key_constraint(CS, Field, #{}).
 
 -spec foreign_key_constraint(#kura_changeset{}, atom(), map()) -> #kura_changeset{}.
+foreign_key_constraint(#kura_changeset{schema = undefined}, _Field, Opts) when
+    not is_map_key(name, Opts)
+->
+    error(
+        {schemaless_constraint,
+            "foreign_key_constraint on a schemaless changeset requires :name in opts"}
+    );
+foreign_key_constraint(
+    CS = #kura_changeset{schema = undefined, constraints = Constraints}, Field, Opts
+) ->
+    Name = maps:get(name, Opts),
+    Msg = maps:get(message, Opts, <<"does not exist">>),
+    C = #kura_constraint{type = foreign_key, constraint = Name, field = Field, message = Msg},
+    CS#kura_changeset{constraints = Constraints ++ [C]};
 foreign_key_constraint(
     CS = #kura_changeset{schema = SchemaMod, constraints = Constraints}, Field, Opts
 ) ->
@@ -282,9 +338,98 @@ put_assoc(CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}, AssocNam
     end.
 
 %%----------------------------------------------------------------------
+%% Embed casting
+%%----------------------------------------------------------------------
+
+-doc "Cast nested embedded schema parameters into parent changes.".
+-spec cast_embed(#kura_changeset{}, atom()) -> #kura_changeset{}.
+cast_embed(CS, EmbedName) ->
+    cast_embed(CS, EmbedName, #{}).
+
+-doc "Cast nested embedded schema parameters with options. Opts: `with` — custom changeset function.".
+-spec cast_embed(#kura_changeset{}, atom(), map()) -> #kura_changeset{}.
+cast_embed(CS = #kura_changeset{schema = SchemaMod, params = Params}, EmbedName, Opts) ->
+    case kura_schema:embed(SchemaMod, EmbedName) of
+        {ok, Embed} ->
+            NestedParams = maps:get(EmbedName, Params, undefined),
+            case NestedParams of
+                undefined ->
+                    CS;
+                _ ->
+                    WithFun = maps:get(with, Opts, default_embed_cast_fun(Embed)),
+                    cast_embed_params(CS, EmbedName, Embed, NestedParams, WithFun)
+            end;
+        {error, not_found} ->
+            add_error(CS, EmbedName, <<"unknown embed">>)
+    end.
+
+%%----------------------------------------------------------------------
+%% Internal: embed helpers
+%%----------------------------------------------------------------------
+
+default_embed_cast_fun(#kura_embed{schema = EmbedSchema}) ->
+    AllFields = kura_schema:field_names(EmbedSchema),
+    NonVirtual = kura_schema:non_virtual_fields(EmbedSchema),
+    Allowed = [F || F <- AllFields, lists:member(F, NonVirtual)],
+    fun(Data, EmbedParams) ->
+        cast(EmbedSchema, Data, EmbedParams, Allowed)
+    end.
+
+cast_embed_params(CS, EmbedName, #kura_embed{type = embeds_one}, Params, WithFun) when
+    is_map(Params)
+->
+    NormParams = normalize_params(Params),
+    ChildCS = WithFun(#{}, NormParams),
+    case ChildCS#kura_changeset.valid of
+        true ->
+            Changes = CS#kura_changeset.changes,
+            CS#kura_changeset{changes = Changes#{EmbedName => apply_changes(ChildCS)}};
+        false ->
+            CS#kura_changeset{
+                valid = false, errors = CS#kura_changeset.errors ++ ChildCS#kura_changeset.errors
+            }
+    end;
+cast_embed_params(CS, EmbedName, #kura_embed{type = embeds_one}, _Params, _WithFun) ->
+    add_error(CS, EmbedName, <<"expected a map">>);
+cast_embed_params(CS, EmbedName, #kura_embed{type = embeds_many}, ParamsList, WithFun) when
+    is_list(ParamsList)
+->
+    Results = lists:map(
+        fun(ChildParams) ->
+            NormParams = normalize_params(ChildParams),
+            WithFun(#{}, NormParams)
+        end,
+        ParamsList
+    ),
+    AllValid = lists:all(fun(#kura_changeset{valid = V}) -> V end, Results),
+    case AllValid of
+        true ->
+            Applied = [apply_changes(R) || R <- Results],
+            Changes = CS#kura_changeset.changes,
+            CS#kura_changeset{changes = Changes#{EmbedName => Applied}};
+        false ->
+            AllErrors = lists:foldl(
+                fun(#kura_changeset{errors = E}, Acc) -> Acc ++ E end,
+                CS#kura_changeset.errors,
+                [R || R <- Results, R#kura_changeset.valid =:= false]
+            ),
+            CS#kura_changeset{valid = false, errors = AllErrors}
+    end;
+cast_embed_params(CS, EmbedName, #kura_embed{type = embeds_many}, _Params, _WithFun) ->
+    add_error(CS, EmbedName, <<"expected a list">>).
+
+%%----------------------------------------------------------------------
 %% Internal: association helpers
 %%----------------------------------------------------------------------
 
+default_cast_fun(#kura_assoc{type = many_to_many, schema = ChildSchema}) ->
+    PK = ChildSchema:primary_key(),
+    AllFields = kura_schema:field_names(ChildSchema),
+    NonVirtual = kura_schema:non_virtual_fields(ChildSchema),
+    Allowed = [F || F <- AllFields, lists:member(F, NonVirtual), F =/= PK],
+    fun(Data, ChildParams) ->
+        cast(ChildSchema, Data, ChildParams, Allowed)
+    end;
 default_cast_fun(#kura_assoc{schema = ChildSchema, foreign_key = FK}) ->
     PK = ChildSchema:primary_key(),
     AllFields = kura_schema:field_names(ChildSchema),
@@ -297,6 +442,8 @@ default_cast_fun(#kura_assoc{schema = ChildSchema, foreign_key = FK}) ->
 cast_assoc_params(CS, AssocName, Assoc, NestedParams, Existing, WithFun) ->
     case Assoc#kura_assoc.type of
         has_many ->
+            cast_has_many(CS, AssocName, Assoc, NestedParams, Existing, WithFun);
+        many_to_many ->
             cast_has_many(CS, AssocName, Assoc, NestedParams, Existing, WithFun);
         has_one ->
             cast_has_one(CS, AssocName, NestedParams, WithFun)
@@ -359,6 +506,20 @@ coerce_assoc_value(_Assoc, #kura_changeset{} = CS) ->
 coerce_assoc_value(_Assoc, Value) ->
     Value.
 
+coerce_single(#kura_assoc{type = many_to_many, schema = ChildSchema}, Map) when is_map(Map) ->
+    PK = ChildSchema:primary_key(),
+    AllFields = kura_schema:field_names(ChildSchema),
+    NonVirtual = kura_schema:non_virtual_fields(ChildSchema),
+    Allowed = [F || F <- AllFields, lists:member(F, NonVirtual), F =/= PK],
+    NormMap = normalize_params(Map),
+    case maps:find(PK, NormMap) of
+        {ok, PKVal} when PKVal =/= undefined ->
+            CS = cast(ChildSchema, #{}, NormMap, Allowed),
+            CS#kura_changeset{action = undefined};
+        _ ->
+            CS = cast(ChildSchema, #{}, NormMap, Allowed),
+            CS#kura_changeset{action = insert}
+    end;
 coerce_single(#kura_assoc{schema = ChildSchema, foreign_key = FK}, Map) when is_map(Map) ->
     PK = ChildSchema:primary_key(),
     AllFields = kura_schema:field_names(ChildSchema),
