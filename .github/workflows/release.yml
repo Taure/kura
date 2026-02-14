@@ -31,10 +31,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Read version from app.src
+      - name: Read version from CHANGELOG.md
         id: version
         run: |
-          VERSION=$(sed -n 's/.*{vsn, *"\([^"]*\)".*/\1/p' src/kura.app.src)
+          VERSION=$(awk '/^## \[/{gsub(/[\[\]]/, "", $2); print $2; exit}' CHANGELOG.md)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
