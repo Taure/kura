@@ -1,5 +1,9 @@
 # Kura
 
+<p align="center">
+  <img src="priv/kura.png" alt="Kura" width="600" />
+</p>
+
 Database layer for Erlang — Ecto-equivalent abstractions in pure Erlang, targeting PostgreSQL via [pgo](https://github.com/erleans/pgo).
 
 ## Features
