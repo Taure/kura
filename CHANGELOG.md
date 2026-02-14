@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-02-14
+
+### Added
+
+- Enum type (`{enum, [atom()]}`) — stored as `VARCHAR(255)`, cast/dump/load between atoms and binaries
+- Query telemetry via `sys.config` — `{kura, [{log, true | {M,F}}]}` with timing on every query
+- `kura_changeset:cast_assoc/2,3` — nested changeset casting for `has_many` and `has_one` associations
+- `kura_changeset:put_assoc/3` — directly attach maps or pre-built changesets as association changes
+- `assoc_changes` field on `#kura_changeset{}` record
+- Nested insert/update — automatic transaction wrapping with FK propagation when `assoc_changes` present
+- `kura_repo_worker:build_log_event/5` and `default_logger/0` exported for testability
+- Architecture documentation (`doc/architecture.md`)
+- Feature guides: enums, telemetry, cast_assoc (`doc/guides/`)
+
+### Changed
+
+- Telemetry reads from `application:get_env(kura, log)` instead of repo `config/0` map
+- Removed `log_queries` application env default (replaced by `log`)
+- `kura_repo_worker:insert/2` and `update/2` refactored to support nested association persistence
+
+### Removed
+
+- `maybe_log/2` internal function (replaced by centralized `emit_log/5`)
+
 ## [0.3.0] - 2026-02-14
 
 ### Added

@@ -8,9 +8,7 @@
         stdlib,
         pgo
     ]},
-    {env, [
-        {log_queries, false}
-    ]},
+    {env, []},
     {modules, []},
     {licenses, ["MIT"]},
     {links, [{"GitHub", "https://github.com/Taure/kura"}]}
