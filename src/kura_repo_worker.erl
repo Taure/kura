@@ -31,7 +31,9 @@ kura_repo_worker:start(MyRepo),
     transaction/2,
     multi/2,
     preload/4,
-    query/3
+    query/3,
+    build_log_event/5,
+    default_logger/0
 ]).
 
 -define(DECODE_OPTS, [return_rows_as_maps, column_name_as_atom]).
@@ -62,7 +64,7 @@ start(RepoMod) ->
 -spec all(module(), #kura_query{}) -> {ok, [map()]} | {error, term()}.
 all(RepoMod, Query) ->
     {SQL, Params} = kura_query_compiler:to_sql(Query),
-    maybe_log(SQL, Params),
+
     case pgo_query(RepoMod, SQL, Params) of
         #{command := select, rows := Rows} ->
             Schema = Query#kura_query.from,
@@ -118,18 +120,17 @@ one(RepoMod, Query) ->
 -spec insert(module(), #kura_changeset{}) -> {ok, map()} | {error, #kura_changeset{}}.
 insert(_RepoMod, CS = #kura_changeset{valid = false}) ->
     {error, CS#kura_changeset{action = insert}};
-insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}) ->
-    Changes1 = maybe_add_timestamps(SchemaMod, Changes, insert),
-    Fields = maps:keys(Changes1),
-    DumpedChanges = dump_changes(SchemaMod, Changes1),
-    {SQL, Params} = kura_query_compiler:insert(SchemaMod, Fields, DumpedChanges),
-    maybe_log(SQL, Params),
-    case pgo_query(RepoMod, SQL, Params) of
-        #{command := insert, rows := [Row]} ->
-            {ok, load_row(SchemaMod, Row)};
-        {error, PgError} ->
-            {error, handle_pg_error(CS#kura_changeset{action = insert}, PgError)}
-    end.
+insert(RepoMod, CS = #kura_changeset{assoc_changes = AC}) when map_size(AC) > 0 ->
+    transaction(RepoMod, fun() ->
+        case insert_record(RepoMod, CS) of
+            {ok, ParentRow} ->
+                persist_assoc_changes(RepoMod, CS#kura_changeset.schema, ParentRow, AC);
+            {error, _} = Err ->
+                Err
+        end
+    end);
+insert(RepoMod, CS) ->
+    insert_record(RepoMod, CS).
 
 -spec insert(module(), #kura_changeset{}, map()) -> {ok, map()} | {error, #kura_changeset{}}.
 insert(_RepoMod, CS = #kura_changeset{valid = false}, _Opts) ->
@@ -139,7 +140,7 @@ insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opt
     Fields = maps:keys(Changes1),
     DumpedChanges = dump_changes(SchemaMod, Changes1),
     {SQL, Params} = kura_query_compiler:insert(SchemaMod, Fields, DumpedChanges, Opts),
-    maybe_log(SQL, Params),
+
     case pgo_query(RepoMod, SQL, Params) of
         #{command := insert, rows := [Row]} ->
             {ok, load_row(SchemaMod, Row)};
@@ -153,32 +154,17 @@ insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opt
 -spec update(module(), #kura_changeset{}) -> {ok, map()} | {error, #kura_changeset{}}.
 update(_RepoMod, CS = #kura_changeset{valid = false}) ->
     {error, CS#kura_changeset{action = update}};
-update(RepoMod, CS = #kura_changeset{schema = SchemaMod, data = Data, changes = Changes}) ->
-    case maps:size(Changes) of
-        0 ->
-            {ok, Data};
-        _ ->
-            PK = SchemaMod:primary_key(),
-            PKValue = maps:get(PK, Data),
-            Changes1 = maybe_add_timestamps(SchemaMod, Changes, update),
-            Fields = maps:keys(Changes1),
-            DumpedChanges = dump_changes(SchemaMod, Changes1),
-            {SQL, Params} = kura_query_compiler:update(
-                SchemaMod, Fields, DumpedChanges, {PK, PKValue}
-            ),
-            maybe_log(SQL, Params),
-            case pgo_query(RepoMod, SQL, Params) of
-                #{command := update, rows := [Row]} ->
-                    {ok, load_row(SchemaMod, Row)};
-                #{command := update, rows := []} ->
-                    {error,
-                        kura_changeset:add_error(
-                            CS#kura_changeset{action = update}, base, <<"record not found">>
-                        )};
-                {error, PgError} ->
-                    {error, handle_pg_error(CS#kura_changeset{action = update}, PgError)}
-            end
-    end.
+update(RepoMod, CS = #kura_changeset{assoc_changes = AC}) when map_size(AC) > 0 ->
+    transaction(RepoMod, fun() ->
+        case update_record(RepoMod, CS) of
+            {ok, ParentRow} ->
+                persist_assoc_changes(RepoMod, CS#kura_changeset.schema, ParentRow, AC);
+            {error, _} = Err ->
+                Err
+        end
+    end);
+update(RepoMod, CS) ->
+    update_record(RepoMod, CS).
 
 -doc "Delete the record referenced by the changeset's data.".
 -spec delete(module(), #kura_changeset{}) -> {ok, map()} | {error, term()}.
@@ -189,7 +175,7 @@ delete(RepoMod, #kura_changeset{schema = SchemaMod, data = Data}) ->
 -spec update_all(module(), #kura_query{}, map()) -> {ok, non_neg_integer()} | {error, term()}.
 update_all(RepoMod, Query, Updates) ->
     {SQL, Params} = kura_query_compiler:update_all(Query, Updates),
-    maybe_log(SQL, Params),
+
     case pgo_query(RepoMod, SQL, Params) of
         #{command := update, num_rows := Count} -> {ok, Count};
         {error, _} = Err -> Err
@@ -199,7 +185,7 @@ update_all(RepoMod, Query, Updates) ->
 -spec delete_all(module(), #kura_query{}) -> {ok, non_neg_integer()} | {error, term()}.
 delete_all(RepoMod, Query) ->
     {SQL, Params} = kura_query_compiler:delete_all(Query),
-    maybe_log(SQL, Params),
+
     case pgo_query(RepoMod, SQL, Params) of
         #{command := delete, num_rows := Count} -> {ok, Count};
         {error, _} = Err -> Err
@@ -219,7 +205,7 @@ insert_all(RepoMod, SchemaMod, Entries) ->
     ],
     Fields = maps:keys(hd(Rows)),
     {SQL, Params} = kura_query_compiler:insert_all(SchemaMod, Fields, Rows),
-    maybe_log(SQL, Params),
+
     case pgo_query(RepoMod, SQL, Params) of
         #{command := insert, num_rows := Count} -> {ok, Count};
         {error, _} = Err -> Err
@@ -248,7 +234,6 @@ multi(RepoMod, Multi) ->
 -doc "Execute raw SQL with parameters.".
 -spec query(module(), iodata(), [term()]) -> {ok, list()} | {error, term()}.
 query(RepoMod, SQL, Params) ->
-    maybe_log(SQL, Params),
     case pgo_query(RepoMod, SQL, Params) of
         #{rows := Rows} -> {ok, Rows};
         {error, _} = Err -> Err
@@ -383,17 +368,113 @@ execute_multi_op(_RepoMod, {run, Fun}, Acc) ->
 
 pgo_query(RepoMod, SQL, Params) ->
     Pool = get_pool(RepoMod),
-    pgo:query(SQL, Params, #{pool => Pool, decode_opts => ?DECODE_OPTS}).
+    T0 = erlang:monotonic_time(microsecond),
+    Result = pgo:query(SQL, Params, #{pool => Pool, decode_opts => ?DECODE_OPTS}),
+    T1 = erlang:monotonic_time(microsecond),
+    emit_log(RepoMod, SQL, Params, Result, T1 - T0),
+    Result.
+
+emit_log(RepoMod, SQL, Params, Result, DurationUs) ->
+    try
+        Config = RepoMod:config(),
+        case maps:find(log, Config) of
+            {ok, LogFun} when is_function(LogFun, 1) ->
+                Event = build_log_event(RepoMod, SQL, Params, Result, DurationUs),
+                LogFun(Event);
+            _ ->
+                ok
+        end
+    catch
+        _:_ -> ok
+    end.
 
 get_pool(RepoMod) ->
     Config = RepoMod:config(),
     maps:get(pool, Config, RepoMod).
 
+insert_record(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}) ->
+    Changes1 = maybe_add_timestamps(SchemaMod, Changes, insert),
+    Fields = maps:keys(Changes1),
+    DumpedChanges = dump_changes(SchemaMod, Changes1),
+    {SQL, Params} = kura_query_compiler:insert(SchemaMod, Fields, DumpedChanges),
+    case pgo_query(RepoMod, SQL, Params) of
+        #{command := insert, rows := [Row]} ->
+            {ok, load_row(SchemaMod, Row)};
+        {error, PgError} ->
+            {error, handle_pg_error(CS#kura_changeset{action = insert}, PgError)}
+    end.
+
+update_record(RepoMod, CS = #kura_changeset{schema = SchemaMod, data = Data, changes = Changes}) ->
+    case maps:size(Changes) of
+        0 ->
+            {ok, Data};
+        _ ->
+            PK = SchemaMod:primary_key(),
+            PKValue = maps:get(PK, Data),
+            Changes1 = maybe_add_timestamps(SchemaMod, Changes, update),
+            Fields = maps:keys(Changes1),
+            DumpedChanges = dump_changes(SchemaMod, Changes1),
+            {SQL, Params} = kura_query_compiler:update(
+                SchemaMod, Fields, DumpedChanges, {PK, PKValue}
+            ),
+            case pgo_query(RepoMod, SQL, Params) of
+                #{command := update, rows := [Row]} ->
+                    {ok, load_row(SchemaMod, Row)};
+                #{command := update, rows := []} ->
+                    {error,
+                        kura_changeset:add_error(
+                            CS#kura_changeset{action = update}, base, <<"record not found">>
+                        )};
+                {error, PgError} ->
+                    {error, handle_pg_error(CS#kura_changeset{action = update}, PgError)}
+            end
+    end.
+
+persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AssocChanges) ->
+    maps:fold(
+        fun(AssocName, ChildCSs, {ok, AccRow}) ->
+            {ok, Assoc} = kura_schema:association(SchemaMod, AssocName),
+            FK = Assoc#kura_assoc.foreign_key,
+            PK = SchemaMod:primary_key(),
+            PKValue = maps:get(PK, AccRow),
+            case is_list(ChildCSs) of
+                true ->
+                    Children = lists:map(
+                        fun(ChildCS) ->
+                            ChildCS1 = kura_changeset:put_change(ChildCS, FK, PKValue),
+                            case ChildCS1#kura_changeset.action of
+                                insert ->
+                                    {ok, Child} = insert_record(RepoMod, ChildCS1),
+                                    Child;
+                                update ->
+                                    {ok, Child} = update_record(RepoMod, ChildCS1),
+                                    Child
+                            end
+                        end,
+                        ChildCSs
+                    ),
+                    {ok, AccRow#{AssocName => Children}};
+                false ->
+                    ChildCS1 = kura_changeset:put_change(ChildCSs, FK, PKValue),
+                    case ChildCSs#kura_changeset.action of
+                        insert ->
+                            {ok, Child} = insert_record(RepoMod, ChildCS1),
+                            {ok, AccRow#{AssocName => Child}};
+                        update ->
+                            {ok, Child} = update_record(RepoMod, ChildCS1),
+                            {ok, AccRow#{AssocName => Child}}
+                    end
+            end
+        end,
+        {ok, ParentRow},
+        AssocChanges
+    ).
+
 delete_record(RepoMod, SchemaMod, Data) ->
     PK = SchemaMod:primary_key(),
     PKValue = maps:get(PK, Data),
     {SQL, Params} = kura_query_compiler:delete(SchemaMod, PK, PKValue),
-    maybe_log(SQL, Params),
+
     case pgo_query(RepoMod, SQL, Params) of
         #{command := delete, rows := [Row]} ->
             {ok, load_row(SchemaMod, Row)};
@@ -525,10 +606,34 @@ constraint_to_field(_) ->
 format_error(#{message := Msg}) when is_binary(Msg) -> Msg;
 format_error(Reason) -> iolist_to_binary(io_lib:format("~p", [Reason])).
 
-maybe_log(SQL, Params) ->
-    case application:get_env(kura, log_queries, false) of
-        true ->
-            logger:debug("Kura SQL: ~s ~p", [SQL, Params]);
-        false ->
-            ok
+-doc "Build a log event map from query execution data.".
+-spec build_log_event(module(), iodata(), [term()], term(), integer()) -> map().
+build_log_event(Repo, SQL, Params, Result, DurationUs) ->
+    ResultStatus =
+        case Result of
+            {error, _} -> error;
+            _ -> ok
+        end,
+    NumRows =
+        case Result of
+            #{num_rows := N} -> N;
+            #{rows := Rows} -> length(Rows);
+            _ -> 0
+        end,
+    #{
+        query => iolist_to_binary([SQL]),
+        params => Params,
+        result => ResultStatus,
+        num_rows => NumRows,
+        duration_us => DurationUs,
+        repo => Repo
+    }.
+
+-doc "Return a default logger function that logs queries via logger:info.".
+-spec default_logger() -> fun((map()) -> ok).
+default_logger() ->
+    fun(Event) ->
+        logger:info("Kura ~s ~pus", [
+            maps:get(query, Event), maps:get(duration_us, Event)
+        ])
     end.

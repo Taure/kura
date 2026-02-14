@@ -46,6 +46,25 @@ cast_integer_field_test() ->
     ?assertEqual(25, maps:get(age, CS#kura_changeset.changes)).
 
 %%----------------------------------------------------------------------
+%% cast enum field
+%%----------------------------------------------------------------------
+
+cast_enum_valid_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{status => active}, [status]),
+    ?assert(CS#kura_changeset.valid),
+    ?assertEqual(active, maps:get(status, CS#kura_changeset.changes)).
+
+cast_enum_from_binary_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{status => <<"inactive">>}, [status]),
+    ?assert(CS#kura_changeset.valid),
+    ?assertEqual(inactive, maps:get(status, CS#kura_changeset.changes)).
+
+cast_enum_invalid_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{status => <<"unknown">>}, [status]),
+    ?assertNot(CS#kura_changeset.valid),
+    ?assertMatch([{status, _}], CS#kura_changeset.errors).
+
+%%----------------------------------------------------------------------
 %% validate_required
 %%----------------------------------------------------------------------
 

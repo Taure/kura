@@ -28,7 +28,8 @@
     types = #{} :: #{atom() => kura_types:kura_type()},
     required = [] :: [atom()],
     action :: insert | update | delete | undefined,
-    constraints = [] :: [#kura_constraint{}]
+    constraints = [] :: [#kura_constraint{}],
+    assoc_changes = #{} :: #{atom() => #kura_changeset{} | [#kura_changeset{}]}
 }).
 
 -record(kura_assoc, {
