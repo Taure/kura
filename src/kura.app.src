@@ -1,0 +1,18 @@
+{application, kura, [
+    {description, "Database layer for Erlang — Ecto-equivalent abstractions"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {mod, {kura_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        pgo
+    ]},
+    {env, [
+        {migration_paths, ["priv/migrations"]},
+        {log_queries, false}
+    ]},
+    {modules, []},
+    {licenses, ["MIT"]},
+    {links, [{"GitHub", "https://github.com/Taure/kura"}]}
+]}.
