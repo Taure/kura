@@ -13,7 +13,12 @@ Database layer for Erlang — Ecto-equivalent abstractions in pure Erlang, targe
 - **Query Builder** — composable, functional query construction
 - **SQL Compiler** — parameterized SQL generation (no string interpolation)
 - **Repo** — CRUD operations with automatic type conversion and PG error mapping
-- **Migrations** — DDL operations with version tracking
+- **Associations** — `belongs_to`, `has_one`, `has_many`, `many_to_many` with preloading
+- **Embedded Schemas** — `embeds_one`, `embeds_many` stored as JSONB
+- **Multi** — atomic transaction pipelines
+- **Migrations** — DDL operations with automatic module-based discovery
+- **Enums** — atom-backed enum types stored as `VARCHAR`
+- **Telemetry** — query logging with timing
 
 ## Quick Start
 
@@ -140,13 +145,12 @@ kura_migrator:status(my_repo).
 
 ## Configuration
 
-Migrations are discovered automatically from compiled modules — no configuration needed.
-Place migration files in `src/migrations/` and they'll be found by name convention.
+Migrations are discovered automatically from compiled modules implementing the `kura_migration` behaviour — no configuration needed.
 
 ```erlang
 %% sys.config (optional)
 [{kura, [
-    {log_queries, false}
+    {log, true}
 ]}].
 ```
 
