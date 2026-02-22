@@ -6,7 +6,7 @@ Add kura to your `rebar.config` dependencies:
 
 ```erlang
 {deps, [
-    {kura, "~> 0.2"}
+    kura
 ]}.
 ```
 
