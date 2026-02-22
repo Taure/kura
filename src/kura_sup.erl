@@ -1,4 +1,5 @@
 -module(kura_sup).
+-moduledoc false.
 -behaviour(supervisor).
 
 -export([start_link/0]).

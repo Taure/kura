@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-02-22
+
+### Added
+
+- Embedded schemas guide (`guides/embedded-schemas.md`)
+- Architecture doc linked in hexdocs extras
+- Logo displayed in hexdocs
+- Navigation groups: Getting Started, Guides, Reference
+
+### Changed
+
+- Hidden internal modules (`kura_app`, `kura_sup`) from docs
+
 ## [1.0.0] - 2026-02-22
 
 ### Changed

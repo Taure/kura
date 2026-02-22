@@ -1,4 +1,5 @@
 -module(kura_app).
+-moduledoc false.
 -behaviour(application).
 
 -export([start/2, stop/1]).
