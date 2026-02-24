@@ -32,6 +32,7 @@ kura_repo_worker:start(MyRepo),
     multi/2,
     preload/4,
     query/3,
+    pgo_query/3,
     build_log_event/5,
     default_logger/0
 ]).
@@ -56,8 +57,11 @@ start(RepoMod) ->
         pool_size => maps:get(pool_size, Config, 10),
         decode_opts => ?DECODE_OPTS
     },
-    case pgo:start_pool(Pool, PgoConfig) of
-        {ok, _Pid} -> ok
+    %% pgo spec says {ok, pid()} but supervisor:start_child underneath
+    %% can return {error, {already_started, Pid}} when pool exists.
+    case pgo_sup:start_child(Pool, PgoConfig) of
+        {ok, _Pid} -> ok;
+        {error, {already_started, _Pid}} -> ok
     end.
 
 -doc "Execute a query and return all matching rows.".
@@ -71,7 +75,7 @@ all(RepoMod, Query) ->
             Loaded = [load_row(Schema, Row) || Row <- Rows],
             case Query#kura_query.preloads of
                 [] -> {ok, Loaded};
-                Preloads -> {ok, do_preload(RepoMod, Loaded, Schema, Preloads)}
+                Preloads -> {ok, kura_preloader:do_preload(RepoMod, Loaded, Schema, Preloads)}
             end;
         {error, _} = Err ->
             Err
@@ -240,163 +244,14 @@ query(RepoMod, SQL, Params) ->
     end.
 
 %%----------------------------------------------------------------------
-%% Preloading
+%% Preloading (delegated to kura_preloader)
 %%----------------------------------------------------------------------
 
 -doc "Preload associations on one or more records (standalone, outside of queries).".
 -spec preload(module(), module(), map() | [map()], [atom() | {atom(), list()}]) ->
     map() | [map()].
-preload(RepoMod, Schema, Record, Assocs) when is_map(Record) ->
-    [Result] = preload(RepoMod, Schema, [Record], Assocs),
-    Result;
-preload(_RepoMod, _Schema, [], _Assocs) ->
-    [];
-preload(RepoMod, Schema, Records, Assocs) when is_list(Records) ->
-    do_preload(RepoMod, Records, Schema, Assocs).
-
-do_preload(_RepoMod, Records, _Schema, []) ->
-    Records;
-do_preload(RepoMod, Records, Schema, [Assoc | Rest]) ->
-    Updated = preload_assoc(RepoMod, Records, Schema, Assoc),
-    do_preload(RepoMod, Updated, Schema, Rest).
-
-preload_assoc(RepoMod, Records, Schema, {AssocName, Nested}) ->
-    Records1 = preload_assoc(RepoMod, Records, Schema, AssocName),
-    {ok, Assoc} = kura_schema:association(Schema, AssocName),
-    RelatedSchema = Assoc#kura_assoc.schema,
-    lists:map(
-        fun(R) ->
-            case maps:get(AssocName, R, undefined) of
-                undefined ->
-                    R;
-                nil ->
-                    R;
-                Related when is_list(Related) ->
-                    R#{AssocName => do_preload(RepoMod, Related, RelatedSchema, Nested)};
-                Related when is_map(Related) ->
-                    [Updated] = do_preload(RepoMod, [Related], RelatedSchema, Nested),
-                    R#{AssocName => Updated}
-            end
-        end,
-        Records1
-    );
-preload_assoc(RepoMod, Records, Schema, AssocName) when is_atom(AssocName) ->
-    {ok, Assoc} = kura_schema:association(Schema, AssocName),
-    case Assoc#kura_assoc.type of
-        belongs_to -> preload_belongs_to(RepoMod, Records, Assoc);
-        has_many -> preload_has_many(RepoMod, Records, Schema, Assoc);
-        has_one -> preload_has_one(RepoMod, Records, Schema, Assoc);
-        many_to_many -> preload_many_to_many(RepoMod, Records, Schema, Assoc)
-    end.
-
-preload_belongs_to(RepoMod, Records, #kura_assoc{
-    name = Name, schema = RelSchema, foreign_key = FK
-}) ->
-    FKValues = lists:usort([
-        maps:get(FK, R)
-     || R <- Records, maps:get(FK, R, undefined) =/= undefined
-    ]),
-    case FKValues of
-        [] ->
-            [R#{Name => nil} || R <- Records];
-        _ ->
-            RelPK = RelSchema:primary_key(),
-            Q = kura_query:where(kura_query:from(RelSchema), {RelPK, in, FKValues}),
-            {ok, Related} = all(RepoMod, Q),
-            Lookup = maps:from_list([{maps:get(RelPK, Rel), Rel} || Rel <- Related]),
-            [R#{Name => maps:get(maps:get(FK, R, undefined), Lookup, nil)} || R <- Records]
-    end.
-
-preload_has_many(RepoMod, Records, Schema, #kura_assoc{
-    name = Name, schema = RelSchema, foreign_key = FK
-}) ->
-    PK = Schema:primary_key(),
-    PKValues = lists:usort([maps:get(PK, R) || R <- Records]),
-    Q = kura_query:where(kura_query:from(RelSchema), {FK, in, PKValues}),
-    {ok, Related} = all(RepoMod, Q),
-    Grouped = lists:foldl(
-        fun(Rel, Acc) ->
-            Key = maps:get(FK, Rel),
-            maps:update_with(Key, fun(L) -> L ++ [Rel] end, [Rel], Acc)
-        end,
-        #{},
-        Related
-    ),
-    [R#{Name => maps:get(maps:get(PK, R), Grouped, [])} || R <- Records].
-
-preload_has_one(RepoMod, Records, Schema, #kura_assoc{
-    name = Name, schema = RelSchema, foreign_key = FK
-}) ->
-    PK = Schema:primary_key(),
-    PKValues = lists:usort([maps:get(PK, R) || R <- Records]),
-    Q = kura_query:where(kura_query:from(RelSchema), {FK, in, PKValues}),
-    {ok, Related} = all(RepoMod, Q),
-    Lookup = maps:from_list([{maps:get(FK, Rel), Rel} || Rel <- Related]),
-    [R#{Name => maps:get(maps:get(PK, R), Lookup, nil)} || R <- Records].
-
-preload_many_to_many(RepoMod, Records, Schema, #kura_assoc{
-    name = Name, schema = RelSchema, join_through = JoinThrough, join_keys = {OwnerKey, RelatedKey}
-}) ->
-    PK = Schema:primary_key(),
-    PKValues = lists:usort([maps:get(PK, R) || R <- Records]),
-    case PKValues of
-        [] ->
-            [R#{Name => []} || R <- Records];
-        _ ->
-            JoinTable = resolve_join_table(JoinThrough),
-            OwnerCol = atom_to_binary(OwnerKey, utf8),
-            RelatedCol = atom_to_binary(RelatedKey, utf8),
-            Placeholders = lists:join(<<", ">>, [
-                iolist_to_binary(io_lib:format("$~B", [I]))
-             || I <- lists:seq(1, length(PKValues))
-            ]),
-            JoinSQL = iolist_to_binary([
-                <<"SELECT ">>,
-                OwnerCol,
-                <<", ">>,
-                RelatedCol,
-                <<" FROM ">>,
-                JoinTable,
-                <<" WHERE ">>,
-                OwnerCol,
-                <<" IN (">>,
-                Placeholders,
-                <<")">>
-            ]),
-            #{rows := JoinRows} = pgo_query(RepoMod, JoinSQL, PKValues),
-            RelatedIds = lists:usort([maps:get(RelatedKey, JR) || JR <- JoinRows]),
-            case RelatedIds of
-                [] ->
-                    [R#{Name => []} || R <- Records];
-                _ ->
-                    RelPK = RelSchema:primary_key(),
-                    Q = kura_query:where(kura_query:from(RelSchema), {RelPK, in, RelatedIds}),
-                    {ok, Related} = all(RepoMod, Q),
-                    RelLookup = maps:from_list([{maps:get(RelPK, Rel), Rel} || Rel <- Related]),
-                    Grouped = lists:foldl(
-                        fun(JR, Acc) ->
-                            OKey = maps:get(OwnerKey, JR),
-                            RKey = maps:get(RelatedKey, JR),
-                            case maps:find(RKey, RelLookup) of
-                                {ok, RelRec} ->
-                                    maps:update_with(
-                                        OKey, fun(L) -> L ++ [RelRec] end, [RelRec], Acc
-                                    );
-                                error ->
-                                    Acc
-                            end
-                        end,
-                        #{},
-                        JoinRows
-                    ),
-                    [R#{Name => maps:get(maps:get(PK, R), Grouped, [])} || R <- Records]
-            end
-    end.
-
-resolve_join_table(Table) when is_binary(Table) ->
-    Table;
-resolve_join_table(Mod) when is_atom(Mod) ->
-    Mod:table().
+preload(RepoMod, Schema, Records, Assocs) ->
+    kura_preloader:preload(RepoMod, Schema, Records, Assocs).
 
 %%----------------------------------------------------------------------
 %% Internal: multi execution
@@ -515,38 +370,32 @@ persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AssocChanges) ->
         AssocChanges
     ).
 
-persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
+persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) when
+    is_list(ChildCSs)
+->
     FK = Assoc#kura_assoc.foreign_key,
     PK = SchemaMod:primary_key(),
     PKValue = maps:get(PK, AccRow),
-    case is_list(ChildCSs) of
-        true ->
-            Children = lists:map(
-                fun(ChildCS) ->
-                    ChildCS1 = kura_changeset:put_change(ChildCS, FK, PKValue),
-                    case ChildCS1#kura_changeset.action of
-                        insert ->
-                            {ok, Child} = insert_record(RepoMod, ChildCS1),
-                            Child;
-                        update ->
-                            {ok, Child} = update_record(RepoMod, ChildCS1),
-                            Child
-                    end
-                end,
-                ChildCSs
-            ),
-            {ok, AccRow#{AssocName => Children}};
-        false ->
-            ChildCS1 = kura_changeset:put_change(ChildCSs, FK, PKValue),
-            case ChildCSs#kura_changeset.action of
-                insert ->
-                    {ok, Child} = insert_record(RepoMod, ChildCS1),
-                    {ok, AccRow#{AssocName => Child}};
-                update ->
-                    {ok, Child} = update_record(RepoMod, ChildCS1),
-                    {ok, AccRow#{AssocName => Child}}
-            end
-    end.
+    Children = lists:map(
+        fun(ChildCS) ->
+            persist_child(RepoMod, kura_changeset:put_change(ChildCS, FK, PKValue))
+        end,
+        ChildCSs
+    ),
+    {ok, AccRow#{AssocName => Children}};
+persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCS) ->
+    FK = Assoc#kura_assoc.foreign_key,
+    PK = SchemaMod:primary_key(),
+    PKValue = maps:get(PK, AccRow),
+    Child = persist_child(RepoMod, kura_changeset:put_change(ChildCS, FK, PKValue)),
+    {ok, AccRow#{AssocName => Child}}.
+
+persist_child(RepoMod, CS = #kura_changeset{action = insert}) ->
+    {ok, Child} = insert_record(RepoMod, CS),
+    Child;
+persist_child(RepoMod, CS = #kura_changeset{action = update}) ->
+    {ok, Child} = update_record(RepoMod, CS),
+    Child.
 
 persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
     #kura_assoc{
@@ -557,7 +406,11 @@ persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
     PK = SchemaMod:primary_key(),
     PKValue = maps:get(PK, AccRow),
     RelPK = RelSchema:primary_key(),
-    JoinTable = resolve_join_table(JoinThrough),
+    JoinTable =
+        case JoinThrough of
+            B when is_binary(B) -> B;
+            M when is_atom(M) -> M:table()
+        end,
     OwnerCol = atom_to_binary(OwnerKey, utf8),
     RelatedCol = atom_to_binary(RelatedKey, utf8),
     Children = lists:map(
@@ -646,26 +499,23 @@ load_row(SchemaMod, Row) when is_atom(SchemaMod) ->
 dump_changes(SchemaMod, Changes) ->
     Types = kura_schema:field_types(SchemaMod),
     NonVirtual = kura_schema:non_virtual_fields(SchemaMod),
-    maps:fold(
-        fun(K, V, Acc) ->
-            case lists:member(K, NonVirtual) of
-                false ->
-                    Acc;
-                true ->
-                    case maps:find(K, Types) of
-                        {ok, Type} ->
-                            case kura_types:dump(Type, V) of
-                                {ok, Dumped} -> Acc#{K => Dumped};
-                                {error, _} -> Acc#{K => V}
-                            end;
-                        error ->
-                            Acc#{K => V}
-                    end
-            end
-        end,
-        #{},
-        Changes
-    ).
+    dump_change_fields(maps:to_list(Changes), Types, NonVirtual).
+
+dump_change_fields([], _Types, _NonVirtual) ->
+    #{};
+dump_change_fields([{K, V} | Rest], Types, NonVirtual) ->
+    Acc = dump_change_fields(Rest, Types, NonVirtual),
+    case {lists:member(K, NonVirtual), maps:find(K, Types)} of
+        {false, _} ->
+            Acc;
+        {true, {ok, Type}} ->
+            case kura_types:dump(Type, V) of
+                {ok, Dumped} -> Acc#{K => Dumped};
+                {error, _} -> Acc#{K => V}
+            end;
+        {true, error} ->
+            Acc#{K => V}
+    end.
 
 maybe_add_timestamps(SchemaMod, Changes, Action) ->
     Types = kura_schema:field_types(SchemaMod),
@@ -685,6 +535,10 @@ maybe_add_timestamps(SchemaMod, Changes, Action) ->
         false -> Changes1
     end.
 
+handle_pg_error(CS, {pgsql_error, Fields}) when is_map(Fields) ->
+    handle_pg_error(CS, Fields);
+handle_pg_error(CS, {pgsql_error, Fields}) when is_list(Fields) ->
+    handle_pg_error(CS, maps:from_list(Fields));
 handle_pg_error(CS, #{code := Code, constraint := Constraint}) when
     Code =:= <<"23505">>; Code =:= <<"23503">>; Code =:= <<"23514">>
 ->

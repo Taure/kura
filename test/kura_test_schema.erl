@@ -3,7 +3,7 @@
 
 -include("kura.hrl").
 
--export([table/0, fields/0, primary_key/0]).
+-export([table/0, fields/0, primary_key/0, associations/0]).
 
 table() -> <<"users">>.
 
@@ -24,4 +24,14 @@ fields() ->
         #kura_field{name = inserted_at, type = utc_datetime},
         #kura_field{name = updated_at, type = utc_datetime},
         #kura_field{name = full_name, type = string, virtual = true}
+    ].
+
+associations() ->
+    [
+        #kura_assoc{
+            name = profile,
+            type = has_one,
+            schema = kura_test_profile_schema,
+            foreign_key = user_id
+        }
     ].

@@ -377,63 +377,59 @@ format_type(T) when is_atom(T) -> T.
 dump_embed_to_term(Mod, Map) ->
     Types = kura_schema:field_types(Mod),
     NonVirtual = kura_schema:non_virtual_fields(Mod),
-    lists:foldl(
-        fun(Field, Acc) ->
-            case maps:find(Field, Map) of
-                {ok, Val} ->
-                    BinKey = atom_to_binary(Field, utf8),
-                    case maps:find(Field, Types) of
-                        {ok, {embed, embeds_one, ChildMod}} when is_map(Val) ->
-                            Acc#{BinKey => dump_embed_to_term(ChildMod, Val)};
-                        {ok, {embed, embeds_many, ChildMod}} when is_list(Val) ->
-                            Acc#{BinKey => [dump_embed_to_term(ChildMod, I) || I <- Val]};
-                        {ok, Type} ->
-                            case dump(Type, Val) of
-                                {ok, Dumped} -> Acc#{BinKey => Dumped};
-                                {error, _} -> Acc#{BinKey => Val}
-                            end;
-                        error ->
-                            Acc#{BinKey => Val}
-                    end;
-                error ->
-                    Acc
-            end
-        end,
-        #{},
-        NonVirtual
-    ).
+    dump_embed_fields(NonVirtual, Map, Types).
+
+dump_embed_fields([], _Map, _Types) ->
+    #{};
+dump_embed_fields([Field | Rest], Map, Types) ->
+    Acc = dump_embed_fields(Rest, Map, Types),
+    BinKey = atom_to_binary(Field, utf8),
+    case {maps:find(Field, Map), maps:find(Field, Types)} of
+        {{ok, Val}, {ok, {embed, embeds_one, ChildMod}}} when is_map(Val) ->
+            Acc#{BinKey => dump_embed_to_term(ChildMod, Val)};
+        {{ok, Val}, {ok, {embed, embeds_many, ChildMod}}} when is_list(Val) ->
+            Acc#{BinKey => [dump_embed_to_term(ChildMod, I) || I <- Val]};
+        {{ok, Val}, {ok, Type}} ->
+            case dump(Type, Val) of
+                {ok, Dumped} -> Acc#{BinKey => Dumped};
+                {error, _} -> Acc#{BinKey => Val}
+            end;
+        {{ok, Val}, error} ->
+            Acc#{BinKey => Val};
+        {error, _} ->
+            Acc
+    end.
 
 load_embed_map(Mod, Map) ->
     Types = kura_schema:field_types(Mod),
-    maps:fold(
-        fun(K, V, Acc) ->
-            AtomKey =
-                if
-                    is_binary(K) ->
-                        try
-                            binary_to_existing_atom(K, utf8)
-                        catch
-                            error:badarg -> K
-                        end;
-                    is_atom(K) ->
-                        K;
-                    true ->
-                        K
-                end,
-            case maps:find(AtomKey, Types) of
-                {ok, {embed, embeds_one, ChildMod}} when is_map(V) ->
-                    Acc#{AtomKey => load_embed_map(ChildMod, V)};
-                {ok, {embed, embeds_many, ChildMod}} when is_list(V) ->
-                    Acc#{AtomKey => [load_embed_map(ChildMod, I) || I <- V]};
-                {ok, Type} ->
-                    case load(Type, V) of
-                        {ok, Loaded} -> Acc#{AtomKey => Loaded};
-                        {error, _} -> Acc#{AtomKey => V}
-                    end;
-                error ->
-                    Acc#{AtomKey => V}
-            end
-        end,
-        #{},
-        Map
-    ).
+    load_embed_entries(maps:to_list(Map), Types).
+
+load_embed_entries([], _Types) ->
+    #{};
+load_embed_entries([{K, V} | Rest], Types) ->
+    Acc = load_embed_entries(Rest, Types),
+    AtomKey = normalize_key(K),
+    case maps:find(AtomKey, Types) of
+        {ok, {embed, embeds_one, ChildMod}} when is_map(V) ->
+            Acc#{AtomKey => load_embed_map(ChildMod, V)};
+        {ok, {embed, embeds_many, ChildMod}} when is_list(V) ->
+            Acc#{AtomKey => [load_embed_map(ChildMod, I) || I <- V]};
+        {ok, Type} ->
+            case load(Type, V) of
+                {ok, Loaded} -> Acc#{AtomKey => Loaded};
+                {error, _} -> Acc#{AtomKey => V}
+            end;
+        error ->
+            Acc#{AtomKey => V}
+    end.
+
+normalize_key(K) when is_binary(K) ->
+    try
+        binary_to_existing_atom(K, utf8)
+    catch
+        error:badarg -> K
+    end;
+normalize_key(K) when is_atom(K) ->
+    K;
+normalize_key(K) ->
+    K.
