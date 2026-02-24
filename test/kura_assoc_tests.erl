@@ -7,7 +7,7 @@
 %%----------------------------------------------------------------------
 
 associations_returns_empty_for_no_callback_test() ->
-    ?assertEqual([], kura_schema:associations(kura_test_schema)).
+    ?assertEqual([], kura_schema:associations(kura_test_post_simple_schema)).
 
 associations_returns_list_test() ->
     Assocs = kura_schema:associations(kura_test_post),
