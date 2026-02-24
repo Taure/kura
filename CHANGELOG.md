@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-02-24
+
+### Added
+
+- `kura_preloader` module — extracted preload logic from `kura_repo_worker` into a dedicated module
+- `kura_changeset_assoc` module — extracted `cast_assoc`, `put_assoc`, and association coercion from `kura_changeset`
+- Comprehensive integration tests (356 total) covering all query operators, aggregates, joins, bulk ops, multi pipelines, on_conflict upserts, constraint errors, type round-trips, and all association/preload types
+
+### Fixed
+
+- Constraint error handling (`unique_constraint`, `foreign_key_constraint`, `check_constraint`) now correctly unwraps pgo `{pgsql_error, Map}` tuples
+- `put_assoc` for many_to_many now preserves primary key in changeset data
+
 ## [1.0.1] - 2026-02-22
 
 ### Added
