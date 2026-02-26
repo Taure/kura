@@ -5,28 +5,39 @@ Runs, rolls back, and reports status of migrations.
 Discovers migration modules automatically from the application that owns the
 repo module. Any module named `m<YYYYMMDDHHMMSS>_<name>` in the application's
 module list is treated as a migration. Tracks applied versions in a
-`schema_migrations` table and executes DDL within transactions.
+`schema_migrations` table.
+
+All migrations run within a single transaction protected by a PostgreSQL
+advisory lock (`pg_advisory_xact_lock`) to prevent concurrent execution
+across multiple nodes.
 """.
 
 -include("kura.hrl").
+
+%% Arbitrary constant used as the advisory lock key. All Kura migrators
+%% sharing a PostgreSQL database contend on this single lock.
+-define(MIGRATION_LOCK_KEY, 571629482).
 
 -export([
     migrate/1,
     rollback/1, rollback/2,
     status/1,
     ensure_schema_migrations/1,
-    compile_operation/1
+    compile_operation/1,
+    check_unsafe_operations/2
 ]).
 
 -doc "Run all pending migrations in order.".
 -spec migrate(module()) -> {ok, [integer()]} | {error, term()}.
 migrate(RepoMod) ->
     ensure_schema_migrations(RepoMod),
-    Applied = get_applied_versions(RepoMod),
-    Migrations = discover_migrations(RepoMod),
-    Pending = [{V, M} || {V, M} <- Migrations, not lists:member(V, Applied)],
-    Sorted = lists:sort(fun({V1, _}, {V2, _}) -> V1 =< V2 end, Pending),
-    run_migrations(RepoMod, Sorted, up, []).
+    with_migration_lock(RepoMod, fun(PoolOpts) ->
+        Applied = get_applied_versions(RepoMod),
+        Migrations = discover_migrations(RepoMod),
+        Pending = [{V, M} || {V, M} <- Migrations, not lists:member(V, Applied)],
+        Sorted = lists:sort(fun({V1, _}, {V2, _}) -> V1 =< V2 end, Pending),
+        run_migrations(Sorted, up, PoolOpts, [])
+    end).
 
 -doc "Roll back the last migration.".
 -spec rollback(module()) -> {ok, [integer()]} | {error, term()}.
@@ -37,12 +48,14 @@ rollback(RepoMod) ->
 -spec rollback(module(), non_neg_integer()) -> {ok, [integer()]} | {error, term()}.
 rollback(RepoMod, Steps) ->
     ensure_schema_migrations(RepoMod),
-    Applied = get_applied_versions(RepoMod),
-    Migrations = discover_migrations(RepoMod),
-    ToRollback = lists:sublist(lists:reverse(lists:sort(Applied)), Steps),
-    MigMap = maps:from_list(Migrations),
-    Pairs = [{V, maps:get(V, MigMap)} || V <- ToRollback, maps:is_key(V, MigMap)],
-    run_migrations(RepoMod, Pairs, down, []).
+    with_migration_lock(RepoMod, fun(PoolOpts) ->
+        Applied = get_applied_versions(RepoMod),
+        Migrations = discover_migrations(RepoMod),
+        ToRollback = lists:sublist(lists:reverse(lists:sort(Applied)), Steps),
+        MigMap = maps:from_list(Migrations),
+        Pairs = [{V, maps:get(V, MigMap)} || V <- ToRollback, maps:is_key(V, MigMap)],
+        run_migrations(Pairs, down, PoolOpts, [])
+    end).
 
 -doc "Return the status of all discovered migrations (`:up` or `:pending`).".
 -spec status(module()) -> [{integer(), module(), up | pending}].
@@ -106,56 +119,87 @@ parse_migration_module(Module) ->
     end.
 
 %%----------------------------------------------------------------------
-%% Migration execution
+%% Advisory lock
 %%----------------------------------------------------------------------
 
-run_migrations(_RepoMod, [], _Dir, Acc) ->
-    {ok, lists:reverse(Acc)};
-run_migrations(RepoMod, [{Version, Module} | Rest], Dir, Acc) ->
+-spec with_migration_lock(module(), fun((map()) -> [integer()])) ->
+    {ok, [integer()]} | {error, term()}.
+with_migration_lock(RepoMod, Fun) ->
     Pool = get_pool(RepoMod),
     PoolOpts = #{pool => Pool},
-    case
+    try
         pgo:transaction(
             fun() ->
-                Ops =
-                    case Dir of
-                        up -> Module:up();
-                        down -> Module:down()
-                    end,
-                lists:foreach(
-                    fun(Op) ->
-                        SQL = compile_operation(Op),
-                        pgo:query(SQL, [], PoolOpts)
-                    end,
-                    Ops
+                #{command := _} = pgo:query(
+                    <<"SELECT pg_advisory_xact_lock($1)">>,
+                    [?MIGRATION_LOCK_KEY],
+                    PoolOpts
                 ),
-                case Dir of
-                    up ->
-                        pgo:query(
-                            <<"INSERT INTO schema_migrations (version) VALUES ($1)">>,
-                            [Version],
-                            PoolOpts
-                        );
-                    down ->
-                        pgo:query(
-                            <<"DELETE FROM schema_migrations WHERE version = $1">>,
-                            [Version],
-                            PoolOpts
-                        )
-                end
+                Fun(PoolOpts)
             end,
             PoolOpts
         )
     of
-        {ok, _} ->
-            logger:info("Kura: ~s migration ~p (~p)", [Dir, Version, Module]),
-            run_migrations(RepoMod, Rest, Dir, [Version | Acc]);
-        #{command := _} ->
-            logger:info("Kura: ~s migration ~p (~p)", [Dir, Version, Module]),
-            run_migrations(RepoMod, Rest, Dir, [Version | Acc]);
+        Versions when is_list(Versions) ->
+            {ok, Versions};
         {error, Reason} ->
-            logger:error("Kura: migration ~p failed: ~p", [Version, Reason]),
-            {error, {migration_failed, Version, Reason}}
+            {error, Reason}
+    catch
+        error:{migration_failed, Version, MigReason}:_ ->
+            logger:error("Kura: migration ~p failed: ~p", [Version, MigReason]),
+            {error, {migration_failed, Version, MigReason}};
+        _:ExReason:_ ->
+            logger:error("Kura: migration failed: ~p", [ExReason]),
+            {error, ExReason}
+    end.
+
+%%----------------------------------------------------------------------
+%% Migration execution (runs inside advisory lock transaction)
+%%----------------------------------------------------------------------
+
+run_migrations([], _Dir, _PoolOpts, Acc) ->
+    lists:reverse(Acc);
+run_migrations([{Version, Module} | Rest], Dir, PoolOpts, Acc) ->
+    Ops =
+        case Dir of
+            up -> Module:up();
+            down -> Module:down()
+        end,
+    SafeEntries = get_safe_entries(Module),
+    Warnings = check_unsafe_operations(Ops, SafeEntries),
+    log_warnings(Module, Warnings),
+    lists:foreach(
+        fun(Op) ->
+            SQL = compile_operation(Op),
+            exec(SQL, [], Version, PoolOpts)
+        end,
+        Ops
+    ),
+    case Dir of
+        up ->
+            exec(
+                <<"INSERT INTO schema_migrations (version) VALUES ($1)">>,
+                [Version],
+                Version,
+                PoolOpts
+            );
+        down ->
+            exec(
+                <<"DELETE FROM schema_migrations WHERE version = $1">>,
+                [Version],
+                Version,
+                PoolOpts
+            )
+    end,
+    logger:info("Kura: ~s migration ~p (~p)", [Dir, Version, Module]),
+    run_migrations(Rest, Dir, PoolOpts, [Version | Acc]).
+
+exec(SQL, Params, Version, PoolOpts) ->
+    case pgo:query(SQL, Params, PoolOpts) of
+        #{command := _} ->
+            ok;
+        {error, Reason} ->
+            error({migration_failed, Version, Reason})
     end.
 
 %%----------------------------------------------------------------------
@@ -256,6 +300,138 @@ compile_alter_op({modify_column, Name, Type}) ->
         <<" TYPE ">>,
         kura_types:to_pg_type(Type)
     ].
+
+%%----------------------------------------------------------------------
+%% Unsafe operation detection
+%%----------------------------------------------------------------------
+
+-doc "Check migration operations for actions that are unsafe during rolling deployments.".
+-spec check_unsafe_operations([kura_migration:operation()], [kura_migration:safe_entry()]) ->
+    [map()].
+check_unsafe_operations(Ops, SafeEntries) ->
+    lists:flatmap(fun(Op) -> check_op(Op, SafeEntries) end, Ops).
+
+check_op({drop_table, Table}, SafeEntries) ->
+    case lists:member(drop_table, SafeEntries) of
+        true ->
+            [];
+        false ->
+            [
+                #{
+                    op => drop_table,
+                    target => Table,
+                    risk => <<"Old code still references this table">>,
+                    safe_alt =>
+                        <<"Deploy code that stops using the table first, then drop in a later migration">>
+                }
+            ]
+    end;
+check_op({alter_table, Table, AlterOps}, SafeEntries) ->
+    lists:flatmap(fun(AltOp) -> check_alter_op(AltOp, Table, SafeEntries) end, AlterOps);
+check_op(_Op, _SafeEntries) ->
+    [].
+
+check_alter_op({drop_column, Col}, Table, SafeEntries) ->
+    case lists:member({drop_column, Col}, SafeEntries) of
+        true ->
+            [];
+        false ->
+            [
+                #{
+                    op => drop_column,
+                    target => Col,
+                    table => Table,
+                    risk => <<"Old code still queries this column">>,
+                    safe_alt =>
+                        <<"Deploy code that stops using the column first, then drop in a later migration">>
+                }
+            ]
+    end;
+check_alter_op({rename_column, Old, _New}, Table, SafeEntries) ->
+    case lists:member({rename_column, Old}, SafeEntries) of
+        true ->
+            [];
+        false ->
+            [
+                #{
+                    op => rename_column,
+                    target => Old,
+                    table => Table,
+                    risk => <<"Old code still queries column by original name">>,
+                    safe_alt =>
+                        <<"Add a new column, backfill, deploy code using the new column, then drop the old one">>
+                }
+            ]
+    end;
+check_alter_op({modify_column, Col, _Type}, Table, SafeEntries) ->
+    case lists:member({modify_column, Col}, SafeEntries) of
+        true ->
+            [];
+        false ->
+            [
+                #{
+                    op => modify_column,
+                    target => Col,
+                    table => Table,
+                    risk => <<"Type change may be incompatible with old code expectations">>,
+                    safe_alt =>
+                        <<"Add a new column with the new type, backfill, migrate reads, then drop the old column">>
+                }
+            ]
+    end;
+check_alter_op(
+    {add_column, #kura_column{name = Col, nullable = false, default = undefined}},
+    Table,
+    SafeEntries
+) ->
+    case lists:member({add_column, Col}, SafeEntries) of
+        true ->
+            [];
+        false ->
+            [
+                #{
+                    op => add_column_not_null,
+                    target => Col,
+                    table => Table,
+                    risk =>
+                        <<"Old code inserting rows without this column will fail the NOT NULL constraint">>,
+                    safe_alt =>
+                        <<"Add as nullable first, backfill, then set NOT NULL in a later migration">>
+                }
+            ]
+    end;
+check_alter_op(_Op, _Table, _SafeEntries) ->
+    [].
+
+-spec get_safe_entries(module()) -> [kura_migration:safe_entry()].
+get_safe_entries(Module) ->
+    case erlang:function_exported(Module, safe, 0) of
+        true -> Module:safe();
+        false -> []
+    end.
+
+-spec log_warnings(module(), [map()]) -> ok.
+log_warnings(_Module, []) ->
+    ok;
+log_warnings(Module, Warnings) ->
+    lists:foreach(
+        fun(Warning) ->
+            logger:warning(
+                "Kura: unsafe operation in ~p: ~s ~p~s — ~s",
+                [
+                    Module,
+                    maps:get(op, Warning),
+                    maps:get(target, Warning),
+                    case maps:find(table, Warning) of
+                        {ok, T} -> [" on ", T];
+                        error -> ""
+                    end,
+                    maps:get(safe_alt, Warning)
+                ]
+            )
+        end,
+        Warnings
+    ).
 
 %%----------------------------------------------------------------------
 %% Internal helpers

@@ -25,6 +25,15 @@ down() ->
 
 -callback up() -> [operation()].
 -callback down() -> [operation()].
+-callback safe() -> [safe_entry()].
+-optional_callbacks([safe/0]).
+
+-type safe_entry() ::
+    {drop_column, atom()}
+    | {rename_column, atom()}
+    | {modify_column, atom()}
+    | {add_column, atom()}
+    | drop_table.
 
 -type column_def() :: #kura_column{}.
 -type alter_op() ::
@@ -43,4 +52,4 @@ down() ->
     | {drop_index, binary()}
     | {execute, binary()}.
 
--export_type([operation/0, column_def/0, alter_op/0, index_opts/0]).
+-export_type([operation/0, column_def/0, alter_op/0, index_opts/0, safe_entry/0]).
