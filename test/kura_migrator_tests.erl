@@ -151,3 +151,124 @@ default_boolean_test() ->
         ]}
     ),
     ?assert(binary:match(SQL, <<"DEFAULT FALSE">>) =/= nomatch).
+
+%%----------------------------------------------------------------------
+%% Unsafe operation detection tests
+%%----------------------------------------------------------------------
+
+detect_drop_column_test() ->
+    Ops = [{alter_table, <<"users">>, [{drop_column, email}]}],
+    [W] = kura_migrator:check_unsafe_operations(Ops, []),
+    ?assertEqual(drop_column, maps:get(op, W)),
+    ?assertEqual(email, maps:get(target, W)),
+    ?assertEqual(<<"users">>, maps:get(table, W)).
+
+detect_rename_column_test() ->
+    Ops = [{alter_table, <<"users">>, [{rename_column, name, full_name}]}],
+    [W] = kura_migrator:check_unsafe_operations(Ops, []),
+    ?assertEqual(rename_column, maps:get(op, W)),
+    ?assertEqual(name, maps:get(target, W)).
+
+detect_modify_column_test() ->
+    Ops = [{alter_table, <<"users">>, [{modify_column, age, text}]}],
+    [W] = kura_migrator:check_unsafe_operations(Ops, []),
+    ?assertEqual(modify_column, maps:get(op, W)),
+    ?assertEqual(age, maps:get(target, W)).
+
+detect_drop_table_test() ->
+    Ops = [{drop_table, <<"sessions">>}],
+    [W] = kura_migrator:check_unsafe_operations(Ops, []),
+    ?assertEqual(drop_table, maps:get(op, W)),
+    ?assertEqual(<<"sessions">>, maps:get(target, W)).
+
+detect_add_column_not_null_test() ->
+    Ops = [
+        {alter_table, <<"users">>, [
+            {add_column, #kura_column{name = role, type = string, nullable = false}}
+        ]}
+    ],
+    [W] = kura_migrator:check_unsafe_operations(Ops, []),
+    ?assertEqual(add_column_not_null, maps:get(op, W)),
+    ?assertEqual(role, maps:get(target, W)).
+
+%%----------------------------------------------------------------------
+%% Safe operation tests (no warnings)
+%%----------------------------------------------------------------------
+
+safe_nullable_add_column_test() ->
+    Ops = [
+        {alter_table, <<"users">>, [
+            {add_column, #kura_column{name = bio, type = text, nullable = true}}
+        ]}
+    ],
+    ?assertEqual([], kura_migrator:check_unsafe_operations(Ops, [])).
+
+safe_add_column_with_default_test() ->
+    Ops = [
+        {alter_table, <<"users">>, [
+            {add_column, #kura_column{
+                name = role, type = string, nullable = false, default = <<"user">>
+            }}
+        ]}
+    ],
+    ?assertEqual([], kura_migrator:check_unsafe_operations(Ops, [])).
+
+safe_create_table_test() ->
+    Ops = [
+        {create_table, <<"posts">>, [
+            #kura_column{name = id, type = id, primary_key = true}
+        ]}
+    ],
+    ?assertEqual([], kura_migrator:check_unsafe_operations(Ops, [])).
+
+safe_create_index_test() ->
+    Ops = [{create_index, <<"idx">>, <<"users">>, [email], [unique]}],
+    ?assertEqual([], kura_migrator:check_unsafe_operations(Ops, [])).
+
+safe_execute_test() ->
+    Ops = [{execute, <<"CREATE EXTENSION IF NOT EXISTS citext">>}],
+    ?assertEqual([], kura_migrator:check_unsafe_operations(Ops, [])).
+
+%%----------------------------------------------------------------------
+%% Suppression tests (safe/0 entries suppress warnings)
+%%----------------------------------------------------------------------
+
+suppress_drop_column_test() ->
+    Ops = [{alter_table, <<"users">>, [{drop_column, email}]}],
+    ?assertEqual([], kura_migrator:check_unsafe_operations(Ops, [{drop_column, email}])).
+
+suppress_rename_column_test() ->
+    Ops = [{alter_table, <<"users">>, [{rename_column, name, full_name}]}],
+    ?assertEqual([], kura_migrator:check_unsafe_operations(Ops, [{rename_column, name}])).
+
+suppress_modify_column_test() ->
+    Ops = [{alter_table, <<"users">>, [{modify_column, age, text}]}],
+    ?assertEqual([], kura_migrator:check_unsafe_operations(Ops, [{modify_column, age}])).
+
+suppress_drop_table_test() ->
+    Ops = [{drop_table, <<"sessions">>}],
+    ?assertEqual([], kura_migrator:check_unsafe_operations(Ops, [drop_table])).
+
+suppress_add_column_not_null_test() ->
+    Ops = [
+        {alter_table, <<"users">>, [
+            {add_column, #kura_column{name = role, type = string, nullable = false}}
+        ]}
+    ],
+    ?assertEqual([], kura_migrator:check_unsafe_operations(Ops, [{add_column, role}])).
+
+%%----------------------------------------------------------------------
+%% Partial suppression test
+%%----------------------------------------------------------------------
+
+partial_suppression_test() ->
+    Ops = [
+        {alter_table, <<"users">>, [
+            {drop_column, email},
+            {drop_column, phone}
+        ]}
+    ],
+    Warnings = kura_migrator:check_unsafe_operations(Ops, [{drop_column, email}]),
+    ?assertEqual(1, length(Warnings)),
+    [W] = Warnings,
+    ?assertEqual(phone, maps:get(target, W)).
