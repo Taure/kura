@@ -326,3 +326,73 @@ multiple_constraints_test() ->
     CS2 = kura_changeset:unique_constraint(CS, email),
     CS3 = kura_changeset:foreign_key_constraint(CS2, age),
     ?assertEqual(2, length(CS3#kura_changeset.constraints)).
+
+%%----------------------------------------------------------------------
+%% validate_confirmation
+%%----------------------------------------------------------------------
+
+validate_confirmation_match_test() ->
+    CS = kura_changeset:cast(
+        #{password => string},
+        #{},
+        #{password => <<"secret">>, password_confirmation => <<"secret">>},
+        [password]
+    ),
+    CS2 = kura_changeset:validate_confirmation(CS, password),
+    ?assert(CS2#kura_changeset.valid).
+
+validate_confirmation_mismatch_test() ->
+    CS = kura_changeset:cast(
+        #{password => string},
+        #{},
+        #{password => <<"secret">>, password_confirmation => <<"other">>},
+        [password]
+    ),
+    CS2 = kura_changeset:validate_confirmation(CS, password),
+    ?assertNot(CS2#kura_changeset.valid),
+    ?assertMatch([{password_confirmation, <<"does not match">>}], CS2#kura_changeset.errors).
+
+validate_confirmation_missing_test() ->
+    CS = kura_changeset:cast(
+        #{password => string},
+        #{},
+        #{password => <<"secret">>},
+        [password]
+    ),
+    CS2 = kura_changeset:validate_confirmation(CS, password),
+    ?assertNot(CS2#kura_changeset.valid),
+    ?assertMatch([{password_confirmation, <<"does not match">>}], CS2#kura_changeset.errors).
+
+validate_confirmation_no_change_test() ->
+    CS = kura_changeset:cast(
+        #{password => string},
+        #{},
+        #{},
+        [password]
+    ),
+    CS2 = kura_changeset:validate_confirmation(CS, password),
+    ?assert(CS2#kura_changeset.valid).
+
+validate_confirmation_custom_message_test() ->
+    CS = kura_changeset:cast(
+        #{password => string},
+        #{},
+        #{password => <<"secret">>, password_confirmation => <<"other">>},
+        [password]
+    ),
+    CS2 = kura_changeset:validate_confirmation(CS, password, #{
+        message => <<"passwords don't match">>
+    }),
+    ?assertNot(CS2#kura_changeset.valid),
+    ?assertMatch([{password_confirmation, <<"passwords don't match">>}], CS2#kura_changeset.errors).
+
+validate_confirmation_schemaless_test() ->
+    Types = #{email => string},
+    CS = kura_changeset:cast(
+        Types,
+        #{},
+        #{email => <<"a@b.com">>, email_confirmation => <<"a@b.com">>},
+        [email]
+    ),
+    CS2 = kura_changeset:validate_confirmation(CS, email),
+    ?assert(CS2#kura_changeset.valid).

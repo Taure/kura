@@ -92,7 +92,14 @@ integration_test_() ->
             {"array roundtrip", fun t_type_array/0},
 
             %% Raw queries
-            {"raw SQL query", fun t_raw_query/0}
+            {"raw SQL query", fun t_raw_query/0},
+
+            %% exists/reload
+            {"exists returns true when record matches", fun t_exists_true/0},
+            {"exists returns false when no match", fun t_exists_false/0},
+            {"reload re-fetches after update", fun t_reload/0},
+            {"reload returns not_found for deleted record", fun t_reload_deleted/0},
+            {"reload returns error when PK missing", fun t_reload_no_pk/0}
         ]
     end}.
 
@@ -855,3 +862,40 @@ t_raw_query() ->
     ?assertEqual(1, length(Rows)),
     Row = hd(Rows),
     ?assertEqual(<<"RawUser">>, maps:get(name, Row)).
+
+%%----------------------------------------------------------------------
+%% exists / reload
+%%----------------------------------------------------------------------
+
+t_exists_true() ->
+    {ok, _} = insert_user(<<"ExistsUser">>, <<"existsuser@example.com">>),
+    Q = kura_query:where(kura_query:from(kura_test_schema), {email, <<"existsuser@example.com">>}),
+    ?assertEqual({ok, true}, kura_test_repo:exists(Q)).
+
+t_exists_false() ->
+    Q = kura_query:where(
+        kura_query:from(kura_test_schema), {email, <<"no_such_user_ever@example.com">>}
+    ),
+    ?assertEqual({ok, false}, kura_test_repo:exists(Q)).
+
+t_reload() ->
+    {ok, User} = insert_user(<<"ReloadUser">>, <<"reloaduser@example.com">>),
+    %% Update via raw SQL to simulate external change
+    kura_test_repo:query(
+        "UPDATE \"users\" SET \"name\" = $1 WHERE \"id\" = $2",
+        [<<"ReloadedName">>, maps:get(id, User)]
+    ),
+    {ok, Reloaded} = kura_test_repo:reload(kura_test_schema, User),
+    ?assertEqual(<<"ReloadedName">>, maps:get(name, Reloaded)),
+    ?assertEqual(maps:get(id, User), maps:get(id, Reloaded)).
+
+t_reload_deleted() ->
+    {ok, User} = insert_user(<<"ReloadDel">>, <<"reloaddel@example.com">>),
+    CS = kura_changeset:cast(kura_test_schema, User, #{}, []),
+    {ok, _} = kura_test_repo:delete(CS),
+    ?assertEqual({error, not_found}, kura_test_repo:reload(kura_test_schema, User)).
+
+t_reload_no_pk() ->
+    ?assertEqual(
+        {error, no_primary_key}, kura_test_repo:reload(kura_test_schema, #{name => <<"x">>})
+    ).

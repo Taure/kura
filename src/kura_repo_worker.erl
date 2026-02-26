@@ -28,6 +28,8 @@ kura_repo_worker:start(MyRepo),
     update_all/3,
     delete_all/2,
     insert_all/3,
+    exists/2,
+    reload/3,
     transaction/2,
     multi/2,
     preload/4,
@@ -118,6 +120,25 @@ one(RepoMod, Query) ->
         {ok, [Row]} -> {ok, Row};
         {ok, []} -> {error, not_found};
         {error, _} = Err -> Err
+    end.
+
+-doc "Check if any record matches the query.".
+-spec exists(module(), #kura_query{}) -> {ok, boolean()} | {error, term()}.
+exists(RepoMod, Query) ->
+    Q = kura_query:limit(Query, 1),
+    case all(RepoMod, Q) of
+        {ok, []} -> {ok, false};
+        {ok, [_ | _]} -> {ok, true};
+        {error, _} = Err -> Err
+    end.
+
+-doc "Re-fetch a record from the database by its primary key.".
+-spec reload(module(), module(), map()) -> {ok, map()} | {error, term()}.
+reload(RepoMod, SchemaMod, Record) ->
+    PK = SchemaMod:primary_key(),
+    case maps:find(PK, Record) of
+        {ok, Id} -> get(RepoMod, SchemaMod, Id);
+        error -> {error, no_primary_key}
     end.
 
 -doc "Insert a record from a changeset. Returns `{error, Changeset}` with errors on failure.".

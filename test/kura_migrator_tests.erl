@@ -272,3 +272,120 @@ partial_suppression_test() ->
     ?assertEqual(1, length(Warnings)),
     [W] = Warnings,
     ?assertEqual(phone, maps:get(target, W)).
+
+%%----------------------------------------------------------------------
+%% Foreign key constraint tests
+%%----------------------------------------------------------------------
+
+fk_inline_create_table_test() ->
+    SQL = kura_migrator:compile_operation(
+        {create_table, <<"posts">>, [
+            #kura_column{name = id, type = id, primary_key = true, nullable = false},
+            #kura_column{
+                name = user_id,
+                type = integer,
+                nullable = false,
+                references = {<<"users">>, id},
+                on_delete = cascade
+            }
+        ]}
+    ),
+    ?assert(
+        binary:match(
+            SQL, <<"\"user_id\" INTEGER NOT NULL REFERENCES \"users\"(\"id\") ON DELETE CASCADE">>
+        ) =/= nomatch
+    ).
+
+fk_on_delete_cascade_test() ->
+    SQL = kura_migrator:compile_operation(
+        {create_table, <<"t">>, [
+            #kura_column{
+                name = ref_id, type = integer, references = {<<"refs">>, id}, on_delete = cascade
+            }
+        ]}
+    ),
+    ?assert(binary:match(SQL, <<"REFERENCES \"refs\"(\"id\") ON DELETE CASCADE">>) =/= nomatch).
+
+fk_on_delete_restrict_test() ->
+    SQL = kura_migrator:compile_operation(
+        {create_table, <<"t">>, [
+            #kura_column{
+                name = ref_id, type = integer, references = {<<"refs">>, id}, on_delete = restrict
+            }
+        ]}
+    ),
+    ?assert(binary:match(SQL, <<"ON DELETE RESTRICT">>) =/= nomatch).
+
+fk_on_delete_set_null_test() ->
+    SQL = kura_migrator:compile_operation(
+        {create_table, <<"t">>, [
+            #kura_column{
+                name = ref_id, type = integer, references = {<<"refs">>, id}, on_delete = set_null
+            }
+        ]}
+    ),
+    ?assert(binary:match(SQL, <<"ON DELETE SET NULL">>) =/= nomatch).
+
+fk_on_delete_no_action_test() ->
+    SQL = kura_migrator:compile_operation(
+        {create_table, <<"t">>, [
+            #kura_column{
+                name = ref_id, type = integer, references = {<<"refs">>, id}, on_delete = no_action
+            }
+        ]}
+    ),
+    ?assert(binary:match(SQL, <<"ON DELETE NO ACTION">>) =/= nomatch).
+
+fk_on_update_test() ->
+    SQL = kura_migrator:compile_operation(
+        {create_table, <<"t">>, [
+            #kura_column{
+                name = ref_id, type = integer, references = {<<"refs">>, id}, on_update = cascade
+            }
+        ]}
+    ),
+    ?assert(binary:match(SQL, <<"ON UPDATE CASCADE">>) =/= nomatch).
+
+fk_on_delete_and_on_update_test() ->
+    SQL = kura_migrator:compile_operation(
+        {create_table, <<"t">>, [
+            #kura_column{
+                name = ref_id,
+                type = integer,
+                references = {<<"refs">>, id},
+                on_delete = cascade,
+                on_update = restrict
+            }
+        ]}
+    ),
+    ?assert(binary:match(SQL, <<"ON DELETE CASCADE">>) =/= nomatch),
+    ?assert(binary:match(SQL, <<"ON UPDATE RESTRICT">>) =/= nomatch).
+
+fk_alter_table_add_column_test() ->
+    SQL = kura_migrator:compile_operation(
+        {alter_table, <<"posts">>, [
+            {add_column, #kura_column{
+                name = author_id,
+                type = integer,
+                nullable = false,
+                references = {<<"users">>, id},
+                on_delete = cascade
+            }}
+        ]}
+    ),
+    ?assert(
+        binary:match(
+            SQL,
+            <<"ADD COLUMN \"author_id\" INTEGER NOT NULL REFERENCES \"users\"(\"id\") ON DELETE CASCADE">>
+        ) =/= nomatch
+    ).
+
+fk_no_on_delete_test() ->
+    SQL = kura_migrator:compile_operation(
+        {create_table, <<"t">>, [
+            #kura_column{name = ref_id, type = integer, references = {<<"refs">>, id}}
+        ]}
+    ),
+    ?assert(binary:match(SQL, <<"REFERENCES \"refs\"(\"id\")">>) =/= nomatch),
+    ?assertEqual(nomatch, binary:match(SQL, <<"ON DELETE">>)),
+    ?assertEqual(nomatch, binary:match(SQL, <<"ON UPDATE">>)).

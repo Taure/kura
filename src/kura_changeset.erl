@@ -25,6 +25,8 @@ CS3 = kura_changeset:unique_constraint(CS2, email).
     validate_length/3,
     validate_number/3,
     validate_inclusion/3,
+    validate_confirmation/2,
+    validate_confirmation/3,
     validate_change/3,
     unique_constraint/2,
     unique_constraint/3,
@@ -169,6 +171,29 @@ validate_inclusion(CS, Field, Values) ->
                 false -> add_error(CS, Field, <<"is invalid">>)
             end
     end.
+
+-doc "Validate that `Field` has a matching confirmation field in params.".
+-spec validate_confirmation(#kura_changeset{}, atom()) -> #kura_changeset{}.
+validate_confirmation(CS, Field) ->
+    validate_confirmation(CS, Field, #{}).
+
+-doc "Validate confirmation with options. Opts: `#{message => binary()}`.".
+-spec validate_confirmation(#kura_changeset{}, atom(), map()) -> #kura_changeset{}.
+validate_confirmation(CS, Field, Opts) ->
+    case get_change(CS, Field) of
+        undefined ->
+            CS;
+        Val ->
+            ConfField = confirmation_field(Field),
+            Msg = maps:get(message, Opts, <<"does not match">>),
+            case maps:find(ConfField, CS#kura_changeset.params) of
+                {ok, Val} -> CS;
+                _ -> add_error(CS, ConfField, Msg)
+            end
+    end.
+
+confirmation_field(Field) ->
+    binary_to_atom(<<(atom_to_binary(Field))/binary, "_confirmation">>).
 
 -doc "Validate `Field` with a custom function returning `ok` or `{error, Message}`.".
 -spec validate_change(#kura_changeset{}, atom(), fun((term()) -> ok | {error, binary()})) ->

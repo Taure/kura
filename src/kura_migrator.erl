@@ -261,7 +261,10 @@ compile_column_def(#kura_column{
     type = Type,
     nullable = Nullable,
     default = Default,
-    primary_key = PK
+    primary_key = PK,
+    references = Refs,
+    on_delete = OnDelete,
+    on_update = OnUpdate
 }) ->
     NameBin = atom_to_binary(Name, utf8),
     TypeBin = kura_types:to_pg_type(Type),
@@ -280,7 +283,38 @@ compile_column_def(#kura_column{
             undefined -> <<>>;
             Val -> <<" DEFAULT ", (format_default(Val))/binary>>
         end,
-    iolist_to_binary([quote(NameBin), <<" ">>, TypeBin, PKPart, NullPart, DefaultPart]).
+    RefsPart =
+        case Refs of
+            undefined ->
+                <<>>;
+            {Table, Col} ->
+                <<" REFERENCES ", (quote(Table))/binary, "(",
+                    (quote(atom_to_binary(Col, utf8)))/binary, ")">>
+        end,
+    OnDeletePart = compile_fk_action(<<"ON DELETE">>, OnDelete),
+    OnUpdatePart = compile_fk_action(<<"ON UPDATE">>, OnUpdate),
+    iolist_to_binary([
+        quote(NameBin),
+        <<" ">>,
+        TypeBin,
+        PKPart,
+        NullPart,
+        DefaultPart,
+        RefsPart,
+        OnDeletePart,
+        OnUpdatePart
+    ]).
+
+compile_fk_action(_Prefix, undefined) ->
+    <<>>;
+compile_fk_action(Prefix, cascade) ->
+    <<" ", Prefix/binary, " CASCADE">>;
+compile_fk_action(Prefix, restrict) ->
+    <<" ", Prefix/binary, " RESTRICT">>;
+compile_fk_action(Prefix, set_null) ->
+    <<" ", Prefix/binary, " SET NULL">>;
+compile_fk_action(Prefix, no_action) ->
+    <<" ", Prefix/binary, " NO ACTION">>.
 
 compile_alter_op({add_column, ColDef}) ->
     [<<"ADD COLUMN ">>, compile_column_def(ColDef)];

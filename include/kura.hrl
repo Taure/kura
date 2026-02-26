@@ -68,7 +68,10 @@
     type :: kura_types:kura_type(),
     nullable = true :: boolean(),
     default :: term(),
-    primary_key = false :: boolean()
+    primary_key = false :: boolean(),
+    references :: {binary(), atom()} | undefined,
+    on_delete :: cascade | restrict | set_null | no_action | undefined,
+    on_update :: cascade | restrict | set_null | no_action | undefined
 }).
 
 -endif.
