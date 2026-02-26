@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-02-27
+
+### Added
+
+- Foreign key constraints in migrations — `references`, `on_delete`, `on_update` fields on `#kura_column{}` generate inline `REFERENCES "table"("col") ON DELETE CASCADE` etc.
+- `kura_changeset:validate_confirmation/2,3` — validates a field has a matching `<field>_confirmation` in params (for password/email confirmation flows)
+- `kura_repo_worker:exists/2` — checks if any record matches a query, returns `{ok, true | false}`
+- `kura_repo_worker:reload/3` — re-fetches a record from the database by its primary key
+
 ## [1.0.4] - 2026-02-26
 
 ### Fixed
