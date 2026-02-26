@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2026-02-26
+
+### Fixed
+
+- ExDoc build failure — `doc/architecture.md` was wiped by edoc before ex_doc could read it; moved to `guides/architecture.md`
+- Removed `doc` from hex include_files (generated output, not source)
+
+### Added
+
+- ExDoc build step in CI to catch documentation errors early
+
 ## [1.0.3] - 2026-02-26
 
 ### Added
@@ -75,8 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `assoc_changes` field on `#kura_changeset{}` record
 - Nested insert/update — automatic transaction wrapping with FK propagation when `assoc_changes` present
 - `kura_repo_worker:build_log_event/5` and `default_logger/0` exported for testability
-- Architecture documentation (`doc/architecture.md`)
-- Feature guides: enums, telemetry, cast_assoc (`doc/guides/`)
+- Architecture documentation (`guides/architecture.md`)
+- Feature guides: enums, telemetry, cast_assoc (`guides/`)
 
 ### Changed
 
