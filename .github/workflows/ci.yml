@@ -59,6 +59,9 @@ jobs:
       - name: Dialyzer
         run: rebar3 dialyzer
 
+      - name: ExDoc
+        run: rebar3 ex_doc
+
       - name: EUnit
         run: rebar3 eunit
 
