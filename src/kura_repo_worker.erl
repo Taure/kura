@@ -28,6 +28,7 @@ kura_repo_worker:start(MyRepo),
     update_all/3,
     delete_all/2,
     insert_all/3,
+    insert_all/4,
     exists/2,
     reload/3,
     transaction/2,
@@ -236,6 +237,38 @@ insert_all(RepoMod, SchemaMod, Entries) ->
         {error, _} = Err -> Err
     end.
 
+-doc "Bulk insert with options. `#{returning => true | [atom()]}` returns inserted rows.".
+-spec insert_all(module(), module(), [map()], map()) ->
+    {ok, non_neg_integer()} | {ok, non_neg_integer(), [map()]} | {error, term()}.
+insert_all(RepoMod, SchemaMod, Entries, Opts) ->
+    NonVirtual = kura_schema:non_virtual_fields(SchemaMod),
+    Rows = [
+        begin
+            WithTS = maybe_add_timestamps(SchemaMod, Entry, insert),
+            Filtered = maps:with(NonVirtual, WithTS),
+            dump_changes(SchemaMod, Filtered)
+        end
+     || Entry <- Entries
+    ],
+    Fields = maps:keys(hd(Rows)),
+    {SQL, Params} = kura_query_compiler:insert_all(SchemaMod, Fields, Rows, Opts),
+
+    case maps:find(returning, Opts) of
+        {ok, RetOpt} when RetOpt =:= true; is_list(RetOpt) ->
+            case pgo_query(RepoMod, SQL, Params) of
+                #{command := insert, num_rows := Count, rows := RetRows} ->
+                    Loaded = [load_row(SchemaMod, R) || R <- RetRows],
+                    {ok, Count, Loaded};
+                {error, _} = Err ->
+                    Err
+            end;
+        _ ->
+            case pgo_query(RepoMod, SQL, Params) of
+                #{command := insert, num_rows := Count} -> {ok, Count};
+                {error, _} = Err -> Err
+            end
+    end.
+
 -doc "Execute a function inside a database transaction.".
 -spec transaction(module(), fun(() -> any())) -> any() | {error, any()}.
 transaction(RepoMod, Fun) ->
@@ -338,7 +371,9 @@ get_pool(RepoMod) ->
     Config = RepoMod:config(),
     maps:get(pool, Config, RepoMod).
 
-insert_record(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}) ->
+insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}) ->
+    CS = run_prepare(CS0),
+    Changes = CS#kura_changeset.changes,
     Changes1 = maybe_add_timestamps(SchemaMod, Changes, insert),
     Fields = maps:keys(Changes1),
     DumpedChanges = dump_changes(SchemaMod, Changes1),
@@ -350,7 +385,9 @@ insert_record(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Change
             {error, handle_pg_error(CS#kura_changeset{action = insert}, PgError)}
     end.
 
-update_record(RepoMod, CS = #kura_changeset{schema = SchemaMod, data = Data, changes = Changes}) ->
+update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) ->
+    CS = run_prepare(CS0),
+    Changes = CS#kura_changeset.changes,
     case maps:size(Changes) of
         0 ->
             {ok, Data};
@@ -360,21 +397,97 @@ update_record(RepoMod, CS = #kura_changeset{schema = SchemaMod, data = Data, cha
             Changes1 = maybe_add_timestamps(SchemaMod, Changes, update),
             Fields = maps:keys(Changes1),
             DumpedChanges = dump_changes(SchemaMod, Changes1),
-            {SQL, Params} = kura_query_compiler:update(
-                SchemaMod, Fields, DumpedChanges, {PK, PKValue}
-            ),
-            case pgo_query(RepoMod, SQL, Params) of
-                #{command := update, rows := [Row]} ->
-                    {ok, load_row(SchemaMod, Row)};
-                #{command := update, rows := []} ->
-                    {error,
-                        kura_changeset:add_error(
-                            CS#kura_changeset{action = update}, base, <<"record not found">>
-                        )};
-                {error, PgError} ->
-                    {error, handle_pg_error(CS#kura_changeset{action = update}, PgError)}
+            case CS#kura_changeset.optimistic_lock of
+                undefined ->
+                    {SQL, Params} = kura_query_compiler:update(
+                        SchemaMod, Fields, DumpedChanges, {PK, PKValue}
+                    ),
+                    case pgo_query(RepoMod, SQL, Params) of
+                        #{command := update, rows := [Row]} ->
+                            {ok, load_row(SchemaMod, Row)};
+                        #{command := update, rows := []} ->
+                            {error,
+                                kura_changeset:add_error(
+                                    CS#kura_changeset{action = update},
+                                    base,
+                                    <<"record not found">>
+                                )};
+                        {error, PgError} ->
+                            {error, handle_pg_error(CS#kura_changeset{action = update}, PgError)}
+                    end;
+                LockField ->
+                    LockValue = maps:get(LockField, Data, 0),
+                    {SQL, Params} = compile_update_with_lock(
+                        SchemaMod,
+                        Fields,
+                        DumpedChanges,
+                        {PK, PKValue},
+                        {LockField, LockValue}
+                    ),
+                    case pgo_query(RepoMod, SQL, Params) of
+                        #{command := update, rows := [Row]} ->
+                            {ok, load_row(SchemaMod, Row)};
+                        #{command := update, rows := []} ->
+                            {error, stale};
+                        {error, PgError} ->
+                            {error, handle_pg_error(CS#kura_changeset{action = update}, PgError)}
+                    end
             end
     end.
+
+run_prepare(CS = #kura_changeset{prepare = []}) ->
+    CS;
+run_prepare(CS = #kura_changeset{prepare = Funs}) ->
+    lists:foldl(fun(Fun, Acc) -> Fun(Acc) end, CS, Funs).
+
+compile_update_with_lock(
+    SchemaOrTable, Fields, Changes, {PKField, PKValue}, {LockField, LockValue}
+) ->
+    Table = resolve_table_name(SchemaOrTable),
+    {Sets, Params, Counter} = lists:foldl(
+        fun(Field, {SAcc, PAcc, N}) ->
+            Value = maps:get(Field, Changes),
+            Set = [quote_ident_bin(atom_to_binary(Field, utf8)), <<" = $">>, integer_to_binary(N)],
+            {[Set | SAcc], [Value | PAcc], N + 1}
+        end,
+        {[], [], 1},
+        Fields
+    ),
+    PKPlaceholder = [<<"$">>, integer_to_binary(Counter)],
+    LockPlaceholder = [<<"$">>, integer_to_binary(Counter + 1)],
+    SQL = iolist_to_binary([
+        <<"UPDATE ">>,
+        quote_ident_bin(Table),
+        <<" SET ">>,
+        join_comma_bin(lists:reverse(Sets)),
+        <<" WHERE ">>,
+        quote_ident_bin(atom_to_binary(PKField, utf8)),
+        <<" = ">>,
+        PKPlaceholder,
+        <<" AND ">>,
+        quote_ident_bin(atom_to_binary(LockField, utf8)),
+        <<" = ">>,
+        LockPlaceholder,
+        <<" RETURNING *">>
+    ]),
+    {SQL, lists:reverse(Params) ++ [PKValue, LockValue]}.
+
+resolve_table_name(Mod) when is_atom(Mod) ->
+    case code:ensure_loaded(Mod) of
+        {module, Mod} ->
+            case erlang:function_exported(Mod, table, 0) of
+                true -> Mod:table();
+                false -> atom_to_binary(Mod, utf8)
+            end;
+        _ ->
+            atom_to_binary(Mod, utf8)
+    end.
+
+quote_ident_bin(Name) when is_binary(Name) ->
+    <<$", Name/binary, $">>.
+
+join_comma_bin(Parts) ->
+    lists:join(<<", ">>, Parts).
 
 persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AssocChanges) ->
     maps:fold(

@@ -99,7 +99,39 @@ integration_test_() ->
             {"exists returns false when no match", fun t_exists_false/0},
             {"reload re-fetches after update", fun t_reload/0},
             {"reload returns not_found for deleted record", fun t_reload_deleted/0},
-            {"reload returns error when PK missing", fun t_reload_no_pk/0}
+            {"reload returns error when PK missing", fun t_reload_no_pk/0},
+
+            %% Subqueries
+            {"subquery in WHERE", fun t_subquery_in/0},
+            {"exists subquery", fun t_exists_subquery/0},
+
+            %% CTEs
+            {"CTE with query", fun t_cte/0},
+
+            %% UNION / INTERSECT / EXCEPT
+            {"union combines results", fun t_union/0},
+            {"intersect finds common", fun t_intersect/0},
+            {"except removes matching", fun t_except/0},
+
+            %% Window functions
+            {"select_expr with window function", fun t_window_function/0},
+
+            %% insert_all with RETURNING
+            {"insert_all returning true", fun t_insert_all_returning_true/0},
+            {"insert_all returning fields", fun t_insert_all_returning_fields/0},
+
+            %% prepare_changes
+            {"prepare_changes runs before insert", fun t_prepare_changes_insert/0},
+
+            %% Optimistic locking
+            {"optimistic lock success", fun t_optimistic_lock_ok/0},
+            {"optimistic lock stale", fun t_optimistic_lock_stale/0},
+
+            %% Streaming
+            {"stream processes batches", fun t_stream/0},
+
+            %% Scopes
+            {"query scopes compose", fun t_scope/0}
         ]
     end}.
 
@@ -118,6 +150,7 @@ setup() ->
         "  score DOUBLE PRECISION,"
         "  metadata JSONB,"
         "  tags TEXT[],"
+        "  lock_version INTEGER DEFAULT 0,"
         "  inserted_at TIMESTAMPTZ,"
         "  updated_at TIMESTAMPTZ"
         ")",
@@ -899,3 +932,248 @@ t_reload_no_pk() ->
     ?assertEqual(
         {error, no_primary_key}, kura_test_repo:reload(kura_test_schema, #{name => <<"x">>})
     ).
+
+%%----------------------------------------------------------------------
+%% Subqueries
+%%----------------------------------------------------------------------
+
+t_subquery_in() ->
+    {ok, User} = insert_user(<<"SubqUser">>, <<"subquser@example.com">>),
+    %% Create a post referencing this user
+    PostCS = kura_changeset:cast(
+        kura_test_post_simple_schema,
+        #{},
+        #{<<"title">> => <<"Post1">>, <<"author_id">> => maps:get(id, User)},
+        [title, author_id]
+    ),
+    {ok, _} = kura_test_repo:insert(PostCS),
+    %% Subquery: find users who have posts
+    SubQ = kura_query:select(kura_query:from(kura_test_post_simple_schema), [author_id]),
+    Q = kura_query:where(
+        kura_query:from(kura_test_schema),
+        {'and', [{id, in, {subquery, SubQ}}, {email, <<"subquser@example.com">>}]}
+    ),
+    {ok, Results} = kura_test_repo:all(Q),
+    ?assertEqual(1, length(Results)),
+    ?assertEqual(<<"SubqUser">>, maps:get(name, hd(Results))).
+
+t_exists_subquery() ->
+    {ok, _} = insert_user(<<"ExSubUser">>, <<"exsubuser@example.com">>),
+    SubQ = kura_query:where(
+        kura_query:from(kura_test_schema), {email, <<"exsubuser@example.com">>}
+    ),
+    Q = kura_query:where(kura_query:from(kura_test_schema), {exists, {subquery, SubQ}}),
+    {ok, Results} = kura_test_repo:all(Q),
+    ?assert(length(Results) >= 1).
+
+%%----------------------------------------------------------------------
+%% CTEs
+%%----------------------------------------------------------------------
+
+t_cte() ->
+    {ok, _} = insert_user(<<"CteAdmin">>, <<"cteadmin@example.com">>, #{
+        <<"role">> => <<"cte_admin">>
+    }),
+    {ok, _} = insert_user(<<"CteUser">>, <<"cteuser@example.com">>, #{<<"role">> => <<"cte_user">>}),
+    CteQ = kura_query:where(kura_query:from(kura_test_schema), {role, <<"cte_admin">>}),
+    Q = kura_query:with_cte(kura_query:from(cte_admins), <<"cte_admins">>, CteQ),
+    %% Note: cte_admins is not a real table, it's the CTE alias.
+    %% But the query will use it as the FROM source.
+    {ok, Results} = kura_test_repo:all(Q),
+    ?assertEqual(1, length(Results)),
+    ?assertEqual(<<"CteAdmin">>, maps:get(name, hd(Results))).
+
+%%----------------------------------------------------------------------
+%% UNION / INTERSECT / EXCEPT
+%%----------------------------------------------------------------------
+
+t_union() ->
+    {ok, _} = insert_user(<<"UnionA">>, <<"uniona@example.com">>, #{<<"role">> => <<"union_a">>}),
+    {ok, _} = insert_user(<<"UnionB">>, <<"unionb@example.com">>, #{<<"role">> => <<"union_b">>}),
+    Q1 = kura_query:where(kura_query:from(kura_test_schema), {role, <<"union_a">>}),
+    Q2 = kura_query:where(kura_query:from(kura_test_schema), {role, <<"union_b">>}),
+    Q = kura_query:union(Q1, Q2),
+    {ok, Results} = kura_test_repo:all(Q),
+    Names = [maps:get(name, R) || R <- Results],
+    ?assert(lists:member(<<"UnionA">>, Names)),
+    ?assert(lists:member(<<"UnionB">>, Names)).
+
+t_intersect() ->
+    {ok, _} = insert_user(
+        <<"IntUser">>, <<"intuser@example.com">>, #{
+            <<"role">> => <<"int_role">>, <<"active">> => true
+        }
+    ),
+    Q1 = kura_query:where(kura_query:from(kura_test_schema), {role, <<"int_role">>}),
+    Q2 = kura_query:where(kura_query:from(kura_test_schema), {active, true}),
+    Q = kura_query:intersect(Q1, Q2),
+    {ok, Results} = kura_test_repo:all(Q),
+    Names = [maps:get(name, R) || R <- Results],
+    ?assert(lists:member(<<"IntUser">>, Names)).
+
+t_except() ->
+    {ok, _} = insert_user(
+        <<"ExcA">>, <<"exca@example.com">>, #{<<"role">> => <<"exc_role">>, <<"active">> => true}
+    ),
+    {ok, _} = insert_user(
+        <<"ExcB">>, <<"excb@example.com">>, #{<<"role">> => <<"exc_role">>, <<"active">> => false}
+    ),
+    Q1 = kura_query:where(kura_query:from(kura_test_schema), {role, <<"exc_role">>}),
+    Q2 = kura_query:where(kura_query:from(kura_test_schema), {active, false}),
+    Q = kura_query:except(Q1, Q2),
+    {ok, Results} = kura_test_repo:all(Q),
+    Names = [maps:get(name, R) || R <- Results],
+    ?assert(lists:member(<<"ExcA">>, Names)),
+    ?assertNot(lists:member(<<"ExcB">>, Names)).
+
+%%----------------------------------------------------------------------
+%% Window functions
+%%----------------------------------------------------------------------
+
+t_window_function() ->
+    {ok, _} = insert_user(<<"WinA">>, <<"wina@example.com">>, #{<<"score">> => 10.0}),
+    {ok, _} = insert_user(<<"WinB">>, <<"winb@example.com">>, #{<<"score">> => 20.0}),
+    Q = kura_query:where(
+        kura_query:select_expr(kura_query:from(kura_test_schema), [
+            {row_num, {fragment, <<"ROW_NUMBER() OVER (ORDER BY \"score\" ASC)">>, []}},
+            {user_name, {fragment, <<"\"name\"">>, []}}
+        ]),
+        {name, in, [<<"WinA">>, <<"WinB">>]}
+    ),
+    Q1 = kura_query:order_by(Q, [{row_num, asc}]),
+    {ok, Results} = kura_test_repo:all(Q1),
+    ?assertEqual(2, length(Results)),
+    ?assertEqual(<<"WinA">>, maps:get(user_name, hd(Results))).
+
+%%----------------------------------------------------------------------
+%% insert_all with RETURNING
+%%----------------------------------------------------------------------
+
+t_insert_all_returning_true() ->
+    Entries = [
+        #{name => <<"RetA">>, email => <<"reta@example.com">>},
+        #{name => <<"RetB">>, email => <<"retb@example.com">>}
+    ],
+    {ok, Count, Rows} = kura_test_repo:insert_all(kura_test_schema, Entries, #{returning => true}),
+    ?assertEqual(2, Count),
+    ?assertEqual(2, length(Rows)),
+    ?assert(is_integer(maps:get(id, hd(Rows)))).
+
+t_insert_all_returning_fields() ->
+    Entries = [
+        #{name => <<"RetFA">>, email => <<"retfa@example.com">>}
+    ],
+    {ok, Count, Rows} = kura_test_repo:insert_all(
+        kura_test_schema, Entries, #{returning => [id, name]}
+    ),
+    ?assertEqual(1, Count),
+    ?assertEqual(1, length(Rows)),
+    Row = hd(Rows),
+    ?assert(is_integer(maps:get(id, Row))),
+    ?assertEqual(<<"RetFA">>, maps:get(name, Row)).
+
+%%----------------------------------------------------------------------
+%% prepare_changes
+%%----------------------------------------------------------------------
+
+t_prepare_changes_insert() ->
+    CS = kura_changeset:cast(
+        kura_test_schema,
+        #{},
+        #{<<"name">> => <<"PrepUser">>, <<"email">> => <<"prepuser@example.com">>},
+        [name, email]
+    ),
+    CS1 = kura_changeset:validate_required(CS, [name, email]),
+    CS2 = kura_changeset:prepare_changes(CS1, fun(C) ->
+        kura_changeset:put_change(C, role, <<"prepared">>)
+    end),
+    {ok, User} = kura_test_repo:insert(CS2),
+    ?assertEqual(<<"prepared">>, maps:get(role, User)).
+
+%%----------------------------------------------------------------------
+%% Optimistic locking
+%%----------------------------------------------------------------------
+
+t_optimistic_lock_ok() ->
+    {ok, User} = insert_user(
+        <<"LockOk">>, <<"lockok@example.com">>, #{<<"lock_version">> => 0}
+    ),
+    CS = kura_changeset:cast(
+        kura_test_schema, User, #{<<"name">> => <<"LockOk Updated">>}, [name]
+    ),
+    CS1 = kura_changeset:optimistic_lock(CS, lock_version),
+    {ok, Updated} = kura_test_repo:update(CS1),
+    ?assertEqual(<<"LockOk Updated">>, maps:get(name, Updated)),
+    ?assertEqual(1, maps:get(lock_version, Updated)).
+
+t_optimistic_lock_stale() ->
+    {ok, User} = insert_user(
+        <<"LockStale">>, <<"lockstale@example.com">>, #{<<"lock_version">> => 0}
+    ),
+    %% Simulate a concurrent update by bumping lock_version directly
+    kura_test_repo:query(
+        "UPDATE \"users\" SET \"lock_version\" = 99 WHERE \"id\" = $1",
+        [maps:get(id, User)]
+    ),
+    CS = kura_changeset:cast(
+        kura_test_schema, User, #{<<"name">> => <<"Stale">>}, [name]
+    ),
+    CS1 = kura_changeset:optimistic_lock(CS, lock_version),
+    ?assertEqual({error, stale}, kura_test_repo:update(CS1)).
+
+%%----------------------------------------------------------------------
+%% Streaming
+%%----------------------------------------------------------------------
+
+t_stream() ->
+    %% Insert some test data
+    Entries = [
+        #{name => <<"StreamA">>, email => <<"streama@example.com">>},
+        #{name => <<"StreamB">>, email => <<"streamb@example.com">>},
+        #{name => <<"StreamC">>, email => <<"streamc@example.com">>}
+    ],
+    {ok, 3} = kura_test_repo:insert_all(kura_test_schema, Entries),
+    Q = kura_query:where(
+        kura_query:from(kura_test_schema),
+        {name, in, [<<"StreamA">>, <<"StreamB">>, <<"StreamC">>]}
+    ),
+    Self = self(),
+    ok = kura_stream:stream(
+        kura_test_repo,
+        Q,
+        fun(Batch) ->
+            Self ! {batch, Batch},
+            ok
+        end,
+        #{batch_size => 2}
+    ),
+    %% Collect all batches
+    Batches = collect_batches([]),
+    AllRows = lists:flatten(Batches),
+    Names = [maps:get(name, R) || R <- AllRows],
+    ?assert(lists:member(<<"StreamA">>, Names)),
+    ?assert(lists:member(<<"StreamB">>, Names)),
+    ?assert(lists:member(<<"StreamC">>, Names)).
+
+collect_batches(Acc) ->
+    receive
+        {batch, Batch} -> collect_batches([Batch | Acc])
+    after 100 -> lists:reverse(Acc)
+    end.
+
+%%----------------------------------------------------------------------
+%% Scopes
+%%----------------------------------------------------------------------
+
+t_scope() ->
+    {ok, _} = insert_user(
+        <<"ScopeUser">>,
+        <<"scopeuser@example.com">>,
+        #{<<"role">> => <<"scope_admin">>, <<"active">> => true}
+    ),
+    Active = fun(Q) -> kura_query:where(Q, {active, true}) end,
+    Admin = fun(Q) -> kura_query:where(Q, {role, <<"scope_admin">>}) end,
+    Q = kura_query:scope(kura_query:scope(kura_query:from(kura_test_schema), Active), Admin),
+    {ok, Results} = kura_test_repo:all(Q),
+    Names = [maps:get(name, R) || R <- Results],
+    ?assert(lists:member(<<"ScopeUser">>, Names)).

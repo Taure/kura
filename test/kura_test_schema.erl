@@ -21,6 +21,7 @@ fields() ->
         #kura_field{name = metadata, type = jsonb},
         #kura_field{name = status, type = {enum, [active, inactive, banned]}},
         #kura_field{name = tags, type = {array, string}},
+        #kura_field{name = lock_version, type = integer, default = 0},
         #kura_field{name = inserted_at, type = utc_datetime},
         #kura_field{name = updated_at, type = utc_datetime},
         #kura_field{name = full_name, type = string, virtual = true}

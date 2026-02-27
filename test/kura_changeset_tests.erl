@@ -396,3 +396,118 @@ validate_confirmation_schemaless_test() ->
     ),
     CS2 = kura_changeset:validate_confirmation(CS, email),
     ?assert(CS2#kura_changeset.valid).
+
+%%----------------------------------------------------------------------
+%% validate_exclusion
+%%----------------------------------------------------------------------
+
+validate_exclusion_rejected_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{role => <<"admin">>}, [role]),
+    CS2 = kura_changeset:validate_exclusion(CS, role, [<<"admin">>, <<"root">>]),
+    ?assertNot(CS2#kura_changeset.valid),
+    ?assertMatch([{role, <<"is reserved">>}], CS2#kura_changeset.errors).
+
+validate_exclusion_allowed_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{role => <<"user">>}, [role]),
+    CS2 = kura_changeset:validate_exclusion(CS, role, [<<"admin">>, <<"root">>]),
+    ?assert(CS2#kura_changeset.valid).
+
+validate_exclusion_no_change_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{}, [role]),
+    CS2 = kura_changeset:validate_exclusion(CS, role, [<<"admin">>]),
+    ?assert(CS2#kura_changeset.valid).
+
+%%----------------------------------------------------------------------
+%% validate_subset
+%%----------------------------------------------------------------------
+
+validate_subset_valid_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{tags => [<<"erlang">>, <<"otp">>]}, [tags]),
+    CS2 = kura_changeset:validate_subset(CS, tags, [<<"erlang">>, <<"otp">>, <<"beam">>]),
+    ?assert(CS2#kura_changeset.valid).
+
+validate_subset_invalid_entry_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{tags => [<<"erlang">>, <<"java">>]}, [tags]),
+    CS2 = kura_changeset:validate_subset(CS, tags, [<<"erlang">>, <<"otp">>]),
+    ?assertNot(CS2#kura_changeset.valid),
+    ?assertMatch([{tags, <<"has an invalid entry">>}], CS2#kura_changeset.errors).
+
+validate_subset_non_list_test() ->
+    CS = kura_changeset:cast(#{tags => string}, #{}, #{tags => <<"not a list">>}, [tags]),
+    CS2 = kura_changeset:validate_subset(CS, tags, [<<"a">>, <<"b">>]),
+    ?assertNot(CS2#kura_changeset.valid),
+    ?assertMatch([{tags, <<"is invalid">>}], CS2#kura_changeset.errors).
+
+validate_subset_no_change_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{}, [tags]),
+    CS2 = kura_changeset:validate_subset(CS, tags, [<<"a">>]),
+    ?assert(CS2#kura_changeset.valid).
+
+%%----------------------------------------------------------------------
+%% traverse_errors
+%%----------------------------------------------------------------------
+
+traverse_errors_single_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{}, [name, email]),
+    CS2 = kura_changeset:validate_required(CS, [name]),
+    Result = kura_changeset:traverse_errors(CS2, fun(_Field, Msg) -> Msg end),
+    ?assertEqual(#{name => [<<"can't be blank">>]}, Result).
+
+traverse_errors_multiple_same_field_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{name => <<>>}, [name]),
+    CS2 = kura_changeset:add_error(CS, name, <<"is blank">>),
+    CS3 = kura_changeset:add_error(CS2, name, <<"is too short">>),
+    Result = kura_changeset:traverse_errors(CS3, fun(_Field, Msg) -> Msg end),
+    ?assertEqual(#{name => [<<"is blank">>, <<"is too short">>]}, Result).
+
+traverse_errors_custom_formatter_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{}, [name]),
+    CS2 = kura_changeset:validate_required(CS, [name]),
+    Result = kura_changeset:traverse_errors(CS2, fun(Field, Msg) ->
+        <<(atom_to_binary(Field))/binary, " ", Msg/binary>>
+    end),
+    ?assertEqual(#{name => [<<"name can't be blank">>]}, Result).
+
+traverse_errors_empty_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{name => <<"Alice">>}, [name]),
+    Result = kura_changeset:traverse_errors(CS, fun(_Field, Msg) -> Msg end),
+    ?assertEqual(#{}, Result).
+
+%%----------------------------------------------------------------------
+%% prepare_changes
+%%----------------------------------------------------------------------
+
+prepare_changes_single_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{name => <<"Alice">>}, [name]),
+    CS2 = kura_changeset:prepare_changes(CS, fun(C) ->
+        kura_changeset:put_change(C, email, <<"auto@gen.com">>)
+    end),
+    ?assertEqual(1, length(CS2#kura_changeset.prepare)),
+    ?assertEqual(<<"Alice">>, kura_changeset:get_change(CS2, name)).
+
+prepare_changes_chained_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{name => <<"Alice">>}, [name]),
+    CS2 = kura_changeset:prepare_changes(CS, fun(C) ->
+        kura_changeset:put_change(C, role, <<"user">>)
+    end),
+    CS3 = kura_changeset:prepare_changes(CS2, fun(C) ->
+        kura_changeset:put_change(C, active, true)
+    end),
+    ?assertEqual(2, length(CS3#kura_changeset.prepare)).
+
+%%----------------------------------------------------------------------
+%% optimistic_lock
+%%----------------------------------------------------------------------
+
+optimistic_lock_increments_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{lock_version => 0}, #{name => <<"Alice">>}, [
+        name
+    ]),
+    CS2 = kura_changeset:optimistic_lock(CS, lock_version),
+    ?assertEqual(1, kura_changeset:get_change(CS2, lock_version)),
+    ?assertEqual(lock_version, CS2#kura_changeset.optimistic_lock).
+
+optimistic_lock_from_nil_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{name => <<"Alice">>}, [name]),
+    CS2 = kura_changeset:optimistic_lock(CS, lock_version),
+    ?assertEqual(1, kura_changeset:get_change(CS2, lock_version)).

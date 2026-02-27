@@ -29,7 +29,9 @@
     required = [] :: [atom()],
     action :: insert | update | delete | undefined,
     constraints = [] :: [#kura_constraint{}],
-    assoc_changes = #{} :: #{atom() => #kura_changeset{} | [#kura_changeset{}]}
+    assoc_changes = #{} :: #{atom() => #kura_changeset{} | [#kura_changeset{}]},
+    prepare = [] :: [fun((#kura_changeset{}) -> #kura_changeset{})],
+    optimistic_lock :: atom() | undefined
 }).
 
 -record(kura_assoc, {
@@ -49,7 +51,7 @@
 
 -record(kura_query, {
     from :: atom() | module() | undefined,
-    select = [] :: [atom() | term()],
+    select = [] :: [atom() | term()] | {exprs, [term()]},
     wheres = [] :: [term()],
     joins = [] :: [term()],
     order_bys = [] :: [term()],
@@ -60,7 +62,9 @@
     distinct = false :: boolean() | [atom()],
     lock :: binary() | undefined,
     prefix :: binary() | undefined,
-    preloads = [] :: [atom() | {atom(), list()}]
+    preloads = [] :: [atom() | {atom(), list()}],
+    ctes = [] :: [{binary(), #kura_query{}}],
+    combinations = [] :: [{union | union_all | intersect | except, #kura_query{}}]
 }).
 
 -record(kura_column, {
