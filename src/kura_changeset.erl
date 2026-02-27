@@ -25,6 +25,8 @@ CS3 = kura_changeset:unique_constraint(CS2, email).
     validate_length/3,
     validate_number/3,
     validate_inclusion/3,
+    validate_exclusion/3,
+    validate_subset/3,
     validate_confirmation/2,
     validate_confirmation/3,
     validate_change/3,
@@ -42,6 +44,9 @@ CS3 = kura_changeset:unique_constraint(CS2, email).
     put_change/3,
     apply_changes/1,
     apply_action/2,
+    traverse_errors/2,
+    prepare_changes/2,
+    optimistic_lock/2,
     cast_embed/2,
     cast_embed/3,
     normalize_params/1
@@ -170,6 +175,34 @@ validate_inclusion(CS, Field, Values) ->
                 true -> CS;
                 false -> add_error(CS, Field, <<"is invalid">>)
             end
+    end.
+
+-doc "Validate that `Field` value is NOT in the given list of `DisallowedValues`.".
+-spec validate_exclusion(#kura_changeset{}, atom(), [term()]) -> #kura_changeset{}.
+validate_exclusion(CS, Field, DisallowedValues) ->
+    case get_change(CS, Field) of
+        undefined ->
+            CS;
+        Val ->
+            case lists:member(Val, DisallowedValues) of
+                true -> add_error(CS, Field, <<"is reserved">>);
+                false -> CS
+            end
+    end.
+
+-doc "Validate that all values in an array `Field` are within `AllowedValues`.".
+-spec validate_subset(#kura_changeset{}, atom(), [term()]) -> #kura_changeset{}.
+validate_subset(CS, Field, AllowedValues) ->
+    case get_change(CS, Field) of
+        undefined ->
+            CS;
+        Vals when is_list(Vals) ->
+            case lists:all(fun(V) -> lists:member(V, AllowedValues) end, Vals) of
+                true -> CS;
+                false -> add_error(CS, Field, <<"has an invalid entry">>)
+            end;
+        _ ->
+            add_error(CS, Field, <<"is invalid">>)
     end.
 
 -doc "Validate that `Field` has a matching confirmation field in params.".
@@ -324,6 +357,36 @@ apply_action(CS = #kura_changeset{valid = true}, Action) ->
     {ok, apply_changes(CS#kura_changeset{action = Action})};
 apply_action(CS, Action) ->
     {error, CS#kura_changeset{action = Action}}.
+
+-doc "Register a callback to run just before repo operations (insert/update).".
+-spec prepare_changes(#kura_changeset{}, fun((#kura_changeset{}) -> #kura_changeset{})) ->
+    #kura_changeset{}.
+prepare_changes(CS = #kura_changeset{prepare = Prepare}, Fun) when is_function(Fun, 1) ->
+    CS#kura_changeset{prepare = Prepare ++ [Fun]}.
+
+-doc "Enable optimistic locking on `Field`, incrementing it on each update.".
+-spec optimistic_lock(#kura_changeset{}, atom()) -> #kura_changeset{}.
+optimistic_lock(CS = #kura_changeset{data = Data}, Field) ->
+    Current = maps:get(Field, Data, 0),
+    CS1 = put_change(CS, Field, Current + 1),
+    CS1#kura_changeset{optimistic_lock = Field}.
+
+-doc "Transform errors via a callback, returning `#{field => [transformed_messages]}`.".
+-spec traverse_errors(#kura_changeset{}, fun((atom(), binary()) -> term())) -> map().
+traverse_errors(#kura_changeset{errors = Errors}, Fun) ->
+    ErrorMap = lists:foldl(
+        fun({F, M}, Acc) ->
+            maps:update_with(F, fun(Existing) -> Existing ++ [M] end, [M], Acc)
+        end,
+        #{},
+        Errors
+    ),
+    maps:map(
+        fun(Field, Messages) ->
+            [Fun(Field, Msg) || Msg <- Messages]
+        end,
+        ErrorMap
+    ).
 
 %%----------------------------------------------------------------------
 %% Association casting (delegated to kura_changeset_assoc)

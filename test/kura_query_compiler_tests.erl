@@ -397,3 +397,243 @@ complex_query_test() ->
     >>,
     ?assertEqual(Expected, SQL),
     ?assertEqual([18, true, 10, 5], Params).
+
+%%----------------------------------------------------------------------
+%% to_sql_from/2 (keystone refactor)
+%%----------------------------------------------------------------------
+
+to_sql_from_start_counter_test() ->
+    Q = kura_query:where(kura_query:from(user), {name, <<"Alice">>}),
+    {SQL, Params, NextCounter} = kura_query_compiler:to_sql_from(Q, 5),
+    ?assertEqual(<<"SELECT * FROM \"user\" WHERE \"name\" = $5">>, SQL),
+    ?assertEqual([<<"Alice">>], Params),
+    ?assertEqual(6, NextCounter).
+
+%%----------------------------------------------------------------------
+%% Subqueries in WHERE
+%%----------------------------------------------------------------------
+
+subquery_in_test() ->
+    SubQ = kura_query:select(kura_query:from(post), [user_id]),
+    Q = kura_query:where(kura_query:from(user), {id, in, {subquery, SubQ}}),
+    {SQL, Params} = kura_query_compiler:to_sql(Q),
+    ?assertEqual(
+        <<"SELECT * FROM \"user\" WHERE \"id\" IN (SELECT \"user_id\" FROM \"post\")">>,
+        SQL
+    ),
+    ?assertEqual([], Params).
+
+subquery_in_with_where_test() ->
+    SubQ = kura_query:where(
+        kura_query:select(kura_query:from(post), [user_id]),
+        {published, true}
+    ),
+    Q = kura_query:where(kura_query:from(user), {id, in, {subquery, SubQ}}),
+    {SQL, Params} = kura_query_compiler:to_sql(Q),
+    ?assertEqual(
+        <<"SELECT * FROM \"user\" WHERE \"id\" IN (SELECT \"user_id\" FROM \"post\" WHERE \"published\" = $1)">>,
+        SQL
+    ),
+    ?assertEqual([true], Params).
+
+exists_subquery_test() ->
+    SubQ = kura_query:where(kura_query:from(post), {user_id, 1}),
+    Q = kura_query:where(kura_query:from(user), {exists, {subquery, SubQ}}),
+    {SQL, Params} = kura_query_compiler:to_sql(Q),
+    ?assertEqual(
+        <<"SELECT * FROM \"user\" WHERE EXISTS (SELECT * FROM \"post\" WHERE \"user_id\" = $1)">>,
+        SQL
+    ),
+    ?assertEqual([1], Params).
+
+not_exists_subquery_test() ->
+    SubQ = kura_query:where(kura_query:from(post), {user_id, 1}),
+    Q = kura_query:where(kura_query:from(user), {not_exists, {subquery, SubQ}}),
+    {SQL, Params} = kura_query_compiler:to_sql(Q),
+    ?assertEqual(
+        <<"SELECT * FROM \"user\" WHERE NOT EXISTS (SELECT * FROM \"post\" WHERE \"user_id\" = $1)">>,
+        SQL
+    ),
+    ?assertEqual([1], Params).
+
+%%----------------------------------------------------------------------
+%% Window Functions (select_expr)
+%%----------------------------------------------------------------------
+
+select_expr_row_number_test() ->
+    Q = kura_query:select_expr(kura_query:from(user), [
+        {row_num, {fragment, <<"ROW_NUMBER() OVER (ORDER BY id)">>, []}}
+    ]),
+    {SQL, Params} = kura_query_compiler:to_sql(Q),
+    ?assertEqual(
+        <<"SELECT ROW_NUMBER() OVER (ORDER BY id) AS \"row_num\" FROM \"user\"">>,
+        SQL
+    ),
+    ?assertEqual([], Params).
+
+select_expr_sum_over_test() ->
+    Q = kura_query:select_expr(kura_query:from(user), [
+        {total, {fragment, <<"SUM(score) OVER (PARTITION BY role)">>, []}}
+    ]),
+    {SQL, Params} = kura_query_compiler:to_sql(Q),
+    ?assertEqual(
+        <<"SELECT SUM(score) OVER (PARTITION BY role) AS \"total\" FROM \"user\"">>,
+        SQL
+    ),
+    ?assertEqual([], Params).
+
+select_expr_with_params_test() ->
+    Q = kura_query:select_expr(kura_query:from(user), [
+        {result, {fragment, <<"CASE WHEN age > ? THEN 'senior' ELSE 'junior' END">>, [50]}}
+    ]),
+    {SQL, Params} = kura_query_compiler:to_sql(Q),
+    ?assertEqual(
+        <<"SELECT CASE WHEN age > $1 THEN 'senior' ELSE 'junior' END AS \"result\" FROM \"user\"">>,
+        SQL
+    ),
+    ?assertEqual([50], Params).
+
+%%----------------------------------------------------------------------
+%% CTEs (WITH clause)
+%%----------------------------------------------------------------------
+
+single_cte_test() ->
+    CteQ = kura_query:where(kura_query:from(user), {active, true}),
+    Q = kura_query:with_cte(kura_query:from(active_users), <<"active_users">>, CteQ),
+    {SQL, Params} = kura_query_compiler:to_sql(Q),
+    ?assertEqual(
+        <<"WITH active_users AS (SELECT * FROM \"user\" WHERE \"active\" = $1) SELECT * FROM \"active_users\"">>,
+        SQL
+    ),
+    ?assertEqual([true], Params).
+
+multiple_ctes_test() ->
+    CteQ1 = kura_query:where(kura_query:from(user), {active, true}),
+    CteQ2 = kura_query:where(kura_query:from(user), {role, <<"admin">>}),
+    Q0 = kura_query:from(active_users),
+    Q1 = kura_query:with_cte(Q0, <<"active_users">>, CteQ1),
+    Q2 = kura_query:with_cte(Q1, <<"admin_users">>, CteQ2),
+    {SQL, Params} = kura_query_compiler:to_sql(Q2),
+    ?assertEqual(
+        <<"WITH active_users AS (SELECT * FROM \"user\" WHERE \"active\" = $1), admin_users AS (SELECT * FROM \"user\" WHERE \"role\" = $2) SELECT * FROM \"active_users\"">>,
+        SQL
+    ),
+    ?assertEqual([true, <<"admin">>], Params).
+
+%%----------------------------------------------------------------------
+%% UNION / INTERSECT / EXCEPT
+%%----------------------------------------------------------------------
+
+union_test() ->
+    Q1 = kura_query:where(kura_query:from(user), {role, <<"admin">>}),
+    Q2 = kura_query:where(kura_query:from(user), {role, <<"mod">>}),
+    Q = kura_query:union(Q1, Q2),
+    {SQL, Params} = kura_query_compiler:to_sql(Q),
+    ?assertEqual(
+        <<"SELECT * FROM \"user\" WHERE \"role\" = $1 UNION SELECT * FROM \"user\" WHERE \"role\" = $2">>,
+        SQL
+    ),
+    ?assertEqual([<<"admin">>, <<"mod">>], Params).
+
+union_all_test() ->
+    Q1 = kura_query:where(kura_query:from(user), {role, <<"admin">>}),
+    Q2 = kura_query:where(kura_query:from(user), {role, <<"mod">>}),
+    Q = kura_query:union_all(Q1, Q2),
+    {SQL, Params} = kura_query_compiler:to_sql(Q),
+    ?assertEqual(
+        <<"SELECT * FROM \"user\" WHERE \"role\" = $1 UNION ALL SELECT * FROM \"user\" WHERE \"role\" = $2">>,
+        SQL
+    ),
+    ?assertEqual([<<"admin">>, <<"mod">>], Params).
+
+intersect_test() ->
+    Q1 = kura_query:where(kura_query:from(user), {active, true}),
+    Q2 = kura_query:where(kura_query:from(user), {role, <<"admin">>}),
+    Q = kura_query:intersect(Q1, Q2),
+    {SQL, Params} = kura_query_compiler:to_sql(Q),
+    ?assertEqual(
+        <<"SELECT * FROM \"user\" WHERE \"active\" = $1 INTERSECT SELECT * FROM \"user\" WHERE \"role\" = $2">>,
+        SQL
+    ),
+    ?assertEqual([true, <<"admin">>], Params).
+
+except_test() ->
+    Q1 = kura_query:where(kura_query:from(user), {active, true}),
+    Q2 = kura_query:where(kura_query:from(user), {role, <<"banned">>}),
+    Q = kura_query:except(Q1, Q2),
+    {SQL, Params} = kura_query_compiler:to_sql(Q),
+    ?assertEqual(
+        <<"SELECT * FROM \"user\" WHERE \"active\" = $1 EXCEPT SELECT * FROM \"user\" WHERE \"role\" = $2">>,
+        SQL
+    ),
+    ?assertEqual([true, <<"banned">>], Params).
+
+chained_union_test() ->
+    Q1 = kura_query:where(kura_query:from(user), {role, <<"a">>}),
+    Q2 = kura_query:where(kura_query:from(user), {role, <<"b">>}),
+    Q3 = kura_query:where(kura_query:from(user), {role, <<"c">>}),
+    Q = kura_query:union(kura_query:union(Q1, Q2), Q3),
+    {SQL, Params} = kura_query_compiler:to_sql(Q),
+    ?assertEqual(
+        <<"SELECT * FROM \"user\" WHERE \"role\" = $1 UNION SELECT * FROM \"user\" WHERE \"role\" = $2 UNION SELECT * FROM \"user\" WHERE \"role\" = $3">>,
+        SQL
+    ),
+    ?assertEqual([<<"a">>, <<"b">>, <<"c">>], Params).
+
+%%----------------------------------------------------------------------
+%% Query Scopes
+%%----------------------------------------------------------------------
+
+scope_single_test() ->
+    Active = fun(Q) -> kura_query:where(Q, {active, true}) end,
+    Q = kura_query:scope(kura_query:from(user), Active),
+    {SQL, Params} = kura_query_compiler:to_sql(Q),
+    ?assertEqual(<<"SELECT * FROM \"user\" WHERE \"active\" = $1">>, SQL),
+    ?assertEqual([true], Params).
+
+scope_chained_test() ->
+    Active = fun(Q) -> kura_query:where(Q, {active, true}) end,
+    Admin = fun(Q) -> kura_query:where(Q, {role, <<"admin">>}) end,
+    Q = kura_query:scope(kura_query:scope(kura_query:from(user), Active), Admin),
+    {SQL, Params} = kura_query_compiler:to_sql(Q),
+    ?assertEqual(
+        <<"SELECT * FROM \"user\" WHERE \"active\" = $1 AND \"role\" = $2">>,
+        SQL
+    ),
+    ?assertEqual([true, <<"admin">>], Params).
+
+%%----------------------------------------------------------------------
+%% INSERT ALL with RETURNING
+%%----------------------------------------------------------------------
+
+insert_all_returning_true_test() ->
+    Rows = [#{name => <<"A">>, email => <<"a@b.com">>}],
+    {SQL, Params} = kura_query_compiler:insert_all(
+        kura_test_schema, [name, email], Rows, #{returning => true}
+    ),
+    ?assertEqual(
+        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) RETURNING *">>,
+        SQL
+    ),
+    ?assertEqual([<<"A">>, <<"a@b.com">>], Params).
+
+insert_all_returning_fields_test() ->
+    Rows = [#{name => <<"A">>, email => <<"a@b.com">>}],
+    {SQL, Params} = kura_query_compiler:insert_all(
+        kura_test_schema, [name, email], Rows, #{returning => [id, name]}
+    ),
+    ?assertEqual(
+        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) RETURNING \"id\", \"name\"">>,
+        SQL
+    ),
+    ?assertEqual([<<"A">>, <<"a@b.com">>], Params).
+
+insert_all_no_returning_test() ->
+    Rows = [#{name => <<"A">>, email => <<"a@b.com">>}],
+    {SQL, _} = kura_query_compiler:insert_all(
+        kura_test_schema, [name, email], Rows, #{}
+    ),
+    ?assertEqual(
+        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2)">>,
+        SQL
+    ).

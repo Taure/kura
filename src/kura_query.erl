@@ -18,6 +18,7 @@ Q3 = kura_query:limit(Q2, 10).
 -export([
     from/1,
     select/2,
+    select_expr/2,
     where/2,
     join/4, join/5,
     order_by/2,
@@ -29,6 +30,12 @@ Q3 = kura_query:limit(Q2, 10).
     lock/2,
     prefix/2,
     preload/2,
+    with_cte/3,
+    union/2,
+    union_all/2,
+    intersect/2,
+    except/2,
+    scope/2,
     count/1, count/2,
     sum/2,
     avg/2,
@@ -45,6 +52,11 @@ from(Source) ->
 -spec select(#kura_query{}, [atom() | term()]) -> #kura_query{}.
 select(Q, Fields) ->
     Q#kura_query{select = Fields}.
+
+-doc "Set raw SQL expressions in SELECT with aliases. Exprs = `[{Alias, {fragment, SQL, Params}}]`.".
+-spec select_expr(#kura_query{}, [term()]) -> #kura_query{}.
+select_expr(Q, Exprs) ->
+    Q#kura_query{select = {exprs, Exprs}}.
 
 -doc "Add a WHERE condition. Conditions: `{field, value}`, `{field, op, value}`, `{'and', [...]}`, etc.".
 -spec where(#kura_query{}, term()) -> #kura_query{}.
@@ -103,6 +115,36 @@ prefix(Q, Schema) ->
 -spec preload(#kura_query{}, [atom() | {atom(), list()}]) -> #kura_query{}.
 preload(Q = #kura_query{preloads = P}, Assocs) ->
     Q#kura_query{preloads = P ++ Assocs}.
+
+-doc "Add a Common Table Expression (WITH clause).".
+-spec with_cte(#kura_query{}, binary(), #kura_query{}) -> #kura_query{}.
+with_cte(Q = #kura_query{ctes = CTEs}, Name, CteQuery) ->
+    Q#kura_query{ctes = CTEs ++ [{Name, CteQuery}]}.
+
+-doc "Combine queries with UNION (removes duplicates).".
+-spec union(#kura_query{}, #kura_query{}) -> #kura_query{}.
+union(Q = #kura_query{combinations = C}, Q2) ->
+    Q#kura_query{combinations = C ++ [{union, Q2}]}.
+
+-doc "Combine queries with UNION ALL (keeps duplicates).".
+-spec union_all(#kura_query{}, #kura_query{}) -> #kura_query{}.
+union_all(Q = #kura_query{combinations = C}, Q2) ->
+    Q#kura_query{combinations = C ++ [{union_all, Q2}]}.
+
+-doc "Combine queries with INTERSECT.".
+-spec intersect(#kura_query{}, #kura_query{}) -> #kura_query{}.
+intersect(Q = #kura_query{combinations = C}, Q2) ->
+    Q#kura_query{combinations = C ++ [{intersect, Q2}]}.
+
+-doc "Combine queries with EXCEPT.".
+-spec except(#kura_query{}, #kura_query{}) -> #kura_query{}.
+except(Q = #kura_query{combinations = C}, Q2) ->
+    Q#kura_query{combinations = C ++ [{except, Q2}]}.
+
+-doc "Apply a composable query transform function.".
+-spec scope(#kura_query{}, fun((#kura_query{}) -> #kura_query{})) -> #kura_query{}.
+scope(Query, Fun) when is_function(Fun, 1) ->
+    Fun(Query).
 
 -doc "Set query to SELECT COUNT(*).".
 -spec count(#kura_query{}) -> #kura_query{}.

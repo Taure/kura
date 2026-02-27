@@ -7,13 +7,33 @@ This is an internal module. Use `kura_repo_worker` for executing queries.
 
 -include("kura.hrl").
 
--export([to_sql/1, insert/3, insert/4, update/4, delete/3, update_all/2, delete_all/1, insert_all/3]).
+-export([
+    to_sql/1,
+    to_sql_from/2,
+    insert/3,
+    insert/4,
+    update/4,
+    delete/3,
+    update_all/2,
+    delete_all/1,
+    insert_all/3,
+    insert_all/4
+]).
 
 -doc "Compile a query record into `{SQL, Params}`.".
 -spec to_sql(#kura_query{}) -> {iodata(), [term()]}.
-to_sql(#kura_query{from = From} = Q) when From =/= undefined ->
+to_sql(Query) ->
+    {SQL, Params, _Counter} = to_sql_from(Query, 1),
+    {SQL, Params}.
+
+-doc "Compile a query starting parameter numbering from `StartCounter`. Returns `{SQL, Params, NextCounter}`.".
+-spec to_sql_from(#kura_query{}, pos_integer()) -> {iodata(), [term()], pos_integer()}.
+to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined ->
+    %% CTEs
+    {CteSQL, CteParams, Counter00} = compile_ctes(Q#kura_query.ctes, StartCounter),
+
     Table = resolve_table(From),
-    {SelectSQL, Params0, Counter0} = compile_select(Q, 1),
+    {SelectSQL, Params0, Counter0} = compile_select(Q, Counter00),
     {WhereSQL, Params1, Counter1} = compile_wheres(Q#kura_query.wheres, Counter0),
     {JoinSQL, Params2, Counter2} = compile_joins(Q#kura_query.joins, Table, Counter1),
     {GroupSQL, _, Counter3} = compile_group_by(Q#kura_query.group_bys, Counter2),
@@ -23,7 +43,6 @@ to_sql(#kura_query{from = From} = Q) when From =/= undefined ->
     {OffsetSQL, Params5, Counter7} = compile_offset(Q#kura_query.offset, Counter6),
     LockSQL = compile_lock(Q#kura_query.lock),
     DistinctSQL = compile_distinct(Q#kura_query.distinct),
-    _ = Counter7,
 
     FromClause =
         case Q#kura_query.prefix of
@@ -31,7 +50,8 @@ to_sql(#kura_query{from = From} = Q) when From =/= undefined ->
             Prefix -> [<<"FROM ">>, quote_ident(Prefix), <<".">>, quote_ident(Table)]
         end,
 
-    SQL = iolist_to_binary([
+    MainSQL = iolist_to_binary([
+        CteSQL,
         <<"SELECT ">>,
         DistinctSQL,
         SelectSQL,
@@ -46,8 +66,13 @@ to_sql(#kura_query{from = From} = Q) when From =/= undefined ->
         OffsetSQL,
         LockSQL
     ]),
-    AllParams = Params0 ++ Params2 ++ Params1 ++ Params3 ++ Params4 ++ Params5,
-    {SQL, AllParams}.
+    MainParams = CteParams ++ Params0 ++ Params2 ++ Params1 ++ Params3 ++ Params4 ++ Params5,
+
+    %% Combinations (UNION, INTERSECT, EXCEPT)
+    {FinalSQL, FinalParams, FinalCounter} = compile_combinations(
+        Q#kura_query.combinations, MainSQL, MainParams, Counter7
+    ),
+    {FinalSQL, FinalParams, FinalCounter}.
 
 %%----------------------------------------------------------------------
 %% INSERT
@@ -230,12 +255,34 @@ insert_all(SchemaOrTable, Fields, Rows) ->
     ]),
     {SQL, AllParams}.
 
+-spec insert_all(atom() | module(), [atom()], [map()], map()) -> {iodata(), [term()]}.
+insert_all(SchemaOrTable, Fields, Rows, #{returning := true}) ->
+    {BaseSQL, Params} = insert_all(SchemaOrTable, Fields, Rows),
+    {iolist_to_binary([BaseSQL, <<" RETURNING *">>]), Params};
+insert_all(SchemaOrTable, Fields, Rows, #{returning := RetFields}) when is_list(RetFields) ->
+    {BaseSQL, Params} = insert_all(SchemaOrTable, Fields, Rows),
+    Cols = join_comma([quote_ident(atom_to_binary(F, utf8)) || F <- RetFields]),
+    {iolist_to_binary([BaseSQL, <<" RETURNING ">>, Cols]), Params};
+insert_all(SchemaOrTable, Fields, Rows, _Opts) ->
+    insert_all(SchemaOrTable, Fields, Rows).
+
 %%----------------------------------------------------------------------
 %% Internal: SELECT clause
 %%----------------------------------------------------------------------
 
 compile_select(#kura_query{select = []}, Counter) ->
     {<<"*">>, [], Counter};
+compile_select(#kura_query{select = {exprs, Exprs}}, Counter) ->
+    {Parts, AllParams, NewCounter} = lists:foldl(
+        fun({Alias, {fragment, SQL, Params}}, {PAcc, VarAcc, C}) ->
+            {RewrittenSQL, C2} = rewrite_fragment_placeholders(SQL, C),
+            Part = [RewrittenSQL, <<" AS ">>, quote_ident(atom_to_binary(Alias, utf8))],
+            {PAcc ++ [Part], VarAcc ++ Params, C2}
+        end,
+        {[], [], Counter},
+        Exprs
+    ),
+    {join_comma(Parts), AllParams, NewCounter};
 compile_select(#kura_query{select = Fields}, Counter) ->
     Parts = [compile_select_field(F) || F <- Fields],
     {join_comma(Parts), [], Counter}.
@@ -337,6 +384,15 @@ compile_condition({Field, ilike, Value}, Counter) when is_atom(Field) ->
         [Value],
         Counter + 1
     };
+compile_condition({Field, in, {subquery, SubQ}}, Counter) when is_atom(Field) ->
+    {SubSQL, SubParams, Counter2} = to_sql_from(SubQ, Counter),
+    {[quote_ident(atom_to_binary(Field, utf8)), <<" IN (">>, SubSQL, <<")">>], SubParams, Counter2};
+compile_condition({exists, {subquery, SubQ}}, Counter) ->
+    {SubSQL, SubParams, Counter2} = to_sql_from(SubQ, Counter),
+    {[<<"EXISTS (">>, SubSQL, <<")">>], SubParams, Counter2};
+compile_condition({not_exists, {subquery, SubQ}}, Counter) ->
+    {SubSQL, SubParams, Counter2} = to_sql_from(SubQ, Counter),
+    {[<<"NOT EXISTS (">>, SubSQL, <<")">>], SubParams, Counter2};
 compile_condition({Field, in, Values}, Counter) when is_atom(Field), is_list(Values) ->
     {Placeholders, NewCounter} = lists:foldl(
         fun(_, {Acc, N}) ->
@@ -508,6 +564,53 @@ compile_distinct(Fields) when is_list(Fields) ->
 
 %%----------------------------------------------------------------------
 %% Internal: helpers
+%%----------------------------------------------------------------------
+
+%%----------------------------------------------------------------------
+%% Internal: CTE (WITH) compilation
+%%----------------------------------------------------------------------
+
+compile_ctes([], Counter) ->
+    {<<>>, [], Counter};
+compile_ctes(CTEs, Counter) ->
+    {Parts, AllParams, NewCounter} = lists:foldl(
+        fun({Name, CteQuery}, {PAcc, VarAcc, C}) ->
+            {CteSQL, CteParams, C2} = to_sql_from(CteQuery, C),
+            Part = [Name, <<" AS (">>, CteSQL, <<")">>],
+            {PAcc ++ [Part], VarAcc ++ CteParams, C2}
+        end,
+        {[], [], Counter},
+        CTEs
+    ),
+    {[<<"WITH ">>, join_comma(Parts), <<" ">>], AllParams, NewCounter}.
+
+%%----------------------------------------------------------------------
+%% Internal: UNION / INTERSECT / EXCEPT compilation
+%%----------------------------------------------------------------------
+
+compile_combinations([], MainSQL, MainParams, Counter) ->
+    {MainSQL, MainParams, Counter};
+compile_combinations(Combinations, MainSQL, MainParams, Counter) ->
+    {CombParts, AllParams, NewCounter} = lists:foldl(
+        fun({Type, Q2}, {PAcc, VarAcc, C}) ->
+            {SQL2, Params2, C2} = to_sql_from(Q2, C),
+            TypeBin = combination_type(Type),
+            Part = [<<" ">>, TypeBin, <<" ">>, SQL2],
+            {PAcc ++ [Part], VarAcc ++ Params2, C2}
+        end,
+        {[], [], Counter},
+        Combinations
+    ),
+    FinalSQL = iolist_to_binary([MainSQL | CombParts]),
+    {FinalSQL, MainParams ++ AllParams, NewCounter}.
+
+combination_type(union) -> <<"UNION">>;
+combination_type(union_all) -> <<"UNION ALL">>;
+combination_type(intersect) -> <<"INTERSECT">>;
+combination_type(except) -> <<"EXCEPT">>.
+
+%%----------------------------------------------------------------------
+%% Internal: ON CONFLICT
 %%----------------------------------------------------------------------
 
 compile_on_conflict({Field, nothing}, _Fields, _Data, _Counter) when is_atom(Field) ->
