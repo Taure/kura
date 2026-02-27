@@ -87,7 +87,7 @@ all(RepoMod, Query) ->
 -doc "Fetch a single record by primary key.".
 -spec get(module(), module(), term()) -> {ok, map()} | {error, not_found} | {error, term()}.
 get(RepoMod, SchemaMod, Id) ->
-    PK = SchemaMod:primary_key(),
+    PK = kura_schema:primary_key(SchemaMod),
     Q = kura_query:where(kura_query:from(SchemaMod), {PK, Id}),
     case all(RepoMod, Q) of
         {ok, [Row]} -> {ok, Row};
@@ -136,7 +136,7 @@ exists(RepoMod, Query) ->
 -doc "Re-fetch a record from the database by its primary key.".
 -spec reload(module(), module(), map()) -> {ok, map()} | {error, term()}.
 reload(RepoMod, SchemaMod, Record) ->
-    PK = SchemaMod:primary_key(),
+    PK = kura_schema:primary_key(SchemaMod),
     case maps:find(PK, Record) of
         {ok, Id} -> get(RepoMod, SchemaMod, Id);
         error -> {error, no_primary_key}
@@ -392,7 +392,7 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
         0 ->
             {ok, Data};
         _ ->
-            PK = SchemaMod:primary_key(),
+            PK = kura_schema:primary_key(SchemaMod),
             PKValue = maps:get(PK, Data),
             Changes1 = maybe_add_timestamps(SchemaMod, Changes, update),
             Fields = maps:keys(Changes1),
@@ -508,7 +508,7 @@ persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) when
     is_list(ChildCSs)
 ->
     FK = Assoc#kura_assoc.foreign_key,
-    PK = SchemaMod:primary_key(),
+    PK = kura_schema:primary_key(SchemaMod),
     PKValue = maps:get(PK, AccRow),
     Children = lists:map(
         fun(ChildCS) ->
@@ -519,7 +519,7 @@ persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) when
     {ok, AccRow#{AssocName => Children}};
 persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCS) ->
     FK = Assoc#kura_assoc.foreign_key,
-    PK = SchemaMod:primary_key(),
+    PK = kura_schema:primary_key(SchemaMod),
     PKValue = maps:get(PK, AccRow),
     Child = persist_child(RepoMod, kura_changeset:put_change(ChildCS, FK, PKValue)),
     {ok, AccRow#{AssocName => Child}}.
@@ -537,9 +537,9 @@ persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
         join_through = JoinThrough,
         join_keys = {OwnerKey, RelatedKey}
     } = Assoc,
-    PK = SchemaMod:primary_key(),
+    PK = kura_schema:primary_key(SchemaMod),
     PKValue = maps:get(PK, AccRow),
-    RelPK = RelSchema:primary_key(),
+    RelPK = kura_schema:primary_key(RelSchema),
     JoinTable =
         case JoinThrough of
             B when is_binary(B) -> B;
@@ -589,7 +589,7 @@ persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
     {ok, AccRow#{AssocName => Children}}.
 
 delete_record(RepoMod, SchemaMod, Data) ->
-    PK = SchemaMod:primary_key(),
+    PK = kura_schema:primary_key(SchemaMod),
     PKValue = maps:get(PK, Data),
     {SQL, Params} = kura_query_compiler:delete(SchemaMod, PK, PKValue),
 

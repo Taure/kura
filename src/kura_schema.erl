@@ -2,8 +2,9 @@
 -moduledoc """
 Behaviour for defining database-backed schemas.
 
-Implement the `table/0`, `fields/0`, and `primary_key/0` callbacks to define
-a schema module. Optionally implement `timestamps/0` and `associations/0`.
+Implement the `table/0` and `fields/0` callbacks to define a schema module.
+Mark one field with `primary_key = true`. Optionally implement `timestamps/0`
+and `associations/0`.
 
 ```erlang
 -module(my_user).
@@ -11,9 +12,8 @@ a schema module. Optionally implement `timestamps/0` and `associations/0`.
 -include_lib("kura/include/kura.hrl").
 
 table() -> <<"users">>.
-primary_key() -> id.
 fields() ->
-    [#kura_field{name = id, type = id},
+    [#kura_field{name = id, type = id, primary_key = true},
      #kura_field{name = name, type = string},
      #kura_field{name = email, type = string}].
 ```
@@ -25,6 +25,7 @@ fields() ->
     field_names/1,
     field_types/1,
     column_map/1,
+    primary_key/1,
     primary_key_field/1,
     non_virtual_fields/1,
     associations/1,
@@ -35,7 +36,6 @@ fields() ->
 
 -callback table() -> binary().
 -callback fields() -> [#kura_field{}].
--callback primary_key() -> atom().
 
 -optional_callbacks([timestamps/0, associations/0, embeds/0]).
 
@@ -92,11 +92,20 @@ non_virtual_fields(Mod) ->
         Fields ++ EmbedNames
     end).
 
+-doc "Return the primary key field name for a schema module.".
+-spec primary_key(module()) -> atom().
+primary_key(Mod) ->
+    cache({kura_schema, primary_key, Mod}, fun() ->
+        case [F#kura_field.name || F <- Mod:fields(), F#kura_field.primary_key =:= true] of
+            [PK] -> PK;
+            [] -> error({no_primary_key, Mod})
+        end
+    end).
+
 -doc "Return the primary key field record, or `undefined` if not found.".
 -spec primary_key_field(module()) -> #kura_field{} | undefined.
 primary_key_field(Mod) ->
-    PK = Mod:primary_key(),
-    case [F || F <- Mod:fields(), F#kura_field.name =:= PK] of
+    case [F || F <- Mod:fields(), F#kura_field.primary_key =:= true] of
         [Field] -> Field;
         [] -> undefined
     end.

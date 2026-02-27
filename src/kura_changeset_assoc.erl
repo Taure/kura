@@ -131,7 +131,7 @@ cast_embed_params(CS, EmbedName, #kura_embed{type = embeds_many}, _Params, _With
 %%----------------------------------------------------------------------
 
 default_cast_fun(#kura_assoc{type = many_to_many, schema = ChildSchema}) ->
-    PK = ChildSchema:primary_key(),
+    PK = kura_schema:primary_key(ChildSchema),
     AllFields = kura_schema:field_names(ChildSchema),
     NonVirtual = kura_schema:non_virtual_fields(ChildSchema),
     Allowed = [F || F <- AllFields, lists:member(F, NonVirtual), F =/= PK],
@@ -139,7 +139,7 @@ default_cast_fun(#kura_assoc{type = many_to_many, schema = ChildSchema}) ->
         kura_changeset:cast(ChildSchema, Data, ChildParams, Allowed)
     end;
 default_cast_fun(#kura_assoc{schema = ChildSchema, foreign_key = FK}) ->
-    PK = ChildSchema:primary_key(),
+    PK = kura_schema:primary_key(ChildSchema),
     AllFields = kura_schema:field_names(ChildSchema),
     NonVirtual = kura_schema:non_virtual_fields(ChildSchema),
     Allowed = [F || F <- AllFields, lists:member(F, NonVirtual), F =/= PK, F =/= FK],
@@ -159,7 +159,7 @@ cast_assoc_params(CS, AssocName, Assoc, NestedParams, Existing, WithFun) ->
 
 cast_has_many(CS, AssocName, Assoc, ParamsList, Existing, WithFun) when is_list(ParamsList) ->
     ChildSchema = Assoc#kura_assoc.schema,
-    PK = ChildSchema:primary_key(),
+    PK = kura_schema:primary_key(ChildSchema),
     ExistingLookup =
         case is_list(Existing) of
             true ->
@@ -215,7 +215,7 @@ coerce_assoc_value(_Assoc, Value) ->
     Value.
 
 coerce_single(#kura_assoc{type = many_to_many, schema = ChildSchema}, Map) when is_map(Map) ->
-    PK = ChildSchema:primary_key(),
+    PK = kura_schema:primary_key(ChildSchema),
     AllFields = kura_schema:field_names(ChildSchema),
     NonVirtual = kura_schema:non_virtual_fields(ChildSchema),
     Allowed = [F || F <- AllFields, lists:member(F, NonVirtual), F =/= PK],
@@ -229,7 +229,7 @@ coerce_single(#kura_assoc{type = many_to_many, schema = ChildSchema}, Map) when 
             CS#kura_changeset{action = insert}
     end;
 coerce_single(#kura_assoc{schema = ChildSchema, foreign_key = FK}, Map) when is_map(Map) ->
-    PK = ChildSchema:primary_key(),
+    PK = kura_schema:primary_key(ChildSchema),
     AllFields = kura_schema:field_names(ChildSchema),
     NonVirtual = kura_schema:non_virtual_fields(ChildSchema),
     Allowed = [F || F <- AllFields, lists:member(F, NonVirtual), F =/= PK, F =/= FK],

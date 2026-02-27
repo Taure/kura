@@ -63,7 +63,7 @@ preload_belongs_to(RepoMod, Records, #kura_assoc{
         [] ->
             [R#{Name => nil} || R <- Records];
         _ ->
-            RelPK = RelSchema:primary_key(),
+            RelPK = kura_schema:primary_key(RelSchema),
             Q = kura_query:where(kura_query:from(RelSchema), {RelPK, in, FKValues}),
             {ok, Related} = kura_repo_worker:all(RepoMod, Q),
             Lookup = maps:from_list([{maps:get(RelPK, Rel), Rel} || Rel <- Related]),
@@ -73,7 +73,7 @@ preload_belongs_to(RepoMod, Records, #kura_assoc{
 preload_has_many(RepoMod, Records, Schema, #kura_assoc{
     name = Name, schema = RelSchema, foreign_key = FK
 }) ->
-    PK = Schema:primary_key(),
+    PK = kura_schema:primary_key(Schema),
     PKValues = lists:usort([maps:get(PK, R) || R <- Records]),
     Q = kura_query:where(kura_query:from(RelSchema), {FK, in, PKValues}),
     {ok, Related} = kura_repo_worker:all(RepoMod, Q),
@@ -90,7 +90,7 @@ preload_has_many(RepoMod, Records, Schema, #kura_assoc{
 preload_has_one(RepoMod, Records, Schema, #kura_assoc{
     name = Name, schema = RelSchema, foreign_key = FK
 }) ->
-    PK = Schema:primary_key(),
+    PK = kura_schema:primary_key(Schema),
     PKValues = lists:usort([maps:get(PK, R) || R <- Records]),
     Q = kura_query:where(kura_query:from(RelSchema), {FK, in, PKValues}),
     {ok, Related} = kura_repo_worker:all(RepoMod, Q),
@@ -100,7 +100,7 @@ preload_has_one(RepoMod, Records, Schema, #kura_assoc{
 preload_many_to_many(RepoMod, Records, Schema, #kura_assoc{
     name = Name, schema = RelSchema, join_through = JoinThrough, join_keys = {OwnerKey, RelatedKey}
 }) ->
-    PK = Schema:primary_key(),
+    PK = kura_schema:primary_key(Schema),
     PKValues = lists:usort([maps:get(PK, R) || R <- Records]),
     case PKValues of
         [] ->
@@ -132,7 +132,7 @@ preload_many_to_many(RepoMod, Records, Schema, #kura_assoc{
                 [] ->
                     [R#{Name => []} || R <- Records];
                 _ ->
-                    RelPK = RelSchema:primary_key(),
+                    RelPK = kura_schema:primary_key(RelSchema),
                     Q = kura_query:where(kura_query:from(RelSchema), {RelPK, in, RelatedIds}),
                     {ok, Related} = kura_repo_worker:all(RepoMod, Q),
                     RelLookup = maps:from_list([{maps:get(RelPK, Rel), Rel} || Rel <- Related]),
