@@ -3,11 +3,9 @@
 
 -include("kura.hrl").
 
--export([table/0, fields/0, primary_key/0]).
+-export([table/0, fields/0]).
 
 table() -> <<"tags">>.
-
-primary_key() -> id.
 
 fields() ->
     [
