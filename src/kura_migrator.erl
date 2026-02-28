@@ -131,7 +131,7 @@ with_migration_lock(RepoMod, Fun) ->
         pgo:transaction(
             fun() ->
                 #{command := _} = pgo:query(
-                    <<"SELECT pg_advisory_xact_lock($1)">>,
+                    <<"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock">>,
                     [?MIGRATION_LOCK_KEY],
                     PoolOpts
                 ),
