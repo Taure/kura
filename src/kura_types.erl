@@ -216,11 +216,15 @@ load(jsonb, V) when is_binary(V) ->
     json_decode(V);
 load(jsonb, V) when is_map(V) ->
     {ok, V};
-load({enum, _}, V) when is_binary(V) ->
+load({enum, Values}, V) when is_binary(V) ->
     try
-        {ok, binary_to_existing_atom(V, utf8)}
+        Atom = binary_to_existing_atom(V, utf8),
+        case lists:member(Atom, Values) of
+            true -> {ok, Atom};
+            false -> {error, <<"unknown enum value">>}
+        end
     catch
-        error:badarg -> {ok, binary_to_atom(V, utf8)}
+        error:badarg -> {error, <<"unknown enum value">>}
     end;
 load({array, Inner}, V) when is_list(V) ->
     load_array(Inner, V, []);

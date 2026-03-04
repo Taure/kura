@@ -99,24 +99,10 @@ cast(SchemaMod, Data, Params, Allowed) when is_atom(SchemaMod) ->
 -doc "Validate that all `Fields` are present and non-blank.".
 -spec validate_required(#kura_changeset{}, [atom()]) -> #kura_changeset{}.
 validate_required(CS = #kura_changeset{changes = Changes, data = Data, errors = Errors}, Fields) ->
-    NewErrors = lists:foldl(
-        fun(Field, Acc) ->
-            Val =
-                case maps:find(Field, Changes) of
-                    {ok, V} -> V;
-                    error -> maps:get(Field, Data, undefined)
-                end,
-            case is_blank(Val) of
-                true -> [{Field, <<"can't be blank">>} | Acc];
-                false -> Acc
-            end
-        end,
-        [],
-        Fields
-    ),
+    NewErrors = check_required_fields(Fields, Changes, Data),
     CS#kura_changeset{
         required = Fields,
-        errors = Errors ++ lists:reverse(NewErrors),
+        errors = Errors ++ NewErrors,
         valid = (Errors ++ NewErrors) =:= []
     }.
 
@@ -219,14 +205,15 @@ validate_confirmation(CS, Field, Opts) ->
         Val ->
             ConfField = confirmation_field(Field),
             Msg = maps:get(message, Opts, <<"does not match">>),
-            case maps:find(ConfField, CS#kura_changeset.params) of
-                {ok, Val} -> CS;
-                _ -> add_error(CS, ConfField, Msg)
+            case CS#kura_changeset.params of
+                #{ConfField := Val} -> CS;
+                #{} -> add_error(CS, ConfField, Msg)
             end
     end.
 
 confirmation_field(Field) ->
-    binary_to_atom(<<(atom_to_binary(Field))/binary, "_confirmation">>).
+    %% Safe: Field is always a schema atom, so the set is bounded.
+    list_to_atom(atom_to_list(Field) ++ "_confirmation").
 
 -doc "Validate `Field` with a custom function returning `ok` or `{error, Message}`.".
 -spec validate_change(#kura_changeset{}, atom(), fun((term()) -> ok | {error, binary()})) ->
@@ -328,11 +315,8 @@ get_change(#kura_changeset{changes = Changes}, Field, Default) ->
 
 -doc "Get the field value from changes (preferred) or data.".
 -spec get_field(#kura_changeset{}, atom()) -> term().
-get_field(#kura_changeset{changes = Changes, data = Data}, Field) ->
-    case maps:find(Field, Changes) of
-        {ok, V} -> V;
-        error -> maps:get(Field, Data, undefined)
-    end.
+get_field(ChangeSet, Field) ->
+    get_field(ChangeSet, Field, undefined).
 
 -spec get_field(#kura_changeset{}, atom(), term()) -> term().
 get_field(#kura_changeset{changes = Changes, data = Data}, Field, Default) ->
@@ -374,13 +358,7 @@ optimistic_lock(CS = #kura_changeset{data = Data}, Field) ->
 -doc "Transform errors via a callback, returning `#{field => [transformed_messages]}`.".
 -spec traverse_errors(#kura_changeset{}, fun((atom(), binary()) -> term())) -> map().
 traverse_errors(#kura_changeset{errors = Errors}, Fun) ->
-    ErrorMap = lists:foldl(
-        fun({F, M}, Acc) ->
-            maps:update_with(F, fun(Existing) -> Existing ++ [M] end, [M], Acc)
-        end,
-        #{},
-        Errors
-    ),
+    ErrorMap = group_errors(Errors, #{}),
     maps:map(
         fun(Field, Messages) ->
             [Fun(Field, Msg) || Msg <- Messages]
@@ -473,10 +451,36 @@ is_blank(<<>>) -> true;
 is_blank(null) -> true;
 is_blank(_) -> false.
 
+-spec check_required_fields([atom()], map(), map()) -> [{atom(), binary()}].
+check_required_fields([], _Changes, _Data) ->
+    [];
+check_required_fields([Field | Rest], Changes, Data) ->
+    Val =
+        case Changes of
+            #{Field := V} -> V;
+            #{} -> maps:get(Field, Data, undefined)
+        end,
+    Tail = check_required_fields(Rest, Changes, Data),
+    case is_blank(Val) of
+        true -> [{Field, <<"can't be blank">>} | Tail];
+        false -> Tail
+    end.
+
+-spec group_errors([{atom(), binary()}], #{atom() => [binary()]}) -> #{atom() => [binary()]}.
+group_errors([], Acc) ->
+    Acc;
+group_errors([{F, M} | Rest], Acc) ->
+    NewAcc =
+        case Acc of
+            #{F := Existing} -> Acc#{F := Existing ++ [M]};
+            #{} -> Acc#{F => [M]}
+        end,
+    group_errors(Rest, NewAcc).
+
 check_length(CS, Field, Len, Opts) ->
     lists:foldl(
         fun
-            ({min, Min}, Acc) when Len < Min ->
+            ({min, Min}, Acc = #kura_changeset{}) when Len < Min ->
                 add_error(
                     Acc,
                     Field,
@@ -484,7 +488,7 @@ check_length(CS, Field, Len, Opts) ->
                         io_lib:format("should be at least ~B character(s)", [Min])
                     )
                 );
-            ({max, Max}, Acc) when Len > Max ->
+            ({max, Max}, Acc = #kura_changeset{}) when Len > Max ->
                 add_error(
                     Acc,
                     Field,
@@ -492,7 +496,7 @@ check_length(CS, Field, Len, Opts) ->
                         io_lib:format("should be at most ~B character(s)", [Max])
                     )
                 );
-            ({is, Exact}, Acc) when Len =/= Exact ->
+            ({is, Exact}, Acc = #kura_changeset{}) when Len =/= Exact ->
                 add_error(
                     Acc,
                     Field,
@@ -500,7 +504,7 @@ check_length(CS, Field, Len, Opts) ->
                         io_lib:format("should be ~B character(s)", [Exact])
                     )
                 );
-            (_, Acc) ->
+            (_, Acc = #kura_changeset{}) ->
                 Acc
         end,
         CS,
@@ -510,7 +514,7 @@ check_length(CS, Field, Len, Opts) ->
 check_number(CS, Field, Val, Opts) ->
     lists:foldl(
         fun
-            ({greater_than, N}, Acc) when Val =< N ->
+            ({greater_than, N}, Acc = #kura_changeset{}) when Val =< N ->
                 add_error(
                     Acc,
                     Field,
@@ -518,7 +522,7 @@ check_number(CS, Field, Val, Opts) ->
                         io_lib:format("must be greater than ~p", [N])
                     )
                 );
-            ({less_than, N}, Acc) when Val >= N ->
+            ({less_than, N}, Acc = #kura_changeset{}) when Val >= N ->
                 add_error(
                     Acc,
                     Field,
@@ -526,7 +530,7 @@ check_number(CS, Field, Val, Opts) ->
                         io_lib:format("must be less than ~p", [N])
                     )
                 );
-            ({greater_than_or_equal_to, N}, Acc) when Val < N ->
+            ({greater_than_or_equal_to, N}, Acc = #kura_changeset{}) when Val < N ->
                 add_error(
                     Acc,
                     Field,
@@ -534,7 +538,7 @@ check_number(CS, Field, Val, Opts) ->
                         io_lib:format("must be greater than or equal to ~p", [N])
                     )
                 );
-            ({less_than_or_equal_to, N}, Acc) when Val > N ->
+            ({less_than_or_equal_to, N}, Acc = #kura_changeset{}) when Val > N ->
                 add_error(
                     Acc,
                     Field,
@@ -542,7 +546,7 @@ check_number(CS, Field, Val, Opts) ->
                         io_lib:format("must be less than or equal to ~p", [N])
                     )
                 );
-            ({equal_to, N}, Acc) when Val =/= N ->
+            ({equal_to, N}, Acc = #kura_changeset{}) when Val =/= N ->
                 add_error(
                     Acc,
                     Field,
@@ -550,7 +554,7 @@ check_number(CS, Field, Val, Opts) ->
                         io_lib:format("must be equal to ~p", [N])
                     )
                 );
-            (_, Acc) ->
+            (_, Acc = #kura_changeset{}) ->
                 Acc
         end,
         CS,

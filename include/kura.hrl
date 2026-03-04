@@ -27,7 +27,7 @@
     errors = [] :: [{atom(), binary()}],
     types = #{} :: #{atom() => kura_types:kura_type()},
     required = [] :: [atom()],
-    action :: insert | update | delete | undefined,
+    action :: atom() | undefined,
     constraints = [] :: [#kura_constraint{}],
     assoc_changes = #{} :: #{atom() => #kura_changeset{} | [#kura_changeset{}]},
     prepare = [] :: [fun((#kura_changeset{}) -> #kura_changeset{})],

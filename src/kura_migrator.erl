@@ -63,13 +63,14 @@ status(RepoMod) ->
     ensure_schema_migrations(RepoMod),
     Applied = get_applied_versions(RepoMod),
     Migrations = discover_migrations(RepoMod),
+    Sorted = lists:sort(fun({V1, _}, {V2, _}) -> V1 =< V2 end, Migrations),
     [
         {V, M,
             case lists:member(V, Applied) of
                 true -> up;
                 false -> pending
             end}
-     || {V, M} <- lists:sort(fun({V1, _}, {V2, _}) -> V1 =< V2 end, Migrations)
+     || {V, M} <- Sorted
     ].
 
 %%----------------------------------------------------------------------
@@ -92,6 +93,7 @@ ensure_schema_migrations(RepoMod) ->
 %% Migration discovery
 %%----------------------------------------------------------------------
 
+-spec discover_migrations(module()) -> [{integer(), module()}].
 discover_migrations(RepoMod) ->
     case application:get_application(RepoMod) of
         {ok, App} ->
@@ -100,21 +102,23 @@ discover_migrations(RepoMod) ->
             []
     end.
 
+-spec discover_app_migrations(atom()) -> [{integer(), module()}].
 discover_app_migrations(App) ->
     case application:get_key(App, modules) of
-        {ok, Modules} ->
+        {ok, Modules} when is_list(Modules) ->
             lists:filtermap(fun parse_migration_module/1, Modules);
-        undefined ->
+        _ ->
             []
     end.
 
+-spec parse_migration_module(module()) -> {true, {integer(), module()}} | false.
 parse_migration_module(Module) ->
     Name = atom_to_list(Module),
     case re:run(Name, "^m(\\d{14})_(.+)$", [{capture, [1, 2], list}]) of
-        {match, [VersionStr, _Name]} ->
+        {match, [VersionStr, _Name]} when is_list(VersionStr) ->
             Version = list_to_integer(VersionStr),
             {true, {Version, Module}};
-        nomatch ->
+        _ ->
             false
     end.
 
@@ -157,6 +161,7 @@ with_migration_lock(RepoMod, Fun) ->
 %% Migration execution (runs inside advisory lock transaction)
 %%----------------------------------------------------------------------
 
+-spec run_migrations([{integer(), module()}], up | down, map(), [integer()]) -> [integer()].
 run_migrations([], _Dir, _PoolOpts, Acc) ->
     lists:reverse(Acc);
 run_migrations([{Version, Module} | Rest], Dir, PoolOpts, Acc) ->
@@ -194,6 +199,7 @@ run_migrations([{Version, Module} | Rest], Dir, PoolOpts, Acc) ->
     logger:info("Kura: ~s migration ~p (~p)", [Dir, Version, Module]),
     run_migrations(Rest, Dir, PoolOpts, [Version | Acc]).
 
+-spec exec(binary(), list(), integer(), map()) -> ok.
 exec(SQL, Params, Version, PoolOpts) ->
     case pgo:query(SQL, Params, PoolOpts) of
         #{command := _} ->
@@ -214,7 +220,7 @@ compile_operation({create_table, Name, Columns}) ->
         <<"CREATE TABLE ">>,
         quote(Name),
         <<" (\n  ">>,
-        lists:join(<<",\n  ">>, ColDefs),
+        iolist_to_binary(lists:join(<<",\n  ">>, ColDefs)),
         <<"\n)">>
     ]);
 compile_operation({drop_table, Name}) ->
@@ -225,7 +231,7 @@ compile_operation({alter_table, Name, AlterOps}) ->
         <<"ALTER TABLE ">>,
         quote(Name),
         <<" ">>,
-        lists:join(<<", ">>, Ops)
+        iolist_to_binary(lists:join(<<", ">>, Ops))
     ]);
 compile_operation({create_index, IdxName, Table, Columns, Opts}) ->
     Unique =
@@ -233,11 +239,11 @@ compile_operation({create_index, IdxName, Table, Columns, Opts}) ->
             true -> <<"UNIQUE ">>;
             false -> <<>>
         end,
-    Cols = lists:join(<<", ">>, [quote(atom_to_binary(C, utf8)) || C <- Columns]),
+    Cols = iolist_to_binary(lists:join(<<", ">>, [quote(atom_to_binary(C, utf8)) || C <- Columns])),
     Where =
         case proplists:get_value(where, Opts) of
             undefined -> <<>>;
-            Expr -> <<" WHERE ", Expr/binary>>
+            Expr when is_binary(Expr) -> <<" WHERE ", Expr/binary>>
         end,
     iolist_to_binary([
         <<"CREATE ">>,
@@ -256,6 +262,7 @@ compile_operation({drop_index, Name}) ->
 compile_operation({execute, SQL}) ->
     SQL.
 
+-spec compile_column_def(#kura_column{}) -> binary().
 compile_column_def(#kura_column{
     name = Name,
     type = Type,
@@ -305,6 +312,8 @@ compile_column_def(#kura_column{
         OnUpdatePart
     ]).
 
+-spec compile_fk_action(binary(), cascade | restrict | set_null | no_action | undefined) ->
+    binary().
 compile_fk_action(_Prefix, undefined) ->
     <<>>;
 compile_fk_action(Prefix, cascade) ->
@@ -316,6 +325,7 @@ compile_fk_action(Prefix, set_null) ->
 compile_fk_action(Prefix, no_action) ->
     <<" ", Prefix/binary, " NO ACTION">>.
 
+-spec compile_alter_op(kura_migration:alter_op()) -> iodata().
 compile_alter_op({add_column, ColDef}) ->
     [<<"ADD COLUMN ">>, compile_column_def(ColDef)];
 compile_alter_op({drop_column, Name}) ->
@@ -345,6 +355,7 @@ compile_alter_op({modify_column, Name, Type}) ->
 check_unsafe_operations(Ops, SafeEntries) ->
     lists:flatmap(fun(Op) -> check_op(Op, SafeEntries) end, Ops).
 
+-spec check_op(kura_migration:operation(), [kura_migration:safe_entry()]) -> [map()].
 check_op({drop_table, Table}, SafeEntries) ->
     case lists:member(drop_table, SafeEntries) of
         true ->
@@ -365,6 +376,7 @@ check_op({alter_table, Table, AlterOps}, SafeEntries) ->
 check_op(_Op, _SafeEntries) ->
     [].
 
+-spec check_alter_op(kura_migration:alter_op(), binary(), [kura_migration:safe_entry()]) -> [map()].
 check_alter_op({drop_column, Col}, Table, SafeEntries) ->
     case lists:member({drop_column, Col}, SafeEntries) of
         true ->
@@ -449,18 +461,18 @@ log_warnings(_Module, []) ->
     ok;
 log_warnings(Module, Warnings) ->
     lists:foreach(
-        fun(Warning) ->
+        fun(#{op := Op, target := Target, safe_alt := SafeAlt} = Warning) ->
             logger:warning(
                 "Kura: unsafe operation in ~p: ~s ~p~s — ~s",
                 [
                     Module,
-                    maps:get(op, Warning),
-                    maps:get(target, Warning),
+                    Op,
+                    Target,
                     case maps:find(table, Warning) of
                         {ok, T} -> [" on ", T];
                         error -> ""
                     end,
-                    maps:get(safe_alt, Warning)
+                    SafeAlt
                 ]
             )
         end,
@@ -471,10 +483,12 @@ log_warnings(Module, Warnings) ->
 %% Internal helpers
 %%----------------------------------------------------------------------
 
+-spec get_pool(module()) -> atom().
 get_pool(RepoMod) ->
     Config = RepoMod:config(),
     maps:get(pool, Config, RepoMod).
 
+-spec get_applied_versions(module()) -> [integer()].
 get_applied_versions(RepoMod) ->
     Pool = get_pool(RepoMod),
     case
@@ -486,11 +500,13 @@ get_applied_versions(RepoMod) ->
             []
     end.
 
+-spec quote(binary() | atom()) -> binary().
 quote(Name) when is_binary(Name) ->
     <<$", Name/binary, $">>;
 quote(Name) when is_atom(Name) ->
     quote(atom_to_binary(Name, utf8)).
 
+-spec format_default(term()) -> binary().
 format_default(Val) when is_integer(Val) ->
     integer_to_binary(Val);
 format_default(Val) when is_float(Val) ->

@@ -696,7 +696,12 @@ handle_pg_error(CS, #{code := Code, constraint := Constraint}) when
             kura_changeset:add_error(CS, Field, DefaultMsg)
     end;
 handle_pg_error(CS, #{code := <<"23502">>, column := Column}) ->
-    Field = binary_to_atom(Column, utf8),
+    Field =
+        try
+            binary_to_existing_atom(Column, utf8)
+        catch
+            error:badarg -> base
+        end,
     kura_changeset:add_error(CS, Field, <<"can't be blank">>);
 handle_pg_error(CS, Reason) ->
     kura_changeset:add_error(CS, base, format_error(Reason)).
@@ -714,7 +719,7 @@ constraint_to_field(Constraint) when is_binary(Constraint) ->
             try
                 binary_to_existing_atom(Field, utf8)
             catch
-                error:badarg -> binary_to_atom(Field, utf8)
+                error:badarg -> base
             end;
         _ ->
             base
