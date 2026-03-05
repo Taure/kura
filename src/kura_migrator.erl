@@ -215,12 +215,16 @@ exec(SQL, Params, Version, PoolOpts) ->
 -doc "Compile a single DDL operation to SQL.".
 -spec compile_operation(kura_migration:operation()) -> binary().
 compile_operation({create_table, Name, Columns}) ->
+    compile_operation({create_table, Name, Columns, []});
+compile_operation({create_table, Name, Columns, Constraints}) ->
     ColDefs = [compile_column_def(C) || C <- Columns],
+    ConstraintDefs = [compile_table_constraint(TC) || TC <- Constraints],
+    AllDefs = ColDefs ++ ConstraintDefs,
     iolist_to_binary([
         <<"CREATE TABLE ">>,
         quote(Name),
         <<" (\n  ">>,
-        iolist_to_binary(lists:join(<<",\n  ">>, ColDefs)),
+        iolist_to_binary(lists:join(<<",\n  ">>, AllDefs)),
         <<"\n)">>
     ]);
 compile_operation({drop_table, Name}) ->
@@ -311,6 +315,15 @@ compile_column_def(#kura_column{
         OnDeletePart,
         OnUpdatePart
     ]).
+
+-spec compile_table_constraint(kura_migration:table_constraint()) -> binary().
+compile_table_constraint({unique, Cols}) ->
+    ColList = iolist_to_binary(
+        lists:join(<<", ">>, [quote(atom_to_binary(C, utf8)) || C <- Cols])
+    ),
+    <<"UNIQUE (", ColList/binary, ")">>;
+compile_table_constraint({check, Expr}) ->
+    <<"CHECK (", Expr/binary, ")">>.
 
 -spec compile_fk_action(binary(), cascade | restrict | set_null | no_action | undefined) ->
     binary().

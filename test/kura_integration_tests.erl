@@ -79,6 +79,7 @@ integration_test_() ->
             {"unique_constraint maps DB error", fun t_unique_constraint/0},
             {"unique_constraint default mapping without declaration",
                 fun t_unique_constraint_default/0},
+            {"schema constraints auto-register on cast", fun t_schema_constraints/0},
             {"foreign_key_constraint maps DB error", fun t_foreign_key_constraint/0},
             {"check_constraint maps DB error", fun t_check_constraint/0},
 
@@ -166,9 +167,21 @@ setup() ->
         ")",
         []
     ),
+    {ok, _} = kura_test_repo:query(
+        "CREATE TABLE participants ("
+        "  id BIGSERIAL PRIMARY KEY,"
+        "  chat_id UUID NOT NULL,"
+        "  user_id UUID NOT NULL,"
+        "  inserted_at TIMESTAMPTZ,"
+        "  updated_at TIMESTAMPTZ,"
+        "  UNIQUE(chat_id, user_id)"
+        ")",
+        []
+    ),
     ok.
 
 teardown(_) ->
+    kura_test_repo:query("DROP TABLE IF EXISTS participants CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS posts_simple CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS users CASCADE", []),
     ok.
@@ -777,6 +790,29 @@ t_unique_constraint_default() ->
     ?assertNot(ErrCS#kura_changeset.valid),
     %% Without explicit constraint, maps to field derived from constraint name
     ?assert(lists:keymember(email, 1, ErrCS#kura_changeset.errors)).
+
+t_schema_constraints() ->
+    ChatId = <<"550e8400-e29b-41d4-a716-446655440000">>,
+    UserId = <<"550e8400-e29b-41d4-a716-446655440001">>,
+    CS1 = kura_changeset:cast(
+        kura_test_participant_schema,
+        #{},
+        #{chat_id => ChatId, user_id => UserId},
+        [chat_id, user_id]
+    ),
+    {ok, _} = kura_test_repo:insert(CS1),
+    %% Insert duplicate — should get friendly error without manual unique_constraint call
+    CS2 = kura_changeset:cast(
+        kura_test_participant_schema,
+        #{},
+        #{chat_id => ChatId, user_id => UserId},
+        [chat_id, user_id]
+    ),
+    {error, ErrCS} = kura_test_repo:insert(CS2),
+    ?assertNot(ErrCS#kura_changeset.valid),
+    ?assert(lists:keymember(chat_id, 1, ErrCS#kura_changeset.errors)),
+    {chat_id, Msg} = lists:keyfind(chat_id, 1, ErrCS#kura_changeset.errors),
+    ?assertEqual(<<"has already been taken">>, Msg).
 
 t_foreign_key_constraint() ->
     %% Insert into posts_simple with a non-existent author_id

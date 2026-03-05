@@ -380,6 +380,61 @@ fk_alter_table_add_column_test() ->
         ) =/= nomatch
     ).
 
+%%----------------------------------------------------------------------
+%% Table-level constraints
+%%----------------------------------------------------------------------
+
+create_table_unique_constraint_test() ->
+    SQL = kura_migrator:compile_operation(
+        {create_table, <<"participant">>,
+            [
+                #kura_column{name = id, type = id, primary_key = true, nullable = false},
+                #kura_column{name = chat_id, type = uuid, nullable = false},
+                #kura_column{name = user_id, type = uuid, nullable = false}
+            ],
+            [{unique, [chat_id, user_id]}]}
+    ),
+    ?assert(binary:match(SQL, <<"UNIQUE (\"chat_id\", \"user_id\")">>) =/= nomatch).
+
+create_table_check_constraint_test() ->
+    SQL = kura_migrator:compile_operation(
+        {create_table, <<"orders">>,
+            [
+                #kura_column{name = id, type = id, primary_key = true},
+                #kura_column{name = quantity, type = integer, nullable = false}
+            ],
+            [{check, <<"quantity > 0">>}]}
+    ),
+    ?assert(binary:match(SQL, <<"CHECK (quantity > 0)">>) =/= nomatch).
+
+create_table_multiple_constraints_test() ->
+    SQL = kura_migrator:compile_operation(
+        {create_table, <<"t">>,
+            [
+                #kura_column{name = id, type = id, primary_key = true},
+                #kura_column{name = a, type = integer},
+                #kura_column{name = b, type = integer},
+                #kura_column{name = c, type = integer}
+            ],
+            [{unique, [a, b]}, {unique, [b, c]}, {check, <<"a > 0">>}]}
+    ),
+    ?assert(binary:match(SQL, <<"UNIQUE (\"a\", \"b\")">>) =/= nomatch),
+    ?assert(binary:match(SQL, <<"UNIQUE (\"b\", \"c\")">>) =/= nomatch),
+    ?assert(binary:match(SQL, <<"CHECK (a > 0)">>) =/= nomatch).
+
+create_table_no_constraints_same_as_3tuple_test() ->
+    Cols = [
+        #kura_column{name = id, type = id, primary_key = true},
+        #kura_column{name = name, type = string}
+    ],
+    SQL3 = kura_migrator:compile_operation({create_table, <<"t">>, Cols}),
+    SQL4 = kura_migrator:compile_operation({create_table, <<"t">>, Cols, []}),
+    ?assertEqual(SQL3, SQL4).
+
+%%----------------------------------------------------------------------
+%% FK without on_delete/on_update
+%%----------------------------------------------------------------------
+
 fk_no_on_delete_test() ->
     SQL = kura_migrator:compile_operation(
         {create_table, <<"t">>, [

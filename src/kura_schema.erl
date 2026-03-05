@@ -31,17 +31,19 @@ fields() ->
     associations/1,
     association/2,
     embeds/1,
-    embed/2
+    embed/2,
+    constraints/1
 ]).
 
 -callback table() -> binary().
 -callback fields() -> [#kura_field{}].
 
--optional_callbacks([timestamps/0, associations/0, embeds/0]).
+-optional_callbacks([timestamps/0, associations/0, embeds/0, constraints/0]).
 
 -callback timestamps() -> [{atom(), kura_types:kura_type()}].
 -callback associations() -> [#kura_assoc{}].
 -callback embeds() -> [#kura_embed{}].
+-callback constraints() -> [kura_migration:table_constraint()].
 
 -doc "Return list of field names for a schema module.".
 -spec field_names(module()) -> [atom()].
@@ -147,6 +149,17 @@ embed(Mod, Name) ->
         [Embed] -> {ok, Embed};
         [] -> {error, not_found}
     end.
+
+-doc "Return all table-level constraints defined on a schema module.".
+-spec constraints(module()) -> [kura_migration:table_constraint()].
+constraints(Mod) ->
+    cache({kura_schema, constraints, Mod}, fun() ->
+        _ = code:ensure_loaded(Mod),
+        case erlang:function_exported(Mod, constraints, 0) of
+            true -> Mod:constraints();
+            false -> []
+        end
+    end).
 
 %%----------------------------------------------------------------------
 %% Internal: persistent_term cache
