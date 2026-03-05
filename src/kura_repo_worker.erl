@@ -137,9 +137,9 @@ exists(RepoMod, Query) ->
 -spec reload(module(), module(), map()) -> {ok, map()} | {error, term()}.
 reload(RepoMod, SchemaMod, Record) ->
     PK = kura_schema:primary_key(SchemaMod),
-    case maps:find(PK, Record) of
-        {ok, Id} -> get(RepoMod, SchemaMod, Id);
-        error -> {error, no_primary_key}
+    case Record of
+        #{PK := Id} -> get(RepoMod, SchemaMod, Id);
+        #{} -> {error, no_primary_key}
     end.
 
 -doc "Insert a record from a changeset. Returns `{error, Changeset}` with errors on failure.".
@@ -253,8 +253,8 @@ insert_all(RepoMod, SchemaMod, Entries, Opts) ->
     Fields = maps:keys(hd(Rows)),
     {SQL, Params} = kura_query_compiler:insert_all(SchemaMod, Fields, Rows, Opts),
 
-    case maps:find(returning, Opts) of
-        {ok, RetOpt} when RetOpt =:= true; is_list(RetOpt) ->
+    case Opts of
+        #{returning := RetOpt} when RetOpt =:= true; is_list(RetOpt) ->
             case pgo_query(RepoMod, SQL, Params) of
                 #{command := insert, num_rows := Count, rows := RetRows} ->
                     Loaded = [load_row(SchemaMod, R) || R <- RetRows],
@@ -262,7 +262,7 @@ insert_all(RepoMod, SchemaMod, Entries, Opts) ->
                 {error, _} = Err ->
                     Err
             end;
-        _ ->
+        #{} ->
             case pgo_query(RepoMod, SQL, Params) of
                 #{command := insert, num_rows := Count} -> {ok, Count};
                 {error, _} = Err -> Err
@@ -610,13 +610,13 @@ load_row(SchemaMod, Row) when is_atom(SchemaMod) ->
                     Types = kura_schema:field_types(SchemaMod),
                     maps:fold(
                         fun(K, V, Acc) ->
-                            case maps:find(K, Types) of
-                                {ok, Type} ->
+                            case Types of
+                                #{K := Type} ->
                                     case kura_types:load(Type, V) of
                                         {ok, Loaded} -> Acc#{K => Loaded};
                                         {error, _} -> Acc#{K => V}
                                     end;
-                                error ->
+                                #{} ->
                                     Acc#{K => V}
                             end
                         end,
@@ -639,15 +639,15 @@ dump_change_fields([], _Types, _NonVirtual) ->
     #{};
 dump_change_fields([{K, V} | Rest], Types, NonVirtual) ->
     Acc = dump_change_fields(Rest, Types, NonVirtual),
-    case {lists:member(K, NonVirtual), maps:find(K, Types)} of
+    case {lists:member(K, NonVirtual), Types} of
         {false, _} ->
             Acc;
-        {true, {ok, Type}} ->
+        {true, #{K := Type}} ->
             case kura_types:dump(Type, V) of
                 {ok, Dumped} -> Acc#{K => Dumped};
                 {error, _} -> Acc#{K => V}
             end;
-        {true, error} ->
+        {true, #{}} ->
             Acc#{K => V}
     end.
 

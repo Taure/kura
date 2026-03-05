@@ -479,7 +479,7 @@ t_inline_preload_via_query() ->
     Q2 = kura_query:preload(Q1, [author]),
     {ok, Results} = kura_test_repo:all(Q2),
 
-    ?assert(length(Results) >= 1),
+    ?assertMatch([_ | _], Results),
     Post = hd(Results),
     Author = maps:get(author, Post),
     ?assertMatch(#{name := <<"IP_Author">>}, Author).
@@ -520,7 +520,7 @@ t_join_inner() ->
     Q3 = kura_query:select(Q2, [name]),
     Q4 = kura_query:distinct(Q3),
     {ok, Results} = kura_test_repo:all(Q4),
-    ?assert(length(Results) >= 1),
+    ?assertMatch([_ | _], Results),
     ?assertEqual(<<"JoinA">>, maps:get(name, hd(Results))).
 
 t_join_left() ->
@@ -532,7 +532,7 @@ t_join_left() ->
     Q2 = kura_query:where(Q1, {name, <<"LeftJoin">>}),
     Q3 = kura_query:select(Q2, [name]),
     {ok, Results} = kura_test_repo:all(Q3),
-    ?assert(length(Results) >= 1),
+    ?assertMatch([_ | _], Results),
     ?assertEqual(<<"LeftJoin">>, maps:get(name, hd(Results))).
 
 %%----------------------------------------------------------------------

@@ -170,12 +170,12 @@ cast_has_many(CS, AssocName, Assoc, ParamsList, Existing, WithFun) when is_list(
     ChildCSs = lists:map(
         fun(ChildParams) ->
             NormParams = kura_changeset:normalize_params(ChildParams),
-            case maps:find(PK, NormParams) of
-                {ok, PKVal} when PKVal =/= undefined ->
+            case NormParams of
+                #{PK := PKVal} when PKVal =/= undefined ->
                     ExistingData = maps:get(PKVal, ExistingLookup, #{}),
                     ChildCS = WithFun(ExistingData, NormParams),
                     ChildCS#kura_changeset{action = update};
-                _ ->
+                #{} ->
                     ChildCS = WithFun(#{}, NormParams),
                     ChildCS#kura_changeset{action = insert}
             end
@@ -220,11 +220,11 @@ coerce_single(#kura_assoc{type = many_to_many, schema = ChildSchema}, Map) when 
     NonVirtual = kura_schema:non_virtual_fields(ChildSchema),
     Allowed = [F || F <- AllFields, lists:member(F, NonVirtual), F =/= PK],
     NormMap = kura_changeset:normalize_params(Map),
-    case maps:find(PK, NormMap) of
-        {ok, PKVal} when PKVal =/= undefined ->
+    case NormMap of
+        #{PK := PKVal} when PKVal =/= undefined ->
             CS = kura_changeset:cast(ChildSchema, #{PK => PKVal}, NormMap, Allowed),
             CS#kura_changeset{action = undefined};
-        _ ->
+        #{} ->
             CS = kura_changeset:cast(ChildSchema, #{}, NormMap, Allowed),
             CS#kura_changeset{action = insert}
     end;

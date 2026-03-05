@@ -379,14 +379,14 @@ t_where_like() ->
     {ok, _} = insert_user(<<"LikeUser">>, <<"likeuser@example.com">>),
     Q = kura_query:where(kura_query:from(kura_test_schema), {name, like, <<"Like%">>}),
     {ok, Results} = kura_test_repo:all(Q),
-    ?assert(length(Results) >= 1),
+    ?assertMatch([_ | _], Results),
     ?assert(lists:any(fun(R) -> maps:get(name, R) =:= <<"LikeUser">> end, Results)).
 
 t_where_ilike() ->
     {ok, _} = insert_user(<<"IlikeUser">>, <<"ilikeuser@example.com">>),
     Q = kura_query:where(kura_query:from(kura_test_schema), {name, ilike, <<"ilike%">>}),
     {ok, Results} = kura_test_repo:all(Q),
-    ?assert(length(Results) >= 1),
+    ?assertMatch([_ | _], Results),
     ?assert(lists:any(fun(R) -> maps:get(name, R) =:= <<"IlikeUser">> end, Results)).
 
 t_where_between() ->
@@ -494,7 +494,7 @@ t_where_fragment() ->
         {fragment, <<"\"age\" = ? AND \"name\" = ?">>, [33, <<"FragUser">>]}
     ),
     {ok, Results} = kura_test_repo:all(Q),
-    ?assert(length(Results) >= 1),
+    ?assertMatch([_ | _], Results),
     ?assert(lists:any(fun(R) -> maps:get(name, R) =:= <<"FragUser">> end, Results)).
 
 %%----------------------------------------------------------------------
@@ -964,7 +964,7 @@ t_exists_subquery() ->
     ),
     Q = kura_query:where(kura_query:from(kura_test_schema), {exists, {subquery, SubQ}}),
     {ok, Results} = kura_test_repo:all(Q),
-    ?assert(length(Results) >= 1).
+    ?assertMatch([_ | _], Results).
 
 %%----------------------------------------------------------------------
 %% CTEs

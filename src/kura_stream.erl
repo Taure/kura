@@ -74,13 +74,13 @@ load_row(SchemaMod, Row) when is_atom(SchemaMod) ->
                     Types = kura_schema:field_types(SchemaMod),
                     maps:fold(
                         fun(K, V, Acc) ->
-                            case maps:find(K, Types) of
-                                {ok, Type} ->
+                            case Types of
+                                #{K := Type} ->
                                     case kura_types:load(Type, V) of
                                         {ok, Loaded} -> Acc#{K => Loaded};
                                         {error, _} -> Acc#{K => V}
                                     end;
-                                error ->
+                                #{} ->
                                     Acc#{K => V}
                             end
                         end,
