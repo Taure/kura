@@ -511,3 +511,36 @@ optimistic_lock_from_nil_test() ->
     CS = kura_changeset:cast(kura_test_schema, #{}, #{name => <<"Alice">>}, [name]),
     CS2 = kura_changeset:optimistic_lock(CS, lock_version),
     ?assertEqual(1, kura_changeset:get_change(CS2, lock_version)).
+
+%%----------------------------------------------------------------------
+%% schema constraints auto-registration
+%%----------------------------------------------------------------------
+
+schema_constraints_auto_registered_test() ->
+    CS = kura_changeset:cast(
+        kura_test_participant_schema, #{},
+        #{chat_id => <<"550e8400-e29b-41d4-a716-446655440000">>,
+          user_id => <<"550e8400-e29b-41d4-a716-446655440001">>},
+        [chat_id, user_id]
+    ),
+    [C] = CS#kura_changeset.constraints,
+    ?assertEqual(unique, C#kura_constraint.type),
+    ?assertEqual(<<"participants_chat_id_user_id_key">>, C#kura_constraint.constraint),
+    ?assertEqual(chat_id, C#kura_constraint.field),
+    ?assertEqual(<<"has already been taken">>, C#kura_constraint.message).
+
+schema_no_constraints_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{name => <<"Alice">>}, [name]),
+    ?assertEqual([], CS#kura_changeset.constraints).
+
+schema_constraints_merged_with_manual_test() ->
+    CS = kura_changeset:cast(
+        kura_test_participant_schema, #{},
+        #{chat_id => <<"550e8400-e29b-41d4-a716-446655440000">>,
+          user_id => <<"550e8400-e29b-41d4-a716-446655440001">>},
+        [chat_id, user_id]
+    ),
+    CS1 = kura_changeset:unique_constraint(CS, user_id, #{
+        name => <<"participants_user_id_key">>
+    }),
+    ?assertEqual(2, length(CS1#kura_changeset.constraints)).

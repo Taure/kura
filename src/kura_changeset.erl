@@ -86,6 +86,7 @@ cast(SchemaMod, Data, Params, Allowed) when is_atom(SchemaMod) ->
     Types = kura_schema:field_types(SchemaMod),
     NormParams = normalize_params(Params),
     {Changes, Errors} = cast_params(NormParams, Allowed, Types, Data),
+    Constraints = build_schema_constraints(SchemaMod),
     #kura_changeset{
         valid = Errors =:= [],
         schema = SchemaMod,
@@ -93,7 +94,8 @@ cast(SchemaMod, Data, Params, Allowed) when is_atom(SchemaMod) ->
         params = NormParams,
         changes = Changes,
         errors = Errors,
-        types = Types
+        types = Types,
+        constraints = Constraints
     }.
 
 -doc "Validate that all `Fields` are present and non-blank.".
@@ -559,4 +561,32 @@ check_number(CS, Field, Val, Opts) ->
         end,
         CS,
         Opts
+    ).
+
+build_schema_constraints(SchemaMod) ->
+    Table = SchemaMod:table(),
+    lists:filtermap(
+        fun
+            ({unique, Cols}) when is_list(Cols) ->
+                ColsBin = lists:join(<<"_">>, [atom_to_binary(C, utf8) || C <- Cols]),
+                Name = iolist_to_binary([Table, <<"_">>, ColsBin, <<"_key">>]),
+                Field = hd(Cols),
+                {true, #kura_constraint{
+                    type = unique,
+                    constraint = Name,
+                    field = Field,
+                    message = <<"has already been taken">>
+                }};
+            ({check, Expr}) when is_binary(Expr) ->
+                Name = iolist_to_binary([Table, <<"_check">>]),
+                {true, #kura_constraint{
+                    type = check,
+                    constraint = Name,
+                    field = base,
+                    message = <<"is invalid">>
+                }};
+            (_) ->
+                false
+        end,
+        kura_schema:constraints(SchemaMod)
     ).

@@ -13,8 +13,9 @@ Migration modules must be named `m<YYYYMMDDHHMMSS>_<name>`.
 up() ->
     [{create_table, <<"users">>, [
         #kura_column{name = id, type = id, primary_key = true},
-        #kura_column{name = name, type = string, nullable = false}
-    ]}].
+        #kura_column{name = name, type = string, nullable = false},
+        #kura_column{name = email, type = string, nullable = false}
+    ], [{unique, [name, email]}]}].
 
 down() ->
     [{drop_table, <<"users">>}].
@@ -44,12 +45,17 @@ down() ->
 
 -type index_opts() :: [unique | {where, binary()}].
 
+-type table_constraint() ::
+    {unique, [atom()]}
+    | {check, binary()}.
+
 -type operation() ::
     {create_table, binary(), [column_def()]}
+    | {create_table, binary(), [column_def()], [table_constraint()]}
     | {drop_table, binary()}
     | {alter_table, binary(), [alter_op()]}
     | {create_index, binary(), binary(), [atom()], index_opts()}
     | {drop_index, binary()}
     | {execute, binary()}.
 
--export_type([operation/0, column_def/0, alter_op/0, index_opts/0, safe_entry/0]).
+-export_type([operation/0, column_def/0, alter_op/0, index_opts/0, table_constraint/0, safe_entry/0]).
