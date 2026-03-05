@@ -218,7 +218,11 @@ t_recovery_after_restart() ->
     %% Ensure PG is up and pool is good — wait for pgo to reconnect from previous test
     ensure_pg_running(),
     wait_for_pg(60),
-    try kura_stress_repo:start() catch _:_ -> ok end,
+    try
+        kura_stress_repo:start()
+    catch
+        _:_ -> ok
+    end,
     %% Wait for pgo connection backoff to reconnect (max backoff is 10s)
     timer:sleep(12000),
     %% Create tables if they don't exist
@@ -256,7 +260,11 @@ t_recovery_after_restart() ->
     start_pg(),
     wait_for_pg(60),
     %% Pool may need to reconnect — restart pool
-    try kura_stress_repo:start() catch _:_ -> ok end,
+    try
+        kura_stress_repo:start()
+    catch
+        _:_ -> ok
+    end,
     timer:sleep(2000),
     %% Retry query with backoff
     {ok, Found} = retry(

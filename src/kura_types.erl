@@ -373,9 +373,12 @@ load_array(Inner, [H | T], Acc) ->
         {error, _} = Err -> Err
     end.
 
-format_type({enum, _}) -> enum;
-format_type({array, Inner}) -> binary_to_atom(<<"array_", (atom_to_binary(format_type(Inner), utf8))/binary>>);
-format_type({embed, _, Mod}) -> Mod;
+format_type({enum, _}) ->
+    enum;
+format_type({array, Inner}) ->
+    binary_to_atom(<<"array_", (atom_to_binary(format_type(Inner), utf8))/binary>>);
+format_type({embed, _, Mod}) ->
+    Mod;
 format_type(T) when is_atom(T) -> T.
 
 dump_embed_to_term(Mod, Map) ->
