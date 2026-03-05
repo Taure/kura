@@ -374,7 +374,7 @@ load_array(Inner, [H | T], Acc) ->
     end.
 
 format_type({enum, _}) -> enum;
-format_type({array, Inner}) -> list_to_atom("array_" ++ atom_to_list(format_type(Inner)));
+format_type({array, Inner}) -> binary_to_atom(<<"array_", (atom_to_binary(format_type(Inner), utf8))/binary>>);
 format_type({embed, _, Mod}) -> Mod;
 format_type(T) when is_atom(T) -> T.
 
@@ -388,19 +388,22 @@ dump_embed_fields([], _Map, _Types) ->
 dump_embed_fields([Field | Rest], Map, Types) ->
     Acc = dump_embed_fields(Rest, Map, Types),
     BinKey = atom_to_binary(Field, utf8),
-    case {maps:find(Field, Map), maps:find(Field, Types)} of
-        {{ok, Val}, {ok, {embed, embeds_one, ChildMod}}} when is_map(Val) ->
-            Acc#{BinKey => dump_embed_to_term(ChildMod, Val)};
-        {{ok, Val}, {ok, {embed, embeds_many, ChildMod}}} when is_list(Val) ->
-            Acc#{BinKey => [dump_embed_to_term(ChildMod, I) || I <- Val]};
-        {{ok, Val}, {ok, Type}} ->
-            case dump(Type, Val) of
-                {ok, Dumped} -> Acc#{BinKey => Dumped};
-                {error, _} -> Acc#{BinKey => Val}
+    case Map of
+        #{Field := Val} ->
+            case Types of
+                #{Field := {embed, embeds_one, ChildMod}} when is_map(Val) ->
+                    Acc#{BinKey => dump_embed_to_term(ChildMod, Val)};
+                #{Field := {embed, embeds_many, ChildMod}} when is_list(Val) ->
+                    Acc#{BinKey => [dump_embed_to_term(ChildMod, I) || I <- Val]};
+                #{Field := Type} ->
+                    case dump(Type, Val) of
+                        {ok, Dumped} -> Acc#{BinKey => Dumped};
+                        {error, _} -> Acc#{BinKey => Val}
+                    end;
+                #{} ->
+                    Acc#{BinKey => Val}
             end;
-        {{ok, Val}, error} ->
-            Acc#{BinKey => Val};
-        {error, _} ->
+        #{} ->
             Acc
     end.
 
@@ -413,17 +416,17 @@ load_embed_entries([], _Types) ->
 load_embed_entries([{K, V} | Rest], Types) ->
     Acc = load_embed_entries(Rest, Types),
     AtomKey = normalize_key(K),
-    case maps:find(AtomKey, Types) of
-        {ok, {embed, embeds_one, ChildMod}} when is_map(V) ->
+    case Types of
+        #{AtomKey := {embed, embeds_one, ChildMod}} when is_map(V) ->
             Acc#{AtomKey => load_embed_map(ChildMod, V)};
-        {ok, {embed, embeds_many, ChildMod}} when is_list(V) ->
+        #{AtomKey := {embed, embeds_many, ChildMod}} when is_list(V) ->
             Acc#{AtomKey => [load_embed_map(ChildMod, I) || I <- V]};
-        {ok, Type} ->
+        #{AtomKey := Type} ->
             case load(Type, V) of
                 {ok, Loaded} -> Acc#{AtomKey => Loaded};
                 {error, _} -> Acc#{AtomKey => V}
             end;
-        error ->
+        #{} ->
             Acc#{AtomKey => V}
     end.
 

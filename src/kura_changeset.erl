@@ -213,7 +213,7 @@ validate_confirmation(CS, Field, Opts) ->
 
 confirmation_field(Field) ->
     %% Safe: Field is always a schema atom, so the set is bounded.
-    list_to_atom(atom_to_list(Field) ++ "_confirmation").
+    binary_to_atom(<<(atom_to_binary(Field, utf8))/binary, "_confirmation">>).
 
 -doc "Validate `Field` with a custom function returning `ok` or `{error, Message}`.".
 -spec validate_change(#kura_changeset{}, atom(), fun((term()) -> ok | {error, binary()})) ->
@@ -320,9 +320,9 @@ get_field(ChangeSet, Field) ->
 
 -spec get_field(#kura_changeset{}, atom(), term()) -> term().
 get_field(#kura_changeset{changes = Changes, data = Data}, Field, Default) ->
-    case maps:find(Field, Changes) of
-        {ok, V} -> V;
-        error -> maps:get(Field, Data, Default)
+    case Changes of
+        #{Field := V} -> V;
+        #{} -> maps:get(Field, Data, Default)
     end.
 
 -doc "Put a change value directly, bypassing casting.".
@@ -431,8 +431,8 @@ cast_params(_Params, [], _Types, _Data) ->
     {#{}, []};
 cast_params(Params, [Field | Rest], Types, Data) ->
     {Changes, Errors} = cast_params(Params, Rest, Types, Data),
-    case {maps:find(Field, Params), maps:find(Field, Types)} of
-        {{ok, Value}, {ok, Type}} ->
+    case {Params, Types} of
+        {#{Field := Value}, #{Field := Type}} ->
             case kura_types:cast(Type, Value) of
                 {ok, Casted} ->
                     case maps:get(Field, Data, undefined) of

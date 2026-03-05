@@ -468,9 +468,9 @@ log_warnings(Module, Warnings) ->
                     Module,
                     Op,
                     Target,
-                    case maps:find(table, Warning) of
-                        {ok, T} -> [" on ", T];
-                        error -> ""
+                    case Warning of
+                        #{table := T} -> [" on ", T];
+                        #{} -> ""
                     end,
                     SafeAlt
                 ]

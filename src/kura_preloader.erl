@@ -140,12 +140,12 @@ preload_many_to_many(RepoMod, Records, Schema, #kura_assoc{
                         fun(JR, Acc) ->
                             OKey = maps:get(OwnerKey, JR),
                             RKey = maps:get(RelatedKey, JR),
-                            case maps:find(RKey, RelLookup) of
-                                {ok, RelRec} ->
+                            case RelLookup of
+                                #{RKey := RelRec} ->
                                     maps:update_with(
                                         OKey, fun(L) -> L ++ [RelRec] end, [RelRec], Acc
                                     );
-                                error ->
+                                #{} ->
                                     Acc
                             end
                         end,
