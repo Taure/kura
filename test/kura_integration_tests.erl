@@ -795,14 +795,16 @@ t_schema_constraints() ->
     ChatId = <<"550e8400-e29b-41d4-a716-446655440000">>,
     UserId = <<"550e8400-e29b-41d4-a716-446655440001">>,
     CS1 = kura_changeset:cast(
-        kura_test_participant_schema, #{},
+        kura_test_participant_schema,
+        #{},
         #{chat_id => ChatId, user_id => UserId},
         [chat_id, user_id]
     ),
     {ok, _} = kura_test_repo:insert(CS1),
     %% Insert duplicate — should get friendly error without manual unique_constraint call
     CS2 = kura_changeset:cast(
-        kura_test_participant_schema, #{},
+        kura_test_participant_schema,
+        #{},
         #{chat_id => ChatId, user_id => UserId},
         [chat_id, user_id]
     ),

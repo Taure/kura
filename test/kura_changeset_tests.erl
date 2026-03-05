@@ -518,9 +518,12 @@ optimistic_lock_from_nil_test() ->
 
 schema_constraints_auto_registered_test() ->
     CS = kura_changeset:cast(
-        kura_test_participant_schema, #{},
-        #{chat_id => <<"550e8400-e29b-41d4-a716-446655440000">>,
-          user_id => <<"550e8400-e29b-41d4-a716-446655440001">>},
+        kura_test_participant_schema,
+        #{},
+        #{
+            chat_id => <<"550e8400-e29b-41d4-a716-446655440000">>,
+            user_id => <<"550e8400-e29b-41d4-a716-446655440001">>
+        },
         [chat_id, user_id]
     ),
     [C] = CS#kura_changeset.constraints,
@@ -535,9 +538,12 @@ schema_no_constraints_test() ->
 
 schema_constraints_merged_with_manual_test() ->
     CS = kura_changeset:cast(
-        kura_test_participant_schema, #{},
-        #{chat_id => <<"550e8400-e29b-41d4-a716-446655440000">>,
-          user_id => <<"550e8400-e29b-41d4-a716-446655440001">>},
+        kura_test_participant_schema,
+        #{},
+        #{
+            chat_id => <<"550e8400-e29b-41d4-a716-446655440000">>,
+            user_id => <<"550e8400-e29b-41d4-a716-446655440001">>
+        },
         [chat_id, user_id]
     ),
     CS1 = kura_changeset:unique_constraint(CS, user_id, #{
