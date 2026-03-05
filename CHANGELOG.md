@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-03-05
+
+### Added
+
+- Table-level constraints in migrations — `{create_table, Table, Columns, Constraints}` 4-tuple variant supporting `{unique, [atom()]}` and `{check, binary()}` inline constraints
+- `constraints/0` optional callback on `kura_schema` behaviour — declares table-level constraints on the schema
+- Auto-registration of schema constraints on `kura_changeset:cast/4` — duplicate inserts get friendly error messages without manual `unique_constraint/3` calls
+
 ## [1.4.0] - 2026-03-05
 
 ### Changed
