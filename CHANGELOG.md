@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] - 2026-03-05
+
+### Fixed
+
+- Dialyzer warnings in `get_field/2,3` — `maps:find/2` returns `{ok, V} | error`, not map patterns
+- Atom exhaustion risk in enum `load/2` — now validates against declared values list instead of `binary_to_atom`
+- Atom exhaustion risk in `kura_repo_worker` error handlers — NOT NULL and constraint errors fall back to `base` atom for unknown columns
+- CI running resilience tests that require docker compose control — explicitly list test modules
+
+### Added
+
+- Production readiness test suites: `kura_stress_tests` (7 concurrency tests), `kura_bench_tests` (6 throughput benchmarks), `kura_migration_stress_tests` (4 migration safety tests), `kura_resilience_tests` (4 failure/recovery tests)
+- Makefile targets: `test-stress`, `test-bench`, `test-migration-stress`, `test-resilience`, `test-production`
+
+## [1.3.1] - 2026-03-04
+
+### Fixed
+
+- Advisory lock query wrapped to avoid pgo void type decode error (`pg_advisory_xact_lock` returns void)
+
+## [1.3.0] - 2026-03-03
+
+### Changed
+
+- Primary key derived from field flag instead of separate callback
+
+## [1.2.0] - 2026-03-01
+
+### Added
+
+- Changeset validators: `validate_exclusion`, `validate_subset`, `traverse_errors`, `prepare_changes`, `optimistic_lock`
+- Query extensions: subqueries in WHERE, CTEs, UNION/INTERSECT/EXCEPT, window functions (`select_expr`), query scopes
+- `kura_sandbox` — test transaction rollback for isolated concurrent tests
+- `kura_stream` — server-side cursor batching for large result sets
+- `insert_all` with RETURNING support
+
+### Changed
+
+- `to_sql_from/2` refactored as keystone for all query compilation
+
 ## [1.1.0] - 2026-02-27
 
 ### Added
