@@ -12,7 +12,7 @@ jobs:
 
     strategy:
       matrix:
-        otp: ['27', '28']
+        otp: ['28']
 
     services:
       postgres:

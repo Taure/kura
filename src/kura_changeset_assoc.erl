@@ -32,7 +32,7 @@ cast_assoc(CS = #kura_changeset{schema = SchemaMod, params = Params, data = Data
                     cast_assoc_params(CS, AssocName, Assoc, NestedParams, Existing, WithFun)
             end;
         {error, not_found} ->
-            kura_changeset:add_error(CS, AssocName, <<"unknown association">>)
+            kura_changeset:add_error(CS, AssocName, ~"unknown association")
     end.
 
 -spec put_assoc(#kura_changeset{}, atom(), term()) -> #kura_changeset{}.
@@ -42,7 +42,7 @@ put_assoc(CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}, AssocNam
             Changesets = coerce_assoc_value(Assoc, Value),
             CS#kura_changeset{assoc_changes = AC#{AssocName => Changesets}};
         {error, not_found} ->
-            kura_changeset:add_error(CS, AssocName, <<"unknown association">>)
+            kura_changeset:add_error(CS, AssocName, ~"unknown association")
     end.
 
 %%----------------------------------------------------------------------
@@ -66,7 +66,7 @@ cast_embed(CS = #kura_changeset{schema = SchemaMod, params = Params}, EmbedName,
                     cast_embed_params(CS, EmbedName, Embed, NestedParams, WithFun)
             end;
         {error, not_found} ->
-            kura_changeset:add_error(CS, EmbedName, <<"unknown embed">>)
+            kura_changeset:add_error(CS, EmbedName, ~"unknown embed")
     end.
 
 %%----------------------------------------------------------------------
@@ -98,7 +98,7 @@ cast_embed_params(CS, EmbedName, #kura_embed{type = embeds_one}, Params, WithFun
             }
     end;
 cast_embed_params(CS, EmbedName, #kura_embed{type = embeds_one}, _Params, _WithFun) ->
-    kura_changeset:add_error(CS, EmbedName, <<"expected a map">>);
+    kura_changeset:add_error(CS, EmbedName, ~"expected a map");
 cast_embed_params(CS, EmbedName, #kura_embed{type = embeds_many}, ParamsList, WithFun) when
     is_list(ParamsList)
 ->
@@ -124,7 +124,7 @@ cast_embed_params(CS, EmbedName, #kura_embed{type = embeds_many}, ParamsList, Wi
             CS#kura_changeset{valid = false, errors = AllErrors}
     end;
 cast_embed_params(CS, EmbedName, #kura_embed{type = embeds_many}, _Params, _WithFun) ->
-    kura_changeset:add_error(CS, EmbedName, <<"expected a list">>).
+    kura_changeset:add_error(CS, EmbedName, ~"expected a list").
 
 %%----------------------------------------------------------------------
 %% Internal: association helpers
@@ -163,7 +163,16 @@ cast_has_many(CS, AssocName, Assoc, ParamsList, Existing, WithFun) when is_list(
     ExistingLookup =
         case is_list(Existing) of
             true ->
-                maps:from_list([{maps:get(PK, E), E} || E <- Existing, maps:is_key(PK, E)]);
+                lists:foldl(
+                    fun(E, Acc) ->
+                        case maps:get(PK, E, undefined) of
+                            undefined -> Acc;
+                            Key -> Acc#{Key => E}
+                        end
+                    end,
+                    #{},
+                    Existing
+                );
             false ->
                 #{}
         end,
@@ -190,7 +199,7 @@ cast_has_many(CS, AssocName, Assoc, ParamsList, Existing, WithFun) when is_list(
         false -> CS1#kura_changeset{valid = false}
     end;
 cast_has_many(CS, AssocName, _Assoc, _BadParams, _Existing, _WithFun) ->
-    kura_changeset:add_error(CS, AssocName, <<"expected a list">>).
+    kura_changeset:add_error(CS, AssocName, ~"expected a list").
 
 cast_has_one(CS, AssocName, ChildParams, WithFun) when is_map(ChildParams) ->
     NormParams = kura_changeset:normalize_params(ChildParams),
@@ -203,7 +212,7 @@ cast_has_one(CS, AssocName, ChildParams, WithFun) when is_map(ChildParams) ->
         false -> CS1#kura_changeset{valid = false}
     end;
 cast_has_one(CS, AssocName, _BadParams, _WithFun) ->
-    kura_changeset:add_error(CS, AssocName, <<"expected a map">>).
+    kura_changeset:add_error(CS, AssocName, ~"expected a map").
 
 coerce_assoc_value(Assoc, Value) when is_list(Value) ->
     [coerce_single(Assoc, V) || V <- Value];
