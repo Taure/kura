@@ -164,5 +164,5 @@ Migrations are discovered automatically from compiled modules implementing the `
 
 ## Requirements
 
-- Erlang/OTP 27+
+- Erlang/OTP 28+
 - PostgreSQL 14+

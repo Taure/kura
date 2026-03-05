@@ -115,7 +115,7 @@ validate_format(CS, Field, Pattern) ->
         Val when is_binary(Val) ->
             case re:run(Val, Pattern) of
                 {match, _} -> CS;
-                nomatch -> add_error(CS, Field, <<"has invalid format">>)
+                nomatch -> add_error(CS, Field, ~"has invalid format")
             end;
         _ ->
             CS
@@ -159,7 +159,7 @@ validate_inclusion(CS, Field, Values) ->
         Val ->
             case lists:member(Val, Values) of
                 true -> CS;
-                false -> add_error(CS, Field, <<"is invalid">>)
+                false -> add_error(CS, Field, ~"is invalid")
             end
     end.
 
@@ -171,7 +171,7 @@ validate_exclusion(CS, Field, DisallowedValues) ->
             CS;
         Val ->
             case lists:member(Val, DisallowedValues) of
-                true -> add_error(CS, Field, <<"is reserved">>);
+                true -> add_error(CS, Field, ~"is reserved");
                 false -> CS
             end
     end.
@@ -185,10 +185,10 @@ validate_subset(CS, Field, AllowedValues) ->
         Vals when is_list(Vals) ->
             case lists:all(fun(V) -> lists:member(V, AllowedValues) end, Vals) of
                 true -> CS;
-                false -> add_error(CS, Field, <<"has an invalid entry">>)
+                false -> add_error(CS, Field, ~"has an invalid entry")
             end;
         _ ->
-            add_error(CS, Field, <<"is invalid">>)
+            add_error(CS, Field, ~"is invalid")
     end.
 
 -doc "Validate that `Field` has a matching confirmation field in params.".
@@ -204,7 +204,7 @@ validate_confirmation(CS, Field, Opts) ->
             CS;
         Val ->
             ConfField = confirmation_field(Field),
-            Msg = maps:get(message, Opts, <<"does not match">>),
+            Msg = maps:get(message, Opts, ~"does not match"),
             case CS#kura_changeset.params of
                 #{ConfField := Val} -> CS;
                 #{} -> add_error(CS, ConfField, Msg)
@@ -244,7 +244,7 @@ unique_constraint(#kura_changeset{schema = undefined}, _Field, Opts) when
     );
 unique_constraint(CS = #kura_changeset{schema = undefined, constraints = Constraints}, Field, Opts) ->
     Name = maps:get(name, Opts),
-    Msg = maps:get(message, Opts, <<"has already been taken">>),
+    Msg = maps:get(message, Opts, ~"has already been taken"),
     C = #kura_constraint{type = unique, constraint = Name, field = Field, message = Msg},
     CS#kura_changeset{constraints = Constraints ++ [C]};
 unique_constraint(CS = #kura_changeset{schema = SchemaMod, constraints = Constraints}, Field, Opts) ->
@@ -252,7 +252,7 @@ unique_constraint(CS = #kura_changeset{schema = SchemaMod, constraints = Constra
     Name = maps:get(
         name, Opts, <<Table/binary, "_", (atom_to_binary(Field, utf8))/binary, "_key">>
     ),
-    Msg = maps:get(message, Opts, <<"has already been taken">>),
+    Msg = maps:get(message, Opts, ~"has already been taken"),
     C = #kura_constraint{type = unique, constraint = Name, field = Field, message = Msg},
     CS#kura_changeset{constraints = Constraints ++ [C]}.
 
@@ -273,7 +273,7 @@ foreign_key_constraint(
     CS = #kura_changeset{schema = undefined, constraints = Constraints}, Field, Opts
 ) ->
     Name = maps:get(name, Opts),
-    Msg = maps:get(message, Opts, <<"does not exist">>),
+    Msg = maps:get(message, Opts, ~"does not exist"),
     C = #kura_constraint{type = foreign_key, constraint = Name, field = Field, message = Msg},
     CS#kura_changeset{constraints = Constraints ++ [C]};
 foreign_key_constraint(
@@ -283,7 +283,7 @@ foreign_key_constraint(
     Name = maps:get(
         name, Opts, <<Table/binary, "_", (atom_to_binary(Field, utf8))/binary, "_fkey">>
     ),
-    Msg = maps:get(message, Opts, <<"does not exist">>),
+    Msg = maps:get(message, Opts, ~"does not exist"),
     C = #kura_constraint{type = foreign_key, constraint = Name, field = Field, message = Msg},
     CS#kura_changeset{constraints = Constraints ++ [C]}.
 
@@ -294,7 +294,7 @@ check_constraint(CS, Constraint, Field) ->
 
 -spec check_constraint(#kura_changeset{}, binary(), atom(), map()) -> #kura_changeset{}.
 check_constraint(CS = #kura_changeset{constraints = Constraints}, Constraint, Field, Opts) ->
-    Msg = maps:get(message, Opts, <<"is invalid">>),
+    Msg = maps:get(message, Opts, ~"is invalid"),
     C = #kura_constraint{type = check, constraint = Constraint, field = Field, message = Msg},
     CS#kura_changeset{constraints = Constraints ++ [C]}.
 
@@ -462,7 +462,7 @@ check_required_fields([Field | Rest], Changes, Data) ->
         end,
     Tail = check_required_fields(Rest, Changes, Data),
     case is_blank(Val) of
-        true -> [{Field, <<"can't be blank">>} | Tail];
+        true -> [{Field, ~"can't be blank"} | Tail];
         false -> Tail
     end.
 
