@@ -121,6 +121,127 @@ end.
 
 No manual `unique_constraint/2` calls needed — the `indexes/0` callback handles it.
 
+## Constraints
+
+### How Constraint Errors Work
+
+When PostgreSQL rejects an insert or update due to a constraint violation, Kura maps the error back to a changeset field error instead of crashing. This mapping works through **constraint declarations** — records that say "if PG constraint X fires, put error Y on field Z".
+
+There are three ways to declare constraints:
+
+1. **`indexes/0`** — auto-registers unique constraints for indexes (recommended for single/multi-column unique)
+2. **`constraints/0`** — auto-registers constraints for composite unique and check constraints
+3. **Manual** — `unique_constraint/2`, `foreign_key_constraint/2`, `check_constraint/3` on the changeset
+
+### Unique Constraints
+
+For single-column unique constraints, use `indexes/0` (shown above). The constraint is registered automatically.
+
+For **composite** unique constraints (multiple columns together), use `constraints/0`:
+
+```erlang
+-module(participant).
+-behaviour(kura_schema).
+-include_lib("kura/include/kura.hrl").
+
+-export([table/0, fields/0, constraints/0]).
+
+table() -> <<"participants">>.
+
+fields() ->
+    [#kura_field{name = id, type = id, primary_key = true, nullable = false},
+     #kura_field{name = chat_id, type = uuid, nullable = false},
+     #kura_field{name = user_id, type = uuid, nullable = false}].
+
+constraints() ->
+    [{unique, [chat_id, user_id]}].
+```
+
+This auto-generates the constraint name `participants_chat_id_user_id_key` and maps violations to the first column (`chat_id`) with `"has already been taken"`.
+
+In the migration, declare it as a table-level constraint:
+
+```erlang
+{create_table, <<"participants">>, [
+    #kura_column{name = id, type = id, primary_key = true, nullable = false},
+    #kura_column{name = chat_id, type = uuid, nullable = false},
+    #kura_column{name = user_id, type = uuid, nullable = false}
+], [{unique, [chat_id, user_id]}]}.
+```
+
+### Foreign Key Constraints
+
+Foreign keys are declared in migrations via `references` on `#kura_column{}`. To get friendly errors when a referenced row doesn't exist, declare the constraint on the changeset:
+
+```erlang
+changeset(Params) ->
+    CS = kura_changeset:cast(post, #{}, Params, [title, user_id]),
+    CS1 = kura_changeset:validate_required(CS, [title, user_id]),
+    kura_changeset:foreign_key_constraint(CS1, user_id).
+```
+
+Now if you insert a post with a `user_id` that doesn't exist:
+
+```erlang
+{error, #kura_changeset{errors = [{user_id, <<"does not exist">>}]}}
+```
+
+Instead of a raw PostgreSQL error.
+
+### Check Constraints
+
+Check constraints enforce arbitrary SQL conditions. Declare them with `constraints/0` on the schema or as table-level constraints in the migration:
+
+```erlang
+%% Migration
+{create_table, <<"orders">>, [
+    #kura_column{name = id, type = id, primary_key = true},
+    #kura_column{name = quantity, type = integer, nullable = false}
+], [{check, <<"quantity > 0">>}]}.
+```
+
+To map the violation to a field error, use `check_constraint/3` on the changeset:
+
+```erlang
+changeset(Params) ->
+    CS = kura_changeset:cast(order, #{}, Params, [quantity]),
+    kura_changeset:check_constraint(CS, <<"orders_check">>, quantity, #{
+        message => <<"must be positive">>
+    }).
+```
+
+Or declare it on the schema with `constraints/0`:
+
+```erlang
+constraints() ->
+    [{check, <<"quantity > 0">>}].
+```
+
+### Manual Constraint Declarations
+
+When you need custom constraint names or messages, use the manual functions:
+
+```erlang
+CS1 = kura_changeset:unique_constraint(CS, email, #{
+    name => <<"users_email_unique">>,
+    message => <<"is already registered">>
+}),
+CS2 = kura_changeset:foreign_key_constraint(CS1, team_id),
+CS3 = kura_changeset:check_constraint(CS2, <<"positive_balance">>, balance, #{
+    message => <<"cannot be negative">>
+}).
+```
+
+### When to Use What
+
+| Scenario | Use |
+|---|---|
+| Single-column unique | `indexes/0` with `#{unique => true}` |
+| Composite unique (e.g. join table) | `constraints/0` with `{unique, [cols]}` |
+| Foreign key error mapping | `foreign_key_constraint/2` on changeset |
+| Check constraint error mapping | `constraints/0` with `{check, expr}` or `check_constraint/3` on changeset |
+| Custom error messages | Manual `unique_constraint/3`, `foreign_key_constraint/3`, `check_constraint/4` |
+
 ## A More Complex Example: Foreign Keys and Composite Indexes
 
 ```sql
