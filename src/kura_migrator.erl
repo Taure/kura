@@ -237,6 +237,31 @@ compile_operation({alter_table, Name, AlterOps}) ->
         <<" ">>,
         iolist_to_binary(lists:join(<<", ">>, Ops))
     ]);
+compile_operation({create_index, Table, Columns, Opts}) when is_map(Opts) ->
+    IdxName = kura_migration:index_name(Table, Columns),
+    Unique =
+        case maps:get(unique, Opts, false) of
+            true -> <<"UNIQUE ">>;
+            false -> <<>>
+        end,
+    Cols = iolist_to_binary(lists:join(<<", ">>, [quote(atom_to_binary(C, utf8)) || C <- Columns])),
+    Where =
+        case maps:get(where, Opts, undefined) of
+            undefined -> <<>>;
+            Expr when is_binary(Expr) -> <<" WHERE ", Expr/binary>>
+        end,
+    iolist_to_binary([
+        <<"CREATE ">>,
+        Unique,
+        <<"INDEX ">>,
+        quote(IdxName),
+        <<" ON ">>,
+        quote(Table),
+        <<" (">>,
+        Cols,
+        <<")">>,
+        Where
+    ]);
 compile_operation({create_index, IdxName, Table, Columns, Opts}) ->
     Unique =
         case lists:member(unique, Opts) of

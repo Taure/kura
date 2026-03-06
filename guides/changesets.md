@@ -72,7 +72,22 @@ end).
 
 Constraints map PostgreSQL constraint violations to friendly changeset errors on insert/update.
 
-### Unique Constraint
+### Automatic Registration via `indexes/0`
+
+The recommended approach is to declare unique indexes on your schema. They are automatically registered as changeset constraints — no manual calls needed:
+
+```erlang
+%% In your schema module
+indexes() ->
+    [{[email], #{unique => true}},
+     {[username], #{unique => true}}].
+```
+
+When a PG unique violation fires on `users_email_index`, the changeset gets `{email, <<"has already been taken">>}` automatically.
+
+### Unique Constraint (Manual)
+
+For cases where you need custom constraint names or messages:
 
 ```erlang
 CS1 = kura_changeset:unique_constraint(CS, email).

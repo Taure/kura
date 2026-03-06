@@ -113,10 +113,11 @@ up() ->
         #kura_column{name = inserted_at, type = utc_datetime},
         #kura_column{name = updated_at, type = utc_datetime}
     ]},
-    {create_index, <<"users_email_index">>, <<"users">>, [email], [unique]}].
+    {create_index, <<"users">>, [email], #{unique => true}}].
 
 down() ->
-    [{drop_table, <<"users">>}].
+    [{drop_index, <<"users_email_index">>},
+     {drop_table, <<"users">>}].
 ```
 
 Run migrations:

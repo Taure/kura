@@ -432,6 +432,48 @@ create_table_no_constraints_same_as_3tuple_test() ->
     ?assertEqual(SQL3, SQL4).
 
 %%----------------------------------------------------------------------
+%% Map-based create_index (Ecto-style, auto-generated name)
+%%----------------------------------------------------------------------
+
+create_index_map_test() ->
+    SQL = kura_migrator:compile_operation(
+        {create_index, <<"users">>, [email], #{}}
+    ),
+    ?assertEqual(<<"CREATE INDEX \"users_email_index\" ON \"users\" (\"email\")">>, SQL).
+
+create_unique_index_map_test() ->
+    SQL = kura_migrator:compile_operation(
+        {create_index, <<"users">>, [email], #{unique => true}}
+    ),
+    ?assertEqual(
+        <<"CREATE UNIQUE INDEX \"users_email_index\" ON \"users\" (\"email\")">>, SQL
+    ).
+
+create_index_map_with_where_test() ->
+    SQL = kura_migrator:compile_operation(
+        {create_index, <<"users">>, [email], #{unique => true, where => <<"email IS NOT NULL">>}}
+    ),
+    ?assert(binary:match(SQL, <<"CREATE UNIQUE INDEX">>) =/= nomatch),
+    ?assert(binary:match(SQL, <<"\"users_email_index\"">>) =/= nomatch),
+    ?assert(binary:match(SQL, <<"WHERE email IS NOT NULL">>) =/= nomatch).
+
+create_composite_index_map_test() ->
+    SQL = kura_migrator:compile_operation(
+        {create_index, <<"users">>, [first_name, last_name], #{}}
+    ),
+    ?assertEqual(
+        <<"CREATE INDEX \"users_first_name_last_name_index\" ON \"users\" (\"first_name\", \"last_name\")">>,
+        SQL
+    ).
+
+index_name_test() ->
+    ?assertEqual(<<"users_email_index">>, kura_migration:index_name(<<"users">>, [email])),
+    ?assertEqual(
+        <<"posts_user_id_title_index">>,
+        kura_migration:index_name(<<"posts">>, [user_id, title])
+    ).
+
+%%----------------------------------------------------------------------
 %% FK without on_delete/on_update
 %%----------------------------------------------------------------------
 
