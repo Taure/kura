@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-03-06
+
+### Added
+
+- `telemetry` library integration — every query emits a `[kura, repo, query]` telemetry event with measurements (`duration`, `duration_us`) and metadata (`query`, `params`, `repo`, `result`, `num_rows`, `source`)
+- `build_telemetry_metadata/4` and `extract_source/1` exported from `kura_repo_worker` for testing
+- `source` field in telemetry metadata — table name extracted from the SQL query
+
+### Changed
+
+- Legacy `{kura, [{log, ...}]}` config still works but now runs alongside telemetry events (not instead of)
+
 ## [1.6.0] - 2026-03-06
 
 ### Added
