@@ -32,18 +32,20 @@ fields() ->
     association/2,
     embeds/1,
     embed/2,
-    constraints/1
+    constraints/1,
+    indexes/1
 ]).
 
 -callback table() -> binary().
 -callback fields() -> [#kura_field{}].
 
--optional_callbacks([timestamps/0, associations/0, embeds/0, constraints/0]).
+-optional_callbacks([timestamps/0, associations/0, embeds/0, constraints/0, indexes/0]).
 
 -callback timestamps() -> [{atom(), kura_types:kura_type()}].
 -callback associations() -> [#kura_assoc{}].
 -callback embeds() -> [#kura_embed{}].
 -callback constraints() -> [kura_migration:table_constraint()].
+-callback indexes() -> [kura_migration:index_def()].
 
 -doc "Return list of field names for a schema module.".
 -spec field_names(module()) -> [atom()].
@@ -157,6 +159,17 @@ constraints(Mod) ->
         _ = code:ensure_loaded(Mod),
         case erlang:function_exported(Mod, constraints, 0) of
             true -> Mod:constraints();
+            false -> []
+        end
+    end).
+
+-doc "Return all indexes defined on a schema module.".
+-spec indexes(module()) -> [kura_migration:index_def()].
+indexes(Mod) ->
+    cache({kura_schema, indexes, Mod}, fun() ->
+        _ = code:ensure_loaded(Mod),
+        case erlang:function_exported(Mod, indexes, 0) of
+            true -> Mod:indexes();
             false -> []
         end
     end).

@@ -70,12 +70,30 @@ Column options:
 
 ### Create Index
 
+Indexes use a map-based options format with auto-generated names following Ecto conventions (`{table}_{columns}_index`):
+
 ```erlang
-{create_index, <<"users_email_index">>, <<"users">>, [email], [unique]}.
+%% Simple unique index
+{create_index, <<"users">>, [email], #{unique => true}}.
+%% Generates: CREATE UNIQUE INDEX "users_email_index" ON "users" ("email")
+
+%% Non-unique index
+{create_index, <<"posts">>, [user_id], #{}}.
+%% Generates: CREATE INDEX "posts_user_id_index" ON "posts" ("user_id")
+
+%% Composite index
+{create_index, <<"users">>, [first_name, last_name], #{}}.
+%% Generates: CREATE INDEX "users_first_name_last_name_index" ON ...
 
 %% Partial index
-{create_index, <<"users_active_email_idx">>, <<"users">>, [email],
-    [unique, {where, <<"\"active\" = TRUE">>}]}.
+{create_index, <<"users">>, [email], #{unique => true, where => <<"email IS NOT NULL">>}}.
+%% Generates: CREATE UNIQUE INDEX "users_email_index" ON "users" ("email") WHERE email IS NOT NULL
+```
+
+The index name is auto-generated via `kura_migration:index_name/2`. If you need a custom name, the legacy 5-tuple format is still supported:
+
+```erlang
+{create_index, <<"my_custom_idx">>, <<"users">>, [email], [unique]}.
 ```
 
 ### Drop Index
@@ -115,6 +133,33 @@ Each migration runs in its own transaction. If a migration fails, it is rolled b
 Status = kura_migrator:status(my_repo).
 %% Returns: [{Version, Module, up | pending}, ...]
 ```
+
+## Schema-Level Indexes
+
+Instead of manually writing index operations in migrations, you can declare indexes on your schema module. This is the recommended approach — it keeps index definitions alongside your schema and allows [rebar3_kura](https://github.com/Taure/rebar3_kura) to auto-generate the migration operations for you.
+
+```erlang
+-module(my_user).
+-behaviour(kura_schema).
+-include_lib("kura/include/kura.hrl").
+
+-export([table/0, fields/0, indexes/0]).
+
+table() -> <<"users">>.
+
+fields() ->
+    [#kura_field{name = id, type = uuid, primary_key = true, nullable = false},
+     #kura_field{name = username, type = string, nullable = false},
+     #kura_field{name = email, type = string},
+     #kura_field{name = phone_number, type = string}].
+
+indexes() ->
+    [{[username], #{unique => true}},
+     {[email], #{unique => true}},
+     {[phone_number], #{unique => true, where => <<"phone_number IS NOT NULL">>}}].
+```
+
+Unique indexes declared via `indexes/0` are automatically registered as changeset constraints — no manual `unique_constraint/2` calls needed. When a PostgreSQL unique violation fires (e.g. `users_email_index`), it maps to `{email, <<"has already been taken">>}` on the changeset.
 
 ## Schema Migrations Table
 

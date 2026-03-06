@@ -71,10 +71,12 @@ up() ->
         #kura_column{name = email, type = string, nullable = false},
         #kura_column{name = inserted_at, type = utc_datetime, nullable = false},
         #kura_column{name = updated_at, type = utc_datetime, nullable = false}
-    ]}].
+    ]},
+    {create_index, <<"users">>, [email], #{unique => true}}].
 
 down() ->
-    [{drop_table, <<"users">>}].
+    [{drop_index, <<"users_email_index">>},
+     {drop_table, <<"users">>}].
 ```
 
 ## Start the Pool & Run Migrations

@@ -565,7 +565,7 @@ check_number(CS, Field, Val, Opts) ->
 
 build_schema_constraints(SchemaMod) ->
     Table = SchemaMod:table(),
-    lists:filtermap(
+    TableConstraints = lists:filtermap(
         fun
             ({unique, Cols}) when is_list(Cols) ->
                 ColsBin = lists:join(<<"_">>, [atom_to_binary(C, utf8) || C <- Cols]),
@@ -589,4 +589,21 @@ build_schema_constraints(SchemaMod) ->
                 false
         end,
         kura_schema:constraints(SchemaMod)
-    ).
+    ),
+    IndexConstraints = lists:filtermap(
+        fun
+            ({Cols, #{unique := true}}) when is_list(Cols) ->
+                Name = kura_migration:index_name(Table, Cols),
+                Field = hd(Cols),
+                {true, #kura_constraint{
+                    type = unique,
+                    constraint = Name,
+                    field = Field,
+                    message = <<"has already been taken">>
+                }};
+            (_) ->
+                false
+        end,
+        kura_schema:indexes(SchemaMod)
+    ),
+    TableConstraints ++ IndexConstraints.

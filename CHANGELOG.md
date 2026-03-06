@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-03-06
+
+### Added
+
+- Ecto-style index support — `indexes/0` optional callback on `kura_schema` for declaring indexes at the schema level
+- Map-based `{create_index, Table, Cols, Opts}` migration operation with auto-generated index names (`{table}_{cols}_index`)
+- `kura_migration:index_name/2` helper for generating Ecto-style index names
+- Unique indexes declared via `indexes/0` auto-register changeset constraints — no manual `unique_constraint/3` calls needed
+- New types: `index_def()`, `index_opts_map()` in `kura_migration`
+
 ## [1.5.0] - 2026-03-05
 
 ### Added
