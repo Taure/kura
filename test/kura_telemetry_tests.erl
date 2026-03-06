@@ -37,3 +37,56 @@ build_log_event_keys_test() ->
 default_logger_test() ->
     LogFun = kura_repo_worker:default_logger(),
     ?assert(is_function(LogFun, 1)).
+
+%%----------------------------------------------------------------------
+%% Telemetry metadata tests
+%%----------------------------------------------------------------------
+
+build_telemetry_metadata_select_test() ->
+    Result = #{command => select, rows => [#{id => 1}]},
+    Meta = kura_repo_worker:build_telemetry_metadata(
+        my_repo, <<"SELECT * FROM \"users\" WHERE id = $1">>, [1], Result
+    ),
+    ?assertEqual(<<"SELECT * FROM \"users\" WHERE id = $1">>, maps:get(query, Meta)),
+    ?assertEqual([1], maps:get(params, Meta)),
+    ?assertEqual(my_repo, maps:get(repo, Meta)),
+    ?assertEqual(ok, maps:get(result, Meta)),
+    ?assertEqual(1, maps:get(num_rows, Meta)),
+    ?assertEqual(<<"users">>, maps:get(source, Meta)).
+
+build_telemetry_metadata_insert_test() ->
+    Result = #{command => insert, rows => [#{id => 1}]},
+    Meta = kura_repo_worker:build_telemetry_metadata(
+        my_repo, <<"INSERT INTO \"posts\" (title) VALUES ($1)">>, [<<"Hello">>], Result
+    ),
+    ?assertEqual(<<"posts">>, maps:get(source, Meta)),
+    ?assertEqual(ok, maps:get(result, Meta)).
+
+build_telemetry_metadata_update_test() ->
+    Result = #{command => update, rows => [#{id => 1}]},
+    Meta = kura_repo_worker:build_telemetry_metadata(
+        my_repo, <<"UPDATE \"users\" SET name = $1">>, [<<"Bob">>], Result
+    ),
+    ?assertEqual(<<"users">>, maps:get(source, Meta)).
+
+build_telemetry_metadata_error_test() ->
+    Result = {error, #{code => <<"23505">>}},
+    Meta = kura_repo_worker:build_telemetry_metadata(
+        my_repo, <<"INSERT INTO \"users\"">>, [], Result
+    ),
+    ?assertEqual(error, maps:get(result, Meta)),
+    ?assertEqual(0, maps:get(num_rows, Meta)).
+
+build_telemetry_metadata_no_source_test() ->
+    Result = #{command => select, rows => []},
+    Meta = kura_repo_worker:build_telemetry_metadata(
+        my_repo, <<"SELECT 1">>, [], Result
+    ),
+    ?assertEqual(undefined, maps:get(source, Meta)).
+
+extract_source_test() ->
+    ?assertEqual(<<"users">>, kura_repo_worker:extract_source(<<"SELECT * FROM \"users\"">>)),
+    ?assertEqual(<<"posts">>, kura_repo_worker:extract_source(<<"INSERT INTO \"posts\"">>)),
+    ?assertEqual(<<"users">>, kura_repo_worker:extract_source(<<"UPDATE \"users\" SET">>)),
+    ?assertEqual(<<"t">>, kura_repo_worker:extract_source(<<"CREATE TABLE \"t\"">>)),
+    ?assertEqual(undefined, kura_repo_worker:extract_source(<<"SELECT 1">>)).

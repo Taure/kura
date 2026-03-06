@@ -6,7 +6,8 @@
     {applications, [
         kernel,
         stdlib,
-        pgo
+        pgo,
+        telemetry
     ]},
     {env, []},
     {modules, []},

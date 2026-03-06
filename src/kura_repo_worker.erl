@@ -37,6 +37,8 @@ kura_repo_worker:start(MyRepo),
     query/3,
     pgo_query/3,
     build_log_event/5,
+    build_telemetry_metadata/4,
+    extract_source/1,
     default_logger/0
 ]).
 
@@ -342,29 +344,69 @@ execute_multi_op(_RepoMod, {run, Fun}, Acc) ->
 
 pgo_query(RepoMod, SQL, Params) ->
     Pool = get_pool(RepoMod),
-    T0 = erlang:monotonic_time(microsecond),
+    T0 = erlang:monotonic_time(),
     Result = pgo:query(SQL, Params, #{pool => Pool, decode_opts => ?DECODE_OPTS}),
-    T1 = erlang:monotonic_time(microsecond),
-    emit_log(RepoMod, SQL, Params, Result, T1 - T0),
+    T1 = erlang:monotonic_time(),
+    DurationNative = T1 - T0,
+    DurationUs = erlang:convert_time_unit(DurationNative, native, microsecond),
+    emit_telemetry(RepoMod, SQL, Params, Result, DurationNative, DurationUs),
     Result.
 
-emit_log(RepoMod, SQL, Params, Result, DurationUs) ->
+emit_telemetry(RepoMod, SQL, Params, Result, DurationNative, DurationUs) ->
     try
-        case application:get_env(kura, log) of
-            {ok, true} ->
-                Event = build_log_event(RepoMod, SQL, Params, Result, DurationUs),
-                (default_logger())(Event);
-            {ok, LogFun} when is_function(LogFun, 1) ->
-                Event = build_log_event(RepoMod, SQL, Params, Result, DurationUs),
-                LogFun(Event);
-            {ok, {M, F}} when is_atom(M), is_atom(F) ->
-                Event = build_log_event(RepoMod, SQL, Params, Result, DurationUs),
-                M:F(Event);
-            _ ->
-                ok
-        end
+        Measurements = #{
+            duration => DurationNative,
+            duration_us => DurationUs
+        },
+        Metadata = build_telemetry_metadata(RepoMod, SQL, Params, Result),
+        telemetry:execute([kura, repo, query], Measurements, Metadata),
+        emit_legacy_log(RepoMod, SQL, Params, Result, DurationUs)
     catch
         _:_ -> ok
+    end.
+
+emit_legacy_log(RepoMod, SQL, Params, Result, DurationUs) ->
+    case application:get_env(kura, log) of
+        {ok, true} ->
+            Event = build_log_event(RepoMod, SQL, Params, Result, DurationUs),
+            (default_logger())(Event);
+        {ok, LogFun} when is_function(LogFun, 1) ->
+            Event = build_log_event(RepoMod, SQL, Params, Result, DurationUs),
+            LogFun(Event);
+        {ok, {M, F}} when is_atom(M), is_atom(F) ->
+            Event = build_log_event(RepoMod, SQL, Params, Result, DurationUs),
+            M:F(Event);
+        _ ->
+            ok
+    end.
+
+build_telemetry_metadata(RepoMod, SQL, Params, Result) ->
+    SQLBin = iolist_to_binary(SQL),
+    {ResultStatus, NumRows} =
+        case Result of
+            #{rows := Rows} -> {ok, length(Rows)};
+            #{num_rows := N} -> {ok, N};
+            {error, _} -> {error, 0};
+            _ -> {ok, 0}
+        end,
+    Source = extract_source(SQLBin),
+    #{
+        query => SQLBin,
+        params => Params,
+        repo => RepoMod,
+        result => ResultStatus,
+        num_rows => NumRows,
+        source => Source
+    }.
+
+extract_source(SQL) ->
+    case
+        re:run(SQL, <<"(?:FROM|INTO|UPDATE|TABLE)\\s+\"?(\\w+)\"?">>, [
+            {capture, [1], binary}, caseless
+        ])
+    of
+        {match, [Table]} -> Table;
+        nomatch -> undefined
     end.
 
 get_pool(RepoMod) ->
