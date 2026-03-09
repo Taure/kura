@@ -162,7 +162,7 @@ t_concurrent_reads_under_write_load() ->
 t_long_transaction_doesnt_block_others() ->
     clean_tables(),
     Self = self(),
-    Pool = maps:get(pool, kura_stress_repo:config()),
+    Pool = maps:get(pool, kura_repo:config(kura_stress_repo)),
     %% Spawn a process that holds a transaction open for 2 seconds
     spawn_link(fun() ->
         pgo:transaction(

@@ -523,7 +523,7 @@ log_warnings(Module, Warnings) ->
 
 -spec get_pool(module()) -> atom().
 get_pool(RepoMod) ->
-    Config = RepoMod:config(),
+    Config = kura_repo:config(RepoMod),
     maps:get(pool, Config, RepoMod).
 
 -spec get_applied_versions(module()) -> [integer()].

@@ -184,7 +184,7 @@ t_cursor_cleanup_on_process_crash() ->
     end,
     timer:sleep(500),
     %% Check for leaked cursors
-    Pool = maps:get(pool, kura_stress_repo:config()),
+    Pool = maps:get(pool, kura_repo:config(kura_stress_repo)),
     #{rows := Cursors} = pgo:query(
         <<"SELECT name FROM pg_cursors WHERE name LIKE 'kura_cursor_%'">>,
         [],

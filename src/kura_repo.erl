@@ -2,30 +2,69 @@
 -moduledoc """
 Behaviour for defining a repository (database connection).
 
-Implement `config/0` to return connection parameters. The `pool` key defaults
-to the module name.
+Configuration is read from application environment. Implement `otp_app/0`
+to tell Kura which application holds your database config.
 
 ```erlang
 -module(my_repo).
 -behaviour(kura_repo).
+-export([otp_app/0]).
 
-config() ->
-    #{database => <<"my_db">>,
-      hostname => <<"localhost">>,
-      port => 5432,
-      username => <<"postgres">>,
-      password => <<"secret">>,
-      pool_size => 10}.
+otp_app() -> my_app.
+```
+
+Then in your sys.config (or runtime config):
+
+```erlang
+[{my_app, [
+    {my_repo, #{
+        database => <<"my_db">>,
+        hostname => <<"localhost">>,
+        port => 5432,
+        username => <<"postgres">>,
+        password => <<"secret">>,
+        pool_size => 10
+    }}
+]}].
+```
+
+The config is looked up as `application:get_env(OtpApp, RepoModule)`,
+so each repo has its own config key. This supports multiple repos per application.
+
+Optionally implement `init/1` to modify config at runtime — useful for reading
+secrets from files, environment variables, or external services:
+
+```erlang
+-module(my_repo).
+-behaviour(kura_repo).
+-export([otp_app/0, init/1]).
+
+otp_app() -> my_app.
+
+init(Config) ->
+    Config#{
+        password => list_to_binary(os:getenv("DB_PASSWORD", "postgres"))
+    }.
 ```
 """.
 
--callback config() ->
-    #{
-        pool => atom(),
-        database => binary(),
-        hostname => binary(),
-        port => integer(),
-        username => binary(),
-        password => binary(),
-        pool_size => integer()
-    }.
+-export([config/1]).
+
+-callback otp_app() -> atom().
+
+-callback init(Config :: map()) -> map().
+-optional_callbacks([init/1]).
+
+-doc "Read the repo configuration from application environment.".
+-spec config(module()) -> map().
+config(RepoMod) ->
+    App = RepoMod:otp_app(),
+    Config =
+        case application:get_env(App, RepoMod) of
+            {ok, C} when is_map(C) -> C;
+            _ -> #{}
+        end,
+    case erlang:function_exported(RepoMod, init, 1) of
+        true -> RepoMod:init(Config);
+        false -> Config
+    end.

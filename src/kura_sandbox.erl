@@ -49,5 +49,5 @@ checkin(RepoMod) ->
     end.
 
 get_pool(RepoMod) ->
-    Config = RepoMod:config(),
+    Config = kura_repo:config(RepoMod),
     maps:get(pool, Config, RepoMod).
