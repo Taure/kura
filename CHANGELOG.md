@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-03-06
+
+### Changed
+
+- **Breaking**: `kura_repo` behaviour now requires `otp_app/0` callback instead of `config/0` — database configuration is read from application environment via `application:get_env(OtpApp, RepoModule)`
+- Optional `init/1` callback on `kura_repo` — modify config at runtime (read secrets from env vars, files, external services)
+- `kura_repo:config/1` function reads config from app env, then calls `init/1` if defined
+- All internal `get_pool/1` calls now use `kura_repo:config/1` instead of `RepoMod:config()`
+
 ## [1.7.0] - 2026-03-06
 
 ### Added

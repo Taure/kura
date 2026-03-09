@@ -2,7 +2,7 @@
 -behaviour(kura_repo).
 
 -export([
-    config/0,
+    otp_app/0,
     start/0,
     all/1,
     get/2,
@@ -24,8 +24,10 @@
     query/2
 ]).
 
-config() ->
-    #{
+otp_app() -> kura.
+
+start() ->
+    application:set_env(kura, kura_stress_repo, #{
         pool => kura_stress_repo,
         database => <<"kura_test">>,
         hostname => <<"localhost">>,
@@ -33,9 +35,9 @@ config() ->
         username => <<"postgres">>,
         password => <<"root">>,
         pool_size => 20
-    }.
+    }),
+    kura_repo_worker:start(?MODULE).
 
-start() -> kura_repo_worker:start(?MODULE).
 all(Q) -> kura_repo_worker:all(?MODULE, Q).
 get(Schema, Id) -> kura_repo_worker:get(?MODULE, Schema, Id).
 get_by(Schema, Clauses) -> kura_repo_worker:get_by(?MODULE, Schema, Clauses).

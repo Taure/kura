@@ -51,7 +51,7 @@ kura_repo_worker:start(MyRepo),
 -doc "Start the connection pool for the given repo module.".
 -spec start(module()) -> ok.
 start(RepoMod) ->
-    Config = RepoMod:config(),
+    Config = kura_repo:config(RepoMod),
     Pool = maps:get(pool, Config, RepoMod),
     PgoConfig = #{
         host => binary_to_list(maps:get(hostname, Config, <<"localhost">>)),
@@ -410,7 +410,7 @@ extract_source(SQL) ->
     end.
 
 get_pool(RepoMod) ->
-    Config = RepoMod:config(),
+    Config = kura_repo:config(RepoMod),
     maps:get(pool, Config, RepoMod).
 
 insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}) ->

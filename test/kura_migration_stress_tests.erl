@@ -46,7 +46,7 @@ teardown(_) ->
 %%----------------------------------------------------------------------
 
 pool() ->
-    maps:get(pool, kura_stress_repo:config()).
+    maps:get(pool, kura_repo:config(kura_stress_repo)).
 
 %%----------------------------------------------------------------------
 %% Tests

@@ -74,8 +74,10 @@ bulk operations. Supports fragments for raw SQL escape hatches.
 
 ### `kura_repo` and `kura_repo_worker`
 
-`kura_repo` is a thin behaviour — user repo modules implement `config/0`
-and delegate operations to `kura_repo_worker`. The worker handles:
+`kura_repo` is a thin behaviour — user repo modules implement `otp_app/0`
+and delegate operations to `kura_repo_worker`. Database configuration is
+read from application environment via `application:get_env(OtpApp, RepoModule)`.
+The worker handles:
 
 - Query execution via `pgo`
 - Type conversion between Erlang terms and PostgreSQL values (dump/load)

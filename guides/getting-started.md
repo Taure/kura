@@ -19,13 +19,12 @@ Create a schema module that implements the `kura_schema` behaviour:
 -behaviour(kura_schema).
 -include_lib("kura/include/kura.hrl").
 
--export([table/0, fields/0, primary_key/0]).
+-export([table/0, fields/0]).
 
 table() -> <<"users">>.
-primary_key() -> id.
 
 fields() ->
-    [#kura_field{name = id, type = id},
+    [#kura_field{name = id, type = id, primary_key = true},
      #kura_field{name = name, type = string},
      #kura_field{name = email, type = string},
      #kura_field{name = inserted_at, type = utc_datetime},
@@ -42,16 +41,28 @@ Create a repo module that implements the `kura_repo` behaviour:
 -module(my_repo).
 -behaviour(kura_repo).
 
--export([config/0]).
+-export([otp_app/0]).
 
-config() ->
-    #{database => <<"my_app_dev">>,
-      hostname => <<"localhost">>,
-      port => 5432,
-      username => <<"postgres">>,
-      password => <<"postgres">>,
-      pool_size => 10}.
+otp_app() -> my_app.
 ```
+
+Then add database configuration to your `sys.config`:
+
+```erlang
+[{my_app, [
+    {my_repo, #{
+        database => <<"my_app_dev">>,
+        hostname => <<"localhost">>,
+        port => 5432,
+        username => <<"postgres">>,
+        password => <<"postgres">>,
+        pool_size => 10
+    }}
+]}].
+```
+
+The config is looked up as `application:get_env(OtpApp, RepoModule)`, so each
+repo has its own config key. This supports multiple repos per application.
 
 ## Define a Migration
 

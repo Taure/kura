@@ -29,10 +29,9 @@ Database layer for Erlang — Ecto-equivalent abstractions in pure Erlang, targe
 -behaviour(kura_schema).
 -include_lib("kura/include/kura.hrl").
 
--export([table/0, fields/0, primary_key/0]).
+-export([table/0, fields/0]).
 
 table() -> <<"users">>.
-primary_key() -> id.
 
 fields() ->
     [
@@ -51,13 +50,9 @@ fields() ->
 -module(my_repo).
 -behaviour(kura_repo).
 
--export([config/0, start/0, all/1, get/2, insert/1, update/1, delete/1]).
+-export([otp_app/0, start/0, all/1, get/2, insert/1, update/1, delete/1]).
 
-config() ->
-    #{pool => my_repo, database => <<"myapp">>,
-      hostname => <<"localhost">>, port => 5432,
-      username => <<"postgres">>, password => <<>>,
-      pool_size => 10}.
+otp_app() -> my_app.
 
 start() -> kura_repo_worker:start(?MODULE).
 all(Q) -> kura_repo_worker:all(?MODULE, Q).
@@ -65,6 +60,21 @@ get(Schema, Id) -> kura_repo_worker:get(?MODULE, Schema, Id).
 insert(CS) -> kura_repo_worker:insert(?MODULE, CS).
 update(CS) -> kura_repo_worker:update(?MODULE, CS).
 delete(CS) -> kura_repo_worker:delete(?MODULE, CS).
+```
+
+Configure the database connection in `sys.config`:
+
+```erlang
+[{my_app, [
+    {my_repo, #{
+        database => <<"myapp">>,
+        hostname => <<"localhost">>,
+        port => 5432,
+        username => <<"postgres">>,
+        password => <<>>,
+        pool_size => 10
+    }}
+]}].
 ```
 
 ### Changesets
@@ -146,18 +156,36 @@ kura_migrator:status(my_repo).
 
 ## Configuration
 
-Migrations are discovered automatically from compiled modules implementing the `kura_migration` behaviour — no configuration needed.
+Database config is read from application environment using `application:get_env(OtpApp, RepoModule)`:
 
 ```erlang
-%% sys.config (optional)
+%% sys.config
+[{my_app, [
+    {my_repo, #{
+        database => <<"my_app_dev">>,
+        hostname => <<"localhost">>,
+        port => 5432,
+        username => <<"postgres">>,
+        password => <<"postgres">>,
+        pool_size => 10
+    }}
+]}].
+```
+
+Migrations are discovered automatically from compiled modules implementing the `kura_migration` behaviour.
+
+Optional telemetry/logging config:
+
+```erlang
 [{kura, [
-    {log, true}
+    {log, true}  %% true | {M, F} | false (default)
 ]}].
 ```
 
 ## Plugins
 
 - [rebar3_kura](https://github.com/Taure/rebar3_kura) — Rebar3 plugin that auto-generates migration files from schema changes. Add a field to your schema, run `rebar3 compile`, and the migration is created for you.
+- [opentelemetry_kura](https://github.com/novaframework/opentelemetry_kura) — OpenTelemetry instrumentation. Subscribes to Kura's telemetry events and creates spans for every database query.
 
 ## Examples
 
