@@ -64,14 +64,13 @@ status(RepoMod) ->
     Applied = get_applied_versions(RepoMod),
     Migrations = discover_migrations(RepoMod),
     Sorted = lists:sort(fun({V1, _}, {V2, _}) -> V1 =< V2 end, Migrations),
-    [
-        {V, M,
-            case lists:member(V, Applied) of
-                true -> up;
-                false -> pending
-            end}
-     || {V, M} <- Sorted
-    ].
+    [tag_status(V, M, Applied) || {V, M} <- Sorted].
+
+tag_status(V, M, Applied) ->
+    case lists:member(V, Applied) of
+        true -> {V, M, up};
+        false -> {V, M, pending}
+    end.
 
 %%----------------------------------------------------------------------
 %% Schema migrations table

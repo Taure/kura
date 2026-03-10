@@ -143,7 +143,7 @@ cast({embed, embeds_one, _}, V) when is_map(V) ->
 cast({embed, embeds_many, _}, V) when is_list(V) ->
     {ok, V};
 cast(Type, _V) ->
-    {error, <<"cannot cast to ", (atom_to_binary(format_type(Type), utf8))/binary>>}.
+    {error, <<"cannot cast to ", (format_type(Type))/binary>>}.
 
 %%----------------------------------------------------------------------
 %% Dump: Erlang term → pgo-compatible value
@@ -184,7 +184,7 @@ dump({embed, embeds_one, Mod}, V) when is_map(V) ->
 dump({embed, embeds_many, Mod}, V) when is_list(V) ->
     json_encode([dump_embed_to_term(Mod, Item) || Item <- V]);
 dump(Type, _V) ->
-    {error, <<"cannot dump ", (atom_to_binary(format_type(Type), utf8))/binary>>}.
+    {error, <<"cannot dump ", (format_type(Type))/binary>>}.
 
 %%----------------------------------------------------------------------
 %% Load: pgo result → Erlang term
@@ -245,7 +245,7 @@ load({embed, embeds_many, Mod}, V) when is_binary(V) ->
 load({embed, embeds_many, Mod}, V) when is_list(V) ->
     {ok, [load_embed_map(Mod, M) || M <- V]};
 load(Type, _V) ->
-    {error, <<"cannot load ", (atom_to_binary(format_type(Type), utf8))/binary>>}.
+    {error, <<"cannot load ", (format_type(Type))/binary>>}.
 
 %%----------------------------------------------------------------------
 %% Internal helpers
@@ -374,12 +374,13 @@ load_array(Inner, [H | T], Acc) ->
     end.
 
 format_type({enum, _}) ->
-    enum;
+    <<"enum">>;
 format_type({array, Inner}) ->
-    binary_to_atom(<<"array_", (atom_to_binary(format_type(Inner), utf8))/binary>>);
+    <<"array_", (format_type(Inner))/binary>>;
 format_type({embed, _, Mod}) ->
-    Mod;
-format_type(T) when is_atom(T) -> T.
+    atom_to_binary(Mod, utf8);
+format_type(T) when is_atom(T) ->
+    atom_to_binary(T, utf8).
 
 dump_embed_to_term(Mod, Map) ->
     Types = kura_schema:field_types(Mod),
