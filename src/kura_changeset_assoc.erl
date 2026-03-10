@@ -22,14 +22,13 @@ cast_assoc(CS, AssocName) ->
 cast_assoc(CS = #kura_changeset{schema = SchemaMod, params = Params, data = Data}, AssocName, Opts) ->
     case kura_schema:association(SchemaMod, AssocName) of
         {ok, Assoc} ->
-            NestedParams = maps:get(AssocName, Params, undefined),
-            case NestedParams of
-                undefined ->
-                    CS;
-                _ ->
+            case Params of
+                #{AssocName := NestedParams} ->
                     Existing = maps:get(AssocName, Data, undefined),
                     WithFun = maps:get(with, Opts, default_cast_fun(Assoc)),
-                    cast_assoc_params(CS, AssocName, Assoc, NestedParams, Existing, WithFun)
+                    cast_assoc_params(CS, AssocName, Assoc, NestedParams, Existing, WithFun);
+                #{} ->
+                    CS
             end;
         {error, not_found} ->
             kura_changeset:add_error(CS, AssocName, ~"unknown association")
@@ -57,13 +56,12 @@ cast_embed(CS, EmbedName) ->
 cast_embed(CS = #kura_changeset{schema = SchemaMod, params = Params}, EmbedName, Opts) ->
     case kura_schema:embed(SchemaMod, EmbedName) of
         {ok, Embed} ->
-            NestedParams = maps:get(EmbedName, Params, undefined),
-            case NestedParams of
-                undefined ->
-                    CS;
-                _ ->
+            case Params of
+                #{EmbedName := NestedParams} ->
                     WithFun = maps:get(with, Opts, default_embed_cast_fun(Embed)),
-                    cast_embed_params(CS, EmbedName, Embed, NestedParams, WithFun)
+                    cast_embed_params(CS, EmbedName, Embed, NestedParams, WithFun);
+                #{} ->
+                    CS
             end;
         {error, not_found} ->
             kura_changeset:add_error(CS, EmbedName, ~"unknown embed")
@@ -74,9 +72,7 @@ cast_embed(CS = #kura_changeset{schema = SchemaMod, params = Params}, EmbedName,
 %%----------------------------------------------------------------------
 
 default_embed_cast_fun(#kura_embed{schema = EmbedSchema}) ->
-    AllFields = kura_schema:field_names(EmbedSchema),
-    NonVirtual = kura_schema:non_virtual_fields(EmbedSchema),
-    Allowed = [F || F <- AllFields, lists:member(F, NonVirtual)],
+    Allowed = castable_fields(EmbedSchema, []),
     fun(Data, EmbedParams) ->
         kura_changeset:cast(EmbedSchema, Data, EmbedParams, Allowed)
     end.
@@ -132,17 +128,13 @@ cast_embed_params(CS, EmbedName, #kura_embed{type = embeds_many}, _Params, _With
 
 default_cast_fun(#kura_assoc{type = many_to_many, schema = ChildSchema}) ->
     PK = kura_schema:primary_key(ChildSchema),
-    AllFields = kura_schema:field_names(ChildSchema),
-    NonVirtual = kura_schema:non_virtual_fields(ChildSchema),
-    Allowed = [F || F <- AllFields, lists:member(F, NonVirtual), F =/= PK],
+    Allowed = castable_fields(ChildSchema, [PK]),
     fun(Data, ChildParams) ->
         kura_changeset:cast(ChildSchema, Data, ChildParams, Allowed)
     end;
 default_cast_fun(#kura_assoc{schema = ChildSchema, foreign_key = FK}) ->
     PK = kura_schema:primary_key(ChildSchema),
-    AllFields = kura_schema:field_names(ChildSchema),
-    NonVirtual = kura_schema:non_virtual_fields(ChildSchema),
-    Allowed = [F || F <- AllFields, lists:member(F, NonVirtual), F =/= PK, F =/= FK],
+    Allowed = castable_fields(ChildSchema, [PK, FK]),
     fun(Data, ChildParams) ->
         kura_changeset:cast(ChildSchema, Data, ChildParams, Allowed)
     end.
@@ -225,9 +217,7 @@ coerce_assoc_value(_Assoc, Value) ->
 
 coerce_single(#kura_assoc{type = many_to_many, schema = ChildSchema}, Map) when is_map(Map) ->
     PK = kura_schema:primary_key(ChildSchema),
-    AllFields = kura_schema:field_names(ChildSchema),
-    NonVirtual = kura_schema:non_virtual_fields(ChildSchema),
-    Allowed = [F || F <- AllFields, lists:member(F, NonVirtual), F =/= PK],
+    Allowed = castable_fields(ChildSchema, [PK]),
     NormMap = kura_changeset:normalize_params(Map),
     case NormMap of
         #{PK := PKVal} when PKVal =/= undefined ->
@@ -239,10 +229,13 @@ coerce_single(#kura_assoc{type = many_to_many, schema = ChildSchema}, Map) when 
     end;
 coerce_single(#kura_assoc{schema = ChildSchema, foreign_key = FK}, Map) when is_map(Map) ->
     PK = kura_schema:primary_key(ChildSchema),
-    AllFields = kura_schema:field_names(ChildSchema),
-    NonVirtual = kura_schema:non_virtual_fields(ChildSchema),
-    Allowed = [F || F <- AllFields, lists:member(F, NonVirtual), F =/= PK, F =/= FK],
+    Allowed = castable_fields(ChildSchema, [PK, FK]),
     CS = kura_changeset:cast(ChildSchema, #{}, Map, Allowed),
     CS#kura_changeset{action = insert};
 coerce_single(_Assoc, #kura_changeset{} = CS) ->
     CS.
+
+castable_fields(Schema, Exclude) ->
+    AllFields = kura_schema:field_names(Schema),
+    NonVirtual = kura_schema:non_virtual_fields(Schema),
+    [F || F <- AllFields, lists:member(F, NonVirtual), not lists:member(F, Exclude)].
