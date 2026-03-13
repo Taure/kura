@@ -449,10 +449,10 @@ compile_condition({Field, Value}, Counter) when is_atom(Field) ->
 
 compile_joins([], _Table, Counter) ->
     {<<>>, [], Counter};
-compile_joins(Joins, _FromTable, Counter) ->
-    {Parts, Params, NewCounter} = lists:foldl(
-        fun({Type, JoinTable, {LeftCol, RightCol}, As}, {Acc, PAcc, C}) ->
-            JoinTableBin = atom_to_binary(JoinTable, utf8),
+compile_joins(Joins, FromTable, Counter) ->
+    {Parts, Params, NewCounter, _LastTable} = lists:foldl(
+        fun({Type, JoinTable, {LeftCol, RightCol}, As}, {Acc, PAcc, C, PrevTable}) ->
+            JoinTableBin = resolve_table(JoinTable),
             TableRef =
                 case As of
                     undefined ->
@@ -476,17 +476,17 @@ compile_joins(Joins, _FromTable, Counter) ->
                 <<" ">>,
                 TableRef,
                 <<" ON ">>,
+                quote_ident(PrevTable),
+                <<".">>,
+                quote_ident(atom_to_binary(LeftCol, utf8)),
+                <<" = ">>,
                 quote_ident(JoinRef),
                 <<".">>,
-                quote_ident(atom_to_binary(RightCol, utf8)),
-                <<" = ">>,
-                quote_ident(JoinTableBin),
-                <<".">>,
-                quote_ident(atom_to_binary(LeftCol, utf8))
+                quote_ident(atom_to_binary(RightCol, utf8))
             ],
-            {Acc ++ [Part], PAcc, C}
+            {Acc ++ [Part], PAcc, C, JoinRef}
         end,
-        {[], [], Counter},
+        {[], [], Counter, FromTable},
         Joins
     ),
     {iolist_to_binary(Parts), Params, NewCounter}.

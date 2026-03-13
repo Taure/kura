@@ -125,12 +125,35 @@ where_fragment_test() ->
 join_test() ->
     Q = kura_query:join(kura_query:from(user), inner, post, {id, user_id}),
     {SQL, _} = kura_query_compiler:to_sql(Q),
-    ?assert(binary:match(SQL, <<"INNER JOIN \"post\"">>) =/= nomatch).
+    ?assert(binary:match(SQL, <<"INNER JOIN \"post\"">>) =/= nomatch),
+    ?assert(binary:match(SQL, <<"ON \"user\".\"id\" = \"post\".\"user_id\"">>) =/= nomatch).
 
 left_join_test() ->
     Q = kura_query:join(kura_query:from(user), left, post, {id, user_id}),
     {SQL, _} = kura_query_compiler:to_sql(Q),
-    ?assert(binary:match(SQL, <<"LEFT JOIN \"post\"">>) =/= nomatch).
+    ?assert(binary:match(SQL, <<"LEFT JOIN \"post\"">>) =/= nomatch),
+    ?assert(binary:match(SQL, <<"ON \"user\".\"id\" = \"post\".\"user_id\"">>) =/= nomatch).
+
+join_chained_test() ->
+    Q0 = kura_query:from(user),
+    Q1 = kura_query:join(Q0, inner, post, {id, user_id}),
+    Q2 = kura_query:join(Q1, inner, comment, {id, post_id}),
+    {SQL, _} = kura_query_compiler:to_sql(Q2),
+    ?assert(binary:match(SQL, <<"ON \"user\".\"id\" = \"post\".\"user_id\"">>) =/= nomatch),
+    ?assert(binary:match(SQL, <<"ON \"post\".\"id\" = \"comment\".\"post_id\"">>) =/= nomatch).
+
+join_with_alias_test() ->
+    Q = kura_query:join(kura_query:from(user), inner, post, {id, user_id}, p),
+    {SQL, _} = kura_query_compiler:to_sql(Q),
+    ?assert(binary:match(SQL, <<"INNER JOIN \"post\" AS \"p\"">>) =/= nomatch),
+    ?assert(binary:match(SQL, <<"ON \"user\".\"id\" = \"p\".\"user_id\"">>) =/= nomatch).
+
+join_schema_module_test() ->
+    Q = kura_query:join(
+        kura_query:from(kura_test_schema), inner, kura_test_post_schema, {id, author_id}
+    ),
+    {SQL, _} = kura_query_compiler:to_sql(Q),
+    ?assert(binary:match(SQL, <<"INNER JOIN \"posts\"">>) =/= nomatch).
 
 %%----------------------------------------------------------------------
 %% ORDER BY

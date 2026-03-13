@@ -1,5 +1,5 @@
 .PHONY: test test-up test-down _test compile fmt check \
-       test-stress test-bench test-migration-stress test-resilience test-production
+       test-stress test-bench test-bench-full test-migration-stress test-resilience test-production
 
 DOCKER_COMPOSE = docker compose
 
@@ -29,6 +29,10 @@ test-stress: test-up
 
 test-bench: test-up
 	rebar3 eunit --module=kura_bench_tests || ($(MAKE) test-down && exit 1)
+	$(MAKE) test-down
+
+test-bench-full: test-up
+	rebar3 eunit --module=kura_comprehensive_bench_tests || ($(MAKE) test-down && exit 1)
 	$(MAKE) test-down
 
 test-migration-stress: test-up
