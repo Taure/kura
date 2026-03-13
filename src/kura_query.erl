@@ -63,7 +63,20 @@ select_expr(Q, Exprs) ->
 where(Q = #kura_query{wheres = W}, Condition) ->
     Q#kura_query{wheres = W ++ [Condition]}.
 
--doc "Add a JOIN clause. `On` is `{LeftCol, RightCol}`.".
+-doc """
+Add a JOIN clause. `Table` can be a schema module or raw table atom.
+`On` is `{LeftCol, RightCol}` where LeftCol is on the previous table
+(FROM for the first join, or the last joined table) and RightCol is on
+the joined table. For chained joins, the left side automatically advances.
+
+```erlang
+Q = kura_query:from(user_schema),
+Q1 = kura_query:join(Q, inner, post_schema, {id, user_id}),
+%% => users.id = posts.user_id
+Q2 = kura_query:join(Q1, inner, comment_schema, {id, post_id}).
+%% => posts.id = comments.post_id
+```
+""".
 -spec join(#kura_query{}, inner | left | right | full, atom(), {atom(), atom()}) -> #kura_query{}.
 join(Q, Type, Table, On) ->
     join(Q, Type, Table, On, undefined).
