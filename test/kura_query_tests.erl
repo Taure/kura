@@ -6,6 +6,23 @@ from_test() ->
     Q = kura_query:from(user),
     ?assertEqual(user, Q#kura_query.from).
 
+from_defaults_test() ->
+    Q = kura_query:from(user),
+    ?assertEqual([], Q#kura_query.select),
+    ?assertEqual([], Q#kura_query.wheres),
+    ?assertEqual([], Q#kura_query.joins),
+    ?assertEqual([], Q#kura_query.order_bys),
+    ?assertEqual([], Q#kura_query.group_bys),
+    ?assertEqual([], Q#kura_query.havings),
+    ?assertEqual(undefined, Q#kura_query.limit),
+    ?assertEqual(undefined, Q#kura_query.offset),
+    ?assertEqual(false, Q#kura_query.distinct),
+    ?assertEqual(undefined, Q#kura_query.lock),
+    ?assertEqual(undefined, Q#kura_query.prefix),
+    ?assertEqual([], Q#kura_query.preloads),
+    ?assertEqual([], Q#kura_query.ctes),
+    ?assertEqual([], Q#kura_query.combinations).
+
 select_test() ->
     Q = kura_query:select(kura_query:from(user), [name, email]),
     ?assertEqual([name, email], Q#kura_query.select).
