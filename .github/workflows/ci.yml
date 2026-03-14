@@ -14,7 +14,7 @@ jobs:
       rebar3-version: '3.24'
       enable-ct: true
       enable-ex-doc: true
-      eunit-args: '--module=kura_assoc_tests,kura_cast_assoc_tests,kura_changeset_tests,kura_embed_tests,kura_integration_assoc_tests,kura_integration_tests,kura_many_to_many_tests,kura_migrator_tests,kura_multi_tests,kura_paginator_tests,kura_query_compiler_tests,kura_query_tests,kura_sandbox_tests,kura_schemaless_tests,kura_telemetry_tests,kura_types_tests,kura_stress_tests,kura_bench_tests,kura_migration_stress_tests'
+
       postgres: true
       postgres-version: '16'
       postgres-db: 'kura_test'
