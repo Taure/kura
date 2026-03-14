@@ -275,7 +275,13 @@ insert_all(RepoMod, SchemaMod, Entries, Opts) ->
 -spec transaction(module(), fun(() -> any())) -> any() | {error, any()}.
 transaction(RepoMod, Fun) ->
     Pool = get_pool(RepoMod),
-    pgo:transaction(Fun, #{pool => Pool}).
+    case kura_sandbox:get_conn(Pool) of
+        {ok, _Conn} ->
+            %% Already in a sandbox transaction — run directly
+            Fun();
+        not_found ->
+            pgo:transaction(Fun, #{pool => Pool})
+    end.
 
 -doc "Execute a `kura_multi` pipeline inside a transaction.".
 -spec multi(module(), term()) ->
@@ -345,7 +351,13 @@ execute_multi_op(_RepoMod, {run, Fun}, Acc) ->
 pgo_query(RepoMod, SQL, Params) ->
     Pool = get_pool(RepoMod),
     T0 = erlang:monotonic_time(),
-    Result = pgo:query(SQL, Params, #{pool => Pool, decode_opts => ?DECODE_OPTS}),
+    Result =
+        case kura_sandbox:get_conn(Pool) of
+            {ok, Conn} ->
+                pgo:query(SQL, Params, #{decode_opts => ?DECODE_OPTS}, Conn);
+            not_found ->
+                pgo:query(SQL, Params, #{pool => Pool, decode_opts => ?DECODE_OPTS})
+        end,
     T1 = erlang:monotonic_time(),
     DurationNative = T1 - T0,
     DurationUs = erlang:convert_time_unit(DurationNative, native, microsecond),

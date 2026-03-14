@@ -16,16 +16,22 @@ resilience_test_() ->
         ]
     end}.
 
-%% Docker tests are separate so pool death doesn't affect other tests
+%% Docker tests are separate so pool death doesn't affect other tests.
+%% Skipped in CI since they require docker compose control.
 docker_resilience_test_() ->
-    {setup, fun setup/0, fun docker_teardown/1, fun(_) ->
-        [
-            {"query during PG downtime returns error",
-                {timeout, 120, fun t_query_during_pg_downtime/0}},
-            {"recovery after restart preserves data",
-                {timeout, 120, fun t_recovery_after_restart/0}}
-        ]
-    end}.
+    case os:getenv("CI") of
+        false ->
+            {setup, fun setup/0, fun docker_teardown/1, fun(_) ->
+                [
+                    {"query during PG downtime returns error",
+                        {timeout, 120, fun t_query_during_pg_downtime/0}},
+                    {"recovery after restart preserves data",
+                        {timeout, 120, fun t_recovery_after_restart/0}}
+                ]
+            end};
+        _ ->
+            []
+    end.
 
 setup() ->
     application:ensure_all_started(pgo),
