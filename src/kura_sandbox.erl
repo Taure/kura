@@ -85,7 +85,7 @@ checkout(RepoMod, Opts) ->
 
     %% Set process dict so pgo:query in this process uses the connection
     erlang:put(pgo_transaction_connection, Conn),
-    pgo:query(<<"BEGIN">>, [], #{pool => Pool}),
+    _ = pgo:query(<<"BEGIN">>, [], #{pool => Pool}),
     ok.
 
 -doc "Roll back the sandbox transaction and return the connection to the pool.".
@@ -113,7 +113,7 @@ checkin(RepoMod) ->
         undefined ->
             ok;
         _ ->
-            pgo:query(<<"ROLLBACK">>, [], #{pool => Pool}),
+            _ = pgo:query(<<"ROLLBACK">>, [], #{pool => Pool}),
             erlang:erase(pgo_transaction_connection),
             pgo:checkin(Ref, Conn),
             %% Clean up any allowances for this owner
