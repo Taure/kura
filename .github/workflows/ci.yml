@@ -18,6 +18,8 @@ jobs:
       enable-ct: true
       enable-ex-doc: true
       enable-audit: true
+      enable-sbom: true
+      enable-sbom-scan: true
       enable-dependency-submission: true
 
       postgres: true
