@@ -9,9 +9,6 @@ on:
 jobs:
   ci:
     uses: Taure/erlang-ci/.github/workflows/ci.yml@v2
-    permissions:
-      contents: read
-      pull-requests: write
     with:
       otp-version: '28'
       rebar3-version: '3.24'
