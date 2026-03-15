@@ -9,11 +9,16 @@ on:
 jobs:
   ci:
     uses: Taure/erlang-ci/.github/workflows/ci.yml@v1
+    permissions:
+      contents: write
+      pull-requests: write
     with:
       otp-version: '28'
       rebar3-version: '3.24'
       enable-ct: true
       enable-ex-doc: true
+      enable-audit: true
+      enable-dependency-submission: true
 
       postgres: true
       postgres-version: '16'

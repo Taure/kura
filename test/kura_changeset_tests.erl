@@ -513,6 +513,80 @@ optimistic_lock_from_nil_test() ->
     ?assertEqual(1, kura_changeset:get_change(CS2, lock_version)).
 
 %%----------------------------------------------------------------------
+%% validate_number — boundary and equal_to
+%%----------------------------------------------------------------------
+
+validate_number_gte_boundary_pass_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{age => 18}, [age]),
+    CS2 = kura_changeset:validate_number(CS, age, [{greater_than_or_equal_to, 18}]),
+    ?assert(CS2#kura_changeset.valid).
+
+validate_number_gte_boundary_fail_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{age => 17}, [age]),
+    CS2 = kura_changeset:validate_number(CS, age, [{greater_than_or_equal_to, 18}]),
+    ?assertNot(CS2#kura_changeset.valid).
+
+validate_number_lte_boundary_pass_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{age => 100}, [age]),
+    CS2 = kura_changeset:validate_number(CS, age, [{less_than_or_equal_to, 100}]),
+    ?assert(CS2#kura_changeset.valid).
+
+validate_number_lte_boundary_fail_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{age => 101}, [age]),
+    CS2 = kura_changeset:validate_number(CS, age, [{less_than_or_equal_to, 100}]),
+    ?assertNot(CS2#kura_changeset.valid).
+
+validate_number_equal_to_pass_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{age => 42}, [age]),
+    CS2 = kura_changeset:validate_number(CS, age, [{equal_to, 42}]),
+    ?assert(CS2#kura_changeset.valid).
+
+validate_number_equal_to_fail_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{age => 43}, [age]),
+    CS2 = kura_changeset:validate_number(CS, age, [{equal_to, 42}]),
+    ?assertNot(CS2#kura_changeset.valid).
+
+%%----------------------------------------------------------------------
+%% validate_required with null
+%%----------------------------------------------------------------------
+
+validate_required_null_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{name => null}, [name]),
+    CS2 = kura_changeset:validate_required(CS, [name]),
+    ?assertNot(CS2#kura_changeset.valid).
+
+%%----------------------------------------------------------------------
+%% record defaults
+%%----------------------------------------------------------------------
+
+changeset_defaults_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{}, []),
+    ?assert(CS#kura_changeset.valid),
+    ?assertEqual(#{}, CS#kura_changeset.changes),
+    ?assertEqual([], CS#kura_changeset.errors).
+
+%%----------------------------------------------------------------------
+%% normalize_key edge cases
+%%----------------------------------------------------------------------
+
+cast_unknown_binary_key_test() ->
+    CS = kura_changeset:cast(
+        kura_test_schema, #{}, #{<<"completely_unknown_key_xyz_999">> => <<"val">>}, [name]
+    ),
+    ?assert(CS#kura_changeset.valid).
+
+cast_list_key_existing_atom_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{"name" => <<"Alice">>}, [name]),
+    ?assert(CS#kura_changeset.valid),
+    ?assertEqual(<<"Alice">>, maps:get(name, CS#kura_changeset.changes)).
+
+cast_list_key_nonexistent_atom_test() ->
+    CS = kura_changeset:cast(
+        kura_test_schema, #{}, #{"nonexistent_key_xyz_888" => <<"val">>}, [name]
+    ),
+    ?assert(CS#kura_changeset.valid).
+
+%%----------------------------------------------------------------------
 %% schema constraints auto-registration
 %%----------------------------------------------------------------------
 
@@ -535,6 +609,15 @@ schema_constraints_auto_registered_test() ->
 schema_no_constraints_test() ->
     CS = kura_changeset:cast(kura_test_schema, #{}, #{name => <<"Alice">>}, [name]),
     ?assertEqual([], CS#kura_changeset.constraints).
+
+schema_index_constraints_auto_registered_test() ->
+    CS = kura_changeset:cast(
+        kura_test_indexed_schema, #{}, #{code => <<"ABC">>}, [code]
+    ),
+    ?assertEqual(1, length(CS#kura_changeset.constraints)),
+    [C] = CS#kura_changeset.constraints,
+    ?assertEqual(unique, C#kura_constraint.type),
+    ?assertEqual(code, C#kura_constraint.field).
 
 schema_constraints_merged_with_manual_test() ->
     CS = kura_changeset:cast(
