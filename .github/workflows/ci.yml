@@ -8,7 +8,7 @@ on:
 
 jobs:
   ci:
-    uses: Taure/erlang-ci/.github/workflows/ci.yml@v3
+    uses: Taure/erlang-ci/.github/workflows/ci.yml@v4
     permissions:
       contents: write
       pull-requests: write
