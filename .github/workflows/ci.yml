@@ -13,8 +13,7 @@ jobs:
       contents: write
       pull-requests: write
     with:
-      otp-version: '28'
-      rebar3-version: '3.24'
+      version-file: '.tool-versions'
       enable-ct: true
       enable-ex-doc: true
       enable-audit: true
