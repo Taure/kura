@@ -13,6 +13,10 @@ jobs:
       contents: write
       pull-requests: write
     with:
+      enable-summary: true
+      enable-sbom-scan: true
+      enable-sbom: true
+      enable-coverage: true
       otp-version: '28'
       rebar3-version: '3.24'
       enable-ct: true
@@ -36,6 +40,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+      enable-summary: true
+      enable-sbom-scan: true
+      enable-sbom: true
+      enable-coverage: true
           fetch-depth: 0
 
       - name: Read version from CHANGELOG.md
