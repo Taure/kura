@@ -21,6 +21,7 @@ jobs:
       enable-sbom: true
       enable-sbom-scan: true
       enable-dependency-submission: true
+      enable-summary: true
 
       postgres: true
       postgres-version: '16'
