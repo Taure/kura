@@ -622,12 +622,11 @@ compile_on_conflict({Field, replace_all}, Fields, Data, Counter) when is_atom(Fi
     compile_on_conflict({Field, {replace, UpdateFields}}, Fields, Data, Counter);
 compile_on_conflict({{constraint, Name}, replace_all}, Fields, Data, Counter) ->
     compile_on_conflict_update(
-        [<<" ON CONFLICT ON CONSTRAINT ">>, quote_ident(Name)], Fields, Fields, Data, Counter
+        [<<" ON CONFLICT ON CONSTRAINT ">>, quote_ident(Name)], Fields, Data, Counter
     );
 compile_on_conflict({Field, {replace, UpdateFields}}, _Fields, Data, Counter) when is_atom(Field) ->
     compile_on_conflict_update(
         [<<" ON CONFLICT (">>, quote_ident(atom_to_binary(Field, utf8)), <<")">>],
-        UpdateFields,
         UpdateFields,
         Data,
         Counter
@@ -636,12 +635,11 @@ compile_on_conflict({{constraint, Name}, {replace, UpdateFields}}, _Fields, Data
     compile_on_conflict_update(
         [<<" ON CONFLICT ON CONSTRAINT ">>, quote_ident(Name)],
         UpdateFields,
-        UpdateFields,
         Data,
         Counter
     ).
 
-compile_on_conflict_update(ConflictTarget, UpdateFields, _AllFields, Data, Counter) ->
+compile_on_conflict_update(ConflictTarget, UpdateFields, Data, Counter) ->
     {Sets, Params, _} = lists:foldl(
         fun(F, {SAcc, PAcc, N}) ->
             Value = maps:get(F, Data),
