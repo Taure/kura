@@ -789,7 +789,7 @@ t_aggregates() ->
             {"AVG", fun(Q) -> kura_query:avg(Q, view_count) end},
             {"MIN", fun(Q) -> kura_query:min(Q, view_count) end},
             {"MAX", fun(Q) -> kura_query:max(Q, view_count) end},
-            {"COUNT", fun(Q) -> kura_query:count(Q) end}
+            {"COUNT", fun kura_query:count/1}
         ]
     ).
 
