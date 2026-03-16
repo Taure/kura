@@ -545,7 +545,7 @@ migrator_compile_index_where_proplist(_Config) ->
 
 %% Covers kura_query_compiler line 624: constraint replace_all
 on_conflict_constraint_replace_all(_Config) ->
-    kura_test_repo:query("CREATE UNIQUE INDEX IF NOT EXISTS cov2_email_u5 ON users (email)", []),
+    kura_test_repo:query("ALTER TABLE users ADD CONSTRAINT cov2_email_u5 UNIQUE (email)", []),
     {ok, _} = insert_user(<<"C2CRA">>, <<"c2cra@test.com">>),
     CS = kura_changeset:cast(
         kura_test_schema,
@@ -559,11 +559,11 @@ on_conflict_constraint_replace_all(_Config) ->
         #{on_conflict => {{constraint, <<"cov2_email_u5">>}, replace_all}}
     ),
     ?assertMatch({ok, _}, Result),
-    kura_test_repo:query("DROP INDEX IF EXISTS cov2_email_u5", []).
+    kura_test_repo:query("ALTER TABLE users DROP CONSTRAINT IF EXISTS cov2_email_u5", []).
 
 %% Covers kura_query_compiler line 636: constraint {replace, Fields}
 on_conflict_constraint_replace(_Config) ->
-    kura_test_repo:query("CREATE UNIQUE INDEX IF NOT EXISTS cov2_email_u6 ON users (email)", []),
+    kura_test_repo:query("ALTER TABLE users ADD CONSTRAINT cov2_email_u6 UNIQUE (email)", []),
     {ok, _} = insert_user(<<"C2CRF">>, <<"c2crf@test.com">>),
     CS = kura_changeset:cast(
         kura_test_schema,
@@ -577,7 +577,7 @@ on_conflict_constraint_replace(_Config) ->
         #{on_conflict => {{constraint, <<"cov2_email_u6">>}, {replace, [name]}}}
     ),
     ?assertMatch({ok, _}, Result),
-    kura_test_repo:query("DROP INDEX IF EXISTS cov2_email_u6", []).
+    kura_test_repo:query("ALTER TABLE users DROP CONSTRAINT IF EXISTS cov2_email_u6", []).
 
 %%======================================================================
 %% schema_edges
@@ -607,10 +607,12 @@ schema_column_map_explicit_column(_Config) ->
 
 %% Covers kura_sandbox lines 108, 114: checkin when no connection exists
 sandbox_checkin_no_conn(_Config) ->
+    kura_sandbox:start(),
     ok = kura_sandbox:checkin(kura_test_repo).
 
 %% Covers kura_sandbox line 164: allowed lookup finds owner but owner has no conn
 sandbox_allowed_lookup_miss(_Config) ->
+    kura_sandbox:start(),
     Pool = maps:get(pool, kura_repo:config(kura_test_repo)),
     FakePid = spawn(fun() -> ok end),
     timer:sleep(50),
