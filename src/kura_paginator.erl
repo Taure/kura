@@ -28,7 +28,7 @@ Q = kura_query:from(my_schema),
 
 -include("kura.hrl").
 
--export([paginate/3, cursor_paginate/3]).
+-export([paginate/3, cursor_paginate/3, total_pages/2]).
 
 -doc """
 Offset-based pagination. Returns entries for the given page along with
@@ -60,11 +60,7 @@ paginate(Repo, Query, Opts) ->
             },
             case kura_repo_worker:all(Repo, DataQ) of
                 {ok, Entries} ->
-                    TotalPages =
-                        case TotalEntries of
-                            0 -> 0;
-                            N -> (N + PageSize - 1) div PageSize
-                        end,
+                    TotalPages = total_pages(TotalEntries, PageSize),
                     {ok, #{
                         entries => Entries,
                         page => Page,
@@ -167,3 +163,8 @@ cursor_paginate(Repo, Query, Opts) ->
         {error, _} = Err ->
             Err
     end.
+
+-doc "Calculate total number of pages given total entries and page size.".
+-spec total_pages(non_neg_integer(), pos_integer()) -> non_neg_integer().
+total_pages(0, _PageSize) -> 0;
+total_pages(TotalEntries, PageSize) -> (TotalEntries + PageSize - 1) div PageSize.

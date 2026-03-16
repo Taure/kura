@@ -22,6 +22,9 @@ jobs:
       enable-sbom-scan: true
       enable-dependency-submission: true
       enable-summary: true
+      enable-mutate: true
+      mutate-diff: true
+      mutate-min-score: '80'
 
       postgres: true
       postgres-version: '16'
