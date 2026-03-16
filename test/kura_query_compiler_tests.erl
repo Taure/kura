@@ -328,6 +328,32 @@ insert_on_conflict_replace_all_test() ->
     ),
     ?assertEqual([<<"Alice">>, <<"a@b.com">>, <<"Alice">>], Params).
 
+insert_on_conflict_constraint_replace_all_test() ->
+    {SQL, Params} = kura_query_compiler:insert(
+        kura_test_schema,
+        [name, email],
+        #{name => <<"Alice">>, email => <<"a@b.com">>},
+        #{on_conflict => {{constraint, <<"uq_email">>}, replace_all}}
+    ),
+    ?assertEqual(
+        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) ON CONFLICT ON CONSTRAINT \"uq_email\" DO UPDATE SET \"name\" = $3, \"email\" = $4 RETURNING *">>,
+        SQL
+    ),
+    ?assertEqual([<<"Alice">>, <<"a@b.com">>, <<"Alice">>, <<"a@b.com">>], Params).
+
+insert_on_conflict_constraint_replace_fields_test() ->
+    {SQL, Params} = kura_query_compiler:insert(
+        kura_test_schema,
+        [name, email],
+        #{name => <<"Alice">>, email => <<"a@b.com">>},
+        #{on_conflict => {{constraint, <<"uq_email">>}, {replace, [name]}}}
+    ),
+    ?assertEqual(
+        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) ON CONFLICT ON CONSTRAINT \"uq_email\" DO UPDATE SET \"name\" = $3 RETURNING *">>,
+        SQL
+    ),
+    ?assertEqual([<<"Alice">>, <<"a@b.com">>, <<"Alice">>], Params).
+
 insert_on_conflict_replace_fields_test() ->
     {SQL, Params} = kura_query_compiler:insert(
         kura_test_schema,
