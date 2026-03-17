@@ -3,6 +3,12 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-eqwalizer({nowarn_function, t_sequential_insert_throughput/0}).
+-eqwalizer({nowarn_function, t_concurrent_insert_throughput/0}).
+-eqwalizer({nowarn_function, t_insert_all_bulk/0}).
+-eqwalizer({nowarn_function, t_preload_batching/0}).
+-eqwalizer({nowarn_function, t_stream_large_dataset/0}).
+
 %%----------------------------------------------------------------------
 %% Test fixture
 %%----------------------------------------------------------------------
@@ -70,7 +76,6 @@ t_sequential_insert_throughput() ->
     Start = erlang:monotonic_time(microsecond),
     lists:foreach(
         fun(I) ->
-            % eqwalizer:fixme - I is integer from lists:seq
             Name = iolist_to_binary([<<"seq_">>, integer_to_binary(I)]),
             Email = iolist_to_binary([Name, <<"@bench.com">>]),
             CS = kura_changeset:cast(
@@ -98,7 +103,6 @@ t_concurrent_insert_throughput() ->
         spawn_link(fun() ->
             lists:foreach(
                 fun(J) ->
-                    % eqwalizer:fixme - J is integer from lists:seq
                     Idx = (W - 1) * PerWorker + J,
                     Name = iolist_to_binary([<<"con_">>, integer_to_binary(Idx)]),
                     Email = iolist_to_binary([Name, <<"@bench.com">>]),
@@ -167,7 +171,6 @@ t_read_latency_distribution() ->
 t_insert_all_bulk() ->
     clean_tables(),
     lists:foreach(
-        % eqwalizer:fixme - Size is integer from list
         fun(Size) ->
             clean_tables(),
             Entries = [
@@ -206,7 +209,6 @@ t_preload_batching() ->
     %% Insert 5 posts per user
     PostEntries = lists:flatmap(
         fun(User) ->
-            % eqwalizer:fixme - User is map from repo:all
             Uid = maps:get(id, User),
             [
                 #{
@@ -226,7 +228,6 @@ t_preload_batching() ->
     %% Each user should have 5 posts
     lists:foreach(
         fun(U) ->
-            % eqwalizer:fixme - U is map from preload
             Posts = maps:get(posts, U),
             ?assertEqual(5, length(Posts))
         end,
@@ -237,7 +238,6 @@ t_stream_large_dataset() ->
     clean_tables(),
     %% Insert 5000 rows via insert_all in batches of 1000
     lists:foreach(
-        % eqwalizer:fixme - Batch is integer from lists:seq
         fun(Batch) ->
             Offset = (Batch - 1) * 1000,
             Entries = [
