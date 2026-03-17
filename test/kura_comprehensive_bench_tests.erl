@@ -3,6 +3,10 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-eqwalizer({nowarn_function, drop_tables/0}).
+-eqwalizer({nowarn_function, seed_posts/2}).
+-eqwalizer({nowarn_function, seed_comments/2}).
+
 %%----------------------------------------------------------------------
 %% Test fixture
 %%----------------------------------------------------------------------
