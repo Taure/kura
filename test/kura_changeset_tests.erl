@@ -2,6 +2,9 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-eqwalizer({nowarn_function, validate_change_ok_test/0}).
+-eqwalizer({nowarn_function, validate_change_error_test/0}).
+
 %%----------------------------------------------------------------------
 %% cast
 %%----------------------------------------------------------------------

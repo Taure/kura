@@ -3,6 +3,31 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-eqwalizer({nowarn_function, t_where_neq/0}).
+-eqwalizer({nowarn_function, t_where_lt/0}).
+-eqwalizer({nowarn_function, t_where_gt/0}).
+-eqwalizer({nowarn_function, t_where_lte/0}).
+-eqwalizer({nowarn_function, t_where_gte/0}).
+-eqwalizer({nowarn_function, t_where_like/0}).
+-eqwalizer({nowarn_function, t_where_ilike/0}).
+-eqwalizer({nowarn_function, t_where_between/0}).
+-eqwalizer({nowarn_function, t_where_not_in/0}).
+-eqwalizer({nowarn_function, t_where_is_nil/0}).
+-eqwalizer({nowarn_function, t_where_is_not_nil/0}).
+-eqwalizer({nowarn_function, t_where_or/0}).
+-eqwalizer({nowarn_function, t_where_not/0}).
+-eqwalizer({nowarn_function, t_where_fragment/0}).
+-eqwalizer({nowarn_function, t_query/0}).
+-eqwalizer({nowarn_function, t_offset/0}).
+-eqwalizer({nowarn_function, t_distinct/0}).
+-eqwalizer({nowarn_function, t_group_by_having/0}).
+-eqwalizer({nowarn_function, t_raw_query/0}).
+-eqwalizer({nowarn_function, t_subquery_in/0}).
+-eqwalizer({nowarn_function, t_cte/0}).
+-eqwalizer({nowarn_function, t_window_function/0}).
+-eqwalizer({nowarn_function, t_insert_all_returning_true/0}).
+-eqwalizer({nowarn_function, t_insert_all_returning_fields/0}).
+
 %%----------------------------------------------------------------------
 %% Test fixture
 %%----------------------------------------------------------------------

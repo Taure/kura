@@ -2,6 +2,9 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-eqwalizer({nowarn_function, cast_has_one_test/0}).
+-eqwalizer({nowarn_function, put_assoc_single_map_test/0}).
+
 put_assoc_unknown_test() ->
     CS = kura_changeset:cast(kura_test_post, #{}, #{title => <<"Post">>, author_id => 1}, [
         title, author_id

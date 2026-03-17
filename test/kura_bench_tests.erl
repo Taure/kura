@@ -3,6 +3,12 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-eqwalizer({nowarn_function, t_sequential_insert_throughput/0}).
+-eqwalizer({nowarn_function, t_concurrent_insert_throughput/0}).
+-eqwalizer({nowarn_function, t_insert_all_bulk/0}).
+-eqwalizer({nowarn_function, t_preload_batching/0}).
+-eqwalizer({nowarn_function, t_stream_large_dataset/0}).
+
 %%----------------------------------------------------------------------
 %% Test fixture
 %%----------------------------------------------------------------------

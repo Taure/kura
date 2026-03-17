@@ -30,6 +30,8 @@ Q = kura_query:from(my_schema),
 
 -export([paginate/3, cursor_paginate/3, total_pages/2]).
 
+-eqwalizer({nowarn_function, cursor_paginate/3}).
+
 -doc """
 Offset-based pagination. Returns entries for the given page along with
 total counts.

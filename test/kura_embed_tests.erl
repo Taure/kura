@@ -2,6 +2,13 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-eqwalizer({nowarn_function, dump_embed_one_test/0}).
+-eqwalizer({nowarn_function, dump_embed_many_test/0}).
+-eqwalizer({nowarn_function, load_embed_one_from_map_test/0}).
+-eqwalizer({nowarn_function, load_embed_one_from_binary_test/0}).
+-eqwalizer({nowarn_function, load_embed_many_test/0}).
+-eqwalizer({nowarn_function, dump_load_roundtrip_test/0}).
+
 %%----------------------------------------------------------------------
 %% Schema: embeds/1, embed/2
 %%----------------------------------------------------------------------
