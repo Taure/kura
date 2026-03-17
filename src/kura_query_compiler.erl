@@ -51,7 +51,8 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
     Table = resolve_table(From),
     {SelectSQL, Params0, Counter0} = compile_select(Q, Counter00),
     {WhereSQL, Params1, Counter1} = compile_wheres(Q#kura_query.wheres, Counter0),
-    {JoinSQL, Params2, Counter2} = compile_joins(Q#kura_query.joins, Table, Counter1),
+    Prefix = resolve_prefix(Q#kura_query.prefix),
+    {JoinSQL, Params2, Counter2} = compile_joins(Q#kura_query.joins, Table, Prefix, Counter1),
     {GroupSQL, _, Counter3} = compile_group_by(Q#kura_query.group_bys, Counter2),
     {HavingSQL, Params3, Counter4} = compile_havings(Q#kura_query.havings, Counter3),
     {OrderSQL, _, Counter5} = compile_order_by(Q#kura_query.order_bys, Counter4),
@@ -60,11 +61,7 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
     LockSQL = compile_lock(Q#kura_query.lock),
     DistinctSQL = compile_distinct(Q#kura_query.distinct),
 
-    FromClause =
-        case Q#kura_query.prefix of
-            undefined -> [<<"FROM ">>, quote_ident(Table)];
-            Prefix -> [<<"FROM ">>, quote_ident(Prefix), <<".">>, quote_ident(Table)]
-        end,
+    FromClause = [<<"FROM ">>, qualified_table(Table, Prefix)],
 
     MainSQL = iolist_to_binary([
         CteSQL,
@@ -109,7 +106,7 @@ insert(SchemaOrTable, Fields, Data) ->
     ),
     SQL = iolist_to_binary([
         <<"INSERT INTO ">>,
-        quote_ident(Table),
+        qualified_table(Table, resolve_prefix(undefined)),
         <<" (">>,
         join_comma(lists:reverse(Cols)),
         <<") VALUES (">>,
@@ -134,7 +131,7 @@ insert(SchemaOrTable, Fields, Data, #{on_conflict := OnConflict}) ->
     {ConflictSQL, ConflictParams} = compile_on_conflict(OnConflict, Fields, Data, Counter),
     SQL = iolist_to_binary([
         <<"INSERT INTO ">>,
-        quote_ident(Table),
+        qualified_table(Table, resolve_prefix(undefined)),
         <<" (">>,
         join_comma(lists:reverse(Cols)),
         <<") VALUES (">>,
@@ -166,7 +163,7 @@ update(SchemaOrTable, Fields, Changes, {PKField, PKValue}) ->
     PKPlaceholder = [<<"$">>, integer_to_binary(Counter)],
     SQL = iolist_to_binary([
         <<"UPDATE ">>,
-        quote_ident(Table),
+        qualified_table(Table, resolve_prefix(undefined)),
         <<" SET ">>,
         join_comma(lists:reverse(Sets)),
         <<" WHERE ">>,
@@ -186,7 +183,7 @@ delete(SchemaOrTable, PKField, PKValue) ->
     Table = resolve_table(SchemaOrTable),
     SQL = iolist_to_binary([
         <<"DELETE FROM ">>,
-        quote_ident(Table),
+        qualified_table(Table, resolve_prefix(undefined)),
         <<" WHERE ">>,
         quote_ident(atom_to_binary(PKField, utf8)),
         <<" = $1">>,
@@ -199,8 +196,9 @@ delete(SchemaOrTable, PKField, PKValue) ->
 %%----------------------------------------------------------------------
 
 -spec update_all(#kura_query{}, map()) -> {iodata(), [term()]}.
-update_all(#kura_query{from = From, wheres = Wheres}, SetMap) ->
+update_all(#kura_query{from = From, wheres = Wheres, prefix = QPrefix}, SetMap) ->
     Table = resolve_table(From),
+    Prefix = resolve_prefix(QPrefix),
     Fields = maps:keys(SetMap),
     {Sets, Params, Counter} = lists:foldl(
         fun(Field, {SAcc, PAcc, N}) ->
@@ -214,7 +212,7 @@ update_all(#kura_query{from = From, wheres = Wheres}, SetMap) ->
     {WhereSQL, WhereParams, _} = compile_wheres(Wheres, Counter),
     SQL = iolist_to_binary([
         <<"UPDATE ">>,
-        quote_ident(Table),
+        qualified_table(Table, Prefix),
         <<" SET ">>,
         join_comma(lists:reverse(Sets)),
         WhereSQL
@@ -226,12 +224,13 @@ update_all(#kura_query{from = From, wheres = Wheres}, SetMap) ->
 %%----------------------------------------------------------------------
 
 -spec delete_all(#kura_query{}) -> {iodata(), [term()]}.
-delete_all(#kura_query{from = From, wheres = Wheres}) ->
+delete_all(#kura_query{from = From, wheres = Wheres, prefix = QPrefix}) ->
     Table = resolve_table(From),
+    Prefix = resolve_prefix(QPrefix),
     {WhereSQL, WhereParams, _} = compile_wheres(Wheres, 1),
     SQL = iolist_to_binary([
         <<"DELETE FROM ">>,
-        quote_ident(Table),
+        qualified_table(Table, Prefix),
         WhereSQL
     ]),
     {SQL, WhereParams}.
@@ -263,7 +262,7 @@ insert_all(SchemaOrTable, Fields, Rows) ->
     ),
     SQL = iolist_to_binary([
         <<"INSERT INTO ">>,
-        quote_ident(Table),
+        qualified_table(Table, resolve_prefix(undefined)),
         <<" (">>,
         join_comma(Cols),
         <<") VALUES ">>,
@@ -463,19 +462,19 @@ compile_condition({Field, Value}, Counter) when is_atom(Field) ->
 %% Internal: JOIN clause
 %%----------------------------------------------------------------------
 
-compile_joins([], _Table, Counter) ->
+compile_joins([], _Table, _Prefix, Counter) ->
     {<<>>, [], Counter};
-compile_joins(Joins, FromTable, Counter) ->
+compile_joins(Joins, FromTable, Prefix, Counter) ->
     {Parts, Params, NewCounter, _LastTable} = lists:foldl(
         fun({Type, JoinTable, {LeftCol, RightCol}, As}, {Acc, PAcc, C, PrevTable}) ->
             JoinTableBin = resolve_table(JoinTable),
             TableRef =
                 case As of
                     undefined ->
-                        quote_ident(JoinTableBin);
+                        qualified_table(JoinTableBin, Prefix);
                     Alias ->
                         [
-                            quote_ident(JoinTableBin),
+                            qualified_table(JoinTableBin, Prefix),
                             <<" AS ">>,
                             quote_ident(atom_to_binary(Alias, utf8))
                         ]
@@ -701,3 +700,16 @@ rewrite_fragment(<<"?", Rest/binary>>, Counter, Acc) ->
     rewrite_fragment(Rest, Counter + 1, <<Acc/binary, (iolist_to_binary(Placeholder))/binary>>);
 rewrite_fragment(<<C, Rest/binary>>, Counter, Acc) ->
     rewrite_fragment(Rest, Counter, <<Acc/binary, C>>).
+
+qualified_table(Table, undefined) ->
+    quote_ident(Table);
+qualified_table(Table, Prefix) ->
+    [quote_ident(Prefix), <<".">>, quote_ident(Table)].
+
+resolve_prefix(undefined) ->
+    case kura_tenant:get_tenant() of
+        {prefix, P} -> P;
+        _ -> undefined
+    end;
+resolve_prefix(Prefix) ->
+    Prefix.
