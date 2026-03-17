@@ -8,7 +8,7 @@ on:
 
 jobs:
   ci:
-    uses: Taure/erlang-ci/.github/workflows/ci.yml@v1
+    uses: Taure/erlang-ci/.github/workflows/ci.yml@feat/elp-support
     permissions:
       contents: write
       pull-requests: write
@@ -25,6 +25,8 @@ jobs:
       enable-dependency-submission: true
       enable-summary: true
       enable-mutate: true
+      enable-elp-lint: true
+      enable-elp-eqwalizer: true
       mutate-diff: true
       mutate-min-score: '80'
 
