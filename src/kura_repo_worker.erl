@@ -42,6 +42,18 @@ kura_repo_worker:start(MyRepo),
     default_logger/0
 ]).
 
+-eqwalizer({nowarn_function, get_by/3}).
+-eqwalizer({nowarn_function, insert_all/3}).
+-eqwalizer({nowarn_function, insert_all/4}).
+-eqwalizer({nowarn_function, multi/2}).
+-eqwalizer({nowarn_function, build_log_event/5}).
+-eqwalizer({nowarn_function, run_prepare/1}).
+-eqwalizer({nowarn_function, compile_update_with_lock/5}).
+-eqwalizer({nowarn_function, persist_assoc_changes/4}).
+-eqwalizer({nowarn_function, persist_owned_assoc/6}).
+-eqwalizer({nowarn_function, persist_many_to_many/6}).
+-eqwalizer({nowarn_function, persist_child/2}).
+
 -define(DECODE_OPTS, [return_rows_as_maps, column_name_as_atom]).
 
 %%----------------------------------------------------------------------
@@ -72,7 +84,7 @@ start(RepoMod) ->
 -doc "Execute a query and return all matching rows.".
 -spec all(module(), #kura_query{}) -> {ok, [map()]} | {error, term()}.
 all(RepoMod, Query) ->
-    {SQL, Params} = kura_query_compiler:to_sql(Query),
+    {SQL, Params} = kura_query_compiler:to_sql(maybe_apply_tenant_query(Query)),
 
     case pgo_query(RepoMod, SQL, Params) of
         #{command := select, rows := Rows} ->
@@ -202,7 +214,7 @@ delete(RepoMod, #kura_changeset{schema = SchemaMod, data = Data}) ->
 -doc "Bulk update all rows matching the query, returning the count of affected rows.".
 -spec update_all(module(), #kura_query{}, map()) -> {ok, non_neg_integer()} | {error, term()}.
 update_all(RepoMod, Query, Updates) ->
-    {SQL, Params} = kura_query_compiler:update_all(Query, Updates),
+    {SQL, Params} = kura_query_compiler:update_all(maybe_apply_tenant_query(Query), Updates),
 
     case pgo_query(RepoMod, SQL, Params) of
         #{command := update, num_rows := Count} -> {ok, Count};
@@ -212,7 +224,7 @@ update_all(RepoMod, Query, Updates) ->
 -doc "Bulk delete all rows matching the query, returning the count of deleted rows.".
 -spec delete_all(module(), #kura_query{}) -> {ok, non_neg_integer()} | {error, term()}.
 delete_all(RepoMod, Query) ->
-    {SQL, Params} = kura_query_compiler:delete_all(Query),
+    {SQL, Params} = kura_query_compiler:delete_all(maybe_apply_tenant_query(Query)),
 
     case pgo_query(RepoMod, SQL, Params) of
         #{command := delete, num_rows := Count} -> {ok, Count};
@@ -427,10 +439,10 @@ get_pool(RepoMod) ->
 
 insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}) ->
     CS = run_prepare(CS0),
-    Changes = CS#kura_changeset.changes,
+    Changes = maybe_apply_tenant_changes(CS#kura_changeset.changes),
     Changes1 = maybe_add_timestamps(SchemaMod, Changes, insert),
-    Fields = maps:keys(Changes1),
     DumpedChanges = dump_changes(SchemaMod, Changes1),
+    Fields = maps:keys(DumpedChanges),
     {SQL, Params} = kura_query_compiler:insert(SchemaMod, Fields, DumpedChanges),
     case pgo_query(RepoMod, SQL, Params) of
         #{command := insert, rows := [Row]} ->
@@ -814,4 +826,29 @@ default_logger() ->
         logger:info("Kura ~s ~pus", [
             maps:get(query, Event), maps:get(duration_us, Event)
         ])
+    end.
+
+%%----------------------------------------------------------------------
+%% Internal: multitenancy
+%%----------------------------------------------------------------------
+
+maybe_apply_tenant_query(Query) ->
+    case kura_tenant:get_tenant() of
+        {prefix, Prefix} ->
+            case Query#kura_query.prefix of
+                undefined -> Query#kura_query{prefix = Prefix};
+                _ -> Query
+            end;
+        {attribute, {Field, Value}} ->
+            kura_query:where(Query, {Field, Value});
+        undefined ->
+            Query
+    end.
+
+maybe_apply_tenant_changes(Changes) ->
+    case kura_tenant:get_tenant() of
+        {attribute, {Field, Value}} ->
+            Changes#{Field => Value};
+        _ ->
+            Changes
     end.
