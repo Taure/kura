@@ -20,6 +20,22 @@ This is an internal module. Use `kura_repo_worker` for executing queries.
     insert_all/4
 ]).
 
+-eqwalizer({nowarn_function, insert/4}).
+-eqwalizer({nowarn_function, insert/5}).
+-eqwalizer({nowarn_function, insert_with_prefix/4}).
+-eqwalizer({nowarn_function, insert_with_opts/5}).
+-eqwalizer({nowarn_function, update/5}).
+-eqwalizer({nowarn_function, update_all/2}).
+-eqwalizer({nowarn_function, insert_all_with_prefix/4}).
+-eqwalizer({nowarn_function, insert_all_returning/5}).
+-eqwalizer({nowarn_function, compile_select/2}).
+-eqwalizer({nowarn_function, compile_conditions/2}).
+-eqwalizer({nowarn_function, compile_condition/2}).
+-eqwalizer({nowarn_function, compile_joins/4}).
+-eqwalizer({nowarn_function, compile_ctes/2}).
+-eqwalizer({nowarn_function, compile_combinations/4}).
+-eqwalizer({nowarn_function, compile_on_conflict_update/4}).
+
 -doc "Compile a query record into `{SQL, Params}`.".
 -spec to_sql(#kura_query{}) -> {iodata(), [term()]}.
 to_sql(Query) ->

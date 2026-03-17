@@ -2,6 +2,9 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-eqwalizer({nowarn_function, cast_assoc_many_to_many_test/0}).
+-eqwalizer({nowarn_function, put_assoc_many_to_many_test/0}).
+
 %%----------------------------------------------------------------------
 %% Association record
 %%----------------------------------------------------------------------

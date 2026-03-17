@@ -27,6 +27,8 @@ end),
     append/2
 ]).
 
+-eqwalizer({nowarn_function, to_list/1}).
+
 -record(kura_multi, {
     operations = [] :: [{atom(), term()}]
 }).

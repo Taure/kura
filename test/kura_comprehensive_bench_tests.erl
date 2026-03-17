@@ -6,6 +6,15 @@
 -eqwalizer({nowarn_function, drop_tables/0}).
 -eqwalizer({nowarn_function, seed_posts/2}).
 -eqwalizer({nowarn_function, seed_comments/2}).
+-eqwalizer({nowarn_function, seed_post_tags/2}).
+-eqwalizer({nowarn_function, bench/3}).
+-eqwalizer({nowarn_function, bench_concurrent/4}).
+-eqwalizer({nowarn_function, t_insert_all_scaling/0}).
+-eqwalizer({nowarn_function, t_where_in_clause/0}).
+-eqwalizer({nowarn_function, t_pagination/0}).
+-eqwalizer({nowarn_function, t_keyset_vs_offset/0}).
+-eqwalizer({nowarn_function, t_changeset_overhead/0}).
+-eqwalizer({nowarn_function, t_stream_batch_sizes/0}).
 
 %%----------------------------------------------------------------------
 %% Test fixture

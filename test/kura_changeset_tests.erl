@@ -2,6 +2,9 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-eqwalizer({nowarn_function, validate_change_ok_test/0}).
+-eqwalizer({nowarn_function, validate_change_error_test/0}).
+
 %%----------------------------------------------------------------------
 %% cast
 %%----------------------------------------------------------------------
@@ -194,7 +197,6 @@ non_virtual_fields_test() ->
 validate_change_ok_test() ->
     CS = kura_changeset:cast(kura_test_schema, #{}, #{name => <<"Alice">>}, [name]),
     CS2 = kura_changeset:validate_change(CS, name, fun(V) ->
-        % eqwalizer:fixme - V is binary from changeset field value
         case byte_size(V) >= 2 of
             true -> ok;
             false -> {error, <<"too short">>}
@@ -205,7 +207,6 @@ validate_change_ok_test() ->
 validate_change_error_test() ->
     CS = kura_changeset:cast(kura_test_schema, #{}, #{name => <<"A">>}, [name]),
     CS2 = kura_changeset:validate_change(CS, name, fun(V) ->
-        % eqwalizer:fixme - V is binary from changeset field value
         case byte_size(V) >= 2 of
             true -> ok;
             false -> {error, <<"too short">>}

@@ -2,6 +2,9 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-eqwalizer({nowarn_function, cast_has_one_test/0}).
+-eqwalizer({nowarn_function, put_assoc_single_map_test/0}).
+
 put_assoc_unknown_test() ->
     CS = kura_changeset:cast(kura_test_post, #{}, #{title => <<"Post">>, author_id => 1}, [
         title, author_id
@@ -20,7 +23,6 @@ cast_has_one_test() ->
     CS1 = kura_changeset:cast_assoc(CS, profile),
     ?assert(CS1#kura_changeset.valid),
     #{profile := ChildCS} = CS1#kura_changeset.assoc_changes,
-    % eqwalizer:fixme - assoc_changes value is #kura_changeset{} for has_one
     ?assertEqual(insert, ChildCS#kura_changeset.action).
 
 cast_has_one_invalid_child_test() ->
@@ -83,7 +85,6 @@ put_assoc_single_map_test() ->
     ),
     CS1 = kura_changeset:put_assoc(CS, comments, [#{body => <<"Comment">>, author_id => 1}]),
     #{comments := Children} = CS1#kura_changeset.assoc_changes,
-    % eqwalizer:fixme - assoc_changes value is [#kura_changeset{}] for has_many
     ?assertEqual(1, length(Children)).
 
 put_assoc_single_changeset_test() ->

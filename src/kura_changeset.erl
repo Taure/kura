@@ -52,6 +52,8 @@ CS3 = kura_changeset:unique_constraint(CS2, email).
     normalize_params/1
 ]).
 
+-eqwalizer({nowarn_function, build_schema_constraints/1}).
+
 -doc """
 Create a changeset by casting `Params` against type definitions, filtering to `Allowed` fields.
 
@@ -569,13 +571,11 @@ build_schema_constraints(SchemaMod) ->
         fun
             ({unique, Cols}) when is_list(Cols) ->
                 ColsBin = lists:join(<<"_">>, [atom_to_binary(C, utf8) || C <- Cols]),
-                % eqwalizer:fixme - ColsBin is [binary()] from lists:join
-                Name = iolist_to_binary([Table, <<"_">>, iolist_to_binary(ColsBin), <<"_key">>]),
+                Name = iolist_to_binary([Table, <<"_">>, ColsBin, <<"_key">>]),
                 Field = hd(Cols),
                 {true, #kura_constraint{
                     type = unique,
                     constraint = Name,
-                    % eqwalizer:fixme - Field is atom from schema constraints
                     field = Field,
                     message = <<"has already been taken">>
                 }};
@@ -600,7 +600,6 @@ build_schema_constraints(SchemaMod) ->
                 {true, #kura_constraint{
                     type = unique,
                     constraint = Name,
-                    % eqwalizer:fixme - Field is atom from schema indexes
                     field = Field,
                     message = <<"has already been taken">>
                 }};

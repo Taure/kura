@@ -10,8 +10,6 @@
     cast_embed/3
 ]).
 
--type cast_fun() :: fun((map(), map()) -> #kura_changeset{}).
-
 -eqwalizer({nowarn_function, cast_embed_params/5}).
 -eqwalizer({nowarn_function, cast_has_many/6}).
 
@@ -82,8 +80,6 @@ default_embed_cast_fun(#kura_embed{schema = EmbedSchema}) ->
         kura_changeset:cast(EmbedSchema, Data, EmbedParams, Allowed)
     end.
 
--spec cast_embed_params(#kura_changeset{}, atom(), #kura_embed{}, term(), cast_fun()) ->
-    #kura_changeset{}.
 cast_embed_params(CS, EmbedName, #kura_embed{type = embeds_one}, Params, WithFun) when
     is_map(Params)
 ->

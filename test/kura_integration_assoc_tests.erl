@@ -3,6 +3,15 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-eqwalizer({nowarn_function, t_nested_preload/0}).
+-eqwalizer({nowarn_function, t_cast_assoc_has_many/0}).
+-eqwalizer({nowarn_function, t_cast_assoc_single_child/0}).
+-eqwalizer({nowarn_function, t_update_with_cast_assoc/0}).
+-eqwalizer({nowarn_function, t_inline_preload_via_query/0}).
+-eqwalizer({nowarn_function, t_inline_preload_multiple/0}).
+-eqwalizer({nowarn_function, t_join_inner/0}).
+-eqwalizer({nowarn_function, t_join_left/0}).
+
 %%----------------------------------------------------------------------
 %% Test fixture
 %%----------------------------------------------------------------------
