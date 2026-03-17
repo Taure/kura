@@ -26,7 +26,7 @@ jobs:
       enable-summary: true
       enable-mutate: true
       enable-elp-lint: true
-      enable-elp-eqwalizer: true
+      enable-elp-eqwalize: true
       mutate-diff: true
       mutate-min-score: '80'
 
