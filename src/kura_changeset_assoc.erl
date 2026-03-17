@@ -12,6 +12,9 @@
 
 -type cast_fun() :: fun((map(), map()) -> #kura_changeset{}).
 
+-eqwalizer({nowarn_function, cast_embed_params/5}).
+-eqwalizer({nowarn_function, cast_has_many/6}).
+
 %%----------------------------------------------------------------------
 %% Association casting
 %%----------------------------------------------------------------------
