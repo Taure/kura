@@ -20,6 +20,7 @@ cast_assoc_has_many_test() ->
     CS1 = kura_changeset:cast_assoc(CS, comments),
     ?assert(CS1#kura_changeset.valid),
     #{comments := ChildCSs} = CS1#kura_changeset.assoc_changes,
+    % eqwalizer:fixme - assoc_changes value is [#kura_changeset{}] for has_many
     ?assertEqual(2, length(ChildCSs)),
     [C1, C2] = ChildCSs,
     ?assertEqual(insert, C1#kura_changeset.action),
@@ -137,6 +138,7 @@ put_assoc_with_maps_test() ->
         #{body => <<"Comment 2">>, author_id => 2}
     ]),
     #{comments := Children} = CS1#kura_changeset.assoc_changes,
+    % eqwalizer:fixme - assoc_changes value is [#kura_changeset{}] for has_many
     ?assertEqual(2, length(Children)),
     [C1, _C2] = Children,
     ?assertEqual(insert, C1#kura_changeset.action).

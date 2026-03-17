@@ -569,7 +569,8 @@ build_schema_constraints(SchemaMod) ->
         fun
             ({unique, Cols}) when is_list(Cols) ->
                 ColsBin = lists:join(<<"_">>, [atom_to_binary(C, utf8) || C <- Cols]),
-                Name = iolist_to_binary([Table, <<"_">>, ColsBin, <<"_key">>]),
+                Name = iolist_to_binary([Table, <<"_">>, iolist_to_binary(ColsBin), <<"_key">>]),
+                % eqwalizer:fixme - Cols elements are atoms from schema constraints
                 Field = hd(Cols),
                 {true, #kura_constraint{
                     type = unique,
@@ -594,6 +595,7 @@ build_schema_constraints(SchemaMod) ->
         fun
             ({Cols, #{unique := true}}) when is_list(Cols) ->
                 Name = kura_migration:index_name(Table, Cols),
+                % eqwalizer:fixme - Cols elements are atoms from schema indexes
                 Field = hd(Cols),
                 {true, #kura_constraint{
                     type = unique,
