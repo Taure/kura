@@ -25,6 +25,8 @@ jobs:
       enable-dependency-submission: true
       enable-summary: true
       enable-mutate: true
+      enable-elp-lint: true
+      enable-elp-eqwalize: true
       mutate-diff: true
       mutate-min-score: '80'
 
