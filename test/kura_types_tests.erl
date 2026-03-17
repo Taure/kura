@@ -1,6 +1,13 @@
 -module(kura_types_tests).
 -include_lib("eunit/include/eunit.hrl").
 
+-eqwalizer({nowarn_function, load_embed_one_from_binary_test/0}).
+-eqwalizer({nowarn_function, load_embed_one_from_map_test/0}).
+-eqwalizer({nowarn_function, load_embed_many_from_binary_test/0}).
+-eqwalizer({nowarn_function, load_embed_many_from_list_test/0}).
+-eqwalizer({nowarn_function, dump_embed_one_test/0}).
+-eqwalizer({nowarn_function, dump_embed_many_test/0}).
+
 %%----------------------------------------------------------------------
 %% to_pg_type
 %%----------------------------------------------------------------------

@@ -76,6 +76,8 @@ down() ->
     safe_entry/0
 ]).
 
+-eqwalizer({nowarn_function, index_name/2}).
+
 -doc "Generate an Ecto-style index name: `{table}_{cols}_index`.".
 -spec index_name(binary(), [atom()]) -> binary().
 index_name(Table, Cols) ->

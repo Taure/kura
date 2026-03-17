@@ -3,6 +3,8 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-eqwalizer({nowarn_function, t_large_result_set/0}).
+
 %%----------------------------------------------------------------------
 %% Test fixtures — non-docker tests run first, docker tests last
 %%----------------------------------------------------------------------

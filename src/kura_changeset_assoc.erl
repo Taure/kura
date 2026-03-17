@@ -10,6 +10,9 @@
     cast_embed/3
 ]).
 
+-eqwalizer({nowarn_function, cast_embed_params/5}).
+-eqwalizer({nowarn_function, cast_has_many/6}).
+
 %%----------------------------------------------------------------------
 %% Association casting
 %%----------------------------------------------------------------------

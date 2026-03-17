@@ -52,6 +52,8 @@ CS3 = kura_changeset:unique_constraint(CS2, email).
     normalize_params/1
 ]).
 
+-eqwalizer({nowarn_function, build_schema_constraints/1}).
+
 -doc """
 Create a changeset by casting `Params` against type definitions, filtering to `Allowed` fields.
 

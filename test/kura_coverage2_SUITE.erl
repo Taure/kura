@@ -6,6 +6,10 @@
 
 -compile(export_all).
 
+-eqwalizer({nowarn_function, migrator_quote_atom/1}).
+-eqwalizer({nowarn_function, dump_embed_one_nested/1}).
+-eqwalizer({nowarn_function, load_embed_one_nested/1}).
+
 %%----------------------------------------------------------------------
 %% CT callbacks
 %%----------------------------------------------------------------------

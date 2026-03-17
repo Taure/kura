@@ -2,6 +2,9 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-eqwalizer({nowarn_function, cast_assoc_valid_children_test/0}).
+-eqwalizer({nowarn_function, put_assoc_with_maps_test/0}).
+
 %%----------------------------------------------------------------------
 %% cast_assoc has_many
 %%----------------------------------------------------------------------

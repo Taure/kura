@@ -2,6 +2,20 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-eqwalizer({nowarn_function, join_test/0}).
+-eqwalizer({nowarn_function, left_join_test/0}).
+-eqwalizer({nowarn_function, join_chained_test/0}).
+-eqwalizer({nowarn_function, join_with_alias_test/0}).
+-eqwalizer({nowarn_function, join_schema_module_test/0}).
+-eqwalizer({nowarn_function, order_by_test/0}).
+-eqwalizer({nowarn_function, group_by_test/0}).
+-eqwalizer({nowarn_function, having_test/0}).
+-eqwalizer({nowarn_function, limit_test/0}).
+-eqwalizer({nowarn_function, limit_offset_test/0}).
+-eqwalizer({nowarn_function, distinct_test/0}).
+-eqwalizer({nowarn_function, distinct_on_test/0}).
+-eqwalizer({nowarn_function, lock_test/0}).
+
 %%----------------------------------------------------------------------
 %% SELECT compilation
 %%----------------------------------------------------------------------
