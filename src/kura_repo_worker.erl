@@ -177,8 +177,8 @@ insert(_RepoMod, CS = #kura_changeset{valid = false}, _Opts) ->
     {error, CS#kura_changeset{action = insert}};
 insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opts) ->
     Changes1 = maybe_add_timestamps(SchemaMod, Changes, insert),
-    Fields = maps:keys(Changes1),
     DumpedChanges = dump_changes(SchemaMod, Changes1),
+    Fields = maps:keys(DumpedChanges),
     {SQL, Params} = kura_query_compiler:insert(SchemaMod, Fields, DumpedChanges, Opts),
 
     case pgo_query(RepoMod, SQL, Params) of
@@ -461,8 +461,8 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
             PK = kura_schema:primary_key(SchemaMod),
             PKValue = maps:get(PK, Data),
             Changes1 = maybe_add_timestamps(SchemaMod, Changes, update),
-            Fields = maps:keys(Changes1),
             DumpedChanges = dump_changes(SchemaMod, Changes1),
+            Fields = maps:keys(DumpedChanges),
             case CS#kura_changeset.optimistic_lock of
                 undefined ->
                     {SQL, Params} = kura_query_compiler:update(
