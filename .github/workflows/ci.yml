@@ -31,8 +31,4 @@ jobs:
       mutate-min-score: '80'
       mutate-test-framework: 'ct'
 
-      postgres: true
-      postgres-version: '16'
-      postgres-db: 'kura_test'
-      postgres-password: 'root'
-      postgres-port: '5555'
+      extra-services-compose: 'docker-compose.ci.yml'
