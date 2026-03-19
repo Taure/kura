@@ -17,17 +17,29 @@ Kura repo operations.
 -doc "Set the current tenant strategy in the process dictionary.".
 -spec put_tenant(strategy()) -> undefined | strategy().
 put_tenant(Tenant) ->
-    erlang:put(kura_tenant, Tenant).
+    case erlang:put(kura_tenant, Tenant) of
+        undefined -> undefined;
+        {prefix, _} = S -> S;
+        {attribute, _} = S -> S
+    end.
 
 -doc "Get the current tenant strategy from the process dictionary.".
 -spec get_tenant() -> undefined | strategy().
 get_tenant() ->
-    erlang:get(kura_tenant).
+    case erlang:get(kura_tenant) of
+        undefined -> undefined;
+        {prefix, _} = S -> S;
+        {attribute, _} = S -> S
+    end.
 
 -doc "Remove the current tenant strategy from the process dictionary.".
 -spec clear_tenant() -> undefined | strategy().
 clear_tenant() ->
-    erlang:erase(kura_tenant).
+    case erlang:erase(kura_tenant) of
+        undefined -> undefined;
+        {prefix, _} = S -> S;
+        {attribute, _} = S -> S
+    end.
 
 -doc "Execute a function with a temporary tenant, restoring the previous tenant after.".
 -spec with_tenant(strategy(), fun(() -> T)) -> T when T :: term().

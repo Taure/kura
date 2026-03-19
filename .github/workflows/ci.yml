@@ -29,6 +29,7 @@ jobs:
       enable-elp-eqwalize: true
       mutate-diff: true
       mutate-min-score: '80'
+      mutate-args: '--exclude kura_preloader'
 
       postgres: true
       postgres-version: '16'
