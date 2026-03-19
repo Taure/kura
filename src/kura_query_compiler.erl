@@ -23,7 +23,6 @@ This is an internal module. Use `kura_repo_worker` for executing queries.
 -eqwalizer({nowarn_function, insert/3}).
 -eqwalizer({nowarn_function, insert/4}).
 -eqwalizer({nowarn_function, update/4}).
--eqwalizer({nowarn_function, delete/3}).
 -eqwalizer({nowarn_function, update_all/2}).
 -eqwalizer({nowarn_function, insert_all/3}).
 -eqwalizer({nowarn_function, compile_select/2}).
