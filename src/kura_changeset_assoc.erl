@@ -10,7 +10,9 @@
     cast_embed/3
 ]).
 
+%% eqWAlizer: lists:foldl accumulating errors loses [{atom(), binary()}] type
 -eqwalizer({nowarn_function, cast_embed_params/5}).
+%% eqWAlizer: lists:foldl with dynamic map keys (PK lookup) returns dynamic()
 -eqwalizer({nowarn_function, cast_has_many/6}).
 
 %%----------------------------------------------------------------------

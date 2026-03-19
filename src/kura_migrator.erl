@@ -27,14 +27,19 @@ across multiple nodes.
     check_unsafe_operations/2
 ]).
 
+%% eqWAlizer: pgo:transaction returns any() — can't verify return types
 -eqwalizer({nowarn_function, migrate/1}).
 -eqwalizer({nowarn_function, rollback/2}).
--eqwalizer({nowarn_function, discover_app_migrations/1}).
--eqwalizer({nowarn_function, parse_migration_module/1}).
 -eqwalizer({nowarn_function, with_migration_lock/2}).
+%% eqWAlizer: application:get_key/2 returns {ok, term()}, can't narrow to [module()]
+-eqwalizer({nowarn_function, discover_app_migrations/1}).
+%% eqWAlizer: re:run capture returns [term()], can't narrow to [string()]
+-eqwalizer({nowarn_function, parse_migration_module/1}).
+%% eqWAlizer: Module:up()/down() are dynamic calls returning dynamic()
 -eqwalizer({nowarn_function, run_migrations/4}).
+%% eqWAlizer: operation() union has >7 variants — exceeds clause narrowing limit
 -eqwalizer({nowarn_function, compile_operation/1}).
--eqwalizer({nowarn_function, compile_table_constraint/1}).
+%% eqWAlizer: check_op returns [map()] through lists:flatmap — accumulator type loss
 -eqwalizer({nowarn_function, check_unsafe_operations/2}).
 -eqwalizer({nowarn_function, check_op/2}).
 
@@ -354,11 +359,16 @@ compile_column_def(#kura_column{
 -spec compile_table_constraint(kura_migration:table_constraint()) -> binary().
 compile_table_constraint({unique, Cols}) ->
     ColList = iolist_to_binary(
-        lists:join(<<", ">>, [quote(atom_to_binary(C, utf8)) || C <- Cols])
+        join_comma_iodata([quote(atom_to_binary(C, utf8)) || C <- Cols])
     ),
     <<"UNIQUE (", ColList/binary, ")">>;
 compile_table_constraint({check, Expr}) ->
     <<"CHECK (", Expr/binary, ")">>.
+
+-spec join_comma_iodata([binary()]) -> [binary()].
+join_comma_iodata([]) -> [];
+join_comma_iodata([H]) -> [H];
+join_comma_iodata([H | T]) -> [H, <<", ">> | join_comma_iodata(T)].
 
 -spec compile_fk_action(binary(), cascade | restrict | set_null | no_action | undefined) ->
     binary().

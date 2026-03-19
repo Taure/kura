@@ -30,6 +30,7 @@ Q = kura_query:from(my_schema),
 
 -export([paginate/3, cursor_paginate/3, total_pages/2]).
 
+%% eqWAlizer: maps:get with dynamic cursor_field key returns dynamic()
 -eqwalizer({nowarn_function, cursor_paginate/3}).
 
 -doc """

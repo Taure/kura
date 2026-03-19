@@ -52,6 +52,7 @@ CS3 = kura_changeset:unique_constraint(CS2, email).
     normalize_params/1
 ]).
 
+%% eqWAlizer: kura_schema callbacks return dynamic() — can't narrow constraint/index types
 -eqwalizer({nowarn_function, build_schema_constraints/1}).
 
 -doc """

@@ -42,17 +42,18 @@ kura_repo_worker:start(MyRepo),
     default_logger/0
 ]).
 
--eqwalizer({nowarn_function, get_by/3}).
--eqwalizer({nowarn_function, insert_all/3}).
--eqwalizer({nowarn_function, insert_all/4}).
+%% eqWAlizer: pgo:transaction returns any() — can't verify return types
 -eqwalizer({nowarn_function, multi/2}).
--eqwalizer({nowarn_function, build_log_event/5}).
--eqwalizer({nowarn_function, run_prepare/1}).
 -eqwalizer({nowarn_function, insert/2}).
 -eqwalizer({nowarn_function, update/2}).
--eqwalizer({nowarn_function, compile_update_with_lock/5}).
+%% eqWAlizer: maps:get with dynamic keys (PK, FK) returns dynamic()
 -eqwalizer({nowarn_function, persist_owned_assoc/6}).
 -eqwalizer({nowarn_function, persist_many_to_many/6}).
+%% eqWAlizer: Result is term() from pgo — can't narrow through pattern match
+-eqwalizer({nowarn_function, build_log_event/5}).
+%% eqWAlizer: maps:keys(hd(Rows)) with dynamic map returns [term()]
+-eqwalizer({nowarn_function, insert_all/3}).
+-eqwalizer({nowarn_function, insert_all/4}).
 
 -define(DECODE_OPTS, [return_rows_as_maps, column_name_as_atom]).
 
@@ -113,13 +114,7 @@ get(RepoMod, SchemaMod, Id) ->
 -spec get_by(module(), module(), [{atom(), term()}]) ->
     {ok, map()} | {error, not_found} | {error, term()}.
 get_by(RepoMod, SchemaMod, Clauses) ->
-    Q = lists:foldl(
-        fun({Field, Value}, Acc) ->
-            kura_query:where(Acc, {Field, Value})
-        end,
-        kura_query:from(SchemaMod),
-        Clauses
-    ),
+    Q = apply_clauses(kura_query:from(SchemaMod), Clauses),
     case all(RepoMod, Q) of
         {ok, [Row]} -> {ok, Row};
         {ok, []} -> {error, not_found};
@@ -504,28 +499,27 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
 run_prepare(CS = #kura_changeset{prepare = []}) ->
     CS;
 run_prepare(CS = #kura_changeset{prepare = Funs}) ->
-    lists:foldl(fun(Fun, Acc) -> Fun(Acc) end, CS, Funs).
+    apply_prepare_funs(CS, Funs).
+
+-spec apply_prepare_funs(#kura_changeset{}, [fun((#kura_changeset{}) -> #kura_changeset{})]) ->
+    #kura_changeset{}.
+apply_prepare_funs(CS, []) ->
+    CS;
+apply_prepare_funs(CS, [Fun | Rest]) ->
+    apply_prepare_funs(Fun(CS), Rest).
 
 compile_update_with_lock(
     SchemaOrTable, Fields, Changes, {PKField, PKValue}, {LockField, LockValue}
 ) ->
     Table = resolve_table_name(SchemaOrTable),
-    {Sets, Params, Counter} = lists:foldl(
-        fun(Field, {SAcc, PAcc, N}) ->
-            Value = maps:get(Field, Changes),
-            Set = [quote_ident_bin(atom_to_binary(Field, utf8)), <<" = $">>, integer_to_binary(N)],
-            {[Set | SAcc], [Value | PAcc], N + 1}
-        end,
-        {[], [], 1},
-        Fields
-    ),
+    {Sets, Params, Counter} = build_lock_set_parts(Fields, Changes, 1),
     PKPlaceholder = [<<"$">>, integer_to_binary(Counter)],
     LockPlaceholder = [<<"$">>, integer_to_binary(Counter + 1)],
     SQL = iolist_to_binary([
         <<"UPDATE ">>,
         quote_ident_bin(Table),
         <<" SET ">>,
-        join_comma_bin(lists:reverse(Sets)),
+        join_comma_bin(Sets),
         <<" WHERE ">>,
         quote_ident_bin(atom_to_binary(PKField, utf8)),
         <<" = ">>,
@@ -536,7 +530,7 @@ compile_update_with_lock(
         LockPlaceholder,
         <<" RETURNING *">>
     ]),
-    {SQL, lists:reverse(Params) ++ [PKValue, LockValue]}.
+    {SQL, Params ++ [PKValue, LockValue]}.
 
 resolve_table_name(Mod) when is_atom(Mod) ->
     case code:ensure_loaded(Mod) of
@@ -551,6 +545,22 @@ resolve_table_name(Mod) when is_atom(Mod) ->
 
 quote_ident_bin(Name) when is_binary(Name) ->
     <<$", Name/binary, $">>.
+
+-spec apply_clauses(#kura_query{}, [{atom(), term()}]) -> #kura_query{}.
+apply_clauses(Q, []) ->
+    Q;
+apply_clauses(Q, [{Field, Value} | Rest]) ->
+    apply_clauses(kura_query:where(Q, {Field, Value}), Rest).
+
+-spec build_lock_set_parts([atom()], map(), pos_integer()) ->
+    {[iodata()], [term()], pos_integer()}.
+build_lock_set_parts([], _Changes, N) ->
+    {[], [], N};
+build_lock_set_parts([Field | Rest], Changes, N) ->
+    Value = maps:get(Field, Changes),
+    Set = [quote_ident_bin(atom_to_binary(Field, utf8)), <<" = $">>, integer_to_binary(N)],
+    {Sets, Params, N2} = build_lock_set_parts(Rest, Changes, N + 1),
+    {[Set | Sets], [Value | Params], N2}.
 
 join_comma_bin(Parts) ->
     lists:join(<<", ">>, Parts).

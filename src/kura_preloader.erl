@@ -7,6 +7,7 @@
     do_preload/4
 ]).
 
+%% eqWAlizer: maps:get with dynamic association keys returns dynamic()
 -eqwalizer({nowarn_function, preload_assoc/4}).
 -eqwalizer({nowarn_function, preload_has_many/4}).
 -eqwalizer({nowarn_function, preload_many_to_many/4}).

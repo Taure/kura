@@ -29,6 +29,7 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
     | {array, kura_type()}
     | {embed, embeds_one | embeds_many, module()}.
 
+%% eqWAlizer: cast/2 has >7 clauses narrowing on kura_type() union — exceeds eqWAlizer limit
 -eqwalizer({nowarn_function, cast/2}).
 
 %%----------------------------------------------------------------------

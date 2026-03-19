@@ -15,6 +15,7 @@ end, #{batch_size => 100}).
 
 -export([stream/3, stream/4]).
 
+%% eqWAlizer: pgo:transaction/3 returns any() — can't verify return type
 -eqwalizer({nowarn_function, stream/4}).
 
 -doc "Stream query results in batches of 500, calling Fun for each batch.".
