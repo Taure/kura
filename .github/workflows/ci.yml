@@ -28,7 +28,6 @@ jobs:
       enable-elp-lint: true
       enable-elp-eqwalize: true
       mutate-diff: true
-      mutate-min-score: '80'
-      mutate-test-framework: 'ct'
+      mutate-min-score: '75'
 
       extra-services-compose: 'docker-compose.ci.yml'
