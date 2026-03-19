@@ -8,9 +8,7 @@
 ]).
 
 -eqwalizer({nowarn_function, preload_assoc/4}).
--eqwalizer({nowarn_function, preload_belongs_to/3}).
 -eqwalizer({nowarn_function, preload_has_many/4}).
--eqwalizer({nowarn_function, preload_has_one/4}).
 -eqwalizer({nowarn_function, preload_many_to_many/4}).
 
 -spec preload(module(), module(), map() | [map()], [atom() | {atom(), list()}]) ->

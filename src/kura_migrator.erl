@@ -37,8 +37,6 @@ across multiple nodes.
 -eqwalizer({nowarn_function, compile_table_constraint/1}).
 -eqwalizer({nowarn_function, check_unsafe_operations/2}).
 -eqwalizer({nowarn_function, check_op/2}).
--eqwalizer({nowarn_function, check_alter_op/3}).
--eqwalizer({nowarn_function, get_applied_versions/1}).
 
 -doc "Run all pending migrations in order.".
 -spec migrate(module()) -> {ok, [integer()]} | {error, term()}.
