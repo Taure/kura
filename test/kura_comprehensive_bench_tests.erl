@@ -789,7 +789,7 @@ t_aggregates() ->
     seed_users(100),
     seed_posts(100, 10),
     lists:foreach(
-        fun({AggName, AggFun}) ->
+        fun({AggName, AggFun}) when is_function(AggFun, 1) ->
             {_P50, _P95, _P99, _Avg, _Rate} = bench(
                 io_lib:format("~s(view_count)", [AggName]), 300, fun() ->
                     Q = AggFun(kura_query:from(kura_bench_schema_post)),

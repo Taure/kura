@@ -48,11 +48,11 @@ kura_repo_worker:start(MyRepo),
 -eqwalizer({nowarn_function, multi/2}).
 -eqwalizer({nowarn_function, build_log_event/5}).
 -eqwalizer({nowarn_function, run_prepare/1}).
+-eqwalizer({nowarn_function, insert/2}).
+-eqwalizer({nowarn_function, update/2}).
 -eqwalizer({nowarn_function, compile_update_with_lock/5}).
--eqwalizer({nowarn_function, persist_assoc_changes/4}).
 -eqwalizer({nowarn_function, persist_owned_assoc/6}).
 -eqwalizer({nowarn_function, persist_many_to_many/6}).
--eqwalizer({nowarn_function, persist_child/2}).
 
 -define(DECODE_OPTS, [return_rows_as_maps, column_name_as_atom]).
 

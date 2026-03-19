@@ -30,7 +30,6 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
     | {embed, embeds_one | embeds_many, module()}.
 
 -eqwalizer({nowarn_function, cast/2}).
--eqwalizer({nowarn_function, load/2}).
 
 %%----------------------------------------------------------------------
 %% PG DDL type strings

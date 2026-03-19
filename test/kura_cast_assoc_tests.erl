@@ -2,7 +2,6 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
--eqwalizer({nowarn_function, cast_assoc_valid_children_test/0}).
 -eqwalizer({nowarn_function, put_assoc_with_maps_test/0}).
 
 %%----------------------------------------------------------------------
@@ -22,7 +21,12 @@ cast_assoc_has_many_test() ->
     CS = kura_changeset:cast(kura_test_post, #{}, Params, [title, body, author_id]),
     CS1 = kura_changeset:cast_assoc(CS, comments),
     ?assert(CS1#kura_changeset.valid),
-    #{comments := ChildCSs} = CS1#kura_changeset.assoc_changes,
+    #{comments := ChildCSs0} = CS1#kura_changeset.assoc_changes,
+    ChildCSs =
+        case is_list(ChildCSs0) of
+            true -> ChildCSs0;
+            false -> [ChildCSs0]
+        end,
     ?assertEqual(2, length(ChildCSs)),
     [C1, C2] = ChildCSs,
     ?assertEqual(insert, C1#kura_changeset.action),
