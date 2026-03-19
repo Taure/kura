@@ -31,6 +31,9 @@ end),
     operations = [] :: [{atom(), term()}]
 }).
 
+%% eqWAlizer can't narrow record field types through lists:reverse
+-eqwalizer({nowarn_function, to_list/1}).
+
 -doc "Create a new empty multi pipeline.".
 -spec new() -> #kura_multi{}.
 new() ->
