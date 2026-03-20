@@ -1,4 +1,4 @@
--module(kura_repo_worker_helper_tests).
+-module(kura_repo_worker_tests).
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 

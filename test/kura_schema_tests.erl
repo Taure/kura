@@ -1,4 +1,4 @@
--module(kura_schema_hook_tests).
+-module(kura_schema_tests).
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 

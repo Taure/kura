@@ -1,4 +1,4 @@
--module(kura_changeset_assoc_helper_tests).
+-module(kura_changeset_assoc_tests).
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 

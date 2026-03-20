@@ -1,4 +1,4 @@
--module(kura_stream_helper_tests).
+-module(kura_stream_tests).
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 

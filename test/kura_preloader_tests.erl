@@ -1,4 +1,4 @@
--module(kura_preloader_helper_tests).
+-module(kura_preloader_tests).
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
