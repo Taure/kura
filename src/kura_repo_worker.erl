@@ -42,20 +42,15 @@ kura_repo_worker:start(MyRepo),
     default_logger/0
 ]).
 
-%% eqWAlizer: pgo:transaction returns any() — can't verify return types
--eqwalizer({nowarn_function, multi/2}).
+-define(DECODE_OPTS, [return_rows_as_maps, column_name_as_atom]).
+
+%% eqWAlizer: pgo:transaction/2 returns any() — no override module available
 -eqwalizer({nowarn_function, insert/2}).
 -eqwalizer({nowarn_function, update/2}).
-%% eqWAlizer: maps:get with dynamic keys (PK, FK) returns dynamic()
+-eqwalizer({nowarn_function, delete/2}).
+-eqwalizer({nowarn_function, multi/2}).
 -eqwalizer({nowarn_function, persist_owned_assoc/6}).
 -eqwalizer({nowarn_function, persist_many_to_many/6}).
-%% eqWAlizer: Result is term() from pgo — can't narrow through pattern match
--eqwalizer({nowarn_function, build_log_event/5}).
-%% eqWAlizer: maps:keys(hd(Rows)) with dynamic map returns [term()]
--eqwalizer({nowarn_function, insert_all/3}).
--eqwalizer({nowarn_function, insert_all/4}).
-
--define(DECODE_OPTS, [return_rows_as_maps, column_name_as_atom]).
 
 %%----------------------------------------------------------------------
 %% Pool management
@@ -155,17 +150,37 @@ reload(RepoMod, SchemaMod, Record) ->
 -spec insert(module(), #kura_changeset{}) -> {ok, map()} | {error, #kura_changeset{}}.
 insert(_RepoMod, CS = #kura_changeset{valid = false}) ->
     {error, CS#kura_changeset{action = insert}};
-insert(RepoMod, CS = #kura_changeset{assoc_changes = AC}) when map_size(AC) > 0 ->
-    transaction(RepoMod, fun() ->
-        case insert_record(RepoMod, CS) of
-            {ok, ParentRow} ->
-                persist_assoc_changes(RepoMod, CS#kura_changeset.schema, ParentRow, AC);
-            {error, _} = Err ->
-                Err
-        end
-    end);
-insert(RepoMod, CS) ->
-    insert_record(RepoMod, CS).
+insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}) when
+    map_size(AC) > 0
+->
+    narrow_ok_error(
+        transaction(RepoMod, fun() ->
+            case insert_record(RepoMod, CS) of
+                {ok, ParentRow} ->
+                    persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AC);
+                {error, _} = Err ->
+                    Err
+            end
+        end)
+    );
+insert(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
+    case needs_transaction(SchemaMod, insert) of
+        true ->
+            try
+                narrow_ok_error(
+                    transaction(RepoMod, fun() ->
+                        case insert_record(RepoMod, CS) of
+                            {ok, _} = Ok -> Ok;
+                            {error, Reason} -> throw({kura_rollback, Reason})
+                        end
+                    end)
+                )
+            catch
+                throw:{kura_rollback, Reason} -> {error, Reason}
+            end;
+        false ->
+            insert_record(RepoMod, CS)
+    end.
 
 -spec insert(module(), #kura_changeset{}, map()) -> {ok, map()} | {error, #kura_changeset{}}.
 insert(_RepoMod, CS = #kura_changeset{valid = false}, _Opts) ->
@@ -189,22 +204,58 @@ insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opt
 -spec update(module(), #kura_changeset{}) -> {ok, map()} | {error, #kura_changeset{}}.
 update(_RepoMod, CS = #kura_changeset{valid = false}) ->
     {error, CS#kura_changeset{action = update}};
-update(RepoMod, CS = #kura_changeset{assoc_changes = AC}) when map_size(AC) > 0 ->
-    transaction(RepoMod, fun() ->
-        case update_record(RepoMod, CS) of
-            {ok, ParentRow} ->
-                persist_assoc_changes(RepoMod, CS#kura_changeset.schema, ParentRow, AC);
-            {error, _} = Err ->
-                Err
-        end
-    end);
-update(RepoMod, CS) ->
-    update_record(RepoMod, CS).
+update(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}) when
+    map_size(AC) > 0
+->
+    narrow_ok_error(
+        transaction(RepoMod, fun() ->
+            case update_record(RepoMod, CS) of
+                {ok, ParentRow} ->
+                    persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AC);
+                {error, _} = Err ->
+                    Err
+            end
+        end)
+    );
+update(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
+    case needs_transaction(SchemaMod, update) of
+        true ->
+            try
+                narrow_ok_error(
+                    transaction(RepoMod, fun() ->
+                        case update_record(RepoMod, CS) of
+                            {ok, _} = Ok -> Ok;
+                            {error, Reason} -> throw({kura_rollback, Reason})
+                        end
+                    end)
+                )
+            catch
+                throw:{kura_rollback, Reason} -> {error, Reason}
+            end;
+        false ->
+            update_record(RepoMod, CS)
+    end.
 
 -doc "Delete the record referenced by the changeset's data.".
 -spec delete(module(), #kura_changeset{}) -> {ok, map()} | {error, term()}.
 delete(RepoMod, #kura_changeset{schema = SchemaMod, data = Data}) ->
-    delete_record(RepoMod, SchemaMod, Data).
+    case needs_transaction(SchemaMod, delete) of
+        true ->
+            try
+                narrow_ok_error(
+                    transaction(RepoMod, fun() ->
+                        case delete_record(RepoMod, SchemaMod, Data) of
+                            {ok, _} = Ok -> Ok;
+                            {error, Reason} -> throw({kura_rollback, Reason})
+                        end
+                    end)
+                )
+            catch
+                throw:{kura_rollback, Reason} -> {error, Reason}
+            end;
+        false ->
+            delete_record(RepoMod, SchemaMod, Data)
+    end.
 
 -doc "Bulk update all rows matching the query, returning the count of affected rows.".
 -spec update_all(module(), #kura_query{}, map()) -> {ok, non_neg_integer()} | {error, term()}.
@@ -238,7 +289,8 @@ insert_all(RepoMod, SchemaMod, Entries) ->
         end
      || Entry <- Entries
     ],
-    Fields = maps:keys(hd(Rows)),
+    [First | _] = Rows,
+    Fields = maps:keys(First),
     {SQL, Params} = kura_query_compiler:insert_all(SchemaMod, Fields, Rows),
 
     case pgo_query(RepoMod, SQL, Params) of
@@ -259,7 +311,8 @@ insert_all(RepoMod, SchemaMod, Entries, Opts) ->
         end
      || Entry <- Entries
     ],
-    Fields = maps:keys(hd(Rows)),
+    [First | _] = Rows,
+    Fields = maps:keys(First),
     {SQL, Params} = kura_query_compiler:insert_all(SchemaMod, Fields, Rows, Opts),
 
     case Opts of
@@ -279,12 +332,11 @@ insert_all(RepoMod, SchemaMod, Entries, Opts) ->
     end.
 
 -doc "Execute a function inside a database transaction.".
--spec transaction(module(), fun(() -> any())) -> any() | {error, any()}.
+-spec transaction(module(), fun(() -> term())) -> term().
 transaction(RepoMod, Fun) ->
     Pool = get_pool(RepoMod),
     case kura_sandbox:get_conn(Pool) of
         {ok, _Conn} ->
-            %% Already in a sandbox transaction — run directly
             Fun();
         not_found ->
             pgo:transaction(Fun, #{pool => Pool})
@@ -296,9 +348,11 @@ transaction(RepoMod, Fun) ->
 multi(RepoMod, Multi) ->
     Ops = kura_multi:to_list(Multi),
     try
-        transaction(RepoMod, fun() ->
-            execute_multi_ops(RepoMod, Ops, #{})
-        end)
+        narrow_ok_error(
+            transaction(RepoMod, fun() ->
+                execute_multi_ops(RepoMod, Ops, #{})
+            end)
+        )
     catch
         throw:{multi_error, Name, Value, Completed} ->
             {error, Name, Value, Completed}
@@ -433,66 +487,88 @@ get_pool(RepoMod) ->
     maps:get(pool, Config, RepoMod).
 
 insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}) ->
-    CS = run_prepare(CS0),
-    Changes = maybe_apply_tenant_changes(CS#kura_changeset.changes),
-    Changes1 = maybe_add_timestamps(SchemaMod, Changes, insert),
-    DumpedChanges = dump_changes(SchemaMod, Changes1),
-    Fields = maps:keys(DumpedChanges),
-    {SQL, Params} = kura_query_compiler:insert(SchemaMod, Fields, DumpedChanges),
-    case pgo_query(RepoMod, SQL, Params) of
-        #{command := insert, rows := [Row]} ->
-            {ok, load_row(SchemaMod, Row)};
-        {error, PgError} ->
-            {error, handle_pg_error(CS#kura_changeset{action = insert}, PgError)}
+    CS1 = run_prepare(CS0),
+    case kura_schema:run_before_insert(SchemaMod, CS1) of
+        {error, ErrCS} ->
+            {error, ErrCS#kura_changeset{action = insert}};
+        {ok, CS} ->
+            Changes = maybe_apply_tenant_changes(CS#kura_changeset.changes),
+            Changes1 = maybe_add_timestamps(SchemaMod, Changes, insert),
+            DumpedChanges = dump_changes(SchemaMod, Changes1),
+            Fields = maps:keys(DumpedChanges),
+            {SQL, Params} = kura_query_compiler:insert(SchemaMod, Fields, DumpedChanges),
+            case pgo_query(RepoMod, SQL, Params) of
+                #{command := insert, rows := [Row]} ->
+                    Row1 = load_row(SchemaMod, Row),
+                    kura_schema:run_after_insert(SchemaMod, Row1);
+                {error, PgError} ->
+                    {error, handle_pg_error(CS#kura_changeset{action = insert}, PgError)}
+            end
     end.
 
 update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) ->
-    CS = run_prepare(CS0),
-    Changes = CS#kura_changeset.changes,
-    case maps:size(Changes) of
-        0 ->
-            {ok, Data};
-        _ ->
-            PK = kura_schema:primary_key(SchemaMod),
-            PKValue = maps:get(PK, Data),
-            Changes1 = maybe_add_timestamps(SchemaMod, Changes, update),
-            DumpedChanges = dump_changes(SchemaMod, Changes1),
-            Fields = maps:keys(DumpedChanges),
-            case CS#kura_changeset.optimistic_lock of
-                undefined ->
-                    {SQL, Params} = kura_query_compiler:update(
-                        SchemaMod, Fields, DumpedChanges, {PK, PKValue}
-                    ),
-                    case pgo_query(RepoMod, SQL, Params) of
-                        #{command := update, rows := [Row]} ->
-                            {ok, load_row(SchemaMod, Row)};
-                        #{command := update, rows := []} ->
-                            {error,
-                                kura_changeset:add_error(
-                                    CS#kura_changeset{action = update},
-                                    base,
-                                    <<"record not found">>
-                                )};
-                        {error, PgError} ->
-                            {error, handle_pg_error(CS#kura_changeset{action = update}, PgError)}
-                    end;
-                LockField ->
-                    LockValue = maps:get(LockField, Data, 0),
-                    {SQL, Params} = compile_update_with_lock(
-                        SchemaMod,
-                        Fields,
-                        DumpedChanges,
-                        {PK, PKValue},
-                        {LockField, LockValue}
-                    ),
-                    case pgo_query(RepoMod, SQL, Params) of
-                        #{command := update, rows := [Row]} ->
-                            {ok, load_row(SchemaMod, Row)};
-                        #{command := update, rows := []} ->
-                            {error, stale};
-                        {error, PgError} ->
-                            {error, handle_pg_error(CS#kura_changeset{action = update}, PgError)}
+    CS1 = run_prepare(CS0),
+    case kura_schema:run_before_update(SchemaMod, CS1) of
+        {error, ErrCS} ->
+            {error, ErrCS#kura_changeset{action = update}};
+        {ok, CS} ->
+            Changes = CS#kura_changeset.changes,
+            case maps:size(Changes) of
+                0 ->
+                    {ok, Data};
+                _ ->
+                    PK = kura_schema:primary_key(SchemaMod),
+                    PKValue = maps:get(PK, Data),
+                    Changes1 = maybe_add_timestamps(SchemaMod, Changes, update),
+                    DumpedChanges = dump_changes(SchemaMod, Changes1),
+                    Fields = maps:keys(DumpedChanges),
+                    case
+                        do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, PK, PKValue)
+                    of
+                        {ok, Row} ->
+                            kura_schema:run_after_update(SchemaMod, Row);
+                        {error, _} = Err ->
+                            Err
                     end
+            end
+    end.
+
+do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, PK, PKValue) ->
+    case CS#kura_changeset.optimistic_lock of
+        undefined ->
+            {SQL, Params} = kura_query_compiler:update(
+                SchemaMod, Fields, DumpedChanges, {PK, PKValue}
+            ),
+            case pgo_query(RepoMod, SQL, Params) of
+                #{command := update, rows := [Row]} ->
+                    {ok, load_row(SchemaMod, Row)};
+                #{command := update, rows := []} ->
+                    {error,
+                        kura_changeset:add_error(
+                            CS#kura_changeset{action = update},
+                            base,
+                            <<"record not found">>
+                        )};
+                {error, PgError} ->
+                    {error, handle_pg_error(CS#kura_changeset{action = update}, PgError)}
+            end;
+        LockField ->
+            Data = CS#kura_changeset.data,
+            LockValue = maps:get(LockField, Data, 0),
+            {SQL, Params} = compile_update_with_lock(
+                SchemaMod,
+                Fields,
+                DumpedChanges,
+                {PK, PKValue},
+                {LockField, LockValue}
+            ),
+            case pgo_query(RepoMod, SQL, Params) of
+                #{command := update, rows := [Row]} ->
+                    {ok, load_row(SchemaMod, Row)};
+                #{command := update, rows := []} ->
+                    {error, stale};
+                {error, PgError} ->
+                    {error, handle_pg_error(CS#kura_changeset{action = update}, PgError)}
             end
     end.
 
@@ -580,6 +656,14 @@ persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AssocChanges) ->
         AssocChanges
     ).
 
+-spec persist_owned_assoc(
+    module(),
+    module(),
+    map(),
+    atom(),
+    #kura_assoc{},
+    #kura_changeset{} | [#kura_changeset{}]
+) -> {ok, map()}.
 persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) when
     is_list(ChildCSs)
 ->
@@ -607,6 +691,14 @@ persist_child(RepoMod, CS = #kura_changeset{action = update}) ->
     {ok, Child} = update_record(RepoMod, CS),
     Child.
 
+-spec persist_many_to_many(
+    module(),
+    module(),
+    map(),
+    atom(),
+    #kura_assoc{},
+    [#kura_changeset{}]
+) -> {ok, map()}.
 persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
     #kura_assoc{
         schema = RelSchema,
@@ -665,17 +757,25 @@ persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
     {ok, AccRow#{AssocName => Children}}.
 
 delete_record(RepoMod, SchemaMod, Data) ->
-    PK = kura_schema:primary_key(SchemaMod),
-    PKValue = maps:get(PK, Data),
-    {SQL, Params} = kura_query_compiler:delete(SchemaMod, PK, PKValue),
-
-    case pgo_query(RepoMod, SQL, Params) of
-        #{command := delete, rows := [Row]} ->
-            {ok, load_row(SchemaMod, Row)};
-        #{command := delete, rows := []} ->
-            {error, not_found};
+    case kura_schema:run_before_delete(SchemaMod, Data) of
         {error, _} = Err ->
-            Err
+            Err;
+        ok ->
+            PK = kura_schema:primary_key(SchemaMod),
+            PKValue = maps:get(PK, Data),
+            {SQL, Params} = kura_query_compiler:delete(SchemaMod, PK, PKValue),
+            case pgo_query(RepoMod, SQL, Params) of
+                #{command := delete, rows := [Row]} ->
+                    Row1 = load_row(SchemaMod, Row),
+                    case kura_schema:run_after_delete(SchemaMod, Row1) of
+                        ok -> {ok, Row1};
+                        {error, _} = AfterErr -> AfterErr
+                    end;
+                #{command := delete, rows := []} ->
+                    {error, not_found};
+                {error, _} = Err ->
+                    Err
+            end
     end.
 
 load_row(SchemaMod, Row) when is_atom(SchemaMod) ->
@@ -809,17 +909,8 @@ format_error(Reason) -> iolist_to_binary(io_lib:format("~p", [Reason])).
 -doc "Build a log event map from query execution data.".
 -spec build_log_event(module(), iodata(), [term()], term(), integer()) -> map().
 build_log_event(Repo, SQL, Params, Result, DurationUs) ->
-    ResultStatus =
-        case Result of
-            {error, _} -> error;
-            _ -> ok
-        end,
-    NumRows =
-        case Result of
-            #{num_rows := N} -> N;
-            #{rows := Rows} -> length(Rows);
-            _ -> 0
-        end,
+    ResultStatus = extract_result_status(Result),
+    NumRows = extract_num_rows(Result),
     #{
         query => iolist_to_binary([SQL]),
         params => Params,
@@ -842,6 +933,11 @@ default_logger() ->
 %% Internal: multitenancy
 %%----------------------------------------------------------------------
 
+needs_transaction(undefined, _Action) ->
+    false;
+needs_transaction(SchemaMod, Action) ->
+    kura_schema:has_after_hook(SchemaMod, Action).
+
 maybe_apply_tenant_query(Query) ->
     case kura_tenant:get_tenant() of
         {prefix, Prefix} ->
@@ -862,3 +958,20 @@ maybe_apply_tenant_changes(Changes) ->
         _ ->
             Changes
     end.
+
+%%----------------------------------------------------------------------
+%% Internal: type narrowing helpers for eqWAlizer
+%%----------------------------------------------------------------------
+
+-spec narrow_ok_error(term()) -> {ok, term()} | {error, term()}.
+narrow_ok_error({ok, _} = Ok) -> Ok;
+narrow_ok_error({error, _} = Err) -> Err.
+
+-spec extract_result_status(term()) -> ok | error.
+extract_result_status({error, _}) -> error;
+extract_result_status(_) -> ok.
+
+-spec extract_num_rows(term()) -> non_neg_integer().
+extract_num_rows(#{num_rows := N}) when is_integer(N) -> N;
+extract_num_rows(#{rows := Rows}) when is_list(Rows) -> length(Rows);
+extract_num_rows(_) -> 0.

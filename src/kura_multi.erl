@@ -31,9 +31,6 @@ end),
     operations = [] :: [{atom(), term()}]
 }).
 
-%% eqWAlizer can't narrow record field types through lists:reverse
--eqwalizer({nowarn_function, to_list/1}).
-
 -doc "Create a new empty multi pipeline.".
 -spec new() -> #kura_multi{}.
 new() ->
@@ -65,7 +62,11 @@ run(Multi, Name, Fun) ->
 -doc "Return the operations list in execution order.".
 -spec to_list(#kura_multi{}) -> [{atom(), term()}].
 to_list(#kura_multi{operations = Ops}) ->
-    lists:reverse(Ops).
+    reverse_ops(Ops, []).
+
+-spec reverse_ops([{atom(), term()}], [{atom(), term()}]) -> [{atom(), term()}].
+reverse_ops([], Acc) -> Acc;
+reverse_ops([{Name, Op} | Rest], Acc) -> reverse_ops(Rest, [{Name, Op} | Acc]).
 
 -doc "Append the operations of the second multi onto the first.".
 -spec append(#kura_multi{}, #kura_multi{}) -> #kura_multi{}.

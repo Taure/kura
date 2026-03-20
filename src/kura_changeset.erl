@@ -52,9 +52,6 @@ CS3 = kura_changeset:unique_constraint(CS2, email).
     normalize_params/1
 ]).
 
-%% eqWAlizer: kura_schema callbacks return dynamic() — can't narrow constraint/index types
--eqwalizer({nowarn_function, build_schema_constraints/1}).
-
 -doc """
 Create a changeset by casting `Params` against type definitions, filtering to `Allowed` fields.
 
@@ -567,46 +564,67 @@ check_number(CS, Field, Val, Opts) ->
     ).
 
 build_schema_constraints(SchemaMod) ->
-    Table = SchemaMod:table(),
-    TableConstraints = lists:filtermap(
-        fun
-            ({unique, Cols}) when is_list(Cols) ->
-                ColsBin = lists:join(<<"_">>, [atom_to_binary(C, utf8) || C <- Cols]),
-                Name = iolist_to_binary([Table, <<"_">>, ColsBin, <<"_key">>]),
-                Field = hd(Cols),
-                {true, #kura_constraint{
-                    type = unique,
-                    constraint = Name,
-                    field = Field,
-                    message = <<"has already been taken">>
-                }};
-            ({check, Expr}) when is_binary(Expr) ->
-                Name = iolist_to_binary([Table, <<"_check">>]),
-                {true, #kura_constraint{
-                    type = check,
-                    constraint = Name,
-                    field = base,
-                    message = <<"is invalid">>
-                }};
-            (_) ->
-                false
-        end,
-        kura_schema:constraints(SchemaMod)
-    ),
-    IndexConstraints = lists:filtermap(
-        fun
-            ({Cols, #{unique := true}}) when is_list(Cols) ->
-                Name = kura_migration:index_name(Table, Cols),
-                Field = hd(Cols),
-                {true, #kura_constraint{
-                    type = unique,
-                    constraint = Name,
-                    field = Field,
-                    message = <<"has already been taken">>
-                }};
-            (_) ->
-                false
-        end,
-        kura_schema:indexes(SchemaMod)
-    ),
+    Table = schema_table(SchemaMod),
+    TableConstraints = build_table_constraints(kura_schema:constraints(SchemaMod), Table),
+    IndexConstraints = build_index_constraints(kura_schema:indexes(SchemaMod), Table),
     TableConstraints ++ IndexConstraints.
+
+-spec schema_table(module()) -> binary().
+schema_table(SchemaMod) -> SchemaMod:table().
+
+-spec build_table_constraints([kura_migration:table_constraint()], binary()) ->
+    [#kura_constraint{}].
+build_table_constraints([], _Table) ->
+    [];
+build_table_constraints([{unique, [First | _] = Cols} | Rest], Table) ->
+    ColsBin = join_col_names(Cols, <<"_">>),
+    Name = iolist_to_binary([Table, <<"_">>, ColsBin, <<"_key">>]),
+    [
+        #kura_constraint{
+            type = unique,
+            constraint = Name,
+            field = First,
+            message = <<"has already been taken">>
+        }
+        | build_table_constraints(Rest, Table)
+    ];
+build_table_constraints([{check, Expr} | Rest], Table) when is_binary(Expr) ->
+    Name = iolist_to_binary([Table, <<"_check">>]),
+    [
+        #kura_constraint{
+            type = check,
+            constraint = Name,
+            field = base,
+            message = <<"is invalid">>
+        }
+        | build_table_constraints(Rest, Table)
+    ];
+build_table_constraints([_ | Rest], Table) ->
+    build_table_constraints(Rest, Table).
+
+-spec build_index_constraints([kura_migration:index_def()], binary()) -> [#kura_constraint{}].
+build_index_constraints([], _Table) ->
+    [];
+build_index_constraints([{[First | _] = Cols, #{unique := true}} | Rest], Table) ->
+    Name = kura_migration:index_name(Table, Cols),
+    [
+        #kura_constraint{
+            type = unique,
+            constraint = Name,
+            field = First,
+            message = <<"has already been taken">>
+        }
+        | build_index_constraints(Rest, Table)
+    ];
+build_index_constraints([_ | Rest], Table) ->
+    build_index_constraints(Rest, Table).
+
+-spec join_col_names([atom()], binary()) -> binary().
+join_col_names(Cols, Sep) ->
+    Bins = [atom_to_binary(C, utf8) || C <- Cols],
+    join_bins(Bins, Sep).
+
+-spec join_bins([binary()], binary()) -> binary().
+join_bins([], _Sep) -> <<>>;
+join_bins([H], _Sep) -> H;
+join_bins([H | T], Sep) -> <<H/binary, Sep/binary, (join_bins(T, Sep))/binary>>.
