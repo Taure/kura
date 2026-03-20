@@ -157,7 +157,20 @@ integration_test_() ->
             {"stream processes batches", fun t_stream/0},
 
             %% Scopes
-            {"query scopes compose", fun t_scope/0}
+            {"query scopes compose", fun t_scope/0},
+
+            %% Lifecycle hooks
+            {"before_insert modifies changeset", fun t_before_insert_hook/0},
+            {"before_insert rejects changeset", fun t_before_insert_reject/0},
+            {"after_insert receives record", fun t_after_insert_hook/0},
+            {"after_insert failure rolls back", fun t_after_insert_failure/0},
+            {"before_update modifies changeset", fun t_before_update_hook/0},
+            {"before_update rejects changeset", fun t_before_update_reject/0},
+            {"after_update receives record", fun t_after_update_hook/0},
+            {"after_update failure rolls back", fun t_after_update_failure/0},
+            {"before_delete blocks deletion", fun t_before_delete_reject/0},
+            {"after_delete receives record", fun t_after_delete_hook/0},
+            {"after_delete failure rolls back", fun t_after_delete_failure/0}
         ]
     end}.
 
@@ -203,9 +216,20 @@ setup() ->
         ")",
         []
     ),
+    {ok, _} = kura_test_repo:query(
+        "CREATE TABLE hook_items ("
+        "  id BIGSERIAL PRIMARY KEY,"
+        "  name VARCHAR(255) NOT NULL,"
+        "  status VARCHAR(255),"
+        "  inserted_at TIMESTAMPTZ,"
+        "  updated_at TIMESTAMPTZ"
+        ")",
+        []
+    ),
     ok.
 
 teardown(_) ->
+    kura_test_repo:query("DROP TABLE IF EXISTS hook_items CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS participants CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS posts_simple CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS users CASCADE", []),
@@ -1238,3 +1262,150 @@ t_scope() ->
     {ok, Results} = kura_test_repo:all(Q),
     Names = [maps:get(name, R) || R <- Results],
     ?assert(lists:member(<<"ScopeUser">>, Names)).
+
+%%----------------------------------------------------------------------
+%% Lifecycle hooks
+%%----------------------------------------------------------------------
+
+insert_hook_item(Name) ->
+    CS = kura_changeset:cast(
+        kura_test_hook_schema,
+        #{},
+        #{<<"name">> => Name},
+        [name, status]
+    ),
+    CS1 = kura_changeset:validate_required(CS, [name]),
+    kura_test_repo:insert(CS1).
+
+flush_hooks() ->
+    receive
+        {hook, _, _} -> flush_hooks()
+    after 0 -> ok
+    end.
+
+t_before_insert_hook() ->
+    erlang:put(hook_test_pid, self()),
+    flush_hooks(),
+    {ok, Item} = insert_hook_item(<<"normal">>),
+    ?assertEqual(<<"hook_inserted">>, maps:get(status, Item)),
+    receive
+        {hook, before_insert, _} -> ok
+    after 100 -> error(hook_not_called)
+    end,
+    flush_hooks(),
+    erlang:erase(hook_test_pid).
+
+t_before_insert_reject() ->
+    {error, CS} = insert_hook_item(<<"reject_insert">>),
+    ?assertMatch([{name, <<"insert rejected by hook">>} | _], CS#kura_changeset.errors).
+
+t_after_insert_hook() ->
+    erlang:put(hook_test_pid, self()),
+    flush_hooks(),
+    {ok, _} = insert_hook_item(<<"after_ok">>),
+    receive
+        {hook, after_insert, Record} ->
+            ?assertEqual(<<"after_ok">>, maps:get(name, Record))
+    after 100 -> error(hook_not_called)
+    end,
+    flush_hooks(),
+    erlang:erase(hook_test_pid).
+
+t_after_insert_failure() ->
+    {error, after_insert_failed} = insert_hook_item(<<"fail_after_insert">>),
+    %% Verify the insert was rolled back
+    Q = kura_query:where(kura_query:from(kura_test_hook_schema), {name, <<"fail_after_insert">>}),
+    {ok, []} = kura_test_repo:all(Q).
+
+t_before_update_hook() ->
+    erlang:put(hook_test_pid, self()),
+    flush_hooks(),
+    {ok, Item} = insert_hook_item(<<"update_me">>),
+    flush_hooks(),
+    CS = kura_changeset:cast(
+        kura_test_hook_schema,
+        Item,
+        #{<<"name">> => <<"updated">>},
+        [name, status]
+    ),
+    {ok, Updated} = kura_test_repo:update(CS),
+    ?assertEqual(<<"updated">>, maps:get(name, Updated)),
+    receive
+        {hook, before_update, _} -> ok
+    after 100 -> error(hook_not_called)
+    end,
+    flush_hooks(),
+    erlang:erase(hook_test_pid).
+
+t_before_update_reject() ->
+    {ok, Item} = insert_hook_item(<<"will_reject_update">>),
+    CS = kura_changeset:cast(
+        kura_test_hook_schema,
+        Item,
+        #{<<"name">> => <<"reject_update">>},
+        [name, status]
+    ),
+    {error, ErrCS} = kura_test_repo:update(CS),
+    ?assertMatch([{name, <<"update rejected by hook">>} | _], ErrCS#kura_changeset.errors).
+
+t_after_update_hook() ->
+    erlang:put(hook_test_pid, self()),
+    flush_hooks(),
+    {ok, Item} = insert_hook_item(<<"after_update_ok">>),
+    flush_hooks(),
+    CS = kura_changeset:cast(
+        kura_test_hook_schema,
+        Item,
+        #{<<"name">> => <<"after_updated">>},
+        [name, status]
+    ),
+    {ok, Updated} = kura_test_repo:update(CS),
+    ?assertEqual(<<"after_updated">>, maps:get(name, Updated)),
+    receive
+        {hook, after_update, _} -> ok
+    after 100 -> error(hook_not_called)
+    end,
+    flush_hooks(),
+    erlang:erase(hook_test_pid).
+
+t_after_update_failure() ->
+    {ok, Item} = insert_hook_item(<<"will_fail_after">>),
+    CS = kura_changeset:cast(
+        kura_test_hook_schema,
+        Item,
+        #{<<"name">> => <<"fail_after_update">>},
+        [name, status]
+    ),
+    {error, after_update_failed} = kura_test_repo:update(CS),
+    %% Verify the update was rolled back
+    {ok, Reloaded} = kura_test_repo:reload(kura_test_hook_schema, Item),
+    ?assertEqual(<<"will_fail_after">>, maps:get(name, Reloaded)).
+
+t_before_delete_reject() ->
+    {ok, Item} = insert_hook_item(<<"reject_delete">>),
+    CS = kura_changeset:cast(kura_test_hook_schema, Item, #{}, []),
+    {error, delete_rejected} = kura_test_repo:delete(CS),
+    %% Verify record still exists
+    {ok, _} = kura_test_repo:reload(kura_test_hook_schema, Item).
+
+t_after_delete_hook() ->
+    erlang:put(hook_test_pid, self()),
+    flush_hooks(),
+    {ok, Item} = insert_hook_item(<<"delete_me">>),
+    flush_hooks(),
+    CS = kura_changeset:cast(kura_test_hook_schema, Item, #{}, []),
+    {ok, Deleted} = kura_test_repo:delete(CS),
+    ?assertEqual(<<"delete_me">>, maps:get(name, Deleted)),
+    receive
+        {hook, after_delete, _} -> ok
+    after 100 -> error(hook_not_called)
+    end,
+    flush_hooks(),
+    erlang:erase(hook_test_pid).
+
+t_after_delete_failure() ->
+    {ok, Item} = insert_hook_item(<<"fail_after_delete">>),
+    CS = kura_changeset:cast(kura_test_hook_schema, Item, #{}, []),
+    {error, after_delete_failed} = kura_test_repo:delete(CS),
+    %% Verify the delete was rolled back
+    {ok, _} = kura_test_repo:reload(kura_test_hook_schema, Item).
