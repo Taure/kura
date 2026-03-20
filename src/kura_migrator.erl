@@ -27,6 +27,24 @@ across multiple nodes.
     check_unsafe_operations/2
 ]).
 
+-ifdef(TEST).
+-export([
+    sort_migrations/1,
+    sort_integers/1,
+    reverse_integers/2,
+    take_integers/2,
+    partition_ints/4,
+    partition_migrations/4,
+    build_rollback_pairs/2,
+    narrow_migration_result/1,
+    get_app_modules/1,
+    to_module_list/1,
+    parse_version/1,
+    exec_operations/3,
+    check_alter_ops/3
+]).
+-endif.
+
 %% eqWAlizer: operation() union has >7 variants — exceeds clause narrowing limit
 -eqwalizer({nowarn_function, compile_operation/1}).
 

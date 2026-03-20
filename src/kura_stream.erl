@@ -15,6 +15,10 @@ end, #{batch_size => 100}).
 
 -export([stream/3, stream/4]).
 
+-ifdef(TEST).
+-export([narrow_transaction_result/1]).
+-endif.
+
 -doc "Stream query results in batches of 500, calling Fun for each batch.".
 -spec stream(module(), #kura_query{}, fun(([map()]) -> ok)) -> ok | {error, term()}.
 stream(RepoMod, Query, Fun) ->

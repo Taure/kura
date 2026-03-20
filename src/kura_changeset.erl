@@ -52,6 +52,16 @@ CS3 = kura_changeset:unique_constraint(CS2, email).
     normalize_params/1
 ]).
 
+-ifdef(TEST).
+-export([
+    join_col_names/2,
+    join_bins/2,
+    build_table_constraints/2,
+    build_index_constraints/2,
+    schema_table/1
+]).
+-endif.
+
 -doc """
 Create a changeset by casting `Params` against type definitions, filtering to `Allowed` fields.
 

@@ -7,6 +7,18 @@
     do_preload/4
 ]).
 
+-ifdef(TEST).
+-export([
+    get_field/2,
+    get_field_default/3,
+    set_field/3,
+    group_by_key/3,
+    reverse_maps/2,
+    join_bins/2,
+    group_m2m_join/5
+]).
+-endif.
+
 -spec preload(module(), module(), map() | [map()], [atom() | {atom(), list()}]) ->
     map() | [map()].
 preload(RepoMod, Schema, Record, Assocs) when is_map(Record) ->

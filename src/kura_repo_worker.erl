@@ -42,6 +42,14 @@ kura_repo_worker:start(MyRepo),
     default_logger/0
 ]).
 
+-ifdef(TEST).
+-export([
+    narrow_ok_error/1,
+    extract_result_status/1,
+    extract_num_rows/1
+]).
+-endif.
+
 -define(DECODE_OPTS, [return_rows_as_maps, column_name_as_atom]).
 
 %% eqWAlizer: pgo:transaction/2 returns any() — no override module available
