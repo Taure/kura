@@ -30,8 +30,6 @@ Q = kura_query:from(my_schema),
 
 -export([paginate/3, cursor_paginate/3, total_pages/2]).
 
--eqwalizer({nowarn_function, cursor_paginate/3}).
-
 -doc """
 Offset-based pagination. Returns entries for the given page along with
 total counts.
@@ -127,24 +125,15 @@ cursor_paginate(Repo, Query, Opts) ->
             HasMore = length(Rows) > Limit,
             Trimmed =
                 case HasMore of
-                    true -> lists:sublist(Rows, Limit);
+                    true -> take_rows(Rows, Limit);
                     false -> Rows
                 end,
             Entries =
                 case Direction of
                     forward -> Trimmed;
-                    backward -> lists:reverse(Trimmed)
+                    backward -> reverse_rows(Trimmed, [])
                 end,
-            {StartCursor, EndCursor} =
-                case Entries of
-                    [] ->
-                        {undefined, undefined};
-                    _ ->
-                        {
-                            maps:get(CursorField, hd(Entries)),
-                            maps:get(CursorField, lists:last(Entries))
-                        }
-                end,
+            {StartCursor, EndCursor} = extract_cursors(Entries, CursorField),
             HasNext =
                 case Direction of
                     forward -> HasMore;
@@ -170,3 +159,23 @@ cursor_paginate(Repo, Query, Opts) ->
 -spec total_pages(non_neg_integer(), pos_integer()) -> non_neg_integer().
 total_pages(0, _PageSize) -> 0;
 total_pages(TotalEntries, PageSize) -> (TotalEntries + PageSize - 1) div PageSize.
+
+-spec extract_cursors([map()], atom()) -> {term(), term()}.
+extract_cursors([], _CursorField) ->
+    {undefined, undefined};
+extract_cursors([First | _] = Entries, CursorField) ->
+    Last = last_row(Entries),
+    {maps:get(CursorField, First), maps:get(CursorField, Last)}.
+
+-spec last_row([map()]) -> map().
+last_row([H]) -> H;
+last_row([_ | T]) -> last_row(T).
+
+-spec take_rows([map()], non_neg_integer()) -> [map()].
+take_rows(_, 0) -> [];
+take_rows([], _) -> [];
+take_rows([H | T], N) -> [H | take_rows(T, N - 1)].
+
+-spec reverse_rows([map()], [map()]) -> [map()].
+reverse_rows([], Acc) -> Acc;
+reverse_rows([H | T], Acc) -> reverse_rows(T, [H | Acc]).

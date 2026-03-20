@@ -15,7 +15,9 @@ end, #{batch_size => 100}).
 
 -export([stream/3, stream/4]).
 
--eqwalizer({nowarn_function, stream/4}).
+-ifdef(TEST).
+-export([narrow_transaction_result/1]).
+-endif.
 
 -doc "Stream query results in batches of 500, calling Fun for each batch.".
 -spec stream(module(), #kura_query{}, fun(([map()]) -> ok)) -> ok | {error, term()}.
@@ -43,7 +45,7 @@ stream(RepoMod, Query, Fun, Opts) ->
         CursorName
     ]),
     CloseSQL = iolist_to_binary([<<"CLOSE ">>, CursorName]),
-    pgo:transaction(
+    Result = pgo:transaction(
         Pool,
         fun() ->
             _ = pgo:query(DeclareSQL, Params),
@@ -54,7 +56,12 @@ stream(RepoMod, Query, Fun, Opts) ->
             end
         end,
         #{}
-    ).
+    ),
+    narrow_transaction_result(Result).
+
+-spec narrow_transaction_result(term()) -> ok | {error, term()}.
+narrow_transaction_result(ok) -> ok;
+narrow_transaction_result({error, _} = Err) -> Err.
 
 fetch_loop(FetchSQL, Schema, Fun) ->
     case pgo:query(FetchSQL, []) of

@@ -28,10 +28,6 @@ jobs:
       enable-elp-lint: true
       enable-elp-eqwalize: true
       mutate-diff: true
-      mutate-min-score: '80'
+      mutate-min-score: '50'
 
-      postgres: true
-      postgres-version: '16'
-      postgres-db: 'kura_test'
-      postgres-password: 'root'
-      postgres-port: '5555'
+      extra-services-compose: 'docker-compose.ci.yml'

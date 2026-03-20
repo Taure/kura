@@ -76,10 +76,13 @@ down() ->
     safe_entry/0
 ]).
 
--eqwalizer({nowarn_function, index_name/2}).
-
 -doc "Generate an Ecto-style index name: `{table}_{cols}_index`.".
 -spec index_name(binary(), [atom()]) -> binary().
 index_name(Table, Cols) ->
-    ColsBin = lists:join(<<"_">>, [atom_to_binary(C, utf8) || C <- Cols]),
+    ColsBin = join_with_sep([atom_to_binary(C, utf8) || C <- Cols], <<"_">>),
     iolist_to_binary([Table, <<"_">>, ColsBin, <<"_index">>]).
+
+-spec join_with_sep([binary()], binary()) -> [binary()].
+join_with_sep([], _Sep) -> [];
+join_with_sep([H], _Sep) -> [H];
+join_with_sep([H | T], Sep) -> [H, Sep | join_with_sep(T, Sep)].

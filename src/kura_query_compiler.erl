@@ -20,18 +20,8 @@ This is an internal module. Use `kura_repo_worker` for executing queries.
     insert_all/4
 ]).
 
--eqwalizer({nowarn_function, insert/3}).
--eqwalizer({nowarn_function, insert/4}).
--eqwalizer({nowarn_function, update/4}).
--eqwalizer({nowarn_function, update_all/2}).
--eqwalizer({nowarn_function, insert_all/3}).
--eqwalizer({nowarn_function, compile_select/2}).
--eqwalizer({nowarn_function, compile_conditions/2}).
+%% eqWAlizer: compile_condition/2 has >16 clauses narrowing on condition union
 -eqwalizer({nowarn_function, compile_condition/2}).
--eqwalizer({nowarn_function, compile_joins/4}).
--eqwalizer({nowarn_function, compile_ctes/2}).
--eqwalizer({nowarn_function, compile_combinations/4}).
--eqwalizer({nowarn_function, compile_on_conflict_update/4}).
 
 -doc "Compile a query record into `{SQL, Params}`.".
 -spec to_sql(#kura_query{}) -> {iodata(), [term()]}.
@@ -91,53 +81,35 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
 -spec insert(atom() | module(), [atom()], map()) -> {iodata(), [term()]}.
 insert(SchemaOrTable, Fields, Data) ->
     Table = resolve_table(SchemaOrTable),
-    {Cols, Placeholders, Params, _} = lists:foldl(
-        fun(Field, {CAcc, PAcc, VAcc, N}) ->
-            Value = maps:get(Field, Data),
-            Col = quote_ident(atom_to_binary(Field, utf8)),
-            Placeholder = [<<"$">>, integer_to_binary(N)],
-            {[Col | CAcc], [Placeholder | PAcc], [Value | VAcc], N + 1}
-        end,
-        {[], [], [], 1},
-        Fields
-    ),
+    {Cols, Placeholders, Params, _} = build_insert_parts(Fields, Data, 1),
     SQL = iolist_to_binary([
         <<"INSERT INTO ">>,
         qualified_table(Table, resolve_prefix(undefined)),
         <<" (">>,
-        join_comma(lists:reverse(Cols)),
+        join_comma(Cols),
         <<") VALUES (">>,
-        join_comma(lists:reverse(Placeholders)),
+        join_comma(Placeholders),
         <<") RETURNING *">>
     ]),
-    {SQL, lists:reverse(Params)}.
+    {SQL, Params}.
 
 -spec insert(atom() | module(), [atom()], map(), map()) -> {iodata(), [term()]}.
 insert(SchemaOrTable, Fields, Data, #{on_conflict := OnConflict}) ->
     Table = resolve_table(SchemaOrTable),
-    {Cols, Placeholders, Params, Counter} = lists:foldl(
-        fun(Field, {CAcc, PAcc, VAcc, N}) ->
-            Value = maps:get(Field, Data),
-            Col = quote_ident(atom_to_binary(Field, utf8)),
-            Placeholder = [<<"$">>, integer_to_binary(N)],
-            {[Col | CAcc], [Placeholder | PAcc], [Value | VAcc], N + 1}
-        end,
-        {[], [], [], 1},
-        Fields
-    ),
+    {Cols, Placeholders, Params, Counter} = build_insert_parts(Fields, Data, 1),
     {ConflictSQL, ConflictParams} = compile_on_conflict(OnConflict, Fields, Data, Counter),
     SQL = iolist_to_binary([
         <<"INSERT INTO ">>,
         qualified_table(Table, resolve_prefix(undefined)),
         <<" (">>,
-        join_comma(lists:reverse(Cols)),
+        join_comma(Cols),
         <<") VALUES (">>,
-        join_comma(lists:reverse(Placeholders)),
+        join_comma(Placeholders),
         <<")">>,
         ConflictSQL,
         <<" RETURNING *">>
     ]),
-    {SQL, lists:reverse(Params) ++ ConflictParams};
+    {SQL, Params ++ ConflictParams};
 insert(SchemaOrTable, Fields, Data, _Opts) ->
     insert(SchemaOrTable, Fields, Data).
 
@@ -148,28 +120,20 @@ insert(SchemaOrTable, Fields, Data, _Opts) ->
 -spec update(atom() | module(), [atom()], map(), {atom(), term()}) -> {iodata(), [term()]}.
 update(SchemaOrTable, Fields, Changes, {PKField, PKValue}) ->
     Table = resolve_table(SchemaOrTable),
-    {Sets, Params, Counter} = lists:foldl(
-        fun(Field, {SAcc, PAcc, N}) ->
-            Value = maps:get(Field, Changes),
-            Set = [quote_ident(atom_to_binary(Field, utf8)), <<" = $">>, integer_to_binary(N)],
-            {[Set | SAcc], [Value | PAcc], N + 1}
-        end,
-        {[], [], 1},
-        Fields
-    ),
+    {Sets, Params, Counter} = build_set_parts(Fields, Changes, 1),
     PKPlaceholder = [<<"$">>, integer_to_binary(Counter)],
     SQL = iolist_to_binary([
         <<"UPDATE ">>,
         qualified_table(Table, resolve_prefix(undefined)),
         <<" SET ">>,
-        join_comma(lists:reverse(Sets)),
+        join_comma(Sets),
         <<" WHERE ">>,
         quote_ident(atom_to_binary(PKField, utf8)),
         <<" = ">>,
         PKPlaceholder,
         <<" RETURNING *">>
     ]),
-    {SQL, lists:reverse(Params) ++ [PKValue]}.
+    {SQL, Params ++ [PKValue]}.
 
 %%----------------------------------------------------------------------
 %% DELETE
@@ -197,24 +161,16 @@ update_all(#kura_query{from = From, wheres = Wheres, prefix = QPrefix}, SetMap) 
     Table = resolve_table(From),
     Prefix = resolve_prefix(QPrefix),
     Fields = maps:keys(SetMap),
-    {Sets, Params, Counter} = lists:foldl(
-        fun(Field, {SAcc, PAcc, N}) ->
-            Value = maps:get(Field, SetMap),
-            Set = [quote_ident(atom_to_binary(Field, utf8)), <<" = $">>, integer_to_binary(N)],
-            {[Set | SAcc], [Value | PAcc], N + 1}
-        end,
-        {[], [], 1},
-        Fields
-    ),
+    {Sets, Params, Counter} = build_set_parts(Fields, SetMap, 1),
     {WhereSQL, WhereParams, _} = compile_wheres(Wheres, Counter),
     SQL = iolist_to_binary([
         <<"UPDATE ">>,
         qualified_table(Table, Prefix),
         <<" SET ">>,
-        join_comma(lists:reverse(Sets)),
+        join_comma(Sets),
         WhereSQL
     ]),
-    {SQL, lists:reverse(Params) ++ WhereParams}.
+    {SQL, Params ++ WhereParams}.
 
 %%----------------------------------------------------------------------
 %% DELETE ALL (bulk)
@@ -240,30 +196,14 @@ delete_all(#kura_query{from = From, wheres = Wheres, prefix = QPrefix}) ->
 insert_all(SchemaOrTable, Fields, Rows) ->
     Table = resolve_table(SchemaOrTable),
     Cols = [quote_ident(atom_to_binary(F, utf8)) || F <- Fields],
-    {ValueGroups, AllParams, _} = lists:foldl(
-        fun(Row, {GroupAcc, ParamAcc, N}) ->
-            {Placeholders, RowParams, N2} = lists:foldl(
-                fun(Field, {PlAcc, RPAcc, Cnt}) ->
-                    Value = maps:get(Field, Row),
-                    Placeholder = [<<"$">>, integer_to_binary(Cnt)],
-                    {[Placeholder | PlAcc], [Value | RPAcc], Cnt + 1}
-                end,
-                {[], [], N},
-                Fields
-            ),
-            Group = [<<"(">>, join_comma(lists:reverse(Placeholders)), <<")">>],
-            {[Group | GroupAcc], ParamAcc ++ lists:reverse(RowParams), N2}
-        end,
-        {[], [], 1},
-        Rows
-    ),
+    {ValueGroups, AllParams, _} = build_value_groups(Rows, Fields, 1),
     SQL = iolist_to_binary([
         <<"INSERT INTO ">>,
         qualified_table(Table, resolve_prefix(undefined)),
         <<" (">>,
         join_comma(Cols),
         <<") VALUES ">>,
-        join_comma(lists:reverse(ValueGroups))
+        join_comma(ValueGroups)
     ]),
     {SQL, AllParams}.
 
@@ -285,15 +225,7 @@ insert_all(SchemaOrTable, Fields, Rows, _Opts) ->
 compile_select(#kura_query{select = []}, Counter) ->
     {<<"*">>, [], Counter};
 compile_select(#kura_query{select = {exprs, Exprs}}, Counter) ->
-    {Parts, AllParams, NewCounter} = lists:foldl(
-        fun({Alias, {fragment, SQL, Params}}, {PAcc, VarAcc, C}) ->
-            {RewrittenSQL, C2} = rewrite_fragment_placeholders(SQL, C),
-            Part = [RewrittenSQL, <<" AS ">>, quote_ident(atom_to_binary(Alias, utf8))],
-            {PAcc ++ [Part], VarAcc ++ Params, C2}
-        end,
-        {[], [], Counter},
-        Exprs
-    ),
+    {Parts, AllParams, NewCounter} = compile_select_exprs(Exprs, Counter),
     {join_comma(Parts), AllParams, NewCounter};
 compile_select(#kura_query{select = Fields}, Counter) ->
     Parts = [compile_select_field(F) || F <- Fields],
@@ -326,15 +258,12 @@ compile_wheres(Conditions, Counter) ->
     SQL = [<<" WHERE ">>, join_and(Parts)],
     {iolist_to_binary(SQL), Params, NewCounter}.
 
-compile_conditions(Conditions, Counter) ->
-    lists:foldl(
-        fun(Cond, {PAcc, VarAcc, C}) ->
-            {Part, Vars, NewC} = compile_condition(Cond, C),
-            {PAcc ++ [Part], VarAcc ++ Vars, NewC}
-        end,
-        {[], [], Counter},
-        Conditions
-    ).
+compile_conditions([], Counter) ->
+    {[], [], Counter};
+compile_conditions([Cond | Rest], Counter) ->
+    {Part, Vars, Counter1} = compile_condition(Cond, Counter),
+    {Parts, MoreVars, Counter2} = compile_conditions(Rest, Counter1),
+    {[Part | Parts], Vars ++ MoreVars, Counter2}.
 
 compile_condition({'and', Conditions}, Counter) ->
     {Parts, Params, NewCounter} = compile_conditions(Conditions, Counter),
@@ -462,46 +391,8 @@ compile_condition({Field, Value}, Counter) when is_atom(Field) ->
 compile_joins([], _Table, _Prefix, Counter) ->
     {<<>>, [], Counter};
 compile_joins(Joins, FromTable, Prefix, Counter) ->
-    {Parts, Params, NewCounter, _LastTable} = lists:foldl(
-        fun({Type, JoinTable, {LeftCol, RightCol}, As}, {Acc, PAcc, C, PrevTable}) ->
-            JoinTableBin = resolve_table(JoinTable),
-            TableRef =
-                case As of
-                    undefined ->
-                        qualified_table(JoinTableBin, Prefix);
-                    Alias ->
-                        [
-                            qualified_table(JoinTableBin, Prefix),
-                            <<" AS ">>,
-                            quote_ident(atom_to_binary(Alias, utf8))
-                        ]
-                end,
-            JoinRef =
-                case As of
-                    undefined -> JoinTableBin;
-                    Alias2 -> atom_to_binary(Alias2, utf8)
-                end,
-            TypeBin = join_type(Type),
-            Part = [
-                <<" ">>,
-                TypeBin,
-                <<" ">>,
-                TableRef,
-                <<" ON ">>,
-                quote_ident(PrevTable),
-                <<".">>,
-                quote_ident(atom_to_binary(LeftCol, utf8)),
-                <<" = ">>,
-                quote_ident(JoinRef),
-                <<".">>,
-                quote_ident(atom_to_binary(RightCol, utf8))
-            ],
-            {Acc ++ [Part], PAcc, C, JoinRef}
-        end,
-        {[], [], Counter, FromTable},
-        Joins
-    ),
-    {iolist_to_binary(Parts), Params, NewCounter}.
+    Parts = compile_joins_loop(Joins, FromTable, Prefix),
+    {iolist_to_binary(Parts), [], Counter}.
 
 join_type(inner) -> <<"INNER JOIN">>;
 join_type(left) -> <<"LEFT JOIN">>;
@@ -585,15 +476,7 @@ compile_distinct(Fields) when is_list(Fields) ->
 compile_ctes([], Counter) ->
     {<<>>, [], Counter};
 compile_ctes(CTEs, Counter) ->
-    {Parts, AllParams, NewCounter} = lists:foldl(
-        fun({Name, CteQuery}, {PAcc, VarAcc, C}) ->
-            {CteSQL, CteParams, C2} = to_sql_from(CteQuery, C),
-            Part = [Name, <<" AS (">>, CteSQL, <<")">>],
-            {PAcc ++ [Part], VarAcc ++ CteParams, C2}
-        end,
-        {[], [], Counter},
-        CTEs
-    ),
+    {Parts, AllParams, NewCounter} = compile_ctes_loop(CTEs, Counter),
     {[<<"WITH ">>, join_comma(Parts), <<" ">>], AllParams, NewCounter}.
 
 %%----------------------------------------------------------------------
@@ -603,16 +486,7 @@ compile_ctes(CTEs, Counter) ->
 compile_combinations([], MainSQL, MainParams, Counter) ->
     {MainSQL, MainParams, Counter};
 compile_combinations(Combinations, MainSQL, MainParams, Counter) ->
-    {CombParts, AllParams, NewCounter} = lists:foldl(
-        fun({Type, Q2}, {PAcc, VarAcc, C}) ->
-            {SQL2, Params2, C2} = to_sql_from(Q2, C),
-            TypeBin = combination_type(Type),
-            Part = [<<" ">>, TypeBin, <<" ">>, SQL2],
-            {PAcc ++ [Part], VarAcc ++ Params2, C2}
-        end,
-        {[], [], Counter},
-        Combinations
-    ),
+    {CombParts, AllParams, NewCounter} = compile_combinations_loop(Combinations, Counter),
     FinalSQL = iolist_to_binary([MainSQL | CombParts]),
     {FinalSQL, MainParams ++ AllParams, NewCounter}.
 
@@ -652,17 +526,9 @@ compile_on_conflict({{constraint, Name}, {replace, UpdateFields}}, _Fields, Data
     ).
 
 compile_on_conflict_update(ConflictTarget, UpdateFields, Data, Counter) ->
-    {Sets, Params, _} = lists:foldl(
-        fun(F, {SAcc, PAcc, N}) ->
-            Value = maps:get(F, Data),
-            Set = [quote_ident(atom_to_binary(F, utf8)), <<" = $">>, integer_to_binary(N)],
-            {[Set | SAcc], [Value | PAcc], N + 1}
-        end,
-        {[], [], Counter},
-        UpdateFields
-    ),
-    SQL = [ConflictTarget, <<" DO UPDATE SET ">>, join_comma(lists:reverse(Sets))],
-    {SQL, lists:reverse(Params)}.
+    {Sets, Params, _} = build_set_parts(UpdateFields, Data, Counter),
+    SQL = [ConflictTarget, <<" DO UPDATE SET ">>, join_comma(Sets)],
+    {SQL, Params}.
 
 resolve_table(Mod) when is_atom(Mod) ->
     case code:ensure_loaded(Mod) of
@@ -710,3 +576,124 @@ resolve_prefix(undefined) ->
     end;
 resolve_prefix(Prefix) ->
     Prefix.
+
+%%----------------------------------------------------------------------
+%% Internal: typed recursive helpers (replacing lists:foldl to preserve
+%% accumulator types for eqWAlizer)
+%%----------------------------------------------------------------------
+
+-spec build_insert_parts([atom()], map(), pos_integer()) ->
+    {[iodata()], [iodata()], [term()], pos_integer()}.
+build_insert_parts([], _Data, N) ->
+    {[], [], [], N};
+build_insert_parts([Field | Rest], Data, N) ->
+    Value = maps:get(Field, Data),
+    Col = quote_ident(atom_to_binary(Field, utf8)),
+    Placeholder = [<<"$">>, integer_to_binary(N)],
+    {Cols, Placeholders, Params, N2} = build_insert_parts(Rest, Data, N + 1),
+    {[Col | Cols], [Placeholder | Placeholders], [Value | Params], N2}.
+
+-spec build_set_parts([atom()], map(), pos_integer()) ->
+    {[iodata()], [term()], pos_integer()}.
+build_set_parts([], _Data, N) ->
+    {[], [], N};
+build_set_parts([Field | Rest], Data, N) ->
+    Value = maps:get(Field, Data),
+    Set = [quote_ident(atom_to_binary(Field, utf8)), <<" = $">>, integer_to_binary(N)],
+    {Sets, Params, N2} = build_set_parts(Rest, Data, N + 1),
+    {[Set | Sets], [Value | Params], N2}.
+
+-spec build_value_groups([map()], [atom()], pos_integer()) ->
+    {[iodata()], [term()], pos_integer()}.
+build_value_groups([], _Fields, N) ->
+    {[], [], N};
+build_value_groups([Row | Rest], Fields, N) ->
+    {Placeholders, RowParams, N2} = build_row_placeholders(Fields, Row, N),
+    Group = [<<"(">>, join_comma(Placeholders), <<")">>],
+    {Groups, MoreParams, N3} = build_value_groups(Rest, Fields, N2),
+    {[Group | Groups], RowParams ++ MoreParams, N3}.
+
+-spec build_row_placeholders([atom()], map(), pos_integer()) ->
+    {[iodata()], [term()], pos_integer()}.
+build_row_placeholders([], _Row, N) ->
+    {[], [], N};
+build_row_placeholders([Field | Rest], Row, N) ->
+    Value = maps:get(Field, Row),
+    Placeholder = [<<"$">>, integer_to_binary(N)],
+    {Placeholders, Params, N2} = build_row_placeholders(Rest, Row, N + 1),
+    {[Placeholder | Placeholders], [Value | Params], N2}.
+
+-spec compile_select_exprs([{atom(), {fragment, binary(), [term()]}}], pos_integer()) ->
+    {[iodata()], [term()], pos_integer()}.
+compile_select_exprs([], Counter) ->
+    {[], [], Counter};
+compile_select_exprs([{Alias, {fragment, SQL, Params}} | Rest], Counter) ->
+    {RewrittenSQL, C2} = rewrite_fragment_placeholders(SQL, Counter),
+    Part = [RewrittenSQL, <<" AS ">>, quote_ident(atom_to_binary(Alias, utf8))],
+    {Parts, MoreParams, C3} = compile_select_exprs(Rest, C2),
+    {[Part | Parts], Params ++ MoreParams, C3}.
+
+-spec compile_joins_loop(
+    [{atom(), atom() | module(), {atom(), atom()}, atom() | undefined}],
+    binary(),
+    binary() | undefined
+) -> [iodata()].
+compile_joins_loop([], _PrevTable, _Prefix) ->
+    [];
+compile_joins_loop([{Type, JoinTable, {LeftCol, RightCol}, As} | Rest], PrevTable, Prefix) ->
+    JoinTableBin = resolve_table(JoinTable),
+    TableRef =
+        case As of
+            undefined ->
+                qualified_table(JoinTableBin, Prefix);
+            Alias ->
+                [
+                    qualified_table(JoinTableBin, Prefix),
+                    <<" AS ">>,
+                    quote_ident(atom_to_binary(Alias, utf8))
+                ]
+        end,
+    JoinRef =
+        case As of
+            undefined -> JoinTableBin;
+            Alias2 -> atom_to_binary(Alias2, utf8)
+        end,
+    TypeBin = join_type(Type),
+    Part = [
+        <<" ">>,
+        TypeBin,
+        <<" ">>,
+        TableRef,
+        <<" ON ">>,
+        quote_ident(PrevTable),
+        <<".">>,
+        quote_ident(atom_to_binary(LeftCol, utf8)),
+        <<" = ">>,
+        quote_ident(JoinRef),
+        <<".">>,
+        quote_ident(atom_to_binary(RightCol, utf8))
+    ],
+    [Part | compile_joins_loop(Rest, JoinRef, Prefix)].
+
+-spec compile_ctes_loop([{binary(), #kura_query{}}], pos_integer()) ->
+    {[iodata()], [term()], pos_integer()}.
+compile_ctes_loop([], Counter) ->
+    {[], [], Counter};
+compile_ctes_loop([{Name, CteQuery} | Rest], Counter) ->
+    {CteSQL, CteParams, C2} = to_sql_from(CteQuery, Counter),
+    Part = [Name, <<" AS (">>, CteSQL, <<")">>],
+    {Parts, MoreParams, C3} = compile_ctes_loop(Rest, C2),
+    {[Part | Parts], CteParams ++ MoreParams, C3}.
+
+-spec compile_combinations_loop(
+    [{union | union_all | intersect | except, #kura_query{}}], pos_integer()
+) ->
+    {[iodata()], [term()], pos_integer()}.
+compile_combinations_loop([], Counter) ->
+    {[], [], Counter};
+compile_combinations_loop([{Type, Q2} | Rest], Counter) ->
+    {SQL2, Params2, C2} = to_sql_from(Q2, Counter),
+    TypeBin = combination_type(Type),
+    Part = [<<" ">>, TypeBin, <<" ">>, SQL2],
+    {Parts, MoreParams, C3} = compile_combinations_loop(Rest, C2),
+    {[Part | Parts], Params2 ++ MoreParams, C3}.

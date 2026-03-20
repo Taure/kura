@@ -10,9 +10,6 @@
     cast_embed/3
 ]).
 
--eqwalizer({nowarn_function, cast_embed_params/5}).
--eqwalizer({nowarn_function, cast_has_many/6}).
-
 %%----------------------------------------------------------------------
 %% Association casting
 %%----------------------------------------------------------------------
@@ -101,25 +98,14 @@ cast_embed_params(CS, EmbedName, #kura_embed{type = embeds_one}, _Params, _WithF
 cast_embed_params(CS, EmbedName, #kura_embed{type = embeds_many}, ParamsList, WithFun) when
     is_list(ParamsList)
 ->
-    Results = lists:map(
-        fun(ChildParams) ->
-            NormParams = kura_changeset:normalize_params(ChildParams),
-            WithFun(#{}, NormParams)
-        end,
-        ParamsList
-    ),
-    AllValid = lists:all(fun(#kura_changeset{valid = V}) -> V end, Results),
-    case AllValid of
+    Results = cast_embed_list(ParamsList, WithFun, []),
+    case all_valid(Results) of
         true ->
             Applied = [kura_changeset:apply_changes(R) || R <- Results],
             Changes = CS#kura_changeset.changes,
             CS#kura_changeset{changes = Changes#{EmbedName => Applied}};
         false ->
-            AllErrors = lists:foldl(
-                fun(#kura_changeset{errors = E}, Acc) -> Acc ++ E end,
-                CS#kura_changeset.errors,
-                [R || R <- Results, R#kura_changeset.valid =:= false]
-            ),
+            AllErrors = collect_errors(Results, CS#kura_changeset.errors),
             CS#kura_changeset{valid = false, errors = AllErrors}
     end;
 cast_embed_params(CS, EmbedName, #kura_embed{type = embeds_many}, _Params, _WithFun) ->
@@ -158,38 +144,14 @@ cast_has_many(CS, AssocName, Assoc, ParamsList, Existing, WithFun) when is_list(
     ExistingLookup =
         case is_list(Existing) of
             true ->
-                lists:foldl(
-                    fun(E, Acc) ->
-                        case maps:get(PK, E, undefined) of
-                            undefined -> Acc;
-                            Key -> Acc#{Key => E}
-                        end
-                    end,
-                    #{},
-                    Existing
-                );
+                build_existing_lookup(Existing, PK, #{});
             false ->
                 #{}
         end,
-    ChildCSs = lists:map(
-        fun(ChildParams) ->
-            NormParams = kura_changeset:normalize_params(ChildParams),
-            case NormParams of
-                #{PK := PKVal} when PKVal =/= undefined ->
-                    ExistingData = maps:get(PKVal, ExistingLookup, #{}),
-                    ChildCS = WithFun(ExistingData, NormParams),
-                    ChildCS#kura_changeset{action = update};
-                #{} ->
-                    ChildCS = WithFun(#{}, NormParams),
-                    ChildCS#kura_changeset{action = insert}
-            end
-        end,
-        ParamsList
-    ),
-    AllValid = lists:all(fun(#kura_changeset{valid = V}) -> V end, ChildCSs),
+    ChildCSs = cast_has_many_children(ParamsList, PK, ExistingLookup, WithFun, []),
     AC = CS#kura_changeset.assoc_changes,
     CS1 = CS#kura_changeset{assoc_changes = AC#{AssocName => ChildCSs}},
-    case AllValid of
+    case all_valid(ChildCSs) of
         true -> CS1;
         false -> CS1#kura_changeset{valid = false}
     end;
@@ -242,3 +204,65 @@ castable_fields(Schema, Exclude) ->
     AllFields = kura_schema:field_names(Schema),
     NonVirtual = kura_schema:non_virtual_fields(Schema),
     [F || F <- AllFields, lists:member(F, NonVirtual), not lists:member(F, Exclude)].
+
+%%----------------------------------------------------------------------
+%% Internal: type narrowing helpers for eqWAlizer
+%%----------------------------------------------------------------------
+
+-spec cast_embed_list([map()], fun((map(), map()) -> #kura_changeset{}), [#kura_changeset{}]) ->
+    [#kura_changeset{}].
+cast_embed_list([], _WithFun, Acc) ->
+    reverse_changesets(Acc, []);
+cast_embed_list([ChildParams | Rest], WithFun, Acc) ->
+    NormParams = kura_changeset:normalize_params(ChildParams),
+    CS = WithFun(#{}, NormParams),
+    cast_embed_list(Rest, WithFun, [CS | Acc]).
+
+-spec all_valid([#kura_changeset{}]) -> boolean().
+all_valid([]) -> true;
+all_valid([#kura_changeset{valid = false} | _]) -> false;
+all_valid([_ | Rest]) -> all_valid(Rest).
+
+-spec collect_errors([#kura_changeset{}], [{atom(), binary()}]) -> [{atom(), binary()}].
+collect_errors([], Acc) ->
+    Acc;
+collect_errors([#kura_changeset{valid = false, errors = E} | Rest], Acc) ->
+    collect_errors(Rest, Acc ++ E);
+collect_errors([_ | Rest], Acc) ->
+    collect_errors(Rest, Acc).
+
+-spec build_existing_lookup([map()], atom(), map()) -> map().
+build_existing_lookup([], _PK, Acc) ->
+    Acc;
+build_existing_lookup([E | Rest], PK, Acc) ->
+    case maps:get(PK, E, undefined) of
+        undefined -> build_existing_lookup(Rest, PK, Acc);
+        Key -> build_existing_lookup(Rest, PK, Acc#{Key => E})
+    end.
+
+-spec cast_has_many_children(
+    [map()],
+    atom(),
+    map(),
+    fun((map(), map()) -> #kura_changeset{}),
+    [#kura_changeset{}]
+) -> [#kura_changeset{}].
+cast_has_many_children([], _PK, _Lookup, _WithFun, Acc) ->
+    reverse_changesets(Acc, []);
+cast_has_many_children([ChildParams | Rest], PK, Lookup, WithFun, Acc) ->
+    NormParams = kura_changeset:normalize_params(ChildParams),
+    ChildCS =
+        case NormParams of
+            #{PK := PKVal} when PKVal =/= undefined ->
+                ExistingData = maps:get(PKVal, Lookup, #{}),
+                CS = WithFun(ExistingData, NormParams),
+                CS#kura_changeset{action = update};
+            #{} ->
+                CS = WithFun(#{}, NormParams),
+                CS#kura_changeset{action = insert}
+        end,
+    cast_has_many_children(Rest, PK, Lookup, WithFun, [ChildCS | Acc]).
+
+-spec reverse_changesets([#kura_changeset{}], [#kura_changeset{}]) -> [#kura_changeset{}].
+reverse_changesets([], Acc) -> Acc;
+reverse_changesets([H | T], Acc) -> reverse_changesets(T, [H | Acc]).

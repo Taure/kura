@@ -27,16 +27,26 @@ across multiple nodes.
     check_unsafe_operations/2
 ]).
 
--eqwalizer({nowarn_function, migrate/1}).
--eqwalizer({nowarn_function, rollback/2}).
--eqwalizer({nowarn_function, discover_app_migrations/1}).
--eqwalizer({nowarn_function, parse_migration_module/1}).
--eqwalizer({nowarn_function, with_migration_lock/2}).
--eqwalizer({nowarn_function, run_migrations/4}).
+-ifdef(TEST).
+-export([
+    sort_migrations/1,
+    sort_integers/1,
+    reverse_integers/2,
+    take_integers/2,
+    partition_ints/4,
+    partition_migrations/4,
+    build_rollback_pairs/2,
+    narrow_migration_result/1,
+    get_app_modules/1,
+    to_module_list/1,
+    parse_version/1,
+    exec_operations/3,
+    check_alter_ops/3
+]).
+-endif.
+
+%% eqWAlizer: operation() union has >7 variants — exceeds clause narrowing limit
 -eqwalizer({nowarn_function, compile_operation/1}).
--eqwalizer({nowarn_function, compile_table_constraint/1}).
--eqwalizer({nowarn_function, check_unsafe_operations/2}).
--eqwalizer({nowarn_function, check_op/2}).
 
 -doc "Run all pending migrations in order.".
 -spec migrate(module()) -> {ok, [integer()]} | {error, term()}.
@@ -46,7 +56,7 @@ migrate(RepoMod) ->
         Applied = get_applied_versions(RepoMod),
         Migrations = discover_migrations(RepoMod),
         Pending = [{V, M} || {V, M} <- Migrations, not lists:member(V, Applied)],
-        Sorted = lists:sort(fun({V1, _}, {V2, _}) -> V1 =< V2 end, Pending),
+        Sorted = sort_migrations(Pending),
         run_migrations(Sorted, up, PoolOpts, [])
     end).
 
@@ -62,9 +72,9 @@ rollback(RepoMod, Steps) ->
     with_migration_lock(RepoMod, fun(PoolOpts) ->
         Applied = get_applied_versions(RepoMod),
         Migrations = discover_migrations(RepoMod),
-        ToRollback = lists:sublist(lists:reverse(lists:sort(Applied)), Steps),
-        MigMap = maps:from_list(Migrations),
-        Pairs = [{V, maps:get(V, MigMap)} || V <- ToRollback, maps:is_key(V, MigMap)],
+        SortedApplied = sort_integers(Applied),
+        ToRollback = take_integers(reverse_integers(SortedApplied, []), Steps),
+        Pairs = build_rollback_pairs(ToRollback, maps:from_list(Migrations)),
         run_migrations(Pairs, down, PoolOpts, [])
     end).
 
@@ -74,7 +84,7 @@ status(RepoMod) ->
     ensure_schema_migrations(RepoMod),
     Applied = get_applied_versions(RepoMod),
     Migrations = discover_migrations(RepoMod),
-    Sorted = lists:sort(fun({V1, _}, {V2, _}) -> V1 =< V2 end, Migrations),
+    Sorted = sort_migrations(Migrations),
     [tag_status(V, M, Applied) || {V, M} <- Sorted].
 
 tag_status(V, M, Applied) ->
@@ -114,19 +124,15 @@ discover_migrations(RepoMod) ->
 
 -spec discover_app_migrations(atom()) -> [{integer(), module()}].
 discover_app_migrations(App) ->
-    case application:get_key(App, modules) of
-        {ok, Modules} when is_list(Modules) ->
-            lists:filtermap(fun parse_migration_module/1, Modules);
-        _ ->
-            []
-    end.
+    Modules = get_app_modules(App),
+    lists:filtermap(fun parse_migration_module/1, Modules).
 
 -spec parse_migration_module(module()) -> {true, {integer(), module()}} | false.
 parse_migration_module(Module) ->
     Name = atom_to_list(Module),
     case re:run(Name, "^m(\\d{14})_(.+)$", [{capture, [1, 2], list}]) of
-        {match, [VersionStr, _Name]} when is_list(VersionStr) ->
-            Version = list_to_integer(VersionStr),
+        {match, [VersionStr, _Name]} ->
+            Version = parse_version(VersionStr),
             {true, {Version, Module}};
         _ ->
             false
@@ -142,22 +148,19 @@ with_migration_lock(RepoMod, Fun) ->
     Pool = get_pool(RepoMod),
     PoolOpts = #{pool => Pool},
     try
-        pgo:transaction(
-            fun() ->
-                #{command := _} = pgo:query(
-                    <<"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock">>,
-                    [?MIGRATION_LOCK_KEY],
-                    PoolOpts
-                ),
-                Fun(PoolOpts)
-            end,
-            PoolOpts
+        narrow_migration_result(
+            pgo:transaction(
+                fun() ->
+                    #{command := _} = pgo:query(
+                        <<"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock">>,
+                        [?MIGRATION_LOCK_KEY],
+                        PoolOpts
+                    ),
+                    Fun(PoolOpts)
+                end,
+                PoolOpts
+            )
         )
-    of
-        Versions when is_list(Versions) ->
-            {ok, Versions};
-        {error, Reason} ->
-            {error, Reason}
     catch
         error:{migration_failed, Version, MigReason}:_ ->
             logger:error("Kura: migration ~p failed: ~p", [Version, MigReason]),
@@ -173,23 +176,13 @@ with_migration_lock(RepoMod, Fun) ->
 
 -spec run_migrations([{integer(), module()}], up | down, map(), [integer()]) -> [integer()].
 run_migrations([], _Dir, _PoolOpts, Acc) ->
-    lists:reverse(Acc);
+    reverse_integers(Acc, []);
 run_migrations([{Version, Module} | Rest], Dir, PoolOpts, Acc) ->
-    Ops =
-        case Dir of
-            up -> Module:up();
-            down -> Module:down()
-        end,
+    Ops = get_migration_ops(Module, Dir),
     SafeEntries = get_safe_entries(Module),
     Warnings = check_unsafe_operations(Ops, SafeEntries),
     log_warnings(Module, Warnings),
-    lists:foreach(
-        fun(Op) ->
-            SQL = compile_operation(Op),
-            exec(SQL, [], Version, PoolOpts)
-        end,
-        Ops
-    ),
+    exec_operations(Ops, Version, PoolOpts),
     case Dir of
         up ->
             exec(
@@ -208,6 +201,14 @@ run_migrations([{Version, Module} | Rest], Dir, PoolOpts, Acc) ->
     end,
     logger:info("Kura: ~s migration ~p (~p)", [Dir, Version, Module]),
     run_migrations(Rest, Dir, PoolOpts, [Version | Acc]).
+
+-spec exec_operations([kura_migration:operation()], integer(), map()) -> ok.
+exec_operations([], _Version, _PoolOpts) ->
+    ok;
+exec_operations([Op | Rest], Version, PoolOpts) ->
+    SQL = compile_operation(Op),
+    exec(SQL, [], Version, PoolOpts),
+    exec_operations(Rest, Version, PoolOpts).
 
 -spec exec(binary(), list(), integer(), map()) -> ok.
 exec(SQL, Params, Version, PoolOpts) ->
@@ -354,11 +355,16 @@ compile_column_def(#kura_column{
 -spec compile_table_constraint(kura_migration:table_constraint()) -> binary().
 compile_table_constraint({unique, Cols}) ->
     ColList = iolist_to_binary(
-        lists:join(<<", ">>, [quote(atom_to_binary(C, utf8)) || C <- Cols])
+        join_comma_iodata([quote(atom_to_binary(C, utf8)) || C <- Cols])
     ),
     <<"UNIQUE (", ColList/binary, ")">>;
 compile_table_constraint({check, Expr}) ->
     <<"CHECK (", Expr/binary, ")">>.
+
+-spec join_comma_iodata([binary()]) -> [binary()].
+join_comma_iodata([]) -> [];
+join_comma_iodata([H]) -> [H];
+join_comma_iodata([H | T]) -> [H, <<", ">> | join_comma_iodata(T)].
 
 -spec compile_fk_action(binary(), cascade | restrict | set_null | no_action | undefined) ->
     binary().
@@ -400,8 +406,10 @@ compile_alter_op({modify_column, Name, Type}) ->
 -doc "Check migration operations for actions that are unsafe during rolling deployments.".
 -spec check_unsafe_operations([kura_migration:operation()], [kura_migration:safe_entry()]) ->
     [map()].
-check_unsafe_operations(Ops, SafeEntries) ->
-    lists:flatmap(fun(Op) -> check_op(Op, SafeEntries) end, Ops).
+check_unsafe_operations([], _SafeEntries) ->
+    [];
+check_unsafe_operations([Op | Rest], SafeEntries) ->
+    check_op(Op, SafeEntries) ++ check_unsafe_operations(Rest, SafeEntries).
 
 -spec check_op(kura_migration:operation(), [kura_migration:safe_entry()]) -> [map()].
 check_op({drop_table, Table}, SafeEntries) ->
@@ -420,7 +428,7 @@ check_op({drop_table, Table}, SafeEntries) ->
             ]
     end;
 check_op({alter_table, Table, AlterOps}, SafeEntries) ->
-    lists:flatmap(fun(AltOp) -> check_alter_op(AltOp, Table, SafeEntries) end, AlterOps);
+    check_alter_ops(AlterOps, Table, SafeEntries);
 check_op(_Op, _SafeEntries) ->
     [].
 
@@ -565,3 +573,104 @@ format_default(true) ->
     <<"TRUE">>;
 format_default(false) ->
     <<"FALSE">>.
+
+%%----------------------------------------------------------------------
+%% Internal: type narrowing helpers for eqWAlizer
+%%----------------------------------------------------------------------
+
+-spec narrow_migration_result(term()) -> {ok, [integer()]} | {error, term()}.
+narrow_migration_result(Result) ->
+    case Result of
+        {error, Reason} -> {error, Reason};
+        _ when is_list(Result) -> {ok, to_integer_list(Result, [])};
+        _ -> {error, Result}
+    end.
+
+-spec to_integer_list([term()], [integer()]) -> [integer()].
+to_integer_list([], Acc) -> reverse_integers(Acc, []);
+to_integer_list([H | T], Acc) when is_integer(H) -> to_integer_list(T, [H | Acc]).
+
+-spec get_migration_ops(module(), up | down) -> [kura_migration:operation()].
+get_migration_ops(Module, up) -> Module:up();
+get_migration_ops(Module, down) -> Module:down().
+
+-spec get_app_modules(atom()) -> [module()].
+get_app_modules(App) ->
+    case application:get_key(App, modules) of
+        {ok, Modules} -> to_module_list(Modules);
+        _ -> []
+    end.
+
+-spec to_module_list(term()) -> [module()].
+to_module_list(L) when is_list(L) ->
+    [M || M <- L, is_atom(M)];
+to_module_list(_) ->
+    [].
+
+-spec parse_version(term()) -> integer().
+parse_version(Str) when is_list(Str) ->
+    list_to_integer([C || C <- Str, is_integer(C)]).
+
+-spec reverse_integers([integer()], [integer()]) -> [integer()].
+reverse_integers([], Acc) -> Acc;
+reverse_integers([H | T], Acc) -> reverse_integers(T, [H | Acc]).
+
+-spec sort_integers([integer()]) -> [integer()].
+sort_integers([]) ->
+    [];
+sort_integers([Pivot | Rest]) ->
+    {Less, Greater} = partition_ints(Pivot, Rest, [], []),
+    sort_integers(Less) ++ [Pivot | sort_integers(Greater)].
+
+-spec partition_ints(integer(), [integer()], [integer()], [integer()]) ->
+    {[integer()], [integer()]}.
+partition_ints(_Pivot, [], Less, Greater) ->
+    {Less, Greater};
+partition_ints(Pivot, [H | T], Less, Greater) ->
+    case H =< Pivot of
+        true -> partition_ints(Pivot, T, [H | Less], Greater);
+        false -> partition_ints(Pivot, T, Less, [H | Greater])
+    end.
+
+-spec take_integers([integer()], non_neg_integer()) -> [integer()].
+take_integers(_, 0) -> [];
+take_integers([], _) -> [];
+take_integers([H | T], N) -> [H | take_integers(T, N - 1)].
+
+-spec sort_migrations([{integer(), module()}]) -> [{integer(), module()}].
+sort_migrations([]) ->
+    [];
+sort_migrations([{V, M} | Rest]) ->
+    {Less, Greater} = partition_migrations(V, Rest, [], []),
+    sort_migrations(Less) ++ [{V, M} | sort_migrations(Greater)].
+
+-spec partition_migrations(
+    integer(),
+    [{integer(), module()}],
+    [{integer(), module()}],
+    [{integer(), module()}]
+) ->
+    {[{integer(), module()}], [{integer(), module()}]}.
+partition_migrations(_Pivot, [], Less, Greater) ->
+    {Less, Greater};
+partition_migrations(Pivot, [{V, M} | Rest], Less, Greater) ->
+    case V =< Pivot of
+        true -> partition_migrations(Pivot, Rest, [{V, M} | Less], Greater);
+        false -> partition_migrations(Pivot, Rest, Less, [{V, M} | Greater])
+    end.
+
+-spec build_rollback_pairs([integer()], #{integer() => module()}) -> [{integer(), module()}].
+build_rollback_pairs([], _MigMap) ->
+    [];
+build_rollback_pairs([V | Rest], MigMap) ->
+    case MigMap of
+        #{V := M} -> [{V, M} | build_rollback_pairs(Rest, MigMap)];
+        #{} -> build_rollback_pairs(Rest, MigMap)
+    end.
+
+-spec check_alter_ops([kura_migration:alter_op()], binary(), [kura_migration:safe_entry()]) ->
+    [map()].
+check_alter_ops([], _Table, _SafeEntries) ->
+    [];
+check_alter_ops([AltOp | Rest], Table, SafeEntries) ->
+    check_alter_op(AltOp, Table, SafeEntries) ++ check_alter_ops(Rest, Table, SafeEntries).

@@ -33,19 +33,45 @@ fields() ->
     embeds/1,
     embed/2,
     constraints/1,
-    indexes/1
+    indexes/1,
+    run_before_insert/2,
+    run_after_insert/2,
+    run_before_update/2,
+    run_after_update/2,
+    run_before_delete/2,
+    run_after_delete/2,
+    has_after_hook/2
 ]).
 
 -callback table() -> binary().
 -callback fields() -> [#kura_field{}].
 
--optional_callbacks([timestamps/0, associations/0, embeds/0, constraints/0, indexes/0]).
+-optional_callbacks([
+    timestamps/0,
+    associations/0,
+    embeds/0,
+    constraints/0,
+    indexes/0,
+    before_insert/1,
+    after_insert/1,
+    before_update/1,
+    after_update/1,
+    before_delete/1,
+    after_delete/1
+]).
 
 -callback timestamps() -> [{atom(), kura_types:kura_type()}].
 -callback associations() -> [#kura_assoc{}].
 -callback embeds() -> [#kura_embed{}].
 -callback constraints() -> [kura_migration:table_constraint()].
 -callback indexes() -> [kura_migration:index_def()].
+
+-callback before_insert(#kura_changeset{}) -> {ok, #kura_changeset{}} | {error, #kura_changeset{}}.
+-callback after_insert(map()) -> {ok, map()} | {error, term()}.
+-callback before_update(#kura_changeset{}) -> {ok, #kura_changeset{}} | {error, #kura_changeset{}}.
+-callback after_update(map()) -> {ok, map()} | {error, term()}.
+-callback before_delete(map()) -> ok | {error, term()}.
+-callback after_delete(map()) -> ok | {error, term()}.
 
 -doc "Return list of field names for a schema module.".
 -spec field_names(module()) -> [atom()].
@@ -173,6 +199,76 @@ indexes(Mod) ->
             false -> []
         end
     end).
+
+%%----------------------------------------------------------------------
+%% Lifecycle hooks
+%%----------------------------------------------------------------------
+
+-doc "Run before_insert hook if defined. Returns `{ok, CS}` or `{error, CS}`.".
+-spec run_before_insert(module(), #kura_changeset{}) ->
+    {ok, #kura_changeset{}} | {error, #kura_changeset{}}.
+run_before_insert(Mod, CS) ->
+    run_hook(Mod, before_insert, CS).
+
+-doc "Run after_insert hook if defined. Returns `{ok, Record}` or `{error, Reason}`.".
+-spec run_after_insert(module(), map()) -> {ok, map()} | {error, term()}.
+run_after_insert(Mod, Record) ->
+    run_after_hook(Mod, after_insert, Record).
+
+-doc "Run before_update hook if defined. Returns `{ok, CS}` or `{error, CS}`.".
+-spec run_before_update(module(), #kura_changeset{}) ->
+    {ok, #kura_changeset{}} | {error, #kura_changeset{}}.
+run_before_update(Mod, CS) ->
+    run_hook(Mod, before_update, CS).
+
+-doc "Run after_update hook if defined. Returns `{ok, Record}` or `{error, Reason}`.".
+-spec run_after_update(module(), map()) -> {ok, map()} | {error, term()}.
+run_after_update(Mod, Record) ->
+    run_after_hook(Mod, after_update, Record).
+
+-doc "Run before_delete hook if defined. Returns `ok` or `{error, Reason}`.".
+-spec run_before_delete(module(), map()) -> ok | {error, term()}.
+run_before_delete(Mod, Record) ->
+    _ = code:ensure_loaded(Mod),
+    case erlang:function_exported(Mod, before_delete, 1) of
+        true -> Mod:before_delete(Record);
+        false -> ok
+    end.
+
+-doc "Run after_delete hook if defined. Returns `ok` or `{error, Reason}`.".
+-spec run_after_delete(module(), map()) -> ok | {error, term()}.
+run_after_delete(Mod, Record) ->
+    _ = code:ensure_loaded(Mod),
+    case erlang:function_exported(Mod, after_delete, 1) of
+        true -> Mod:after_delete(Record);
+        false -> ok
+    end.
+
+-doc "Check if a schema module has an after_* hook for the given action.".
+-spec has_after_hook(module(), insert | update | delete) -> boolean().
+has_after_hook(Mod, Action) ->
+    Hook =
+        case Action of
+            insert -> after_insert;
+            update -> after_update;
+            delete -> after_delete
+        end,
+    _ = code:ensure_loaded(Mod),
+    erlang:function_exported(Mod, Hook, 1).
+
+run_hook(Mod, Hook, CS) ->
+    _ = code:ensure_loaded(Mod),
+    case erlang:function_exported(Mod, Hook, 1) of
+        true -> Mod:Hook(CS);
+        false -> {ok, CS}
+    end.
+
+run_after_hook(Mod, Hook, Record) ->
+    _ = code:ensure_loaded(Mod),
+    case erlang:function_exported(Mod, Hook, 1) of
+        true -> Mod:Hook(Record);
+        false -> {ok, Record}
+    end.
 
 %%----------------------------------------------------------------------
 %% Internal: persistent_term cache
