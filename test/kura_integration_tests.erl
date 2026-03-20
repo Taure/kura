@@ -27,6 +27,7 @@
 -eqwalizer({nowarn_function, t_window_function/0}).
 -eqwalizer({nowarn_function, t_insert_all_returning_true/0}).
 -eqwalizer({nowarn_function, t_insert_all_returning_fields/0}).
+-eqwalizer({nowarn_function, t_audit_with_actor/0}).
 
 %%----------------------------------------------------------------------
 %% Test fixture
@@ -170,7 +171,15 @@ integration_test_() ->
             {"after_update failure rolls back", fun t_after_update_failure/0},
             {"before_delete blocks deletion", fun t_before_delete_reject/0},
             {"after_delete receives record", fun t_after_delete_hook/0},
-            {"after_delete failure rolls back", fun t_after_delete_failure/0}
+            {"after_delete failure rolls back", fun t_after_delete_failure/0},
+
+            %% Audit trail
+            {"audit logs insert", fun t_audit_insert/0},
+            {"audit logs update with diff", fun t_audit_update/0},
+            {"audit logs delete", fun t_audit_delete/0},
+            {"audit captures actor", fun t_audit_actor/0},
+            {"audit captures actor metadata", fun t_audit_actor_metadata/0},
+            {"audit with_actor restores context", fun t_audit_with_actor/0}
         ]
     end}.
 
@@ -226,9 +235,36 @@ setup() ->
         ")",
         []
     ),
+    {ok, _} = kura_test_repo:query(
+        "CREATE TABLE audited_items ("
+        "  id BIGSERIAL PRIMARY KEY,"
+        "  name VARCHAR(255) NOT NULL,"
+        "  value INTEGER,"
+        "  inserted_at TIMESTAMPTZ,"
+        "  updated_at TIMESTAMPTZ"
+        ")",
+        []
+    ),
+    {ok, _} = kura_test_repo:query(
+        "CREATE TABLE audit_log ("
+        "  id BIGSERIAL PRIMARY KEY,"
+        "  table_name VARCHAR(255) NOT NULL,"
+        "  record_id VARCHAR(255) NOT NULL,"
+        "  action VARCHAR(20) NOT NULL,"
+        "  old_data JSONB,"
+        "  new_data JSONB,"
+        "  changes JSONB,"
+        "  actor VARCHAR(255),"
+        "  metadata JSONB,"
+        "  inserted_at TIMESTAMPTZ"
+        ")",
+        []
+    ),
     ok.
 
 teardown(_) ->
+    kura_test_repo:query("DROP TABLE IF EXISTS audit_log CASCADE", []),
+    kura_test_repo:query("DROP TABLE IF EXISTS audited_items CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS hook_items CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS participants CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS posts_simple CASCADE", []),
@@ -1409,3 +1445,112 @@ t_after_delete_failure() ->
     {error, after_delete_failed} = kura_test_repo:delete(CS),
     %% Verify the delete was rolled back
     {ok, _} = kura_test_repo:reload(kura_test_hook_schema, Item).
+
+%%----------------------------------------------------------------------
+%% Audit trail
+%%----------------------------------------------------------------------
+
+insert_audited(Name, Value) ->
+    CS = kura_changeset:cast(
+        kura_test_audited_schema,
+        #{},
+        #{<<"name">> => Name, <<"value">> => Value},
+        [name, value]
+    ),
+    CS1 = kura_changeset:validate_required(CS, [name]),
+    kura_test_repo:insert(CS1).
+
+get_audit_logs(TableName, RecordId) ->
+    Q = kura_query:where(
+        kura_query:where(
+            kura_query:from(kura_audit_log),
+            {table_name, TableName}
+        ),
+        {record_id, RecordId}
+    ),
+    kura_test_repo:all(Q).
+
+t_audit_insert() ->
+    {ok, Item} = insert_audited(<<"audit_item">>, 42),
+    Id = integer_to_binary(maps:get(id, Item)),
+    {ok, Logs} = get_audit_logs(<<"audited_items">>, Id),
+    ?assertEqual(1, length(Logs)),
+    [Log] = Logs,
+    ?assertEqual(<<"insert">>, maps:get(action, Log)),
+    ?assertEqual(undefined, maps:get(old_data, Log)),
+    NewData = maps:get(new_data, Log),
+    ?assertEqual(<<"audit_item">>, maps:get(<<"name">>, NewData)),
+    ?assertEqual(42, maps:get(<<"value">>, NewData)).
+
+t_audit_update() ->
+    {ok, Item} = insert_audited(<<"before_update">>, 10),
+    CS = kura_changeset:cast(
+        kura_test_audited_schema,
+        Item,
+        #{<<"name">> => <<"after_update">>, <<"value">> => 20},
+        [name, value]
+    ),
+    {ok, _Updated} = kura_test_repo:update(CS),
+    Id = integer_to_binary(maps:get(id, Item)),
+    {ok, Logs} = get_audit_logs(<<"audited_items">>, Id),
+    UpdateLogs = [L || L <- Logs, maps:get(action, L) =:= <<"update">>],
+    ?assertEqual(1, length(UpdateLogs)),
+    [Log] = UpdateLogs,
+    Changes = maps:get(changes, Log),
+    NameChange = maps:get(<<"name">>, Changes),
+    ?assertEqual(<<"before_update">>, maps:get(<<"old">>, NameChange)),
+    ?assertEqual(<<"after_update">>, maps:get(<<"new">>, NameChange)),
+    ValueChange = maps:get(<<"value">>, Changes),
+    ?assertEqual(10, maps:get(<<"old">>, ValueChange)),
+    ?assertEqual(20, maps:get(<<"new">>, ValueChange)).
+
+t_audit_delete() ->
+    {ok, Item} = insert_audited(<<"to_delete">>, 99),
+    Id = integer_to_binary(maps:get(id, Item)),
+    CS = kura_changeset:cast(kura_test_audited_schema, Item, #{}, []),
+    {ok, _} = kura_test_repo:delete(CS),
+    {ok, Logs} = get_audit_logs(<<"audited_items">>, Id),
+    DeleteLogs = [L || L <- Logs, maps:get(action, L) =:= <<"delete">>],
+    ?assertEqual(1, length(DeleteLogs)),
+    [Log] = DeleteLogs,
+    OldData = maps:get(old_data, Log),
+    ?assertEqual(<<"to_delete">>, maps:get(<<"name">>, OldData)),
+    ?assertEqual(undefined, maps:get(new_data, Log)).
+
+t_audit_actor() ->
+    kura_audit:set_actor(<<"user-42">>),
+    {ok, Item} = insert_audited(<<"actor_test">>, 1),
+    kura_audit:clear_actor(),
+    Id = integer_to_binary(maps:get(id, Item)),
+    {ok, [Log]} = get_audit_logs(<<"audited_items">>, Id),
+    ?assertEqual(<<"user-42">>, maps:get(actor, Log)).
+
+t_audit_actor_metadata() ->
+    kura_audit:set_actor(<<"admin">>, #{<<"ip">> => <<"10.0.0.1">>, <<"reason">> => <<"bulk fix">>}),
+    {ok, Item} = insert_audited(<<"meta_test">>, 2),
+    kura_audit:clear_actor(),
+    Id = integer_to_binary(maps:get(id, Item)),
+    {ok, [Log]} = get_audit_logs(<<"audited_items">>, Id),
+    ?assertEqual(<<"admin">>, maps:get(actor, Log)),
+    Meta = maps:get(metadata, Log),
+    ?assertEqual(<<"10.0.0.1">>, maps:get(<<"ip">>, Meta)),
+    ?assertEqual(<<"bulk fix">>, maps:get(<<"reason">>, Meta)).
+
+t_audit_with_actor() ->
+    kura_audit:set_actor(<<"outer">>),
+    Result = kura_audit:with_actor(<<"inner">>, fun() ->
+        insert_audited(<<"with_actor_test">>, 3)
+    end),
+    {ok, Item1} = Result,
+    %% Actor restored to outer
+    ?assertEqual(<<"outer">>, kura_audit:get_actor()),
+    %% Inner log has inner actor
+    Id1 = integer_to_binary(maps:get(id, Item1)),
+    {ok, [Log1]} = get_audit_logs(<<"audited_items">>, Id1),
+    ?assertEqual(<<"inner">>, maps:get(actor, Log1)),
+    %% Insert with outer actor
+    {ok, Item2} = insert_audited(<<"outer_actor_test">>, 4),
+    Id2 = integer_to_binary(maps:get(id, Item2)),
+    {ok, [Log2]} = get_audit_logs(<<"audited_items">>, Id2),
+    ?assertEqual(<<"outer">>, maps:get(actor, Log2)),
+    kura_audit:clear_actor().
