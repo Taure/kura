@@ -30,7 +30,7 @@ stream(RepoMod, Query, Fun, Opts) ->
     BatchSize = maps:get(batch_size, Opts, 500),
     {SQL, Params} = kura_query_compiler:to_sql(Query),
     Schema = Query#kura_query.from,
-    Pool = get_pool(RepoMod),
+    Pool = kura_db:get_pool(RepoMod),
     CursorName = generate_cursor_name(),
     DeclareSQL = iolist_to_binary([
         ~"DECLARE ",
@@ -68,44 +68,12 @@ fetch_loop(FetchSQL, Schema, Fun) ->
         #{rows := []} ->
             ok;
         #{rows := Rows} ->
-            Loaded = [load_row(Schema, Row) || Row <- Rows],
+            Loaded = [kura_db:load_row(Schema, Row) || Row <- Rows],
             Fun(Loaded),
             fetch_loop(FetchSQL, Schema, Fun);
         {error, _} = Err ->
             Err
     end.
-
-load_row(SchemaMod, Row) when is_atom(SchemaMod) ->
-    case code:ensure_loaded(SchemaMod) of
-        {module, SchemaMod} ->
-            case erlang:function_exported(SchemaMod, fields, 0) of
-                true ->
-                    Types = kura_schema:field_types(SchemaMod),
-                    maps:fold(
-                        fun(K, V, Acc) ->
-                            case Types of
-                                #{K := Type} ->
-                                    case kura_types:load(Type, V) of
-                                        {ok, Loaded} -> Acc#{K => Loaded};
-                                        {error, _} -> Acc#{K => V}
-                                    end;
-                                #{} ->
-                                    Acc#{K => V}
-                            end
-                        end,
-                        #{},
-                        Row
-                    );
-                false ->
-                    Row
-            end;
-        _ ->
-            Row
-    end.
-
-get_pool(RepoMod) ->
-    Config = kura_repo:config(RepoMod),
-    maps:get(pool, Config, RepoMod).
 
 generate_cursor_name() ->
     Ref = erlang:unique_integer([positive]),

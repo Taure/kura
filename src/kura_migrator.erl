@@ -99,7 +99,7 @@ tag_status(V, M, Applied) ->
 
 -spec ensure_schema_migrations(module()) -> ok.
 ensure_schema_migrations(RepoMod) ->
-    Pool = get_pool(RepoMod),
+    Pool = kura_db:get_pool(RepoMod),
     SQL = <<
         "CREATE TABLE IF NOT EXISTS schema_migrations ("
         "version BIGINT PRIMARY KEY, "
@@ -145,7 +145,7 @@ parse_migration_module(Module) ->
 -spec with_migration_lock(module(), fun((map()) -> [integer()])) ->
     {ok, [integer()]} | {error, term()}.
 with_migration_lock(RepoMod, Fun) ->
-    Pool = get_pool(RepoMod),
+    Pool = kura_db:get_pool(RepoMod),
     PoolOpts = #{pool => Pool},
     try
         narrow_migration_result(
@@ -539,14 +539,9 @@ log_warnings(Module, Warnings) ->
 %% Internal helpers
 %%----------------------------------------------------------------------
 
--spec get_pool(module()) -> atom().
-get_pool(RepoMod) ->
-    Config = kura_repo:config(RepoMod),
-    maps:get(pool, Config, RepoMod).
-
 -spec get_applied_versions(module()) -> [integer()].
 get_applied_versions(RepoMod) ->
-    Pool = get_pool(RepoMod),
+    Pool = kura_db:get_pool(RepoMod),
     case
         pgo:query(~"SELECT version FROM schema_migrations ORDER BY version", [], #{pool => Pool})
     of
