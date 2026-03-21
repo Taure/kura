@@ -34,6 +34,8 @@ kura_repo_worker:start(MyRepo),
     aggregate/3,
     aggregate/4,
     count/2,
+    soft_delete/2,
+    restore/2,
     transaction/2,
     multi/2,
     preload/4,
@@ -79,7 +81,8 @@ start(RepoMod) ->
 -doc "Execute a query and return all matching rows.".
 -spec all(module(), #kura_query{}) -> {ok, [map()]} | {error, term()}.
 all(RepoMod, Query) ->
-    {SQL, Params} = kura_query_compiler:to_sql(maybe_apply_tenant_query(Query)),
+    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_query(Query)),
+    {SQL, Params} = kura_query_compiler:to_sql(Q1),
 
     case kura_db:query(RepoMod, SQL, Params) of
         #{command := select, rows := Rows} ->
@@ -146,6 +149,7 @@ reload(RepoMod, SchemaMod, Record) ->
     end.
 
 -doc """
+<<<<<<< HEAD
 Run an aggregate function on a query. Supported: `count`, `sum`, `avg`, `min`, `max`.
 
 ```erlang
@@ -202,6 +206,36 @@ count(RepoMod, Query) ->
     case aggregate(RepoMod, Query, count) of
         {ok, N} when is_integer(N) -> {ok, N};
         {error, _} = Err -> Err
+    end.
+
+-doc """
+Soft-delete a record by setting `deleted_at` to the current timestamp.
+The record remains in the database but is excluded from normal queries.
+
+Returns `{error, not_soft_deletable}` if the schema has no `deleted_at` field.
+""".
+-spec soft_delete(module(), #kura_changeset{}) -> {ok, map()} | {error, term()}.
+soft_delete(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
+    case has_soft_delete(SchemaMod) of
+        true ->
+            Now = calendar:universal_time(),
+            CS1 = kura_changeset:put_change(CS, deleted_at, Now),
+            update(RepoMod, CS1);
+        false ->
+            {error, not_soft_deletable}
+    end.
+
+-doc """
+Restore a soft-deleted record by clearing its `deleted_at` field.
+""".
+-spec restore(module(), #kura_changeset{}) -> {ok, map()} | {error, term()}.
+restore(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
+    case has_soft_delete(SchemaMod) of
+        true ->
+            CS1 = kura_changeset:put_change(CS, deleted_at, undefined),
+            update(RepoMod, CS1);
+        false ->
+            {error, not_soft_deletable}
     end.
 
 -doc "Insert a record from a changeset. Returns `{error, Changeset}` with errors on failure.".
@@ -308,7 +342,8 @@ delete(RepoMod, #kura_changeset{schema = SchemaMod, data = Data}) ->
 -doc "Bulk update all rows matching the query, returning the count of affected rows.".
 -spec update_all(module(), #kura_query{}, map()) -> {ok, non_neg_integer()} | {error, term()}.
 update_all(RepoMod, Query, Updates) ->
-    {SQL, Params} = kura_query_compiler:update_all(maybe_apply_tenant_query(Query), Updates),
+    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_query(Query)),
+    {SQL, Params} = kura_query_compiler:update_all(Q1, Updates),
 
     case kura_db:query(RepoMod, SQL, Params) of
         #{command := update, num_rows := Count} -> {ok, Count};
@@ -318,7 +353,8 @@ update_all(RepoMod, Query, Updates) ->
 -doc "Bulk delete all rows matching the query, returning the count of deleted rows.".
 -spec delete_all(module(), #kura_query{}) -> {ok, non_neg_integer()} | {error, term()}.
 delete_all(RepoMod, Query) ->
-    {SQL, Params} = kura_query_compiler:delete_all(maybe_apply_tenant_query(Query)),
+    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_query(Query)),
+    {SQL, Params} = kura_query_compiler:delete_all(Q1),
 
     case kura_db:query(RepoMod, SQL, Params) of
         #{command := delete, num_rows := Count} -> {ok, Count};
@@ -861,6 +897,24 @@ needs_transaction(undefined, _Action) ->
     false;
 needs_transaction(SchemaMod, Action) ->
     kura_schema:has_after_hook(SchemaMod, Action).
+
+maybe_apply_soft_delete(Query) ->
+    case Query#kura_query.include_deleted of
+        true ->
+            Query;
+        false ->
+            Schema = Query#kura_query.from,
+            case has_soft_delete(Schema) of
+                true -> kura_query:where(Query, {deleted_at, is_nil});
+                false -> Query
+            end
+    end.
+
+has_soft_delete(undefined) ->
+    false;
+has_soft_delete(SchemaMod) ->
+    Types = kura_schema:field_types(SchemaMod),
+    maps:is_key(deleted_at, Types).
 
 maybe_apply_tenant_query(Query) ->
     case kura_tenant:get_tenant() of
