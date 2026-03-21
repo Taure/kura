@@ -55,47 +55,47 @@ In Kura, this involves two layers:
 -export([up/0, down/0]).
 
 up() ->
-    [{create_table, <<"users">>, [
+    [{create_table, ~"users", [
         #kura_column{name = id, type = uuid, primary_key = true, nullable = false},
         #kura_column{name = name, type = string, nullable = false}
     ]},
-    {create_table, <<"posts">>, [
+    {create_table, ~"posts", [
         #kura_column{name = id, type = uuid, primary_key = true, nullable = false},
         #kura_column{name = title, type = string, nullable = false},
         #kura_column{name = body, type = text},
         #kura_column{name = user_id, type = uuid, nullable = false,
-                     references = {<<"users">>, id}, on_delete = cascade},
+                     references = {~"users", id}, on_delete = cascade},
         #kura_column{name = inserted_at, type = utc_datetime, nullable = false},
         #kura_column{name = updated_at, type = utc_datetime, nullable = false}
     ]},
-    {create_index, <<"posts">>, [user_id], #{}},
-    {create_table, <<"comments">>, [
+    {create_index, ~"posts", [user_id], #{}},
+    {create_table, ~"comments", [
         #kura_column{name = id, type = uuid, primary_key = true, nullable = false},
         #kura_column{name = body, type = text, nullable = false},
         #kura_column{name = post_id, type = uuid, nullable = false,
-                     references = {<<"posts">>, id}, on_delete = cascade},
+                     references = {~"posts", id}, on_delete = cascade},
         #kura_column{name = user_id, type = uuid,
-                     references = {<<"users">>, id}, on_delete = set_null}
+                     references = {~"users", id}, on_delete = set_null}
     ]},
-    {create_index, <<"comments">>, [post_id], #{}},
-    {create_index, <<"comments">>, [user_id], #{}},
-    {create_table, <<"tags">>, [
+    {create_index, ~"comments", [post_id], #{}},
+    {create_index, ~"comments", [user_id], #{}},
+    {create_table, ~"tags", [
         #kura_column{name = id, type = uuid, primary_key = true, nullable = false},
         #kura_column{name = name, type = string, nullable = false}
     ]},
-    {create_table, <<"posts_tags">>, [
+    {create_table, ~"posts_tags", [
         #kura_column{name = post_id, type = uuid, nullable = false,
-                     references = {<<"posts">>, id}, on_delete = cascade},
+                     references = {~"posts", id}, on_delete = cascade},
         #kura_column{name = tag_id, type = uuid, nullable = false,
-                     references = {<<"tags">>, id}, on_delete = cascade}
+                     references = {~"tags", id}, on_delete = cascade}
     ], [{unique, [post_id, tag_id]}]}].
 
 down() ->
-    [{drop_table, <<"posts_tags">>},
-     {drop_table, <<"tags">>},
-     {drop_table, <<"comments">>},
-     {drop_table, <<"posts">>},
-     {drop_table, <<"users">>}].
+    [{drop_table, ~"posts_tags"},
+     {drop_table, ~"tags"},
+     {drop_table, ~"comments"},
+     {drop_table, ~"posts"},
+     {drop_table, ~"users"}].
 ```
 
 ### Foreign Key Options
@@ -126,7 +126,7 @@ Now define the associations at the application level:
 
 -export([table/0, fields/0, associations/0]).
 
-table() -> <<"users">>.
+table() -> ~"users".
 
 fields() ->
     [#kura_field{name = id, type = uuid, primary_key = true, nullable = false},
@@ -144,7 +144,7 @@ associations() ->
 
 -export([table/0, fields/0, associations/0, indexes/0]).
 
-table() -> <<"posts">>.
+table() -> ~"posts".
 
 fields() ->
     [#kura_field{name = id, type = uuid, primary_key = true, nullable = false},
@@ -158,7 +158,7 @@ associations() ->
     [#kura_assoc{name = author, type = belongs_to, schema = user, foreign_key = user_id},
      #kura_assoc{name = comments, type = has_many, schema = comment, foreign_key = post_id},
      #kura_assoc{name = tags, type = many_to_many, schema = tag,
-                 join_through = <<"posts_tags">>, join_keys = {post_id, tag_id}}].
+                 join_through = ~"posts_tags", join_keys = {post_id, tag_id}}].
 
 indexes() ->
     [{[user_id], #{}}].
@@ -171,7 +171,7 @@ indexes() ->
 
 -export([table/0, fields/0, associations/0]).
 
-table() -> <<"comments">>.
+table() -> ~"comments".
 
 fields() ->
     [#kura_field{name = id, type = uuid, primary_key = true, nullable = false},
@@ -289,7 +289,7 @@ delete_changeset(User) ->
 case my_repo:delete(delete_changeset(User)) of
     {ok, _} ->
         ok;
-    {error, #kura_changeset{errors = [{id, <<"does not exist">>}]}} ->
+    {error, #kura_changeset{errors = [{id, ~"does not exist"}]}} ->
         %% Can't delete — children still reference this user
         {error, has_children}
 end.
@@ -301,7 +301,7 @@ Many-to-many associations use a join table:
 
 ```erlang
 #kura_assoc{name = tags, type = many_to_many, schema = tag,
-            join_through = <<"posts_tags">>, join_keys = {post_id, tag_id}}.
+            join_through = ~"posts_tags", join_keys = {post_id, tag_id}}.
 ```
 
 - `join_through` — the join table name

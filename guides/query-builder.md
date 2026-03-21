@@ -20,8 +20,8 @@ Q1 = kura_query:where(Q, {active, true}),
 ### Equality
 
 ```erlang
-kura_query:where(Q, {name, <<"Alice">>}).
-kura_query:where(Q, {name, '=', <<"Alice">>}).
+kura_query:where(Q, {name, ~"Alice"}).
+kura_query:where(Q, {name, '=', ~"Alice"}).
 ```
 
 ### Comparison Operators
@@ -37,8 +37,8 @@ kura_query:where(Q, {age, '!=', 0}).
 ### IN / NOT IN
 
 ```erlang
-kura_query:where(Q, {role, in, [<<"admin">>, <<"moderator">>]}).
-kura_query:where(Q, {status, not_in, [<<"banned">>, <<"deleted">>]}).
+kura_query:where(Q, {role, in, [~"admin", ~"moderator"]}).
+kura_query:where(Q, {status, not_in, [~"banned", ~"deleted"]}).
 ```
 
 ### BETWEEN
@@ -50,8 +50,8 @@ kura_query:where(Q, {age, between, {18, 65}}).
 ### LIKE / ILIKE
 
 ```erlang
-kura_query:where(Q, {name, like, <<"A%">>}).
-kura_query:where(Q, {email, ilike, <<"%@example.com">>}).
+kura_query:where(Q, {name, like, ~"A%"}).
+kura_query:where(Q, {email, ilike, ~"%@example.com"}).
 ```
 
 ### NULL Checks
@@ -72,7 +72,7 @@ Q2 = kura_query:where(Q1, {age, '>', 18}).
 kura_query:where(Q, {'and', [{active, true}, {age, '>', 18}]}).
 
 %% OR
-kura_query:where(Q, {'or', [{role, <<"admin">>}, {role, <<"moderator">>}]}).
+kura_query:where(Q, {'or', [{role, ~"admin"}, {role, ~"moderator"}]}).
 
 %% NOT
 kura_query:where(Q, {'not', {banned, true}}).
@@ -83,7 +83,7 @@ kura_query:where(Q, {'not', {banned, true}}).
 Raw SQL fragments with `?` placeholders:
 
 ```erlang
-kura_query:where(Q, {fragment, <<"lower(?) = ?">>, [<<"Email">>, <<"alice@example.com">>]}).
+kura_query:where(Q, {fragment, ~"lower(?) = ?", [~"Email", ~"alice@example.com"]}).
 ```
 
 ## SELECT
@@ -127,14 +127,14 @@ kura_query:distinct(Q, [email]).
 ## LOCK
 
 ```erlang
-kura_query:lock(Q, <<"FOR UPDATE">>).
-kura_query:lock(Q, <<"FOR SHARE">>).
+kura_query:lock(Q, ~"FOR UPDATE").
+kura_query:lock(Q, ~"FOR SHARE").
 ```
 
 ## Schema Prefix
 
 ```erlang
-kura_query:prefix(Q, <<"my_schema">>).
+kura_query:prefix(Q, ~"my_schema").
 ```
 
 ## JOINs

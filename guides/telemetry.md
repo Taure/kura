@@ -36,7 +36,7 @@ Attach handlers at application startup using `telemetry:attach/4`:
 %% In your application's start/2
 start(_Type, _Args) ->
     telemetry:attach(
-        <<"kura-logger">>,
+        ~"kura-logger",
         [kura, repo, query],
         fun ?MODULE:handle_query_event/4,
         #{}
@@ -55,7 +55,7 @@ handle_query_event(_Event, Measurements, Metadata, _Config) ->
 
 ```erlang
 telemetry:attach(
-    <<"kura-slow-queries">>,
+    ~"kura-slow-queries",
     [kura, repo, query],
     fun(_, #{duration_us := D}, #{query := Q}, _) ->
         case D > 5000 of
@@ -110,7 +110,7 @@ For backward compatibility, the `{kura, [{log, ...}]}` application environment i
 The legacy log event map:
 
 ```erlang
-#{query => <<"SELECT ...">>,
+#{query => ~"SELECT ...",
   params => [1],
   result => ok,
   num_rows => 1,
@@ -126,7 +126,7 @@ The legacy log event map:
 
 ```erlang
 Meta = kura_repo_worker:build_telemetry_metadata(
-    my_repo, <<"SELECT * FROM \"users\"">>, [], #{rows => []}
+    my_repo, ~"SELECT * FROM \"users\"", [], #{rows => []}
 ),
-<<"users">> = maps:get(source, Meta).
+~"users" = maps:get(source, Meta).
 ```

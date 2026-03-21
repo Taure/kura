@@ -79,8 +79,8 @@ down() ->
 -doc "Generate an Ecto-style index name: `{table}_{cols}_index`.".
 -spec index_name(binary(), [atom()]) -> binary().
 index_name(Table, Cols) ->
-    ColsBin = join_with_sep([atom_to_binary(C, utf8) || C <- Cols], <<"_">>),
-    iolist_to_binary([Table, <<"_">>, ColsBin, <<"_index">>]).
+    ColsBin = join_with_sep([atom_to_binary(C, utf8) || C <- Cols], ~"_"),
+    iolist_to_binary([Table, ~"_", ColsBin, ~"_index"]).
 
 -spec join_with_sep([binary()], binary()) -> [binary()].
 join_with_sep([], _Sep) -> [];

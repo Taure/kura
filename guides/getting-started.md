@@ -21,7 +21,7 @@ Create a schema module that implements the `kura_schema` behaviour:
 
 -export([table/0, fields/0]).
 
-table() -> <<"users">>.
+table() -> ~"users".
 
 fields() ->
     [#kura_field{name = id, type = id, primary_key = true},
@@ -51,11 +51,11 @@ Then add database configuration to your `sys.config`:
 ```erlang
 [{my_app, [
     {my_repo, #{
-        database => <<"my_app_dev">>,
-        hostname => <<"localhost">>,
+        database => ~"my_app_dev",
+        hostname => ~"localhost",
         port => 5432,
-        username => <<"postgres">>,
-        password => <<"postgres">>,
+        username => ~"postgres",
+        password => ~"postgres",
         pool_size => 10
     }}
 ]}].
@@ -76,18 +76,18 @@ Create a migration module in `priv/migrations/`:
 -export([up/0, down/0]).
 
 up() ->
-    [{create_table, <<"users">>, [
+    [{create_table, ~"users", [
         #kura_column{name = id, type = id, primary_key = true},
         #kura_column{name = name, type = string, nullable = false},
         #kura_column{name = email, type = string, nullable = false},
         #kura_column{name = inserted_at, type = utc_datetime, nullable = false},
         #kura_column{name = updated_at, type = utc_datetime, nullable = false}
     ]},
-    {create_index, <<"users">>, [email], #{unique => true}}].
+    {create_index, ~"users", [email], #{unique => true}}].
 
 down() ->
-    [{drop_index, <<"users_email_index">>},
-     {drop_table, <<"users">>}].
+    [{drop_index, ~"users_email_index"},
+     {drop_table, ~"users"}].
 ```
 
 ## Start the Pool & Run Migrations
@@ -102,7 +102,7 @@ ok = kura_repo_worker:start(my_repo),
 ### Insert
 
 ```erlang
-CS = kura_changeset:cast(my_user, #{}, #{<<"name">> => <<"Alice">>, <<"email">> => <<"alice@example.com">>}, [name, email]),
+CS = kura_changeset:cast(my_user, #{}, #{~"name" => ~"Alice", ~"email" => ~"alice@example.com"}, [name, email]),
 CS1 = kura_changeset:validate_required(CS, [name, email]),
 {ok, User} = kura_repo_worker:insert(my_repo, CS1).
 ```
@@ -117,14 +117,14 @@ CS1 = kura_changeset:validate_required(CS, [name, email]),
 {ok, Users} = kura_repo_worker:all(my_repo, kura_query:from(my_user)),
 
 %% With conditions
-Q = kura_query:where(kura_query:from(my_user), {name, <<"Alice">>}),
+Q = kura_query:where(kura_query:from(my_user), {name, ~"Alice"}),
 {ok, Users} = kura_repo_worker:all(my_repo, Q).
 ```
 
 ### Update
 
 ```erlang
-CS = kura_changeset:cast(my_user, User, #{<<"name">> => <<"Bob">>}, [name]),
+CS = kura_changeset:cast(my_user, User, #{~"name" => ~"Bob"}, [name]),
 {ok, Updated} = kura_repo_worker:update(my_repo, CS).
 ```
 

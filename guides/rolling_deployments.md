@@ -37,7 +37,7 @@ Split dangerous migrations into safe steps across multiple deployments:
 **Instead of:**
 
 ```erlang
-up() -> [{alter_table, <<"users">>, [{drop_column, avatar}]}].
+up() -> [{alter_table, ~"users", [{drop_column, avatar}]}].
 ```
 
 **Do this in three steps:**
@@ -45,7 +45,7 @@ up() -> [{alter_table, <<"users">>, [{drop_column, avatar}]}].
 1. Deploy code that stops reading/writing `avatar`
 2. Run migration to drop the column:
    ```erlang
-   up() -> [{alter_table, <<"users">>, [{drop_column, avatar}]}].
+   up() -> [{alter_table, ~"users", [{drop_column, avatar}]}].
 
    safe() -> [{drop_column, avatar}].
    ```
@@ -55,14 +55,14 @@ up() -> [{alter_table, <<"users">>, [{drop_column, avatar}]}].
 **Instead of:**
 
 ```erlang
-up() -> [{alter_table, <<"users">>, [{rename_column, name, full_name}]}].
+up() -> [{alter_table, ~"users", [{rename_column, name, full_name}]}].
 ```
 
 **Do this:**
 
 1. Add the new column:
    ```erlang
-   up() -> [{alter_table, <<"users">>, [
+   up() -> [{alter_table, ~"users", [
        {add_column, #kura_column{name = full_name, type = string}}
    ]}].
    ```
@@ -71,7 +71,7 @@ up() -> [{alter_table, <<"users">>, [{rename_column, name, full_name}]}].
 4. Deploy code that only uses `full_name`
 5. Drop the old column:
    ```erlang
-   up() -> [{alter_table, <<"users">>, [{drop_column, name}]}].
+   up() -> [{alter_table, ~"users", [{drop_column, name}]}].
 
    safe() -> [{drop_column, name}].
    ```
@@ -81,7 +81,7 @@ up() -> [{alter_table, <<"users">>, [{rename_column, name, full_name}]}].
 **Instead of:**
 
 ```erlang
-up() -> [{alter_table, <<"users">>, [
+up() -> [{alter_table, ~"users", [
     {add_column, #kura_column{name = role, type = string, nullable = false}}
 ]}].
 ```
@@ -90,7 +90,7 @@ up() -> [{alter_table, <<"users">>, [
 
 1. Add the column as nullable:
    ```erlang
-   up() -> [{alter_table, <<"users">>, [
+   up() -> [{alter_table, ~"users", [
        {add_column, #kura_column{name = role, type = string}}
    ]}].
    ```
@@ -98,7 +98,7 @@ up() -> [{alter_table, <<"users">>, [
 3. Backfill existing rows
 4. Set NOT NULL:
    ```erlang
-   up() -> [{execute, <<"ALTER TABLE users ALTER COLUMN role SET NOT NULL">>}].
+   up() -> [{execute, ~"ALTER TABLE users ALTER COLUMN role SET NOT NULL"}].
    ```
 
 ### Change a Column Type
@@ -106,7 +106,7 @@ up() -> [{alter_table, <<"users">>, [
 **Instead of:**
 
 ```erlang
-up() -> [{alter_table, <<"users">>, [{modify_column, age, text}]}].
+up() -> [{alter_table, ~"users", [{modify_column, age, text}]}].
 ```
 
 **Do this:**
@@ -126,10 +126,10 @@ contraction step, implement the `safe/0` callback to suppress the warning:
 -behaviour(kura_migration).
 
 up() ->
-    [{alter_table, <<"users">>, [{drop_column, avatar}]}].
+    [{alter_table, ~"users", [{drop_column, avatar}]}].
 
 down() ->
-    [{alter_table, <<"users">>, [
+    [{alter_table, ~"users", [
         {add_column, #kura_column{name = avatar, type = string}}
     ]}].
 

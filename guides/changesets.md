@@ -29,7 +29,7 @@ Checks that each field is present and non-blank (not `undefined`, `null`, or `<<
 ### Format
 
 ```erlang
-CS1 = kura_changeset:validate_format(CS, email, <<"^[^@]+@[^@]+$">>).
+CS1 = kura_changeset:validate_format(CS, email, ~"^[^@]+@[^@]+$").
 ```
 
 Validates a binary field against a regex pattern.
@@ -54,15 +54,15 @@ Options: `{greater_than, N}`, `{less_than, N}`, `{greater_than_or_equal_to, N}`,
 ### Inclusion
 
 ```erlang
-CS1 = kura_changeset:validate_inclusion(CS, role, [<<"admin">>, <<"user">>, <<"guest">>]).
+CS1 = kura_changeset:validate_inclusion(CS, role, [~"admin", ~"user", ~"guest"]).
 ```
 
 ### Custom Validation
 
 ```erlang
 CS1 = kura_changeset:validate_change(CS, email, fun(Val) ->
-    case binary:match(Val, <<"@">>) of
-        nomatch -> {error, <<"must contain @">>};
+    case binary:match(Val, ~"@") of
+        nomatch -> {error, ~"must contain @"};
         _ -> ok
     end
 end).
@@ -94,8 +94,8 @@ CS1 = kura_changeset:unique_constraint(CS, email).
 
 %% With custom constraint name and message
 CS1 = kura_changeset:unique_constraint(CS, email, #{
-    name => <<"users_email_index">>,
-    message => <<"is already registered">>
+    name => ~"users_email_index",
+    message => ~"is already registered"
 }).
 ```
 
@@ -108,8 +108,8 @@ CS1 = kura_changeset:foreign_key_constraint(CS, team_id).
 ### Check Constraint
 
 ```erlang
-CS1 = kura_changeset:check_constraint(CS, <<"users_age_check">>, age, #{
-    message => <<"must be positive">>
+CS1 = kura_changeset:check_constraint(CS, ~"users_age_check", age, #{
+    message => ~"must be positive"
 }).
 ```
 
@@ -118,16 +118,16 @@ CS1 = kura_changeset:check_constraint(CS, <<"users_age_check">>, age, #{
 ```erlang
 %% Get a changed value
 Name = kura_changeset:get_change(CS, name).
-Name = kura_changeset:get_change(CS, name, <<"default">>).
+Name = kura_changeset:get_change(CS, name, ~"default").
 
 %% Get the effective field value (changes take precedence over data)
 Email = kura_changeset:get_field(CS, email).
 
 %% Manually set a change
-CS1 = kura_changeset:put_change(CS, role, <<"admin">>).
+CS1 = kura_changeset:put_change(CS, role, ~"admin").
 
 %% Add a custom error
-CS1 = kura_changeset:add_error(CS, email, <<"is not allowed">>).
+CS1 = kura_changeset:add_error(CS, email, ~"is not allowed").
 ```
 
 ## Applying Changes
@@ -151,7 +151,7 @@ case kura_repo_worker:insert(my_repo, CS) of
         %% success
         Record;
     {error, #kura_changeset{errors = Errors}} ->
-        %% Errors is e.g. [{email, <<"has already been taken">>}]
+        %% Errors is e.g. [{email, ~"has already been taken"}]
         Errors
 end.
 ```

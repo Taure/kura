@@ -38,24 +38,24 @@ end_per_testcase(_TestCase, _Config) ->
 
 create_user_test(_Config) ->
     CS = kura_changeset:cast(user, #{}, #{
-        <<"username">> => <<"alice">>,
-        <<"email">> => <<"alice@example.com">>,
-        <<"password">> => <<"secret123">>
+        ~"username" => ~"alice",
+        ~"email" => ~"alice@example.com",
+        ~"password" => ~"secret123"
     }, [username, email, password]),
     CS1 = kura_changeset:validate_required(CS, [username, email]),
     {ok, User} = kura_repo_worker:insert(my_repo, CS1),
-    <<"alice">> = maps:get(username, User).
+    ~"alice" = maps:get(username, User).
 
 duplicate_email_test(_Config) ->
-    Params = #{<<"username">> => <<"bob">>,
-               <<"email">> => <<"bob@example.com">>},
+    Params = #{~"username" => ~"bob",
+               ~"email" => ~"bob@example.com"},
     CS = kura_changeset:cast(user, #{}, Params, [username, email]),
     {ok, _} = kura_repo_worker:insert(my_repo, CS),
 
     %% Second insert with same email
-    CS2 = kura_changeset:cast(user, #{}, Params#{<<"username">> => <<"bob2">>}, [username, email]),
+    CS2 = kura_changeset:cast(user, #{}, Params#{~"username" => ~"bob2"}, [username, email]),
     {error, ErrCS} = kura_repo_worker:insert(my_repo, CS2),
-    [{email, <<"has already been taken">>}] = ErrCS#kura_changeset.errors.
+    [{email, ~"has already been taken"}] = ErrCS#kura_changeset.errors.
 ```
 
 ### EUnit
@@ -85,9 +85,9 @@ teardown(_) ->
 
 insert_test(_) ->
     fun() ->
-        CS = kura_changeset:cast(user, #{}, #{<<"name">> => <<"Alice">>}, [name]),
+        CS = kura_changeset:cast(user, #{}, #{~"name" => ~"Alice"}, [name]),
         {ok, User} = kura_repo_worker:insert(my_repo, CS),
-        ?assertEqual(<<"Alice">>, maps:get(name, User))
+        ?assertEqual(~"Alice", maps:get(name, User))
     end.
 
 query_test(_) ->
@@ -112,7 +112,7 @@ Unique indexes declared via `indexes/0` are automatically tested when you try to
 
 ```erlang
 constraint_test(_Config) ->
-    Params = #{<<"username">> => <<"alice">>},
+    Params = #{~"username" => ~"alice"},
     CS = kura_changeset:cast(user, #{}, Params, [username]),
 
     %% First insert succeeds
@@ -120,7 +120,7 @@ constraint_test(_Config) ->
 
     %% Second insert returns changeset error (not a crash)
     {error, ErrCS} = kura_repo_worker:insert(my_repo, CS),
-    [{username, <<"has already been taken">>}] = ErrCS#kura_changeset.errors.
+    [{username, ~"has already been taken"}] = ErrCS#kura_changeset.errors.
 ```
 
 ## Testing with Docker Compose

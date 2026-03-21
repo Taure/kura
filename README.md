@@ -19,6 +19,12 @@ Database layer for Erlang — Ecto-equivalent abstractions in pure Erlang, targe
 - **Migrations** — DDL operations with automatic module-based discovery
 - **Enums** — atom-backed enum types stored as `VARCHAR`
 - **Telemetry** — query logging with timing
+- **Lifecycle Hooks** — before/after callbacks for insert, update, delete
+- **Audit Trail** — automatic change tracking with actor context
+- **Pagination** — offset-based and cursor-based pagination
+- **Streaming** — server-side cursor streaming for large result sets
+- **Multitenancy** — schema prefix and attribute-based tenant isolation
+- **Optimistic Locking** — concurrent update conflict detection
 
 ## Quick Start
 
@@ -31,7 +37,7 @@ Database layer for Erlang — Ecto-equivalent abstractions in pure Erlang, targe
 
 -export([table/0, fields/0]).
 
-table() -> <<"users">>.
+table() -> ~"users".
 
 fields() ->
     [
@@ -67,10 +73,10 @@ Configure the database connection in `sys.config`:
 ```erlang
 [{my_app, [
     {my_repo, #{
-        database => <<"myapp">>,
-        hostname => <<"localhost">>,
+        database => ~"myapp",
+        hostname => ~"localhost",
         port => 5432,
-        username => <<"postgres">>,
+        username => ~"postgres",
         password => <<>>,
         pool_size => 10
     }}
@@ -81,9 +87,9 @@ Configure the database connection in `sys.config`:
 
 ```erlang
 %% Cast and validate external params
-CS = kura_changeset:cast(user, #{}, #{<<"name">> => <<"Alice">>, <<"email">> => <<"alice@example.com">>}, [name, email, age]),
+CS = kura_changeset:cast(user, #{}, #{~"name" => ~"Alice", ~"email" => ~"alice@example.com"}, [name, email, age]),
 CS1 = kura_changeset:validate_required(CS, [name, email]),
-CS2 = kura_changeset:validate_format(CS1, email, <<"@">>),
+CS2 = kura_changeset:validate_format(CS1, email, ~"@"),
 CS3 = kura_changeset:validate_length(CS2, name, [{min, 1}, {max, 100}]),
 
 %% Insert
@@ -95,7 +101,7 @@ CS3 = kura_changeset:validate_length(CS2, name, [{min, 1}, {max, 100}]),
 ```erlang
 Q = kura_query:from(user),
 Q1 = kura_query:where(Q, {age, '>', 18}),
-Q2 = kura_query:where(Q1, {'or', [{role, <<"admin">>}, {role, <<"moderator">>}]}),
+Q2 = kura_query:where(Q1, {'or', [{role, ~"admin"}, {role, ~"moderator"}]}),
 Q3 = kura_query:select(Q2, [name, email]),
 Q4 = kura_query:order_by(Q3, [{name, asc}]),
 Q5 = kura_query:limit(Q4, 10),
@@ -115,7 +121,7 @@ Supported conditions: `=`, `!=`, `<`, `>`, `<=`, `>=`, `like`, `ilike`, `in`, `n
 -export([up/0, down/0]).
 
 up() ->
-    [{create_table, <<"users">>, [
+    [{create_table, ~"users", [
         #kura_column{name = id, type = id, primary_key = true, nullable = false},
         #kura_column{name = name, type = string, nullable = false},
         #kura_column{name = email, type = string, nullable = false},
@@ -123,11 +129,11 @@ up() ->
         #kura_column{name = inserted_at, type = utc_datetime},
         #kura_column{name = updated_at, type = utc_datetime}
     ]},
-    {create_index, <<"users">>, [email], #{unique => true}}].
+    {create_index, ~"users", [email], #{unique => true}}].
 
 down() ->
-    [{drop_index, <<"users_email_index">>},
-     {drop_table, <<"users">>}].
+    [{drop_index, ~"users_email_index"},
+     {drop_table, ~"users"}].
 ```
 
 Run migrations:
@@ -162,11 +168,11 @@ Database config is read from application environment using `application:get_env(
 %% sys.config
 [{my_app, [
     {my_repo, #{
-        database => <<"my_app_dev">>,
-        hostname => <<"localhost">>,
+        database => ~"my_app_dev",
+        hostname => ~"localhost",
         port => 5432,
-        username => <<"postgres">>,
-        password => <<"postgres">>,
+        username => ~"postgres",
+        password => ~"postgres",
         pool_size => 10
     }}
 ]}].

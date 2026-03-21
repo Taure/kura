@@ -84,33 +84,16 @@ field_names(Mod) ->
 -spec field_types(module()) -> #{atom() => kura_types:kura_type()}.
 field_types(Mod) ->
     cache({kura_schema, field_types, Mod}, fun() ->
-        Base = maps:from_list([{F#kura_field.name, F#kura_field.type} || F <- Mod:fields()]),
-        EmbedTypes = [
-            {E#kura_embed.name, {embed, E#kura_embed.type, E#kura_embed.schema}}
-         || E <- embeds(Mod)
-        ],
-        maps:merge(Base, maps:from_list(EmbedTypes))
+        Base = field_types_map(Mod:fields(), #{}),
+        embed_types_map(embeds(Mod), Base)
     end).
 
 -doc "Return map of field name to column name (binary), excluding virtual fields.".
 -spec column_map(module()) -> #{atom() => binary()}.
 column_map(Mod) ->
     cache({kura_schema, column_map, Mod}, fun() ->
-        FieldMap = maps:from_list([
-            {
-                F#kura_field.name,
-                case F#kura_field.column of
-                    undefined -> atom_to_binary(F#kura_field.name, utf8);
-                    Col -> Col
-                end
-            }
-         || F <- Mod:fields(), F#kura_field.virtual =:= false
-        ]),
-        EmbedMap = maps:from_list([
-            {E#kura_embed.name, atom_to_binary(E#kura_embed.name, utf8)}
-         || E <- embeds(Mod)
-        ]),
-        maps:merge(FieldMap, EmbedMap)
+        FieldMap = field_column_map(Mod:fields(), #{}),
+        embed_column_map(embeds(Mod), FieldMap)
     end).
 
 -doc "Return list of non-virtual field names.".
@@ -199,6 +182,37 @@ indexes(Mod) ->
             false -> []
         end
     end).
+
+%%----------------------------------------------------------------------
+%% Internal: recursive map builders
+%%----------------------------------------------------------------------
+
+field_types_map([], Acc) ->
+    Acc;
+field_types_map([F | Rest], Acc) ->
+    field_types_map(Rest, Acc#{F#kura_field.name => F#kura_field.type}).
+
+embed_types_map([], Acc) ->
+    Acc;
+embed_types_map([E | Rest], Acc) ->
+    embed_types_map(Rest, Acc#{E#kura_embed.name => {embed, E#kura_embed.type, E#kura_embed.schema}}).
+
+field_column_map([], Acc) ->
+    Acc;
+field_column_map([#kura_field{virtual = true} | Rest], Acc) ->
+    field_column_map(Rest, Acc);
+field_column_map([F | Rest], Acc) ->
+    Col =
+        case F#kura_field.column of
+            undefined -> atom_to_binary(F#kura_field.name, utf8);
+            C -> C
+        end,
+    field_column_map(Rest, Acc#{F#kura_field.name => Col}).
+
+embed_column_map([], Acc) ->
+    Acc;
+embed_column_map([E | Rest], Acc) ->
+    embed_column_map(Rest, Acc#{E#kura_embed.name => atom_to_binary(E#kura_embed.name, utf8)}).
 
 %%----------------------------------------------------------------------
 %% Lifecycle hooks

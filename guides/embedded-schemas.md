@@ -48,7 +48,7 @@ Export an `embeds/0` callback from the parent schema returning a list of `#kura_
 -include_lib("kura/include/kura.hrl").
 -export([table/0, fields/0, embeds/0]).
 
-table() -> <<"profiles">>.
+table() -> ~"profiles".
 
 fields() ->
     [
@@ -91,16 +91,16 @@ Pass a map of params for the embedded field:
 
 ```erlang
 Params = #{
-    name => <<"Alice">>,
-    bio => <<"Developer">>,
-    address => #{street => <<"123 Main St">>, city => <<"Portland">>, zip => <<"97201">>}
+    name => ~"Alice",
+    bio => ~"Developer",
+    address => #{street => ~"123 Main St", city => ~"Portland", zip => ~"97201"}
 },
 CS = kura_changeset:cast(profile, #{}, Params, [name, bio]),
 CS1 = kura_changeset:cast_embed(CS, address),
 %% CS1#kura_changeset.changes contains:
-%%   #{name => <<"Alice">>,
-%%     bio => <<"Developer">>,
-%%     address => #{street => <<"123 Main St">>, city => <<"Portland">>, zip => <<"97201">>}}
+%%   #{name => ~"Alice",
+%%     bio => ~"Developer",
+%%     address => #{street => ~"123 Main St", city => ~"Portland", zip => ~"97201"}}
 ```
 
 ### embeds_many
@@ -109,19 +109,19 @@ Pass a list of maps:
 
 ```erlang
 Params = #{
-    name => <<"Alice">>,
+    name => ~"Alice",
     tags => [
-        #{label => <<"important">>, weight => 10},
-        #{label => <<"urgent">>, weight => 5}
+        #{label => ~"important", weight => 10},
+        #{label => ~"urgent", weight => 5}
     ]
 },
 CS = kura_changeset:cast(profile, #{}, Params, [name]),
 CS1 = kura_changeset:cast_embed(CS, tags),
 %% CS1#kura_changeset.changes contains:
-%%   #{name => <<"Alice">>,
+%%   #{name => ~"Alice",
 %%     tags => [
-%%       #{label => <<"important">>, weight => 10},
-%%       #{label => <<"urgent">>, weight => 5}
+%%       #{label => ~"important", weight => 10},
+%%       #{label => ~"urgent", weight => 5}
 %%     ]}
 ```
 
@@ -150,11 +150,11 @@ Type mismatches are caught automatically:
 
 ```erlang
 %% Passing a list where a map is expected
-Params = #{name => <<"Alice">>, address => [1, 2, 3]},
+Params = #{name => ~"Alice", address => [1, 2, 3]},
 CS = kura_changeset:cast(profile, #{}, Params, [name]),
 CS1 = kura_changeset:cast_embed(CS, address),
 %% CS1#kura_changeset.valid =:= false
-%% CS1#kura_changeset.errors =:= [{address, <<"expected a map">>}]
+%% CS1#kura_changeset.errors =:= [{address, ~"expected a map"}]
 ```
 
 Validation errors from embedded schemas are merged into the parent:
@@ -165,7 +165,7 @@ WithFun = fun(_Data, EmbedParams) ->
     kura_changeset:validate_required(ChildCS, [street, city, zip])
 end,
 
-Params = #{name => <<"Alice">>, address => #{street => <<"123 Main St">>}},
+Params = #{name => ~"Alice", address => #{street => ~"123 Main St"}},
 CS = kura_changeset:cast(profile, #{}, Params, [name]),
 CS1 = kura_changeset:cast_embed(CS, address, #{with => WithFun}),
 %% CS1#kura_changeset.valid =:= false
