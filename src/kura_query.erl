@@ -36,6 +36,8 @@ Q3 = kura_query:limit(Q2, 10).
     intersect/2,
     except/2,
     scope/2,
+    with_deleted/1,
+    only_deleted/1,
     count/1, count/2,
     sum/2,
     avg/2,
@@ -158,6 +160,17 @@ except(Q = #kura_query{combinations = C}, Q2) ->
 -spec scope(#kura_query{}, fun((#kura_query{}) -> #kura_query{})) -> #kura_query{}.
 scope(Query, Fun) when is_function(Fun, 1) ->
     Fun(Query).
+
+-doc "Include soft-deleted records in query results.".
+-spec with_deleted(#kura_query{}) -> #kura_query{}.
+with_deleted(Q) ->
+    Q#kura_query{include_deleted = true}.
+
+-doc "Return only soft-deleted records.".
+-spec only_deleted(#kura_query{}) -> #kura_query{}.
+only_deleted(Q) ->
+    Q1 = Q#kura_query{include_deleted = true},
+    where(Q1, {deleted_at, is_not_nil}).
 
 -doc "Set query to SELECT COUNT(*).".
 -spec count(#kura_query{}) -> #kura_query{}.

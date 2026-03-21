@@ -65,7 +65,8 @@
     prefix :: binary() | undefined,
     preloads = [] :: [atom() | {atom(), list()}],
     ctes = [] :: [{binary(), #kura_query{}}],
-    combinations = [] :: [{union | union_all | intersect | except, #kura_query{}}]
+    combinations = [] :: [{union | union_all | intersect | except, #kura_query{}}],
+    include_deleted = false :: boolean()
 }).
 
 -record(kura_column, {
