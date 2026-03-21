@@ -27,6 +27,7 @@
 otp_app() -> kura.
 
 start() ->
+    application:set_env(pg_types, uuid_format, string),
     application:set_env(kura, kura_stress_repo, #{
         pool => kura_stress_repo,
         database => <<"kura_test">>,

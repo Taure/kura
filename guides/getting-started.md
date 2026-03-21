@@ -58,11 +58,20 @@ Then add database configuration to your `sys.config`:
         password => ~"postgres",
         pool_size => 10
     }}
+]},
+ {pg_types, [
+    {uuid_format, string}
 ]}].
 ```
 
-The config is looked up as `application:get_env(OtpApp, RepoModule)`, so each
-repo has its own config key. This supports multiple repos per application.
+The repo config is looked up as `application:get_env(OtpApp, RepoModule)`, so
+each repo has its own config key. This supports multiple repos per application.
+
+The `pg_types` config controls how PostgreSQL types are decoded by pgo. Kura
+recommends `{uuid_format, string}` so UUIDs are returned as formatted strings
+(e.g. `~"550e8400-e29b-41d4-a716-446655440000"`) rather than raw 16-byte
+binaries. Without this setting, Kura's `kura_types:load/2` will still format
+UUIDs correctly, but setting it avoids the extra conversion step.
 
 ## Define a Migration
 

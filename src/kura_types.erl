@@ -108,6 +108,8 @@ cast(uuid, V) when is_binary(V), byte_size(V) =:= 36 ->
     {ok, V};
 cast(uuid, V) when is_binary(V), byte_size(V) =:= 32 ->
     {ok, format_uuid(V)};
+cast(uuid, V) when is_binary(V), byte_size(V) =:= 16 ->
+    {ok, format_uuid(binary:encode_hex(V, lowercase))};
 cast(jsonb, V) when is_map(V) ->
     {ok, V};
 cast(jsonb, V) when is_list(V) ->
@@ -213,6 +215,8 @@ load(date, {Y, M, D} = V) when is_integer(Y), is_integer(M), is_integer(D) ->
     {ok, V};
 load(utc_datetime, {{_, _, _}, {_, _, _}} = V) ->
     {ok, V};
+load(uuid, V) when is_binary(V), byte_size(V) =:= 16 ->
+    {ok, format_uuid(binary:encode_hex(V, lowercase))};
 load(uuid, V) when is_binary(V) ->
     {ok, V};
 load(jsonb, V) when is_binary(V) ->
