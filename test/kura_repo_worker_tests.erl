@@ -7,48 +7,48 @@
 %%----------------------------------------------------------------------
 
 narrow_ok_error_ok_test() ->
-    ?assertEqual({ok, 42}, kura_repo_worker:narrow_ok_error({ok, 42})).
+    ?assertEqual({ok, 42}, kura_db:narrow_ok_error({ok, 42})).
 
 narrow_ok_error_error_test() ->
-    ?assertEqual({error, reason}, kura_repo_worker:narrow_ok_error({error, reason})).
+    ?assertEqual({error, reason}, kura_db:narrow_ok_error({error, reason})).
 
 narrow_ok_error_ok_complex_test() ->
-    ?assertEqual({ok, #{a => 1}}, kura_repo_worker:narrow_ok_error({ok, #{a => 1}})).
+    ?assertEqual({ok, #{a => 1}}, kura_db:narrow_ok_error({ok, #{a => 1}})).
 
 %%----------------------------------------------------------------------
 %% extract_result_status
 %%----------------------------------------------------------------------
 
 extract_result_status_error_test() ->
-    ?assertEqual(error, kura_repo_worker:extract_result_status({error, oops})).
+    ?assertEqual(error, kura_db:extract_result_status({error, oops})).
 
 extract_result_status_ok_map_test() ->
-    ?assertEqual(ok, kura_repo_worker:extract_result_status(#{rows => []})).
+    ?assertEqual(ok, kura_db:extract_result_status(#{rows => []})).
 
 extract_result_status_ok_atom_test() ->
-    ?assertEqual(ok, kura_repo_worker:extract_result_status(ok)).
+    ?assertEqual(ok, kura_db:extract_result_status(ok)).
 
 extract_result_status_ok_other_test() ->
-    ?assertEqual(ok, kura_repo_worker:extract_result_status(42)).
+    ?assertEqual(ok, kura_db:extract_result_status(42)).
 
 %%----------------------------------------------------------------------
 %% extract_num_rows
 %%----------------------------------------------------------------------
 
 extract_num_rows_from_num_rows_test() ->
-    ?assertEqual(5, kura_repo_worker:extract_num_rows(#{num_rows => 5})).
+    ?assertEqual(5, kura_db:extract_num_rows(#{num_rows => 5})).
 
 extract_num_rows_from_rows_test() ->
-    ?assertEqual(3, kura_repo_worker:extract_num_rows(#{rows => [a, b, c]})).
+    ?assertEqual(3, kura_db:extract_num_rows(#{rows => [a, b, c]})).
 
 extract_num_rows_default_test() ->
-    ?assertEqual(0, kura_repo_worker:extract_num_rows(something_else)).
+    ?assertEqual(0, kura_db:extract_num_rows(something_else)).
 
 extract_num_rows_error_default_test() ->
-    ?assertEqual(0, kura_repo_worker:extract_num_rows({error, oops})).
+    ?assertEqual(0, kura_db:extract_num_rows({error, oops})).
 
 extract_num_rows_empty_rows_test() ->
-    ?assertEqual(0, kura_repo_worker:extract_num_rows(#{rows => []})).
+    ?assertEqual(0, kura_db:extract_num_rows(#{rows => []})).
 
 %%----------------------------------------------------------------------
 %% build_log_event

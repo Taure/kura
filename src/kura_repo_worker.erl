@@ -45,17 +45,6 @@ kura_repo_worker:start(MyRepo),
     default_logger/0
 ]).
 
--ifdef(TEST).
--export([
-    narrow_ok_error/1,
-    extract_result_status/1,
-    extract_num_rows/1
-]).
--endif.
-
--define(DECODE_OPTS, [return_rows_as_maps, column_name_as_atom]).
-
-%% eqWAlizer: pgo:transaction/2 returns any() — no override module available
 -eqwalizer({nowarn_function, insert/2}).
 -eqwalizer({nowarn_function, update/2}).
 -eqwalizer({nowarn_function, delete/2}).
@@ -78,7 +67,7 @@ start(RepoMod) ->
         user => binary_to_list(maps:get(username, Config, ~"postgres")),
         password => binary_to_list(maps:get(password, Config, <<>>)),
         pool_size => maps:get(pool_size, Config, 10),
-        decode_opts => ?DECODE_OPTS
+        decode_opts => [return_rows_as_maps, column_name_as_atom]
     },
     %% pgo spec says {ok, pid()} but supervisor:start_child underneath
     %% can return {error, {already_started, Pid}} when pool exists.
@@ -92,10 +81,10 @@ start(RepoMod) ->
 all(RepoMod, Query) ->
     {SQL, Params} = kura_query_compiler:to_sql(maybe_apply_tenant_query(Query)),
 
-    case pgo_query(RepoMod, SQL, Params) of
+    case kura_db:query(RepoMod, SQL, Params) of
         #{command := select, rows := Rows} ->
             Schema = Query#kura_query.from,
-            Loaded = [load_row(Schema, Row) || Row <- Rows],
+            Loaded = [kura_db:load_row(Schema, Row) || Row <- Rows],
             case Query#kura_query.preloads of
                 [] -> {ok, Loaded};
                 Preloads -> {ok, kura_preloader:do_preload(RepoMod, Loaded, Schema, Preloads)}
@@ -178,7 +167,7 @@ aggregate(RepoMod, Query, {Agg, Field}) ->
         distinct = false
     },
     {SQL, Params} = kura_query_compiler:to_sql(AggQ),
-    case pgo_query(RepoMod, SQL, Params) of
+    case kura_db:query(RepoMod, SQL, Params) of
         #{rows := [Row]} -> {ok, maps:get(Agg, Row)};
         #{rows := []} -> {ok, nil};
         {error, _} = Err -> Err
@@ -222,28 +211,24 @@ insert(_RepoMod, CS = #kura_changeset{valid = false}) ->
 insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}) when
     map_size(AC) > 0
 ->
-    narrow_ok_error(
-        transaction(RepoMod, fun() ->
-            case insert_record(RepoMod, CS) of
-                {ok, ParentRow} ->
-                    persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AC);
-                {error, _} = Err ->
-                    Err
-            end
-        end)
-    );
+    kura_db:transaction_ok(RepoMod, fun() ->
+        case insert_record(RepoMod, CS) of
+            {ok, ParentRow} ->
+                persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AC);
+            {error, _} = Err ->
+                Err
+        end
+    end);
 insert(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
     case needs_transaction(SchemaMod, insert) of
         true ->
             try
-                narrow_ok_error(
-                    transaction(RepoMod, fun() ->
-                        case insert_record(RepoMod, CS) of
-                            {ok, _} = Ok -> Ok;
-                            {error, Reason} -> throw({kura_rollback, Reason})
-                        end
-                    end)
-                )
+                kura_db:transaction_ok(RepoMod, fun() ->
+                    case insert_record(RepoMod, CS) of
+                        {ok, _} = Ok -> Ok;
+                        {error, Reason} -> throw({kura_rollback, Reason})
+                    end
+                end)
             catch
                 throw:{kura_rollback, Reason} -> {error, Reason}
             end;
@@ -260,9 +245,9 @@ insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opt
     Fields = maps:keys(DumpedChanges),
     {SQL, Params} = kura_query_compiler:insert(SchemaMod, Fields, DumpedChanges, Opts),
 
-    case pgo_query(RepoMod, SQL, Params) of
+    case kura_db:query(RepoMod, SQL, Params) of
         #{command := insert, rows := [Row]} ->
-            {ok, load_row(SchemaMod, Row)};
+            {ok, kura_db:load_row(SchemaMod, Row)};
         #{command := insert, rows := []} ->
             {ok, kura_changeset:apply_changes(CS)};
         {error, PgError} ->
@@ -276,28 +261,24 @@ update(_RepoMod, CS = #kura_changeset{valid = false}) ->
 update(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}) when
     map_size(AC) > 0
 ->
-    narrow_ok_error(
-        transaction(RepoMod, fun() ->
-            case update_record(RepoMod, CS) of
-                {ok, ParentRow} ->
-                    persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AC);
-                {error, _} = Err ->
-                    Err
-            end
-        end)
-    );
+    kura_db:transaction_ok(RepoMod, fun() ->
+        case update_record(RepoMod, CS) of
+            {ok, ParentRow} ->
+                persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AC);
+            {error, _} = Err ->
+                Err
+        end
+    end);
 update(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
     case needs_transaction(SchemaMod, update) of
         true ->
             try
-                narrow_ok_error(
-                    transaction(RepoMod, fun() ->
-                        case update_record(RepoMod, CS) of
-                            {ok, _} = Ok -> Ok;
-                            {error, Reason} -> throw({kura_rollback, Reason})
-                        end
-                    end)
-                )
+                kura_db:transaction_ok(RepoMod, fun() ->
+                    case update_record(RepoMod, CS) of
+                        {ok, _} = Ok -> Ok;
+                        {error, Reason} -> throw({kura_rollback, Reason})
+                    end
+                end)
             catch
                 throw:{kura_rollback, Reason} -> {error, Reason}
             end;
@@ -311,14 +292,12 @@ delete(RepoMod, #kura_changeset{schema = SchemaMod, data = Data}) ->
     case needs_transaction(SchemaMod, delete) of
         true ->
             try
-                narrow_ok_error(
-                    transaction(RepoMod, fun() ->
-                        case delete_record(RepoMod, SchemaMod, Data) of
-                            {ok, _} = Ok -> Ok;
-                            {error, Reason} -> throw({kura_rollback, Reason})
-                        end
-                    end)
-                )
+                kura_db:transaction_ok(RepoMod, fun() ->
+                    case delete_record(RepoMod, SchemaMod, Data) of
+                        {ok, _} = Ok -> Ok;
+                        {error, Reason} -> throw({kura_rollback, Reason})
+                    end
+                end)
             catch
                 throw:{kura_rollback, Reason} -> {error, Reason}
             end;
@@ -331,7 +310,7 @@ delete(RepoMod, #kura_changeset{schema = SchemaMod, data = Data}) ->
 update_all(RepoMod, Query, Updates) ->
     {SQL, Params} = kura_query_compiler:update_all(maybe_apply_tenant_query(Query), Updates),
 
-    case pgo_query(RepoMod, SQL, Params) of
+    case kura_db:query(RepoMod, SQL, Params) of
         #{command := update, num_rows := Count} -> {ok, Count};
         {error, _} = Err -> Err
     end.
@@ -341,7 +320,7 @@ update_all(RepoMod, Query, Updates) ->
 delete_all(RepoMod, Query) ->
     {SQL, Params} = kura_query_compiler:delete_all(maybe_apply_tenant_query(Query)),
 
-    case pgo_query(RepoMod, SQL, Params) of
+    case kura_db:query(RepoMod, SQL, Params) of
         #{command := delete, num_rows := Count} -> {ok, Count};
         {error, _} = Err -> Err
     end.
@@ -362,7 +341,7 @@ insert_all(RepoMod, SchemaMod, Entries) ->
     Fields = maps:keys(First),
     {SQL, Params} = kura_query_compiler:insert_all(SchemaMod, Fields, Rows),
 
-    case pgo_query(RepoMod, SQL, Params) of
+    case kura_db:query(RepoMod, SQL, Params) of
         #{command := insert, num_rows := Count} -> {ok, Count};
         {error, _} = Err -> Err
     end.
@@ -386,15 +365,15 @@ insert_all(RepoMod, SchemaMod, Entries, Opts) ->
 
     case Opts of
         #{returning := RetOpt} when RetOpt =:= true; is_list(RetOpt) ->
-            case pgo_query(RepoMod, SQL, Params) of
+            case kura_db:query(RepoMod, SQL, Params) of
                 #{command := insert, num_rows := Count, rows := RetRows} ->
-                    Loaded = [load_row(SchemaMod, R) || R <- RetRows],
+                    Loaded = [kura_db:load_row(SchemaMod, R) || R <- RetRows],
                     {ok, Count, Loaded};
                 {error, _} = Err ->
                     Err
             end;
         #{} ->
-            case pgo_query(RepoMod, SQL, Params) of
+            case kura_db:query(RepoMod, SQL, Params) of
                 #{command := insert, num_rows := Count} -> {ok, Count};
                 {error, _} = Err -> Err
             end
@@ -403,13 +382,7 @@ insert_all(RepoMod, SchemaMod, Entries, Opts) ->
 -doc "Execute a function inside a database transaction.".
 -spec transaction(module(), fun(() -> term())) -> term().
 transaction(RepoMod, Fun) ->
-    Pool = get_pool(RepoMod),
-    case kura_sandbox:get_conn(Pool) of
-        {ok, _Conn} ->
-            Fun();
-        not_found ->
-            pgo:transaction(Fun, #{pool => Pool})
-    end.
+    kura_db:transaction(RepoMod, Fun).
 
 -doc "Execute a `kura_multi` pipeline inside a transaction.".
 -spec multi(module(), term()) ->
@@ -417,11 +390,9 @@ transaction(RepoMod, Fun) ->
 multi(RepoMod, Multi) ->
     Ops = kura_multi:to_list(Multi),
     try
-        narrow_ok_error(
-            transaction(RepoMod, fun() ->
-                execute_multi_ops(RepoMod, Ops, #{})
-            end)
-        )
+        kura_db:transaction_ok(RepoMod, fun() ->
+            execute_multi_ops(RepoMod, Ops, #{})
+        end)
     catch
         throw:{multi_error, Name, Value, Completed} ->
             {error, Name, Value, Completed}
@@ -430,7 +401,7 @@ multi(RepoMod, Multi) ->
 -doc "Execute raw SQL with parameters.".
 -spec query(module(), iodata(), [term()]) -> {ok, list()} | {error, term()}.
 query(RepoMod, SQL, Params) ->
-    case pgo_query(RepoMod, SQL, Params) of
+    case kura_db:query(RepoMod, SQL, Params) of
         #{rows := Rows} -> {ok, Rows};
         {error, _} = Err -> Err
     end.
@@ -475,85 +446,17 @@ execute_multi_op(_RepoMod, {run, Fun}, Acc) ->
     Fun(Acc).
 
 %%----------------------------------------------------------------------
-%% Internal: pgo bridge
+%% Internal: pgo bridge (delegates to kura_db)
 %%----------------------------------------------------------------------
 
 pgo_query(RepoMod, SQL, Params) ->
-    Pool = get_pool(RepoMod),
-    T0 = erlang:monotonic_time(),
-    Result =
-        case kura_sandbox:get_conn(Pool) of
-            {ok, Conn} ->
-                pgo:query(SQL, Params, #{decode_opts => ?DECODE_OPTS}, Conn);
-            not_found ->
-                pgo:query(SQL, Params, #{pool => Pool, decode_opts => ?DECODE_OPTS})
-        end,
-    T1 = erlang:monotonic_time(),
-    DurationNative = T1 - T0,
-    DurationUs = erlang:convert_time_unit(DurationNative, native, microsecond),
-    emit_telemetry(RepoMod, SQL, Params, Result, DurationNative, DurationUs),
-    Result.
-
-emit_telemetry(RepoMod, SQL, Params, Result, DurationNative, DurationUs) ->
-    try
-        Measurements = #{
-            duration => DurationNative,
-            duration_us => DurationUs
-        },
-        Metadata = build_telemetry_metadata(RepoMod, SQL, Params, Result),
-        telemetry:execute([kura, repo, query], Measurements, Metadata),
-        emit_legacy_log(RepoMod, SQL, Params, Result, DurationUs)
-    catch
-        _:_ -> ok
-    end.
-
-emit_legacy_log(RepoMod, SQL, Params, Result, DurationUs) ->
-    case application:get_env(kura, log) of
-        {ok, true} ->
-            Event = build_log_event(RepoMod, SQL, Params, Result, DurationUs),
-            (default_logger())(Event);
-        {ok, LogFun} when is_function(LogFun, 1) ->
-            Event = build_log_event(RepoMod, SQL, Params, Result, DurationUs),
-            LogFun(Event);
-        {ok, {M, F}} when is_atom(M), is_atom(F) ->
-            Event = build_log_event(RepoMod, SQL, Params, Result, DurationUs),
-            M:F(Event);
-        _ ->
-            ok
-    end.
+    kura_db:query(RepoMod, SQL, Params).
 
 build_telemetry_metadata(RepoMod, SQL, Params, Result) ->
-    SQLBin = iolist_to_binary(SQL),
-    {ResultStatus, NumRows} =
-        case Result of
-            #{rows := Rows} -> {ok, length(Rows)};
-            #{num_rows := N} -> {ok, N};
-            {error, _} -> {error, 0};
-            _ -> {ok, 0}
-        end,
-    Source = extract_source(SQLBin),
-    #{
-        query => SQLBin,
-        params => Params,
-        repo => RepoMod,
-        result => ResultStatus,
-        num_rows => NumRows,
-        source => Source
-    }.
+    kura_db:build_telemetry_metadata(RepoMod, SQL, Params, Result).
 
 extract_source(SQL) ->
-    case
-        re:run(SQL, ~"(?:FROM|INTO|UPDATE|TABLE)\\s+\"?(\\w+)\"?", [
-            {capture, [1], binary}, caseless
-        ])
-    of
-        {match, [Table]} -> Table;
-        nomatch -> undefined
-    end.
-
-get_pool(RepoMod) ->
-    Config = kura_repo:config(RepoMod),
-    maps:get(pool, Config, RepoMod).
+    kura_db:extract_source(SQL).
 
 insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}) ->
     CS1 = run_prepare(CS0),
@@ -566,9 +469,9 @@ insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}) ->
             DumpedChanges = dump_changes(SchemaMod, Changes1),
             Fields = maps:keys(DumpedChanges),
             {SQL, Params} = kura_query_compiler:insert(SchemaMod, Fields, DumpedChanges),
-            case pgo_query(RepoMod, SQL, Params) of
+            case kura_db:query(RepoMod, SQL, Params) of
                 #{command := insert, rows := [Row]} ->
-                    Row1 = load_row(SchemaMod, Row),
+                    Row1 = kura_db:load_row(SchemaMod, Row),
                     kura_schema:run_after_insert(SchemaMod, Row1);
                 {error, PgError} ->
                     {error, handle_pg_error(CS#kura_changeset{action = insert}, PgError)}
@@ -608,9 +511,9 @@ do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, PK, PKValue) ->
             {SQL, Params} = kura_query_compiler:update(
                 SchemaMod, Fields, DumpedChanges, {PK, PKValue}
             ),
-            case pgo_query(RepoMod, SQL, Params) of
+            case kura_db:query(RepoMod, SQL, Params) of
                 #{command := update, rows := [Row]} ->
-                    {ok, load_row(SchemaMod, Row)};
+                    {ok, kura_db:load_row(SchemaMod, Row)};
                 #{command := update, rows := []} ->
                     {error,
                         kura_changeset:add_error(
@@ -631,9 +534,9 @@ do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, PK, PKValue) ->
                 {PK, PKValue},
                 {LockField, LockValue}
             ),
-            case pgo_query(RepoMod, SQL, Params) of
+            case kura_db:query(RepoMod, SQL, Params) of
                 #{command := update, rows := [Row]} ->
-                    {ok, load_row(SchemaMod, Row)};
+                    {ok, kura_db:load_row(SchemaMod, Row)};
                 #{command := update, rows := []} ->
                     {error, stale};
                 {error, PgError} ->
@@ -799,7 +702,7 @@ persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
         OwnerCol,
         ~" = $1"
     ]),
-    _ = pgo_query(RepoMod, DeleteSQL, [PKValue]),
+    _ = kura_db:query(RepoMod, DeleteSQL, [PKValue]),
     lists:foreach(
         fun(Child) ->
             RelPKValue = maps:get(RelPK, Child),
@@ -812,7 +715,7 @@ persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
                 RelatedCol,
                 ~") VALUES ($1, $2)"
             ]),
-            pgo_query(RepoMod, InsertSQL, [PKValue, RelPKValue])
+            kura_db:query(RepoMod, InsertSQL, [PKValue, RelPKValue])
         end,
         Children
     ),
@@ -826,9 +729,9 @@ delete_record(RepoMod, SchemaMod, Data) ->
             PK = kura_schema:primary_key(SchemaMod),
             PKValue = maps:get(PK, Data),
             {SQL, Params} = kura_query_compiler:delete(SchemaMod, PK, PKValue),
-            case pgo_query(RepoMod, SQL, Params) of
+            case kura_db:query(RepoMod, SQL, Params) of
                 #{command := delete, rows := [Row]} ->
-                    Row1 = load_row(SchemaMod, Row),
+                    Row1 = kura_db:load_row(SchemaMod, Row),
                     case kura_schema:run_after_delete(SchemaMod, Row1) of
                         ok -> {ok, Row1};
                         {error, _} = AfterErr -> AfterErr
@@ -838,34 +741,6 @@ delete_record(RepoMod, SchemaMod, Data) ->
                 {error, _} = Err ->
                     Err
             end
-    end.
-
-load_row(SchemaMod, Row) when is_atom(SchemaMod) ->
-    case code:ensure_loaded(SchemaMod) of
-        {module, SchemaMod} ->
-            case erlang:function_exported(SchemaMod, fields, 0) of
-                true ->
-                    Types = kura_schema:field_types(SchemaMod),
-                    maps:fold(
-                        fun(K, V, Acc) ->
-                            case Types of
-                                #{K := Type} ->
-                                    case kura_types:load(Type, V) of
-                                        {ok, Loaded} -> Acc#{K => Loaded};
-                                        {error, _} -> Acc#{K => V}
-                                    end;
-                                #{} ->
-                                    Acc#{K => V}
-                            end
-                        end,
-                        #{},
-                        Row
-                    );
-                false ->
-                    Row
-            end;
-        _ ->
-            Row
     end.
 
 dump_changes(SchemaMod, Changes) ->
@@ -971,25 +846,12 @@ format_error(Reason) -> iolist_to_binary(io_lib:format("~p", [Reason])).
 -doc "Build a log event map from query execution data.".
 -spec build_log_event(module(), iodata(), [term()], term(), integer()) -> map().
 build_log_event(Repo, SQL, Params, Result, DurationUs) ->
-    ResultStatus = extract_result_status(Result),
-    NumRows = extract_num_rows(Result),
-    #{
-        query => iolist_to_binary([SQL]),
-        params => Params,
-        result => ResultStatus,
-        num_rows => NumRows,
-        duration_us => DurationUs,
-        repo => Repo
-    }.
+    kura_db:build_log_event(Repo, SQL, Params, Result, DurationUs).
 
 -doc "Return a default logger function that logs queries via logger:info.".
 -spec default_logger() -> fun((map()) -> ok).
 default_logger() ->
-    fun(Event) ->
-        logger:info("Kura ~s ~pus", [
-            maps:get(query, Event), maps:get(duration_us, Event)
-        ])
-    end.
+    kura_db:default_logger().
 
 %%----------------------------------------------------------------------
 %% Internal: multitenancy
@@ -1020,20 +882,3 @@ maybe_apply_tenant_changes(Changes) ->
         _ ->
             Changes
     end.
-
-%%----------------------------------------------------------------------
-%% Internal: type narrowing helpers for eqWAlizer
-%%----------------------------------------------------------------------
-
--spec narrow_ok_error(term()) -> {ok, term()} | {error, term()}.
-narrow_ok_error({ok, _} = Ok) -> Ok;
-narrow_ok_error({error, _} = Err) -> Err.
-
--spec extract_result_status(term()) -> ok | error.
-extract_result_status({error, _}) -> error;
-extract_result_status(_) -> ok.
-
--spec extract_num_rows(term()) -> non_neg_integer().
-extract_num_rows(#{num_rows := N}) when is_integer(N) -> N;
-extract_num_rows(#{rows := Rows}) when is_list(Rows) -> length(Rows);
-extract_num_rows(_) -> 0.
