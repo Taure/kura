@@ -31,6 +31,9 @@ kura_repo_worker:start(MyRepo),
     insert_all/4,
     exists/2,
     reload/3,
+    aggregate/3,
+    aggregate/4,
+    count/2,
     transaction/2,
     multi/2,
     preload/4,
@@ -151,6 +154,65 @@ reload(RepoMod, SchemaMod, Record) ->
     case Record of
         #{PK := Id} -> get(RepoMod, SchemaMod, Id);
         #{} -> {error, no_primary_key}
+    end.
+
+-doc """
+Run an aggregate function on a query. Supported: `count`, `sum`, `avg`, `min`, `max`.
+
+```erlang
+{ok, 42} = kura_repo_worker:aggregate(MyRepo, Q, count).
+{ok, 150.5} = kura_repo_worker:aggregate(MyRepo, Q, {sum, score}).
+```
+""".
+-spec aggregate(module(), #kura_query{}, count | {count | sum | avg | min | max, atom()}) ->
+    {ok, term()} | {error, term()}.
+aggregate(RepoMod, Query, count) ->
+    aggregate(RepoMod, Query, {count, '*'});
+aggregate(RepoMod, Query, {Agg, Field}) ->
+    AggQ = Query#kura_query{
+        select = [{Agg, Field}],
+        order_bys = [],
+        limit = undefined,
+        offset = undefined,
+        preloads = [],
+        distinct = false
+    },
+    {SQL, Params} = kura_query_compiler:to_sql(AggQ),
+    case pgo_query(RepoMod, SQL, Params) of
+        #{rows := [Row]} -> {ok, maps:get(Agg, Row)};
+        #{rows := []} -> {ok, nil};
+        {error, _} = Err -> Err
+    end.
+
+-doc """
+Run an aggregate with a default value when the result is nil/null.
+
+```erlang
+{ok, 0} = kura_repo_worker:aggregate(MyRepo, Q, {sum, score}, 0).
+```
+""".
+-spec aggregate(module(), #kura_query{}, count | {count | sum | avg | min | max, atom()}, term()) ->
+    {ok, term()} | {error, term()}.
+aggregate(RepoMod, Query, Agg, Default) ->
+    case aggregate(RepoMod, Query, Agg) of
+        {ok, nil} -> {ok, Default};
+        {ok, null} -> {ok, Default};
+        {ok, undefined} -> {ok, Default};
+        Other -> Other
+    end.
+
+-doc """
+Count all rows matching a query.
+
+```erlang
+{ok, 42} = kura_repo_worker:count(MyRepo, kura_query:from(my_schema)).
+```
+""".
+-spec count(module(), #kura_query{}) -> {ok, non_neg_integer()} | {error, term()}.
+count(RepoMod, Query) ->
+    case aggregate(RepoMod, Query, count) of
+        {ok, N} when is_integer(N) -> {ok, N};
+        {error, _} = Err -> Err
     end.
 
 -doc "Insert a record from a changeset. Returns `{error, Changeset}` with errors on failure.".
