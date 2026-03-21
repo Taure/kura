@@ -63,8 +63,7 @@ preload_belongs_to(RepoMod, Records, #kura_assoc{
             RelPK = kura_schema:primary_key(RelSchema),
             Q = kura_query:where(kura_query:from(RelSchema), {RelPK, in, FKValues}),
             {ok, Related} = kura_repo_worker:all(RepoMod, Q),
-            %% elp:ignore W0036 — lists:foldl breaks eqWAlizer type inference
-            Lookup = maps:from_list([{get_field(RelPK, Rel), Rel} || Rel <- Related]),
+            Lookup = to_lookup(Related, RelPK, #{}),
             [
                 set_field(
                     Name, get_field_default(get_field_default(FK, R, undefined), Lookup, nil), R
@@ -90,8 +89,7 @@ preload_has_one(RepoMod, Records, Schema, #kura_assoc{
     PKValues = lists:usort([get_field(PK, R) || R <- Records]),
     Q = kura_query:where(kura_query:from(RelSchema), {FK, in, PKValues}),
     {ok, Related} = kura_repo_worker:all(RepoMod, Q),
-    %% elp:ignore W0036 — lists:foldl breaks eqWAlizer type inference
-    Lookup = maps:from_list([{get_field(FK, Rel), Rel} || Rel <- Related]),
+    Lookup = to_lookup(Related, FK, #{}),
     [set_field(Name, get_field_default(get_field(PK, R), Lookup, nil), R) || R <- Records].
 
 preload_many_to_many(RepoMod, Records, Schema, #kura_assoc{
@@ -133,8 +131,7 @@ preload_many_to_many(RepoMod, Records, Schema, #kura_assoc{
                     RelPK = kura_schema:primary_key(RelSchema),
                     Q = kura_query:where(kura_query:from(RelSchema), {RelPK, in, RelatedIds}),
                     {ok, Related} = kura_repo_worker:all(RepoMod, Q),
-                    %% elp:ignore W0036 — lists:foldl breaks eqWAlizer type inference
-                    RelLookup = maps:from_list([{get_field(RelPK, Rel), Rel} || Rel <- Related]),
+                    RelLookup = to_lookup(Related, RelPK, #{}),
                     Grouped = group_m2m_join(JoinRows, OwnerKey, RelatedKey, RelLookup, #{}),
                     [
                         set_field(Name, get_field_default(get_field(PK, R), Grouped, []), R)
@@ -151,6 +148,10 @@ resolve_join_table(Mod) when is_atom(Mod) ->
 %%----------------------------------------------------------------------
 %% Internal: typed map access helpers for eqWAlizer
 %%----------------------------------------------------------------------
+
+-spec to_lookup([map()], atom(), map()) -> map().
+to_lookup([], _Key, Acc) -> Acc;
+to_lookup([Row | Rest], Key, Acc) -> to_lookup(Rest, Key, Acc#{get_field(Key, Row) => Row}).
 
 -spec get_field(atom(), map()) -> term().
 get_field(Key, Map) -> maps:get(Key, Map).
