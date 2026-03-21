@@ -27,7 +27,8 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
     | jsonb
     | {enum, [atom()]}
     | {array, kura_type()}
-    | {embed, embeds_one | embeds_many, module()}.
+    | {embed, embeds_one | embeds_many, module()}
+    | {custom, module()}.
 
 %% eqWAlizer: cast/2 has >7 clauses narrowing on kura_type() union — exceeds eqWAlizer limit
 -eqwalizer({nowarn_function, cast/2}).
@@ -50,7 +51,8 @@ to_pg_type(uuid) -> ~"UUID";
 to_pg_type(jsonb) -> ~"JSONB";
 to_pg_type({enum, _}) -> ~"VARCHAR(255)";
 to_pg_type({array, Inner}) -> <<(to_pg_type(Inner))/binary, "[]">>;
-to_pg_type({embed, _, _}) -> ~"JSONB".
+to_pg_type({embed, _, _}) -> ~"JSONB";
+to_pg_type({custom, Mod}) -> Mod:pg_type().
 
 %%----------------------------------------------------------------------
 %% Cast: coerce external input → Erlang term
@@ -147,6 +149,8 @@ cast({embed, embeds_one, _}, V) when is_map(V) ->
     {ok, V};
 cast({embed, embeds_many, _}, V) when is_list(V) ->
     {ok, V};
+cast({custom, Mod}, V) ->
+    Mod:cast(V);
 cast(Type, _V) ->
     {error, <<"cannot cast to ", (format_type(Type))/binary>>}.
 
@@ -188,6 +192,8 @@ dump({embed, embeds_one, Mod}, V) when is_map(V) ->
     json_encode(dump_embed_to_term(Mod, V));
 dump({embed, embeds_many, Mod}, V) when is_list(V) ->
     json_encode([dump_embed_to_term(Mod, Item) || Item <- V]);
+dump({custom, Mod}, V) ->
+    Mod:dump(V);
 dump(Type, _V) ->
     {error, <<"cannot dump ", (format_type(Type))/binary>>}.
 
@@ -251,6 +257,8 @@ load({embed, embeds_many, Mod}, V) when is_binary(V) ->
     end;
 load({embed, embeds_many, Mod}, V) when is_list(V) ->
     {ok, [load_embed_map(Mod, M) || M <- V]};
+load({custom, Mod}, V) ->
+    Mod:load(V);
 load(Type, _V) ->
     {error, <<"cannot load ", (format_type(Type))/binary>>}.
 
@@ -385,6 +393,8 @@ format_type({enum, _}) ->
 format_type({array, Inner}) ->
     <<"array_", (format_type(Inner))/binary>>;
 format_type({embed, _, Mod}) ->
+    atom_to_binary(Mod, utf8);
+format_type({custom, Mod}) ->
     atom_to_binary(Mod, utf8);
 format_type(T) when is_atom(T) ->
     atom_to_binary(T, utf8).
