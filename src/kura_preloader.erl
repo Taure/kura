@@ -42,12 +42,21 @@ preload_assoc(RepoMod, Records, Schema, {AssocName, Nested}) ->
     nest_preload(RepoMod, Records1, AssocName, RelatedSchema, Nested, []);
 preload_assoc(RepoMod, Records, Schema, AssocName) when is_atom(AssocName) ->
     {ok, Assoc} = kura_schema:association(Schema, AssocName),
-    case Assoc#kura_assoc.type of
-        belongs_to -> preload_belongs_to(RepoMod, Records, Assoc);
-        has_many -> preload_has_many(RepoMod, Records, Schema, Assoc);
-        has_one -> preload_has_one(RepoMod, Records, Schema, Assoc);
-        many_to_many -> preload_many_to_many(RepoMod, Records, Schema, Assoc)
+    case Assoc#kura_assoc.through of
+        [_ | _] = Through ->
+            preload_through(RepoMod, Records, Schema, Assoc#kura_assoc.name, Through);
+        _ ->
+            preload_assoc_direct(RepoMod, Records, Schema, Assoc)
     end.
+
+preload_assoc_direct(RepoMod, Records, _Schema, Assoc = #kura_assoc{type = belongs_to}) ->
+    preload_belongs_to(RepoMod, Records, Assoc);
+preload_assoc_direct(RepoMod, Records, Schema, Assoc = #kura_assoc{type = has_many}) ->
+    preload_has_many(RepoMod, Records, Schema, Assoc);
+preload_assoc_direct(RepoMod, Records, Schema, Assoc = #kura_assoc{type = has_one}) ->
+    preload_has_one(RepoMod, Records, Schema, Assoc);
+preload_assoc_direct(RepoMod, Records, Schema, Assoc = #kura_assoc{type = many_to_many}) ->
+    preload_many_to_many(RepoMod, Records, Schema, Assoc).
 
 preload_belongs_to(RepoMod, Records, #kura_assoc{
     name = Name, schema = RelSchema, foreign_key = FK
@@ -139,6 +148,71 @@ preload_many_to_many(RepoMod, Records, Schema, #kura_assoc{
                     ]
             end
     end.
+
+%%----------------------------------------------------------------------
+%% Has many through
+%%----------------------------------------------------------------------
+
+preload_through(RepoMod, Records, Schema, Name, Through) ->
+    PK = kura_schema:primary_key(Schema),
+    %% Preload the full chain on records, then drill down to collect final values
+    Preloaded = preload_chain(RepoMod, Records, Schema, Through),
+    Grouped = collect_through(Preloaded, PK, Through, #{}),
+    [set_field(Name, get_field_default(get_field(PK, R), Grouped, []), R) || R <- Records].
+
+preload_chain(RepoMod, Records, Schema, [Step | Rest]) ->
+    {ok, StepAssoc} = kura_schema:association(Schema, Step),
+    StepSchema = StepAssoc#kura_assoc.schema,
+    Preloaded = preload_assoc_direct(RepoMod, Records, Schema, StepAssoc),
+    case Rest of
+        [] ->
+            Preloaded;
+        _ ->
+            Intermediates = extract_assoc_values(Preloaded, Step),
+            case Intermediates of
+                [] ->
+                    Preloaded;
+                _ ->
+                    SubPreloaded = preload_chain(RepoMod, Intermediates, StepSchema, Rest),
+                    SubPK = kura_schema:primary_key(StepSchema),
+                    SubLookup = to_lookup(SubPreloaded, SubPK, #{}),
+                    reattach_assoc(Preloaded, Step, SubPK, SubLookup)
+            end
+    end.
+
+extract_assoc_values([], _AssocName) ->
+    [];
+extract_assoc_values([R | Rest], AssocName) ->
+    to_list_val(get_field_default(AssocName, R, [])) ++ extract_assoc_values(Rest, AssocName).
+
+reattach_assoc(Records, AssocName, SubPK, SubLookup) ->
+    [
+        begin
+            OldVals = to_list_val(get_field_default(AssocName, R, [])),
+            NewVals = [get_field_default(get_field(SubPK, V), SubLookup, V) || V <- OldVals],
+            set_field(AssocName, NewVals, R)
+        end
+     || R <- Records
+    ].
+
+collect_through([], _OwnerPK, _Through, Acc) ->
+    Acc;
+collect_through([R | Rest], OwnerPK, Through, Acc) ->
+    Key = get_field(OwnerPK, R),
+    Values = drill_down(R, Through),
+    Existing = to_list_val(get_field_default(Key, Acc, [])),
+    collect_through(Rest, OwnerPK, Through, Acc#{Key => Existing ++ Values}).
+
+drill_down(Record, []) ->
+    [Record];
+drill_down(Record, [Step | Rest]) ->
+    Vals = to_list_val(get_field_default(Step, Record, [])),
+    lists:flatmap(fun(R) -> drill_down(R, Rest) end, Vals).
+
+to_list_val(L) when is_list(L) -> L;
+to_list_val(nil) -> [];
+to_list_val(undefined) -> [];
+to_list_val(M) when is_map(M) -> [M].
 
 resolve_join_table(Table) when is_binary(Table) ->
     Table;
