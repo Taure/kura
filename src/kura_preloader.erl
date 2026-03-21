@@ -160,8 +160,6 @@ preload_through(RepoMod, Records, Schema, Name, Through) ->
     Grouped = collect_through(Preloaded, PK, Through, #{}),
     [set_field(Name, get_field_default(get_field(PK, R), Grouped, []), R) || R <- Records].
 
-preload_chain(_RepoMod, Records, _Schema, []) ->
-    Records;
 preload_chain(RepoMod, Records, Schema, [Step | Rest]) ->
     {ok, StepAssoc} = kura_schema:association(Schema, Step),
     StepSchema = StepAssoc#kura_assoc.schema,
