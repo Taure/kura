@@ -8,7 +8,6 @@ pool lookup, sandbox support, telemetry, and type loading.
 
 -export([
     query/3,
-    query/4,
     transaction/2,
     transaction_ok/2,
     get_pool/1,
@@ -36,10 +35,6 @@ pool lookup, sandbox support, telemetry, and type loading.
 
 -spec query(module(), iodata(), [term()]) -> map() | {error, term()}.
 query(RepoMod, SQL, Params) ->
-    query(RepoMod, SQL, Params, #{}).
-
--spec query(module(), iodata(), [term()], map()) -> map() | {error, term()}.
-query(RepoMod, SQL, Params, _Opts) ->
     Pool = get_pool(RepoMod),
     T0 = erlang:monotonic_time(),
     Result =
