@@ -35,7 +35,15 @@ do_preload(RepoMod, Records, Schema, [Assoc | Rest]) ->
     Updated = preload_assoc(RepoMod, Records, Schema, Assoc),
     do_preload(RepoMod, Updated, Schema, Rest).
 
-preload_assoc(RepoMod, Records, Schema, {AssocName, Nested}) ->
+preload_assoc(RepoMod, Records, Schema, {AssocName, Opts}) when is_map(Opts) ->
+    {ok, Assoc} = kura_schema:association(Schema, AssocName),
+    case Assoc#kura_assoc.type of
+        has_many -> preload_has_many_cond(RepoMod, Records, Schema, Assoc, Opts);
+        has_one -> preload_has_one_cond(RepoMod, Records, Schema, Assoc, Opts);
+        belongs_to -> preload_belongs_to(RepoMod, Records, Assoc);
+        many_to_many -> preload_many_to_many(RepoMod, Records, Schema, Assoc)
+    end;
+preload_assoc(RepoMod, Records, Schema, {AssocName, Nested}) when is_list(Nested) ->
     Records1 = preload_assoc(RepoMod, Records, Schema, AssocName),
     {ok, Assoc} = kura_schema:association(Schema, AssocName),
     RelatedSchema = Assoc#kura_assoc.schema,
@@ -97,6 +105,40 @@ preload_has_one(RepoMod, Records, Schema, #kura_assoc{
     PK = kura_schema:primary_key(Schema),
     PKValues = lists:usort([get_field(PK, R) || R <- Records]),
     Q = kura_query:where(kura_query:from(RelSchema), {FK, in, PKValues}),
+    {ok, Related} = kura_repo_worker:all(RepoMod, Q),
+    Lookup = to_lookup(Related, FK, #{}),
+    [set_field(Name, get_field_default(get_field(PK, R), Lookup, nil), R) || R <- Records].
+
+preload_has_many_cond(
+    RepoMod,
+    Records,
+    Schema,
+    #kura_assoc{
+        name = Name, schema = RelSchema, foreign_key = FK
+    },
+    Opts
+) ->
+    PK = kura_schema:primary_key(Schema),
+    PKValues = lists:usort([get_field(PK, R) || R <- Records]),
+    Q0 = kura_query:where(kura_query:from(RelSchema), {FK, in, PKValues}),
+    Q = apply_preload_opts(Q0, Opts),
+    {ok, Related} = kura_repo_worker:all(RepoMod, Q),
+    Grouped = group_by_key(Related, FK, #{}),
+    [set_field(Name, get_field_default(get_field(PK, R), Grouped, []), R) || R <- Records].
+
+preload_has_one_cond(
+    RepoMod,
+    Records,
+    Schema,
+    #kura_assoc{
+        name = Name, schema = RelSchema, foreign_key = FK
+    },
+    Opts
+) ->
+    PK = kura_schema:primary_key(Schema),
+    PKValues = lists:usort([get_field(PK, R) || R <- Records]),
+    Q0 = kura_query:where(kura_query:from(RelSchema), {FK, in, PKValues}),
+    Q = apply_preload_opts(Q0, Opts),
     {ok, Related} = kura_repo_worker:all(RepoMod, Q),
     Lookup = to_lookup(Related, FK, #{}),
     [set_field(Name, get_field_default(get_field(PK, R), Lookup, nil), R) || R <- Records].
@@ -213,6 +255,22 @@ to_list_val(L) when is_list(L) -> L;
 to_list_val(nil) -> [];
 to_list_val(undefined) -> [];
 to_list_val(M) when is_map(M) -> [M].
+
+apply_preload_opts(Q, Opts) ->
+    Q1 =
+        case Opts of
+            #{where := Cond} -> kura_query:where(Q, Cond);
+            #{} -> Q
+        end,
+    Q2 =
+        case Opts of
+            #{order_by := OrderBy} -> kura_query:order_by(Q1, OrderBy);
+            #{} -> Q1
+        end,
+    case Opts of
+        #{limit := Limit} -> kura_query:limit(Q2, Limit);
+        #{} -> Q2
+    end.
 
 resolve_join_table(Table) when is_binary(Table) ->
     Table;
