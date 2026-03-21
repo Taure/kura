@@ -40,7 +40,8 @@
     schema :: module(),
     foreign_key :: atom() | undefined,
     join_through :: binary() | module() | undefined,
-    join_keys :: {atom(), atom()} | undefined
+    join_keys :: {atom(), atom()} | undefined,
+    through :: [atom()] | undefined
 }).
 
 -record(kura_embed, {
