@@ -36,7 +36,7 @@ In Kura, this maps to three pieces: a **schema**, **indexes**, and a **migration
 
 -export([table/0, fields/0, indexes/0]).
 
-table() -> <<"users">>.
+table() -> ~"users".
 
 fields() ->
     [#kura_field{name = id, type = uuid, primary_key = true, nullable = false},
@@ -52,7 +52,7 @@ fields() ->
 indexes() ->
     [{[username], #{unique => true}},
      {[email], #{unique => true}},
-     {[phone_number], #{unique => true, where => <<"phone_number IS NOT NULL">>}}].
+     {[phone_number], #{unique => true, where => ~"phone_number IS NOT NULL"}}].
 ```
 
 Key points:
@@ -72,7 +72,7 @@ Key points:
 -export([up/0, down/0]).
 
 up() ->
-    [{create_table, <<"users">>, [
+    [{create_table, ~"users", [
         #kura_column{name = id, type = uuid, primary_key = true, nullable = false},
         #kura_column{name = username, type = string, nullable = false},
         #kura_column{name = phone_number, type = string},
@@ -82,16 +82,16 @@ up() ->
         #kura_column{name = inserted_at, type = utc_datetime, nullable = false},
         #kura_column{name = updated_at, type = utc_datetime, nullable = false}
     ]},
-    {create_index, <<"users">>, [username], #{unique => true}},
-    {create_index, <<"users">>, [email], #{unique => true}},
-    {create_index, <<"users">>, [phone_number], #{unique => true,
-        where => <<"phone_number IS NOT NULL">>}}].
+    {create_index, ~"users", [username], #{unique => true}},
+    {create_index, ~"users", [email], #{unique => true}},
+    {create_index, ~"users", [phone_number], #{unique => true,
+        where => ~"phone_number IS NOT NULL"}}].
 
 down() ->
-    [{drop_index, <<"users_phone_number_index">>},
-     {drop_index, <<"users_email_index">>},
-     {drop_index, <<"users_username_index">>},
-     {drop_table, <<"users">>}].
+    [{drop_index, ~"users_phone_number_index"},
+     {drop_index, ~"users_email_index"},
+     {drop_index, ~"users_username_index"},
+     {drop_table, ~"users"}].
 ```
 
 > If you use [rebar3_kura](https://github.com/Taure/rebar3_kura), the migration is generated automatically from your schema — you don't write it by hand.
@@ -106,14 +106,14 @@ registration_changeset(Params) ->
     CS1 = kura_changeset:validate_required(CS, [username, password]),
     CS2 = kura_changeset:validate_length(CS1, username, [{min, 3}, {max, 30}]),
     CS3 = kura_changeset:validate_length(CS2, password, [{min, 8}]),
-    CS4 = kura_changeset:validate_format(CS3, email, <<"^[^@]+@[^@]+$">>),
+    CS4 = kura_changeset:validate_format(CS3, email, ~"^[^@]+@[^@]+$"),
     hash_password(CS4).
 
 %% Insert — constraint errors are handled automatically
 case my_repo:insert(registration_changeset(Params)) of
     {ok, User} ->
         User;
-    {error, #kura_changeset{errors = [{username, <<"has already been taken">>}]}} ->
+    {error, #kura_changeset{errors = [{username, ~"has already been taken"}]}} ->
         %% username was a duplicate
         handle_error(username_taken)
 end.
@@ -146,7 +146,7 @@ For **composite** unique constraints (multiple columns together), use `constrain
 
 -export([table/0, fields/0, constraints/0]).
 
-table() -> <<"participants">>.
+table() -> ~"participants".
 
 fields() ->
     [#kura_field{name = id, type = id, primary_key = true, nullable = false},
@@ -162,7 +162,7 @@ This auto-generates the constraint name `participants_chat_id_user_id_key` and m
 In the migration, declare it as a table-level constraint:
 
 ```erlang
-{create_table, <<"participants">>, [
+{create_table, ~"participants", [
     #kura_column{name = id, type = id, primary_key = true, nullable = false},
     #kura_column{name = chat_id, type = uuid, nullable = false},
     #kura_column{name = user_id, type = uuid, nullable = false}
@@ -183,7 +183,7 @@ changeset(Params) ->
 Now if you insert a post with a `user_id` that doesn't exist:
 
 ```erlang
-{error, #kura_changeset{errors = [{user_id, <<"does not exist">>}]}}
+{error, #kura_changeset{errors = [{user_id, ~"does not exist"}]}}
 ```
 
 Instead of a raw PostgreSQL error.
@@ -194,10 +194,10 @@ Check constraints enforce arbitrary SQL conditions. Declare them with `constrain
 
 ```erlang
 %% Migration
-{create_table, <<"orders">>, [
+{create_table, ~"orders", [
     #kura_column{name = id, type = id, primary_key = true},
     #kura_column{name = quantity, type = integer, nullable = false}
-], [{check, <<"quantity > 0">>}]}.
+], [{check, ~"quantity > 0"}]}.
 ```
 
 To map the violation to a field error, use `check_constraint/3` on the changeset:
@@ -205,8 +205,8 @@ To map the violation to a field error, use `check_constraint/3` on the changeset
 ```erlang
 changeset(Params) ->
     CS = kura_changeset:cast(order, #{}, Params, [quantity]),
-    kura_changeset:check_constraint(CS, <<"orders_check">>, quantity, #{
-        message => <<"must be positive">>
+    kura_changeset:check_constraint(CS, ~"orders_check", quantity, #{
+        message => ~"must be positive"
     }).
 ```
 
@@ -214,7 +214,7 @@ Or declare it on the schema with `constraints/0`:
 
 ```erlang
 constraints() ->
-    [{check, <<"quantity > 0">>}].
+    [{check, ~"quantity > 0"}].
 ```
 
 ### Manual Constraint Declarations
@@ -223,12 +223,12 @@ When you need custom constraint names or messages, use the manual functions:
 
 ```erlang
 CS1 = kura_changeset:unique_constraint(CS, email, #{
-    name => <<"users_email_unique">>,
-    message => <<"is already registered">>
+    name => ~"users_email_unique",
+    message => ~"is already registered"
 }),
 CS2 = kura_changeset:foreign_key_constraint(CS1, team_id),
-CS3 = kura_changeset:check_constraint(CS2, <<"positive_balance">>, balance, #{
-    message => <<"cannot be negative">>
+CS3 = kura_changeset:check_constraint(CS2, ~"positive_balance", balance, #{
+    message => ~"cannot be negative"
 }).
 ```
 
@@ -274,7 +274,7 @@ CREATE TABLE posts_tags
 
 -export([table/0, fields/0, associations/0, indexes/0]).
 
-table() -> <<"posts">>.
+table() -> ~"posts".
 
 fields() ->
     [#kura_field{name = id, type = uuid, primary_key = true, nullable = false},
@@ -287,7 +287,7 @@ fields() ->
 associations() ->
     [#kura_assoc{name = author, type = belongs_to, schema = user, foreign_key = user_id},
      #kura_assoc{name = tags, type = many_to_many, schema = tag,
-                 join_through = <<"posts_tags">>, join_keys = {post_id, tag_id}}].
+                 join_through = ~"posts_tags", join_keys = {post_id, tag_id}}].
 
 indexes() ->
     [{[user_id], #{}}].
@@ -303,32 +303,32 @@ indexes() ->
 -export([up/0, down/0]).
 
 up() ->
-    [{create_table, <<"posts">>, [
+    [{create_table, ~"posts", [
         #kura_column{name = id, type = uuid, primary_key = true, nullable = false},
         #kura_column{name = title, type = string, nullable = false},
         #kura_column{name = body, type = text},
         #kura_column{name = user_id, type = uuid, nullable = false,
-                     references = {<<"users">>, id}, on_delete = cascade},
+                     references = {~"users", id}, on_delete = cascade},
         #kura_column{name = inserted_at, type = utc_datetime, nullable = false},
         #kura_column{name = updated_at, type = utc_datetime, nullable = false}
     ]},
-    {create_index, <<"posts">>, [user_id], #{}},
-    {create_table, <<"posts_tags">>, [
+    {create_index, ~"posts", [user_id], #{}},
+    {create_table, ~"posts_tags", [
         #kura_column{name = post_id, type = uuid, nullable = false,
-                     references = {<<"posts">>, id}, on_delete = cascade},
+                     references = {~"posts", id}, on_delete = cascade},
         #kura_column{name = tag_id, type = uuid, nullable = false,
-                     references = {<<"tags">>, id}, on_delete = cascade}
+                     references = {~"tags", id}, on_delete = cascade}
     ], [{unique, [post_id, tag_id]}]}].
 
 down() ->
-    [{drop_table, <<"posts_tags">>},
-     {drop_index, <<"posts_user_id_index">>},
-     {drop_table, <<"posts">>}].
+    [{drop_table, ~"posts_tags"},
+     {drop_index, ~"posts_user_id_index"},
+     {drop_table, ~"posts"}].
 ```
 
 Note:
 
-- `references = {<<"users">>, id}` generates `REFERENCES "users"("id")`
+- `references = {~"users", id}` generates `REFERENCES "users"("id")`
 - `on_delete = cascade` generates `ON DELETE CASCADE`
 - The join table uses table-level `{unique, [post_id, tag_id]}` for the composite primary key constraint
 - Non-unique indexes use an empty map `#{}` for options
@@ -348,7 +348,7 @@ my_repo:insert(CS, #{on_conflict => {email, replace_all}}).
 my_repo:insert(CS, #{on_conflict => {email, {replace, [name, updated_at]}}}).
 
 %% Use a named constraint instead of a column
-my_repo:insert(CS, #{on_conflict => {{constraint, <<"users_email_index">>}, nothing}}).
+my_repo:insert(CS, #{on_conflict => {{constraint, ~"users_email_index"}, nothing}}).
 ```
 
 ## Quick Reference

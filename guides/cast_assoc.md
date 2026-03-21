@@ -8,11 +8,11 @@ Casts nested params from the parent changeset's params map into child changesets
 
 ```erlang
 Params = #{
-    title => <<"My Post">>,
-    body => <<"Hello world">>,
+    title => ~"My Post",
+    body => ~"Hello world",
     comments => [
-        #{body => <<"Great post!">>},
-        #{body => <<"Thanks for sharing">>}
+        #{body => ~"Great post!"},
+        #{body => ~"Thanks for sharing"}
     ]
 },
 CS = kura_changeset:cast(post, #{}, Params, [title, body]),
@@ -59,14 +59,14 @@ For `has_many`, Kura checks whether each child param map contains the primary ke
 
 ```erlang
 %% Existing post with comments already loaded
-ExistingPost = #{id => 1, title => <<"Old">>, comments => [
-    #{id => 10, body => <<"Existing comment">>}
+ExistingPost = #{id => 1, title => ~"Old", comments => [
+    #{id => 10, body => ~"Existing comment"}
 ]},
 Params = #{
-    title => <<"Updated">>,
+    title => ~"Updated",
     comments => [
-        #{id => 10, body => <<"Edited comment">>},  %% update (has PK)
-        #{body => <<"New comment">>}                  %% insert (no PK)
+        #{id => 10, body => ~"Edited comment"},  %% update (has PK)
+        #{body => ~"New comment"}                  %% insert (no PK)
     ]
 },
 CS = kura_changeset:cast(post, ExistingPost, Params, [title]),
@@ -80,15 +80,15 @@ Directly set association changes from maps or pre-built changesets. Unlike `cast
 ```erlang
 CS = kura_changeset:cast(post, #{}, Params, [title, body]),
 CS1 = kura_changeset:put_assoc(CS, comments, [
-    #{body => <<"Great!">>},
-    #{body => <<"Thanks!">>}
+    #{body => ~"Great!"},
+    #{body => ~"Thanks!"}
 ]).
 ```
 
 Maps are automatically coerced into changesets. You can also pass pre-built changesets directly:
 
 ```erlang
-ChildCS = kura_changeset:cast(comment, #{}, #{body => <<"Nice">>}, [body]),
+ChildCS = kura_changeset:cast(comment, #{}, #{body => ~"Nice"}, [body]),
 CS1 = kura_changeset:put_assoc(CS, comments, [ChildCS]).
 ```
 

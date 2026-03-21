@@ -17,7 +17,7 @@ Migration modules must:
 -export([up/0, down/0]).
 
 up() ->
-    [{create_table, <<"users">>, [
+    [{create_table, ~"users", [
         #kura_column{name = id, type = id, primary_key = true},
         #kura_column{name = name, type = string, nullable = false},
         #kura_column{name = email, type = string, nullable = false},
@@ -26,7 +26,7 @@ up() ->
     ]}].
 
 down() ->
-    [{drop_table, <<"users">>}].
+    [{drop_table, ~"users"}].
 ```
 
 Place migration files in `src/migrations/` (or any subdirectory under `src/`). Kura automatically discovers them by scanning the application's compiled modules for names matching the `m<YYYYMMDDHHMMSS>_<name>` pattern — no configuration needed.
@@ -38,7 +38,7 @@ Since migrations are regular `.erl` files in `src/`, they are compiled normally 
 ### Create Table
 
 ```erlang
-{create_table, <<"table_name">>, [
+{create_table, ~"table_name", [
     #kura_column{name = id, type = id, primary_key = true},
     #kura_column{name = name, type = string, nullable = false},
     #kura_column{name = score, type = integer, default = 0},
@@ -54,13 +54,13 @@ Column options:
 ### Drop Table
 
 ```erlang
-{drop_table, <<"table_name">>}.
+{drop_table, ~"table_name"}.
 ```
 
 ### Alter Table
 
 ```erlang
-{alter_table, <<"users">>, [
+{alter_table, ~"users", [
     {add_column, #kura_column{name = bio, type = text}},
     {drop_column, old_field},
     {rename_column, old_name, new_name},
@@ -74,38 +74,38 @@ Indexes use a map-based options format with auto-generated names following Ecto 
 
 ```erlang
 %% Simple unique index
-{create_index, <<"users">>, [email], #{unique => true}}.
+{create_index, ~"users", [email], #{unique => true}}.
 %% Generates: CREATE UNIQUE INDEX "users_email_index" ON "users" ("email")
 
 %% Non-unique index
-{create_index, <<"posts">>, [user_id], #{}}.
+{create_index, ~"posts", [user_id], #{}}.
 %% Generates: CREATE INDEX "posts_user_id_index" ON "posts" ("user_id")
 
 %% Composite index
-{create_index, <<"users">>, [first_name, last_name], #{}}.
+{create_index, ~"users", [first_name, last_name], #{}}.
 %% Generates: CREATE INDEX "users_first_name_last_name_index" ON ...
 
 %% Partial index
-{create_index, <<"users">>, [email], #{unique => true, where => <<"email IS NOT NULL">>}}.
+{create_index, ~"users", [email], #{unique => true, where => ~"email IS NOT NULL"}}.
 %% Generates: CREATE UNIQUE INDEX "users_email_index" ON "users" ("email") WHERE email IS NOT NULL
 ```
 
 The index name is auto-generated via `kura_migration:index_name/2`. If you need a custom name, the legacy 5-tuple format is still supported:
 
 ```erlang
-{create_index, <<"my_custom_idx">>, <<"users">>, [email], [unique]}.
+{create_index, ~"my_custom_idx", ~"users", [email], [unique]}.
 ```
 
 ### Drop Index
 
 ```erlang
-{drop_index, <<"users_email_index">>}.
+{drop_index, ~"users_email_index"}.
 ```
 
 ### Raw SQL
 
 ```erlang
-{execute, <<"ALTER TABLE users ADD CONSTRAINT age_check CHECK (age >= 0)">>}.
+{execute, ~"ALTER TABLE users ADD CONSTRAINT age_check CHECK (age >= 0)"}.
 ```
 
 ## Running Migrations
@@ -145,7 +145,7 @@ Instead of manually writing index operations in migrations, you can declare inde
 
 -export([table/0, fields/0, indexes/0]).
 
-table() -> <<"users">>.
+table() -> ~"users".
 
 fields() ->
     [#kura_field{name = id, type = uuid, primary_key = true, nullable = false},
@@ -156,7 +156,7 @@ fields() ->
 indexes() ->
     [{[username], #{unique => true}},
      {[email], #{unique => true}},
-     {[phone_number], #{unique => true, where => <<"phone_number IS NOT NULL">>}}].
+     {[phone_number], #{unique => true, where => ~"phone_number IS NOT NULL"}}].
 ```
 
 Unique indexes declared via `indexes/0` are automatically registered as changeset constraints — no manual `unique_constraint/2` calls needed. When a PostgreSQL unique violation fires (e.g. `users_email_index`), it maps to `{email, <<"has already been taken">>}` on the changeset.

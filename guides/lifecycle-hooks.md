@@ -28,7 +28,7 @@ Export the hook functions from your schema module:
 -export([table/0, fields/0]).
 -export([before_insert/1, after_insert/1, before_delete/1]).
 
-table() -> <<"articles">>.
+table() -> ~"articles".
 
 fields() ->
     [#kura_field{name = id, type = id, primary_key = true},
@@ -78,8 +78,8 @@ Return `{error, Changeset}` with errors added to reject the operation:
 ```erlang
 before_update(CS) ->
     case kura_changeset:get_change(CS, role) of
-        <<"superadmin">> ->
-            {error, kura_changeset:add_error(CS, role, <<"cannot assign superadmin">>)};
+        ~"superadmin" ->
+            {error, kura_changeset:add_error(CS, role, ~"cannot assign superadmin")};
         _ ->
             {ok, CS}
     end.
@@ -90,7 +90,7 @@ For `before_delete`, return `{error, Reason}` with any term:
 ```erlang
 before_delete(Record) ->
     case maps:get(status, Record) of
-        <<"active">> -> {error, cannot_delete_active_record};
+        ~"active" -> {error, cannot_delete_active_record};
         _ -> ok
     end.
 ```

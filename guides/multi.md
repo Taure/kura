@@ -15,14 +15,14 @@ Each step has a unique name (atom) and an operation.
 ### Insert
 
 ```erlang
-CS = kura_changeset:cast(my_user, #{}, #{<<"name">> => <<"Alice">>}, [name]),
+CS = kura_changeset:cast(my_user, #{}, #{~"name" => ~"Alice"}, [name]),
 M1 = kura_multi:insert(Multi, create_user, CS).
 ```
 
 ### Update
 
 ```erlang
-CS = kura_changeset:cast(my_user, ExistingUser, #{<<"name">> => <<"Bob">>}, [name]),
+CS = kura_changeset:cast(my_user, ExistingUser, #{~"name" => ~"Bob"}, [name]),
 M1 = kura_multi:update(Multi, update_user, CS).
 ```
 
@@ -50,9 +50,9 @@ Steps can take a function that receives previous results, enabling dependent ope
 ```erlang
 Multi = kura_multi:new(),
 M1 = kura_multi:insert(Multi, create_user,
-    kura_changeset:cast(my_user, #{}, #{<<"name">> => <<"Alice">>}, [name])),
+    kura_changeset:cast(my_user, #{}, #{~"name" => ~"Alice"}, [name])),
 M2 = kura_multi:insert(M1, create_profile, fun(#{create_user := User}) ->
-    kura_changeset:cast(my_profile, #{}, #{<<"user_id">> => maps:get(id, User)}, [user_id])
+    kura_changeset:cast(my_profile, #{}, #{~"user_id" => maps:get(id, User)}, [user_id])
 end).
 ```
 

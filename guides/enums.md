@@ -23,14 +23,14 @@ The allowed values are atoms. The field is stored as `VARCHAR(255)` in the datab
 kura_types:cast({enum, [draft, published]}, draft).
 %% {ok, draft}
 
-kura_types:cast({enum, [draft, published]}, <<"draft">>).
+kura_types:cast({enum, [draft, published]}, ~"draft").
 %% {ok, draft}
 
 kura_types:cast({enum, [draft, published]}, "draft").
 %% {ok, draft}
 
-kura_types:cast({enum, [draft, published]}, <<"unknown">>).
-%% {error, <<"is not a valid enum value">>}
+kura_types:cast({enum, [draft, published]}, ~"unknown").
+%% {error, ~"is not a valid enum value"}
 ```
 
 Binary and charlist inputs are converted using `binary_to_existing_atom/2` and `list_to_existing_atom/1` respectively. If the atom doesn't already exist in the VM, casting fails.
@@ -41,7 +41,7 @@ Atoms are converted to binaries for storage:
 
 ```erlang
 kura_types:dump({enum, [draft, published]}, draft).
-%% {ok, <<"draft">>}
+%% {ok, ~"draft"}
 ```
 
 ## Load (PostgreSQL to Erlang)
@@ -49,7 +49,7 @@ kura_types:dump({enum, [draft, published]}, draft).
 Binaries from the database are converted back to atoms:
 
 ```erlang
-kura_types:load({enum, [draft, published]}, <<"draft">>).
+kura_types:load({enum, [draft, published]}, ~"draft").
 %% {ok, draft}
 ```
 
@@ -61,7 +61,7 @@ Since enums are stored as `VARCHAR(255)`, use binary values in where clauses:
 
 ```erlang
 Q = kura_query:from(post),
-Q1 = kura_query:where(Q, {status, <<"published">>}),
+Q1 = kura_query:where(Q, {status, ~"published"}),
 {ok, Posts} = my_repo:all(Q1).
 ```
 

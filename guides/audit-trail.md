@@ -49,12 +49,12 @@ Four indexes are created automatically: `(table_name, record_id)`, `(action)`, `
 ```erlang
 %% Find all changes to a specific record
 Q = kura_query:from(kura_audit_log),
-Q1 = kura_query:where(Q, #{table_name => <<"users">>, record_id => <<"42">>}),
+Q1 = kura_query:where(Q, #{table_name => ~"users", record_id => ~"42"}),
 {ok, Entries} = my_repo:all(Q1).
 
 %% Find all deletes by a specific actor
 Q = kura_query:from(kura_audit_log),
-Q1 = kura_query:where(Q, #{action => <<"delete">>, actor => <<"admin-1">>}),
+Q1 = kura_query:where(Q, #{action => ~"delete", actor => ~"admin-1"}),
 {ok, Entries} = my_repo:all(Q1).
 ```
 
@@ -71,7 +71,7 @@ To audit a schema, export the relevant lifecycle hooks and delegate to `kura_aud
 -export([table/0, fields/0]).
 -export([before_update/1, after_insert/1, after_update/1, after_delete/1]).
 
-table() -> <<"items">>.
+table() -> ~"items".
 
 fields() ->
     [
@@ -114,12 +114,12 @@ The actor context identifies *who* made a change. It is stored in the process di
 
 ```erlang
 %% Simple: just an actor ID
-kura_audit:set_actor(<<"user-123">>).
+kura_audit:set_actor(~"user-123").
 
 %% With metadata (IP, request ID, etc.)
-kura_audit:set_actor(<<"user-123">>, #{
-    ip => <<"192.168.1.1">>,
-    request_id => <<"req-abc-456">>
+kura_audit:set_actor(~"user-123", #{
+    ip => ~"192.168.1.1",
+    request_id => ~"req-abc-456"
 }).
 ```
 
@@ -144,10 +144,10 @@ handle_delete(#{auth := #{user_id := UserId}}, _State) ->
         CS = kura_changeset:cast(my_item, Record, #{}, []),
         {ok, _} = my_repo:delete(CS)
     end),
-    {json, 200, #{}, #{status => <<"deleted">>}}.
+    {json, 200, #{}, #{status => ~"deleted"}}.
 
 %% With metadata
-kura_audit:with_actor(<<"admin-1">>, #{reason => <<"cleanup">>}, fun() ->
+kura_audit:with_actor(~"admin-1", #{reason => ~"cleanup"}, fun() ->
     {ok, _} = my_repo:delete(CS)
 end).
 ```
@@ -166,7 +166,7 @@ The mechanism uses two steps:
 
 ```erlang
 %% If name changed from "foo" to "bar" and value stayed the same:
-#{name => #{old => <<"foo">>, new => <<"bar">>}}
+#{name => #{old => ~"foo", new => ~"bar"}}
 ```
 
 If `stash/1` was not called (i.e., `before_update/1` is missing), the update is still logged but without `old_data` or `changes` -- only `new_data` is recorded.

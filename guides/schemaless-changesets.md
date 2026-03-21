@@ -21,7 +21,7 @@ All existing validators work on schemaless changesets:
 Types = #{email => string, password => string},
 CS = kura_changeset:cast(Types, #{}, Params, [email, password]),
 CS1 = kura_changeset:validate_required(CS, [email, password]),
-CS2 = kura_changeset:validate_format(CS1, email, <<"@">>),
+CS2 = kura_changeset:validate_format(CS1, email, ~"@"),
 CS3 = kura_changeset:validate_length(CS2, password, [{min, 8}]).
 ```
 
@@ -46,7 +46,7 @@ Constraint declarations (`unique_constraint`, `foreign_key_constraint`) require 
 
 ```erlang
 %% This works
-CS1 = kura_changeset:unique_constraint(CS, email, #{name => <<"users_email_key">>}).
+CS1 = kura_changeset:unique_constraint(CS, email, #{name => ~"users_email_key"}).
 
 %% This raises an error — no table to derive the constraint name
 CS1 = kura_changeset:unique_constraint(CS, email).
@@ -63,7 +63,7 @@ login(Params) ->
     Types = #{email => string, password => string},
     CS = kura_changeset:cast(Types, #{}, Params, [email, password]),
     CS1 = kura_changeset:validate_required(CS, [email, password]),
-    CS2 = kura_changeset:validate_format(CS1, email, <<"@">>),
+    CS2 = kura_changeset:validate_format(CS1, email, ~"@"),
     case kura_changeset:apply_action(CS2, validate) of
         {ok, #{email := Email, password := Password}} ->
             authenticate(Email, Password);
