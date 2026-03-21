@@ -6,7 +6,7 @@
 
 -export([table/0, fields/0, indexes/0]).
 
-table() -> <<"audit_log">>.
+table() -> ~"audit_log".
 
 fields() ->
     [

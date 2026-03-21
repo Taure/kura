@@ -224,8 +224,8 @@ validate_confirmation(CS, Field, Opts) ->
     end.
 
 confirmation_field(Field) ->
-    %% Safe: Field is always a schema atom, so the set is bounded.
-    binary_to_atom(<<(atom_to_binary(Field, utf8))/binary, "_confirmation">>).
+    %% elp:ignore W0023 — bounded by schema field names
+    list_to_atom(atom_to_list(Field) ++ "_confirmation").
 
 -doc "Validate `Field` with a custom function returning `ok` or `{error, Message}`.".
 -spec validate_change(#kura_changeset{}, atom(), fun((term()) -> ok | {error, binary()})) ->
@@ -587,25 +587,25 @@ schema_table(SchemaMod) -> SchemaMod:table().
 build_table_constraints([], _Table) ->
     [];
 build_table_constraints([{unique, [First | _] = Cols} | Rest], Table) ->
-    ColsBin = join_col_names(Cols, <<"_">>),
-    Name = iolist_to_binary([Table, <<"_">>, ColsBin, <<"_key">>]),
+    ColsBin = join_col_names(Cols, ~"_"),
+    Name = iolist_to_binary([Table, ~"_", ColsBin, ~"_key"]),
     [
         #kura_constraint{
             type = unique,
             constraint = Name,
             field = First,
-            message = <<"has already been taken">>
+            message = ~"has already been taken"
         }
         | build_table_constraints(Rest, Table)
     ];
 build_table_constraints([{check, Expr} | Rest], Table) when is_binary(Expr) ->
-    Name = iolist_to_binary([Table, <<"_check">>]),
+    Name = iolist_to_binary([Table, ~"_check"]),
     [
         #kura_constraint{
             type = check,
             constraint = Name,
             field = base,
-            message = <<"is invalid">>
+            message = ~"is invalid"
         }
         | build_table_constraints(Rest, Table)
     ];
@@ -622,7 +622,7 @@ build_index_constraints([{[First | _] = Cols, #{unique := true}} | Rest], Table)
             type = unique,
             constraint = Name,
             field = First,
-            message = <<"has already been taken">>
+            message = ~"has already been taken"
         }
         | build_index_constraints(Rest, Table)
     ];

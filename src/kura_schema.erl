@@ -84,6 +84,7 @@ field_names(Mod) ->
 -spec field_types(module()) -> #{atom() => kura_types:kura_type()}.
 field_types(Mod) ->
     cache({kura_schema, field_types, Mod}, fun() ->
+        %% elp:ignore W0036 — lists:foldl breaks eqWAlizer type inference
         Base = maps:from_list([{F#kura_field.name, F#kura_field.type} || F <- Mod:fields()]),
         EmbedTypes = [
             {E#kura_embed.name, {embed, E#kura_embed.type, E#kura_embed.schema}}
@@ -96,6 +97,7 @@ field_types(Mod) ->
 -spec column_map(module()) -> #{atom() => binary()}.
 column_map(Mod) ->
     cache({kura_schema, column_map, Mod}, fun() ->
+        %% elp:ignore W0036 — lists:foldl breaks eqWAlizer type inference
         FieldMap = maps:from_list([
             {
                 F#kura_field.name,
@@ -106,6 +108,7 @@ column_map(Mod) ->
             }
          || F <- Mod:fields(), F#kura_field.virtual =:= false
         ]),
+        %% elp:ignore W0036 — lists:foldl breaks eqWAlizer type inference
         EmbedMap = maps:from_list([
             {E#kura_embed.name, atom_to_binary(E#kura_embed.name, utf8)}
          || E <- embeds(Mod)

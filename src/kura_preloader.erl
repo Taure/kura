@@ -63,6 +63,7 @@ preload_belongs_to(RepoMod, Records, #kura_assoc{
             RelPK = kura_schema:primary_key(RelSchema),
             Q = kura_query:where(kura_query:from(RelSchema), {RelPK, in, FKValues}),
             {ok, Related} = kura_repo_worker:all(RepoMod, Q),
+            %% elp:ignore W0036 — lists:foldl breaks eqWAlizer type inference
             Lookup = maps:from_list([{get_field(RelPK, Rel), Rel} || Rel <- Related]),
             [
                 set_field(
@@ -89,6 +90,7 @@ preload_has_one(RepoMod, Records, Schema, #kura_assoc{
     PKValues = lists:usort([get_field(PK, R) || R <- Records]),
     Q = kura_query:where(kura_query:from(RelSchema), {FK, in, PKValues}),
     {ok, Related} = kura_repo_worker:all(RepoMod, Q),
+    %% elp:ignore W0036 — lists:foldl breaks eqWAlizer type inference
     Lookup = maps:from_list([{get_field(FK, Rel), Rel} || Rel <- Related]),
     [set_field(Name, get_field_default(get_field(PK, R), Lookup, nil), R) || R <- Records].
 
@@ -108,19 +110,19 @@ preload_many_to_many(RepoMod, Records, Schema, #kura_assoc{
                 iolist_to_binary(io_lib:format("$~B", [I]))
              || I <- lists:seq(1, length(PKValues))
             ],
-            Placeholders = join_bins(PlaceholderBins, <<", ">>),
+            Placeholders = join_bins(PlaceholderBins, ~", "),
             JoinSQL = iolist_to_binary([
-                <<"SELECT ">>,
+                ~"SELECT ",
                 OwnerCol,
-                <<", ">>,
+                ~", ",
                 RelatedCol,
-                <<" FROM ">>,
+                ~" FROM ",
                 JoinTableBin,
-                <<" WHERE ">>,
+                ~" WHERE ",
                 OwnerCol,
-                <<" IN (">>,
+                ~" IN (",
                 Placeholders,
-                <<")">>
+                ~")"
             ]),
             #{rows := JoinRows} = kura_repo_worker:pgo_query(RepoMod, JoinSQL, PKValues),
             RelatedIds = lists:usort([get_field(RelatedKey, JR) || JR <- JoinRows]),
@@ -131,6 +133,7 @@ preload_many_to_many(RepoMod, Records, Schema, #kura_assoc{
                     RelPK = kura_schema:primary_key(RelSchema),
                     Q = kura_query:where(kura_query:from(RelSchema), {RelPK, in, RelatedIds}),
                     {ok, Related} = kura_repo_worker:all(RepoMod, Q),
+                    %% elp:ignore W0036 — lists:foldl breaks eqWAlizer type inference
                     RelLookup = maps:from_list([{get_field(RelPK, Rel), Rel} || Rel <- Related]),
                     Grouped = group_m2m_join(JoinRows, OwnerKey, RelatedKey, RelLookup, #{}),
                     [

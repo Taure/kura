@@ -152,7 +152,7 @@ with_migration_lock(RepoMod, Fun) ->
             pgo:transaction(
                 fun() ->
                     #{command := _} = pgo:query(
-                        <<"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock">>,
+                        ~"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock",
                         [?MIGRATION_LOCK_KEY],
                         PoolOpts
                     ),
@@ -186,14 +186,14 @@ run_migrations([{Version, Module} | Rest], Dir, PoolOpts, Acc) ->
     case Dir of
         up ->
             exec(
-                <<"INSERT INTO schema_migrations (version) VALUES ($1)">>,
+                ~"INSERT INTO schema_migrations (version) VALUES ($1)",
                 [Version],
                 Version,
                 PoolOpts
             );
         down ->
             exec(
-                <<"DELETE FROM schema_migrations WHERE version = $1">>,
+                ~"DELETE FROM schema_migrations WHERE version = $1",
                 [Version],
                 Version,
                 PoolOpts
@@ -232,73 +232,73 @@ compile_operation({create_table, Name, Columns, Constraints}) ->
     ConstraintDefs = [compile_table_constraint(TC) || TC <- Constraints],
     AllDefs = ColDefs ++ ConstraintDefs,
     iolist_to_binary([
-        <<"CREATE TABLE ">>,
+        ~"CREATE TABLE ",
         quote(Name),
-        <<" (\n  ">>,
-        iolist_to_binary(lists:join(<<",\n  ">>, AllDefs)),
-        <<"\n)">>
+        ~" (\n  ",
+        iolist_to_binary(lists:join(~",\n  ", AllDefs)),
+        ~"\n)"
     ]);
 compile_operation({drop_table, Name}) ->
-    iolist_to_binary([<<"DROP TABLE ">>, quote(Name)]);
+    iolist_to_binary([~"DROP TABLE ", quote(Name)]);
 compile_operation({alter_table, Name, AlterOps}) ->
     Ops = [compile_alter_op(Op) || Op <- AlterOps],
     iolist_to_binary([
-        <<"ALTER TABLE ">>,
+        ~"ALTER TABLE ",
         quote(Name),
-        <<" ">>,
-        iolist_to_binary(lists:join(<<", ">>, Ops))
+        ~" ",
+        iolist_to_binary(lists:join(~", ", Ops))
     ]);
 compile_operation({create_index, Table, Columns, Opts}) when is_map(Opts) ->
     IdxName = kura_migration:index_name(Table, Columns),
     Unique =
         case maps:get(unique, Opts, false) of
-            true -> <<"UNIQUE ">>;
+            true -> ~"UNIQUE ";
             false -> <<>>
         end,
-    Cols = iolist_to_binary(lists:join(<<", ">>, [quote(atom_to_binary(C, utf8)) || C <- Columns])),
+    Cols = iolist_to_binary(lists:join(~", ", [quote(atom_to_binary(C, utf8)) || C <- Columns])),
     Where =
         case maps:get(where, Opts, undefined) of
             undefined -> <<>>;
             Expr when is_binary(Expr) -> <<" WHERE ", Expr/binary>>
         end,
     iolist_to_binary([
-        <<"CREATE ">>,
+        ~"CREATE ",
         Unique,
-        <<"INDEX ">>,
+        ~"INDEX ",
         quote(IdxName),
-        <<" ON ">>,
+        ~" ON ",
         quote(Table),
-        <<" (">>,
+        ~" (",
         Cols,
-        <<")">>,
+        ~")",
         Where
     ]);
 compile_operation({create_index, IdxName, Table, Columns, Opts}) ->
     Unique =
         case lists:member(unique, Opts) of
-            true -> <<"UNIQUE ">>;
+            true -> ~"UNIQUE ";
             false -> <<>>
         end,
-    Cols = iolist_to_binary(lists:join(<<", ">>, [quote(atom_to_binary(C, utf8)) || C <- Columns])),
+    Cols = iolist_to_binary(lists:join(~", ", [quote(atom_to_binary(C, utf8)) || C <- Columns])),
     Where =
         case proplists:get_value(where, Opts) of
             undefined -> <<>>;
             Expr when is_binary(Expr) -> <<" WHERE ", Expr/binary>>
         end,
     iolist_to_binary([
-        <<"CREATE ">>,
+        ~"CREATE ",
         Unique,
-        <<"INDEX ">>,
+        ~"INDEX ",
         quote(IdxName),
-        <<" ON ">>,
+        ~" ON ",
         quote(Table),
-        <<" (">>,
+        ~" (",
         Cols,
-        <<")">>,
+        ~")",
         Where
     ]);
 compile_operation({drop_index, Name}) ->
-    iolist_to_binary([<<"DROP INDEX ">>, quote(Name)]);
+    iolist_to_binary([~"DROP INDEX ", quote(Name)]);
 compile_operation({execute, SQL}) ->
     SQL.
 
@@ -317,13 +317,13 @@ compile_column_def(#kura_column{
     TypeBin = kura_types:to_pg_type(Type),
     PKPart =
         case PK of
-            true -> <<" PRIMARY KEY">>;
+            true -> ~" PRIMARY KEY";
             false -> <<>>
         end,
     NullPart =
         case Nullable of
             true -> <<>>;
-            false -> <<" NOT NULL">>
+            false -> ~" NOT NULL"
         end,
     DefaultPart =
         case Default of
@@ -338,11 +338,11 @@ compile_column_def(#kura_column{
                 <<" REFERENCES ", (quote(Table))/binary, "(",
                     (quote(atom_to_binary(Col, utf8)))/binary, ")">>
         end,
-    OnDeletePart = compile_fk_action(<<"ON DELETE">>, OnDelete),
-    OnUpdatePart = compile_fk_action(<<"ON UPDATE">>, OnUpdate),
+    OnDeletePart = compile_fk_action(~"ON DELETE", OnDelete),
+    OnUpdatePart = compile_fk_action(~"ON UPDATE", OnUpdate),
     iolist_to_binary([
         quote(NameBin),
-        <<" ">>,
+        ~" ",
         TypeBin,
         PKPart,
         NullPart,
@@ -364,7 +364,7 @@ compile_table_constraint({check, Expr}) ->
 -spec join_comma_iodata([binary()]) -> [binary()].
 join_comma_iodata([]) -> [];
 join_comma_iodata([H]) -> [H];
-join_comma_iodata([H | T]) -> [H, <<", ">> | join_comma_iodata(T)].
+join_comma_iodata([H | T]) -> [H, ~", " | join_comma_iodata(T)].
 
 -spec compile_fk_action(binary(), cascade | restrict | set_null | no_action | undefined) ->
     binary().
@@ -381,21 +381,21 @@ compile_fk_action(Prefix, no_action) ->
 
 -spec compile_alter_op(kura_migration:alter_op()) -> iodata().
 compile_alter_op({add_column, ColDef}) ->
-    [<<"ADD COLUMN ">>, compile_column_def(ColDef)];
+    [~"ADD COLUMN ", compile_column_def(ColDef)];
 compile_alter_op({drop_column, Name}) ->
-    [<<"DROP COLUMN ">>, quote(atom_to_binary(Name, utf8))];
+    [~"DROP COLUMN ", quote(atom_to_binary(Name, utf8))];
 compile_alter_op({rename_column, From, To}) ->
     [
-        <<"RENAME COLUMN ">>,
+        ~"RENAME COLUMN ",
         quote(atom_to_binary(From, utf8)),
-        <<" TO ">>,
+        ~" TO ",
         quote(atom_to_binary(To, utf8))
     ];
 compile_alter_op({modify_column, Name, Type}) ->
     [
-        <<"ALTER COLUMN ">>,
+        ~"ALTER COLUMN ",
         quote(atom_to_binary(Name, utf8)),
-        <<" TYPE ">>,
+        ~" TYPE ",
         kura_types:to_pg_type(Type)
     ].
 
@@ -421,9 +421,9 @@ check_op({drop_table, Table}, SafeEntries) ->
                 #{
                     op => drop_table,
                     target => Table,
-                    risk => <<"Old code still references this table">>,
+                    risk => ~"Old code still references this table",
                     safe_alt =>
-                        <<"Deploy code that stops using the table first, then drop in a later migration">>
+                        ~"Deploy code that stops using the table first, then drop in a later migration"
                 }
             ]
     end;
@@ -443,9 +443,9 @@ check_alter_op({drop_column, Col}, Table, SafeEntries) ->
                     op => drop_column,
                     target => Col,
                     table => Table,
-                    risk => <<"Old code still queries this column">>,
+                    risk => ~"Old code still queries this column",
                     safe_alt =>
-                        <<"Deploy code that stops using the column first, then drop in a later migration">>
+                        ~"Deploy code that stops using the column first, then drop in a later migration"
                 }
             ]
     end;
@@ -459,9 +459,9 @@ check_alter_op({rename_column, Old, _New}, Table, SafeEntries) ->
                     op => rename_column,
                     target => Old,
                     table => Table,
-                    risk => <<"Old code still queries column by original name">>,
+                    risk => ~"Old code still queries column by original name",
                     safe_alt =>
-                        <<"Add a new column, backfill, deploy code using the new column, then drop the old one">>
+                        ~"Add a new column, backfill, deploy code using the new column, then drop the old one"
                 }
             ]
     end;
@@ -475,9 +475,9 @@ check_alter_op({modify_column, Col, _Type}, Table, SafeEntries) ->
                     op => modify_column,
                     target => Col,
                     table => Table,
-                    risk => <<"Type change may be incompatible with old code expectations">>,
+                    risk => ~"Type change may be incompatible with old code expectations",
                     safe_alt =>
-                        <<"Add a new column with the new type, backfill, migrate reads, then drop the old column">>
+                        ~"Add a new column with the new type, backfill, migrate reads, then drop the old column"
                 }
             ]
     end;
@@ -496,9 +496,9 @@ check_alter_op(
                     target => Col,
                     table => Table,
                     risk =>
-                        <<"Old code inserting rows without this column will fail the NOT NULL constraint">>,
+                        ~"Old code inserting rows without this column will fail the NOT NULL constraint",
                     safe_alt =>
-                        <<"Add as nullable first, backfill, then set NOT NULL in a later migration">>
+                        ~"Add as nullable first, backfill, then set NOT NULL in a later migration"
                 }
             ]
     end;
@@ -548,7 +548,7 @@ get_pool(RepoMod) ->
 get_applied_versions(RepoMod) ->
     Pool = get_pool(RepoMod),
     case
-        pgo:query(<<"SELECT version FROM schema_migrations ORDER BY version">>, [], #{pool => Pool})
+        pgo:query(~"SELECT version FROM schema_migrations ORDER BY version", [], #{pool => Pool})
     of
         #{rows := Rows} ->
             [V || #{version := V} <- Rows];
@@ -570,9 +570,9 @@ format_default(Val) when is_float(Val) ->
 format_default(Val) when is_binary(Val) ->
     <<"'", Val/binary, "'">>;
 format_default(true) ->
-    <<"TRUE">>;
+    ~"TRUE";
 format_default(false) ->
-    <<"FALSE">>.
+    ~"FALSE".
 
 %%----------------------------------------------------------------------
 %% Internal: type narrowing helpers for eqWAlizer

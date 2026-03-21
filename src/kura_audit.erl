@@ -182,7 +182,7 @@ log(Repo, SchemaMod, Action, Record) ->
 -spec migration_up() -> [kura_migration:operation()].
 migration_up() ->
     [
-        {create_table, <<"audit_log">>, [
+        {create_table, ~"audit_log", [
             #kura_column{name = id, type = id, primary_key = true},
             #kura_column{name = table_name, type = string, nullable = false},
             #kura_column{name = record_id, type = string, nullable = false},
@@ -194,16 +194,16 @@ migration_up() ->
             #kura_column{name = metadata, type = jsonb},
             #kura_column{name = inserted_at, type = utc_datetime}
         ]},
-        {create_index, <<"audit_log">>, [table_name, record_id], #{}},
-        {create_index, <<"audit_log">>, [action], #{}},
-        {create_index, <<"audit_log">>, [actor], #{}},
-        {create_index, <<"audit_log">>, [inserted_at], #{}}
+        {create_index, ~"audit_log", [table_name, record_id], #{}},
+        {create_index, ~"audit_log", [action], #{}},
+        {create_index, ~"audit_log", [actor], #{}},
+        {create_index, ~"audit_log", [inserted_at], #{}}
     ].
 
 -doc "Migration operations to drop the audit_log table.".
 -spec migration_down() -> [kura_migration:operation()].
 migration_down() ->
-    [{drop_table, <<"audit_log">>}].
+    [{drop_table, ~"audit_log"}].
 
 %%----------------------------------------------------------------------
 %% Internal
@@ -270,7 +270,7 @@ sanitize_value(L) when is_list(L) ->
 sanitize_value(V) ->
     V.
 
-format_id(undefined) -> <<"unknown">>;
+format_id(undefined) -> ~"unknown";
 format_id(Id) when is_integer(Id) -> integer_to_binary(Id);
 format_id(Id) when is_binary(Id) -> Id;
 format_id(Id) -> iolist_to_binary(io_lib:format("~p", [Id])).

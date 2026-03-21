@@ -57,7 +57,6 @@ kura_repo_worker:start(MyRepo),
 -eqwalizer({nowarn_function, update/2}).
 -eqwalizer({nowarn_function, delete/2}).
 -eqwalizer({nowarn_function, multi/2}).
--eqwalizer({nowarn_function, persist_owned_assoc/6}).
 -eqwalizer({nowarn_function, persist_many_to_many/6}).
 
 %%----------------------------------------------------------------------
@@ -70,10 +69,10 @@ start(RepoMod) ->
     Config = kura_repo:config(RepoMod),
     Pool = maps:get(pool, Config, RepoMod),
     PgoConfig = #{
-        host => binary_to_list(maps:get(hostname, Config, <<"localhost">>)),
+        host => binary_to_list(maps:get(hostname, Config, ~"localhost")),
         port => maps:get(port, Config, 5432),
         database => binary_to_list(maps:get(database, Config)),
-        user => binary_to_list(maps:get(username, Config, <<"postgres">>)),
+        user => binary_to_list(maps:get(username, Config, ~"postgres")),
         password => binary_to_list(maps:get(password, Config, <<>>)),
         pool_size => maps:get(pool_size, Config, 10),
         decode_opts => ?DECODE_OPTS
@@ -482,7 +481,7 @@ build_telemetry_metadata(RepoMod, SQL, Params, Result) ->
 
 extract_source(SQL) ->
     case
-        re:run(SQL, <<"(?:FROM|INTO|UPDATE|TABLE)\\s+\"?(\\w+)\"?">>, [
+        re:run(SQL, ~"(?:FROM|INTO|UPDATE|TABLE)\\s+\"?(\\w+)\"?", [
             {capture, [1], binary}, caseless
         ])
     of
@@ -555,7 +554,7 @@ do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, PK, PKValue) ->
                         kura_changeset:add_error(
                             CS#kura_changeset{action = update},
                             base,
-                            <<"record not found">>
+                            ~"record not found"
                         )};
                 {error, PgError} ->
                     {error, handle_pg_error(CS#kura_changeset{action = update}, PgError)}
@@ -597,22 +596,22 @@ compile_update_with_lock(
 ) ->
     Table = resolve_table_name(SchemaOrTable),
     {Sets, Params, Counter} = build_lock_set_parts(Fields, Changes, 1),
-    PKPlaceholder = [<<"$">>, integer_to_binary(Counter)],
-    LockPlaceholder = [<<"$">>, integer_to_binary(Counter + 1)],
+    PKPlaceholder = [~"$", integer_to_binary(Counter)],
+    LockPlaceholder = [~"$", integer_to_binary(Counter + 1)],
     SQL = iolist_to_binary([
-        <<"UPDATE ">>,
+        ~"UPDATE ",
         quote_ident_bin(Table),
-        <<" SET ">>,
+        ~" SET ",
         join_comma_bin(Sets),
-        <<" WHERE ">>,
+        ~" WHERE ",
         quote_ident_bin(atom_to_binary(PKField, utf8)),
-        <<" = ">>,
+        ~" = ",
         PKPlaceholder,
-        <<" AND ">>,
+        ~" AND ",
         quote_ident_bin(atom_to_binary(LockField, utf8)),
-        <<" = ">>,
+        ~" = ",
         LockPlaceholder,
-        <<" RETURNING *">>
+        ~" RETURNING *"
     ]),
     {SQL, Params ++ [PKValue, LockValue]}.
 
@@ -642,12 +641,12 @@ build_lock_set_parts([], _Changes, N) ->
     {[], [], N};
 build_lock_set_parts([Field | Rest], Changes, N) ->
     Value = maps:get(Field, Changes),
-    Set = [quote_ident_bin(atom_to_binary(Field, utf8)), <<" = $">>, integer_to_binary(N)],
+    Set = [quote_ident_bin(atom_to_binary(Field, utf8)), ~" = $", integer_to_binary(N)],
     {Sets, Params, N2} = build_lock_set_parts(Rest, Changes, N + 1),
     {[Set | Sets], [Value | Params], N2}.
 
 join_comma_bin(Parts) ->
-    lists:join(<<", ">>, Parts).
+    lists:join(~", ", Parts).
 
 persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AssocChanges) ->
     maps:fold(
@@ -678,12 +677,10 @@ persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) when
     FK = Assoc#kura_assoc.foreign_key,
     PK = kura_schema:primary_key(SchemaMod),
     PKValue = maps:get(PK, AccRow),
-    Children = lists:map(
-        fun(ChildCS) ->
-            persist_child(RepoMod, kura_changeset:put_change(ChildCS, FK, PKValue))
-        end,
-        ChildCSs
-    ),
+    Children = [
+        persist_child(RepoMod, kura_changeset:put_change(ChildCS, FK, PKValue))
+     || ChildCS <- ChildCSs
+    ],
     {ok, AccRow#{AssocName => Children}};
 persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCS) ->
     FK = Assoc#kura_assoc.foreign_key,
@@ -698,6 +695,15 @@ persist_child(RepoMod, CS = #kura_changeset{action = insert}) ->
 persist_child(RepoMod, CS = #kura_changeset{action = update}) ->
     {ok, Child} = update_record(RepoMod, CS),
     Child.
+
+persist_m2m_child(RepoMod, CS = #kura_changeset{action = insert}) ->
+    {ok, Child} = insert_record(RepoMod, CS),
+    Child;
+persist_m2m_child(RepoMod, CS = #kura_changeset{action = update}) ->
+    {ok, Child} = update_record(RepoMod, CS),
+    Child;
+persist_m2m_child(_RepoMod, CS = #kura_changeset{action = undefined}) ->
+    kura_changeset:apply_changes(CS).
 
 -spec persist_many_to_many(
     module(),
@@ -723,40 +729,26 @@ persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
         end,
     OwnerCol = atom_to_binary(OwnerKey, utf8),
     RelatedCol = atom_to_binary(RelatedKey, utf8),
-    Children = lists:map(
-        fun(ChildCS) ->
-            case ChildCS#kura_changeset.action of
-                insert ->
-                    {ok, Child} = insert_record(RepoMod, ChildCS),
-                    Child;
-                update ->
-                    {ok, Child} = update_record(RepoMod, ChildCS),
-                    Child;
-                undefined ->
-                    kura_changeset:apply_changes(ChildCS)
-            end
-        end,
-        ChildCSs
-    ),
+    Children = [persist_m2m_child(RepoMod, ChildCS) || ChildCS <- ChildCSs],
     DeleteSQL = iolist_to_binary([
-        <<"DELETE FROM ">>,
+        ~"DELETE FROM ",
         JoinTable,
-        <<" WHERE ">>,
+        ~" WHERE ",
         OwnerCol,
-        <<" = $1">>
+        ~" = $1"
     ]),
     _ = pgo_query(RepoMod, DeleteSQL, [PKValue]),
     lists:foreach(
         fun(Child) ->
             RelPKValue = maps:get(RelPK, Child),
             InsertSQL = iolist_to_binary([
-                <<"INSERT INTO ">>,
+                ~"INSERT INTO ",
                 JoinTable,
-                <<" (">>,
+                ~" (",
                 OwnerCol,
-                <<", ">>,
+                ~", ",
                 RelatedCol,
-                <<") VALUES ($1, $2)">>
+                ~") VALUES ($1, $2)"
             ]),
             pgo_query(RepoMod, InsertSQL, [PKValue, RelPKValue])
         end,
@@ -858,19 +850,19 @@ handle_pg_error(CS, {pgsql_error, Fields}) when is_map(Fields) ->
 handle_pg_error(CS, {pgsql_error, Fields}) when is_list(Fields) ->
     handle_pg_error(CS, maps:from_list(Fields));
 handle_pg_error(CS, #{code := Code, constraint := Constraint}) when
-    Code =:= <<"23505">>; Code =:= <<"23503">>; Code =:= <<"23514">>
+    Code =:= ~"23505"; Code =:= ~"23503"; Code =:= ~"23514"
 ->
     DefaultType =
         case Code of
-            <<"23505">> -> unique;
-            <<"23503">> -> foreign_key;
-            <<"23514">> -> check
+            ~"23505" -> unique;
+            ~"23503" -> foreign_key;
+            ~"23514" -> check
         end,
     DefaultMsg =
         case DefaultType of
-            unique -> <<"has already been taken">>;
-            foreign_key -> <<"does not exist">>;
-            check -> <<"is invalid">>
+            unique -> ~"has already been taken";
+            foreign_key -> ~"does not exist";
+            check -> ~"is invalid"
         end,
     case find_constraint(CS#kura_changeset.constraints, Constraint) of
         {ok, #kura_constraint{field = Field, message = Msg}} ->
@@ -879,14 +871,14 @@ handle_pg_error(CS, #{code := Code, constraint := Constraint}) when
             Field = constraint_to_field(Constraint),
             kura_changeset:add_error(CS, Field, DefaultMsg)
     end;
-handle_pg_error(CS, #{code := <<"23502">>, column := Column}) ->
+handle_pg_error(CS, #{code := ~"23502", column := Column}) ->
     Field =
         try
             binary_to_existing_atom(Column, utf8)
         catch
             error:badarg -> base
         end,
-    kura_changeset:add_error(CS, Field, <<"can't be blank">>);
+    kura_changeset:add_error(CS, Field, ~"can't be blank");
 handle_pg_error(CS, Reason) ->
     kura_changeset:add_error(CS, base, format_error(Reason)).
 
@@ -898,7 +890,7 @@ find_constraint([_ | Rest], Name) ->
     find_constraint(Rest, Name).
 
 constraint_to_field(Constraint) when is_binary(Constraint) ->
-    case binary:split(Constraint, <<"_">>, [global]) of
+    case binary:split(Constraint, ~"_", [global]) of
         [_Table, Field | _Rest] ->
             try
                 binary_to_existing_atom(Field, utf8)

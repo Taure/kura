@@ -33,18 +33,18 @@ stream(RepoMod, Query, Fun, Opts) ->
     Pool = get_pool(RepoMod),
     CursorName = generate_cursor_name(),
     DeclareSQL = iolist_to_binary([
-        <<"DECLARE ">>,
+        ~"DECLARE ",
         CursorName,
-        <<" CURSOR FOR ">>,
+        ~" CURSOR FOR ",
         SQL
     ]),
     FetchSQL = iolist_to_binary([
-        <<"FETCH ">>,
+        ~"FETCH ",
         integer_to_binary(BatchSize),
-        <<" FROM ">>,
+        ~" FROM ",
         CursorName
     ]),
-    CloseSQL = iolist_to_binary([<<"CLOSE ">>, CursorName]),
+    CloseSQL = iolist_to_binary([~"CLOSE ", CursorName]),
     Result = pgo:transaction(
         Pool,
         fun() ->
@@ -109,4 +109,4 @@ get_pool(RepoMod) ->
 
 generate_cursor_name() ->
     Ref = erlang:unique_integer([positive]),
-    iolist_to_binary([<<"kura_cursor_">>, integer_to_binary(Ref)]).
+    iolist_to_binary([~"kura_cursor_", integer_to_binary(Ref)]).

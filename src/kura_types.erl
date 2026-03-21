@@ -38,19 +38,19 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
 
 -doc "Return the PostgreSQL DDL type string for a kura type.".
 -spec to_pg_type(kura_type()) -> binary().
-to_pg_type(id) -> <<"BIGSERIAL">>;
-to_pg_type(integer) -> <<"INTEGER">>;
-to_pg_type(float) -> <<"DOUBLE PRECISION">>;
-to_pg_type(string) -> <<"VARCHAR(255)">>;
-to_pg_type(text) -> <<"TEXT">>;
-to_pg_type(boolean) -> <<"BOOLEAN">>;
-to_pg_type(date) -> <<"DATE">>;
-to_pg_type(utc_datetime) -> <<"TIMESTAMPTZ">>;
-to_pg_type(uuid) -> <<"UUID">>;
-to_pg_type(jsonb) -> <<"JSONB">>;
-to_pg_type({enum, _}) -> <<"VARCHAR(255)">>;
+to_pg_type(id) -> ~"BIGSERIAL";
+to_pg_type(integer) -> ~"INTEGER";
+to_pg_type(float) -> ~"DOUBLE PRECISION";
+to_pg_type(string) -> ~"VARCHAR(255)";
+to_pg_type(text) -> ~"TEXT";
+to_pg_type(boolean) -> ~"BOOLEAN";
+to_pg_type(date) -> ~"DATE";
+to_pg_type(utc_datetime) -> ~"TIMESTAMPTZ";
+to_pg_type(uuid) -> ~"UUID";
+to_pg_type(jsonb) -> ~"JSONB";
+to_pg_type({enum, _}) -> ~"VARCHAR(255)";
 to_pg_type({array, Inner}) -> <<(to_pg_type(Inner))/binary, "[]">>;
-to_pg_type({embed, _, _}) -> <<"JSONB">>.
+to_pg_type({embed, _, _}) -> ~"JSONB".
 
 %%----------------------------------------------------------------------
 %% Cast: coerce external input → Erlang term
@@ -88,13 +88,13 @@ cast(text, V) when is_list(V) ->
     {ok, list_to_binary(V)};
 cast(boolean, V) when is_boolean(V) ->
     {ok, V};
-cast(boolean, <<"true">>) ->
+cast(boolean, ~"true") ->
     {ok, true};
-cast(boolean, <<"false">>) ->
+cast(boolean, ~"false") ->
     {ok, false};
-cast(boolean, <<"1">>) ->
+cast(boolean, ~"1") ->
     {ok, true};
-cast(boolean, <<"0">>) ->
+cast(boolean, ~"0") ->
     {ok, false};
 cast(date, {Y, M, D} = V) when is_integer(Y), is_integer(M), is_integer(D) ->
     {ok, V};
@@ -117,27 +117,27 @@ cast(jsonb, V) when is_binary(V) ->
 cast({enum, Values}, V) when is_atom(V) ->
     case lists:member(V, Values) of
         true -> {ok, V};
-        false -> {error, <<"is not a valid enum value">>}
+        false -> {error, ~"is not a valid enum value"}
     end;
 cast({enum, Values}, V) when is_binary(V) ->
     try
         Atom = binary_to_existing_atom(V, utf8),
         case lists:member(Atom, Values) of
             true -> {ok, Atom};
-            false -> {error, <<"is not a valid enum value">>}
+            false -> {error, ~"is not a valid enum value"}
         end
     catch
-        error:badarg -> {error, <<"is not a valid enum value">>}
+        error:badarg -> {error, ~"is not a valid enum value"}
     end;
 cast({enum, Values}, V) when is_list(V) ->
     try
         Atom = list_to_existing_atom(V),
         case lists:member(Atom, Values) of
             true -> {ok, Atom};
-            false -> {error, <<"is not a valid enum value">>}
+            false -> {error, ~"is not a valid enum value"}
         end
     catch
-        error:badarg -> {error, <<"is not a valid enum value">>}
+        error:badarg -> {error, ~"is not a valid enum value"}
     end;
 cast({array, Inner}, V) when is_list(V) ->
     cast_array(Inner, V, []);
@@ -224,17 +224,17 @@ load({enum, Values}, V) when is_binary(V) ->
         Atom = binary_to_existing_atom(V, utf8),
         case lists:member(Atom, Values) of
             true -> {ok, Atom};
-            false -> {error, <<"unknown enum value">>}
+            false -> {error, ~"unknown enum value"}
         end
     catch
-        error:badarg -> {error, <<"unknown enum value">>}
+        error:badarg -> {error, ~"unknown enum value"}
     end;
 load({array, Inner}, V) when is_list(V) ->
     load_array(Inner, V, []);
 load({embed, embeds_one, Mod}, V) when is_binary(V) ->
     case json_decode(V) of
         {ok, Map} when is_map(Map) -> {ok, load_embed_map(Mod, Map)};
-        {ok, _} -> {error, <<"expected a JSON object">>};
+        {ok, _} -> {error, ~"expected a JSON object"};
         Err -> Err
     end;
 load({embed, embeds_one, Mod}, V) when is_map(V) ->
@@ -242,7 +242,7 @@ load({embed, embeds_one, Mod}, V) when is_map(V) ->
 load({embed, embeds_many, Mod}, V) when is_binary(V) ->
     case json_decode(V) of
         {ok, List} when is_list(List) -> {ok, [load_embed_map(Mod, M) || M <- List]};
-        {ok, _} -> {error, <<"expected a JSON array">>};
+        {ok, _} -> {error, ~"expected a JSON array"};
         Err -> Err
     end;
 load({embed, embeds_many, Mod}, V) when is_list(V) ->
@@ -258,7 +258,7 @@ try_parse_integer(Bin) ->
     try
         {ok, binary_to_integer(Bin)}
     catch
-        error:badarg -> {error, <<"is not a valid integer">>}
+        error:badarg -> {error, ~"is not a valid integer"}
     end.
 
 try_parse_float(Bin) ->
@@ -269,7 +269,7 @@ try_parse_float(Bin) ->
             try
                 {ok, erlang:float(binary_to_integer(Bin))}
             catch
-                error:badarg -> {error, <<"is not a valid float">>}
+                error:badarg -> {error, ~"is not a valid float"}
             end
     end.
 
@@ -277,13 +277,13 @@ parse_date(<<Y:4/binary, $-, M:2/binary, $-, D:2/binary>>) ->
     try
         {ok, {binary_to_integer(Y), binary_to_integer(M), binary_to_integer(D)}}
     catch
-        error:badarg -> {error, <<"is not a valid date">>}
+        error:badarg -> {error, ~"is not a valid date"}
     end;
 parse_date(_) ->
-    {error, <<"is not a valid date">>}.
+    {error, ~"is not a valid date"}.
 
 parse_datetime(Bin) ->
-    case binary:split(Bin, [<<"T">>, <<" ">>]) of
+    case binary:split(Bin, [~"T", ~" "]) of
         [DatePart, TimePart] ->
             case parse_date(DatePart) of
                 {ok, Date} ->
@@ -295,31 +295,31 @@ parse_datetime(Bin) ->
                     Err
             end;
         _ ->
-            {error, <<"is not a valid datetime">>}
+            {error, ~"is not a valid datetime"}
     end.
 
 parse_time(Bin) ->
     Stripped = strip_tz(Bin),
-    case binary:split(Stripped, <<":">>, [global]) of
+    case binary:split(Stripped, ~":", [global]) of
         [H, M, S] ->
             try
                 Sec =
-                    case binary:split(S, <<".">>) of
+                    case binary:split(S, ~".") of
                         [SecWhole, _Frac] -> binary_to_integer(SecWhole);
                         [SecWhole] -> binary_to_integer(SecWhole)
                     end,
                 {ok, {binary_to_integer(H), binary_to_integer(M), Sec}}
             catch
-                error:badarg -> {error, <<"is not a valid time">>}
+                error:badarg -> {error, ~"is not a valid time"}
             end;
         [H, M] ->
             try
                 {ok, {binary_to_integer(H), binary_to_integer(M), 0}}
             catch
-                error:badarg -> {error, <<"is not a valid time">>}
+                error:badarg -> {error, ~"is not a valid time"}
             end;
         _ ->
-            {error, <<"is not a valid time">>}
+            {error, ~"is not a valid time"}
     end.
 
 strip_tz(Bin) ->
@@ -327,7 +327,7 @@ strip_tz(Bin) ->
         $Z ->
             binary:part(Bin, 0, byte_size(Bin) - 1);
         _ ->
-            case binary:match(Bin, [<<"+">>, <<"-">>], [{scope, {3, byte_size(Bin) - 3}}]) of
+            case binary:match(Bin, [~"+", ~"-"], [{scope, {3, byte_size(Bin) - 3}}]) of
                 {Pos, _} -> binary:part(Bin, 0, Pos);
                 nomatch -> Bin
             end
@@ -342,14 +342,14 @@ json_encode(V) ->
     try
         {ok, iolist_to_binary(json:encode(V))}
     catch
-        _:_ -> {error, <<"cannot encode as JSON">>}
+        _:_ -> {error, ~"cannot encode as JSON"}
     end.
 
 json_decode(Bin) ->
     try
         {ok, json:decode(Bin)}
     catch
-        _:_ -> {error, <<"is not valid JSON">>}
+        _:_ -> {error, ~"is not valid JSON"}
     end.
 
 cast_array(_Inner, [], Acc) ->
@@ -377,7 +377,7 @@ load_array(Inner, [H | T], Acc) ->
     end.
 
 format_type({enum, _}) ->
-    <<"enum">>;
+    ~"enum";
 format_type({array, Inner}) ->
     <<"array_", (format_type(Inner))/binary>>;
 format_type({embed, _, Mod}) ->
