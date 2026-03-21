@@ -55,7 +55,7 @@ stream(RepoMod, Query, Fun, Opts) ->
                 pgo:query(CloseSQL, [])
             end
         end,
-        #{}
+        #{pool_options => [{timeout, infinity}]}
     ),
     narrow_transaction_result(Result).
 
