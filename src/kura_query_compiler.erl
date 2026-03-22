@@ -9,6 +9,7 @@ This is an internal module. Use `kura_repo_worker` for executing queries.
 
 -export([
     to_sql/1,
+    to_sql_cached/1,
     to_sql_from/2,
     insert/3,
     insert/4,
@@ -28,6 +29,23 @@ This is an internal module. Use `kura_repo_worker` for executing queries.
 to_sql(Query) ->
     {SQL, Params, _Counter} = to_sql_from(Query, 1),
     {SQL, Params}.
+
+-doc """
+Cached version of `to_sql/1`. Caches `{SQL, Params}` keyed by the
+query record hash. Identical queries (same structure and values) hit
+the cache, avoiding recompilation.
+""".
+-spec to_sql_cached(#kura_query{}) -> {iodata(), [term()]}.
+to_sql_cached(Query) ->
+    Key = erlang:phash2(Query),
+    case kura_query_cache:get(Key) of
+        {ok, Result} ->
+            Result;
+        miss ->
+            Result = to_sql(Query),
+            kura_query_cache:put(Key, Result),
+            Result
+    end.
 
 -doc "Compile a query starting parameter numbering from `StartCounter`. Returns `{SQL, Params, NextCounter}`.".
 -spec to_sql_from(#kura_query{}, pos_integer()) -> {iodata(), [term()], pos_integer()}.

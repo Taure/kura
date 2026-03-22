@@ -6,6 +6,7 @@
 
 start(_StartType, _StartArgs) ->
     configure_pg_types(),
+    kura_query_cache:init(),
     kura_sup:start_link().
 
 stop(_State) ->
