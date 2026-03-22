@@ -31,9 +31,41 @@ preload(RepoMod, Schema, Records, Assocs) when is_list(Records) ->
 
 do_preload(_RepoMod, Records, _Schema, []) ->
     Records;
-do_preload(RepoMod, Records, Schema, [Assoc | Rest]) ->
-    Updated = preload_assoc(RepoMod, Records, Schema, Assoc),
-    do_preload(RepoMod, Updated, Schema, Rest).
+do_preload(RepoMod, Records, Schema, [Assoc]) ->
+    preload_assoc(RepoMod, Records, Schema, Assoc);
+do_preload(RepoMod, Records, Schema, Assocs) ->
+    %% Parallel preload: spawn each association query concurrently,
+    %% then merge results sequentially to preserve record ordering.
+    Self = self(),
+    Refs = lists:map(
+        fun(Assoc) ->
+            Ref = make_ref(),
+            spawn_link(fun() ->
+                Result = preload_assoc(RepoMod, Records, Schema, Assoc),
+                Self ! {preload_done, Ref, Assoc, Result}
+            end),
+            {Ref, Assoc}
+        end,
+        Assocs
+    ),
+    collect_preload_results(Refs, Records).
+
+collect_preload_results([], Records) ->
+    Records;
+collect_preload_results([{Ref, Assoc} | Rest], Records) ->
+    AssocName =
+        case Assoc of
+            {Name, _} -> Name;
+            Name when is_atom(Name) -> Name
+        end,
+    receive
+        {preload_done, Ref, Assoc, UpdatedRecords} ->
+            %% Merge the association field from UpdatedRecords into Records
+            Merged = merge_assoc_field(AssocName, Records, UpdatedRecords),
+            collect_preload_results(Rest, Merged)
+    after 30000 ->
+        error({preload_timeout, AssocName})
+    end.
 
 preload_assoc(RepoMod, Records, Schema, {AssocName, Opts}) when is_map(Opts) ->
     {ok, Assoc} = kura_schema:association(Schema, AssocName),
@@ -281,6 +313,15 @@ resolve_join_table(Mod) when is_atom(Mod) ->
 %% Internal: typed map access helpers for eqWAlizer
 %%----------------------------------------------------------------------
 
+-spec merge_assoc_field(atom(), [map()], [map()]) -> [map()].
+merge_assoc_field(_AssocName, [], []) ->
+    [];
+merge_assoc_field(AssocName, [Orig | Origs], [Updated | Upds]) ->
+    [
+        set_field(AssocName, get_field(AssocName, Updated), Orig)
+        | merge_assoc_field(AssocName, Origs, Upds)
+    ].
+
 -spec to_lookup([map()], atom(), map()) -> map().
 to_lookup([], _Key, Acc) -> Acc;
 to_lookup([Row | Rest], Key, Acc) -> to_lookup(Rest, Key, Acc#{get_field(Key, Row) => Row}).
@@ -296,22 +337,22 @@ set_field(Key, Value, Map) -> Map#{Key => Value}.
 
 -spec group_by_key([map()], atom(), map()) -> map().
 group_by_key([], _FK, Acc) ->
-    Acc;
+    maps:map(fun(_, V) -> lists:reverse(V) end, Acc);
 group_by_key([Rel | Rest], FK, Acc) ->
     Key = get_field(FK, Rel),
-    NewAcc = maps:update_with(Key, fun(L) -> L ++ [Rel] end, [Rel], Acc),
+    NewAcc = maps:update_with(Key, fun(L) -> [Rel | L] end, [Rel], Acc),
     group_by_key(Rest, FK, NewAcc).
 
 -spec group_m2m_join([map()], atom(), atom(), map(), map()) -> map().
 group_m2m_join([], _OwnerKey, _RelatedKey, _RelLookup, Acc) ->
-    Acc;
+    maps:map(fun(_, V) -> lists:reverse(V) end, Acc);
 group_m2m_join([JR | Rest], OwnerKey, RelatedKey, RelLookup, Acc) ->
     OKey = get_field(OwnerKey, JR),
     RKey = get_field(RelatedKey, JR),
     NewAcc =
         case RelLookup of
             #{RKey := RelRec} ->
-                maps:update_with(OKey, fun(L) -> L ++ [RelRec] end, [RelRec], Acc);
+                maps:update_with(OKey, fun(L) -> [RelRec | L] end, [RelRec], Acc);
             #{} ->
                 Acc
         end,
