@@ -82,7 +82,7 @@ start(RepoMod) ->
 -spec all(module(), #kura_query{}) -> {ok, [map()]} | {error, term()}.
 all(RepoMod, Query) ->
     Q1 = maybe_apply_soft_delete(maybe_apply_tenant_query(Query)),
-    {SQL, Params} = kura_query_compiler:to_sql(Q1),
+    {SQL, Params} = kura_query_compiler:to_sql_cached(Q1),
 
     case kura_db:query(RepoMod, SQL, Params) of
         #{command := select, rows := Rows} ->
