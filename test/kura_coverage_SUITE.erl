@@ -559,21 +559,24 @@ build_telemetry_metadata_error(_Config) ->
         kura_test_repo, <<"SELECT 1">>, [], {error, reason}
     ),
     ?assertEqual(error, maps:get(result, Meta)),
-    ?assertEqual(0, maps:get(num_rows, Meta)).
+    ?assertEqual(0, maps:get(num_rows, Meta)),
+    ?assertEqual(reason, maps:get(error_reason, Meta)).
 
 build_telemetry_metadata_num_rows(_Config) ->
     Meta = kura_repo_worker:build_telemetry_metadata(
         kura_test_repo, <<"SELECT 1">>, [], #{num_rows => 3}
     ),
     ?assertEqual(ok, maps:get(result, Meta)),
-    ?assertEqual(3, maps:get(num_rows, Meta)).
+    ?assertEqual(3, maps:get(num_rows, Meta)),
+    ?assertEqual(undefined, maps:get(error_reason, Meta)).
 
 build_telemetry_metadata_bare(_Config) ->
     Meta = kura_repo_worker:build_telemetry_metadata(
         kura_test_repo, <<"SELECT 1">>, [], ok
     ),
     ?assertEqual(ok, maps:get(result, Meta)),
-    ?assertEqual(0, maps:get(num_rows, Meta)).
+    ?assertEqual(0, maps:get(num_rows, Meta)),
+    ?assertEqual(undefined, maps:get(error_reason, Meta)).
 
 extract_source_update(_Config) ->
     ?assertEqual(

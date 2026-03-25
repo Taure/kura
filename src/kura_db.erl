@@ -144,12 +144,12 @@ emit_legacy_log(RepoMod, SQL, Params, Result, DurationUs) ->
 
 build_telemetry_metadata(RepoMod, SQL, Params, Result) ->
     SQLBin = iolist_to_binary(SQL),
-    {ResultStatus, NumRows} =
+    {ResultStatus, NumRows, ErrorReason} =
         case Result of
-            #{rows := Rows} -> {ok, length(Rows)};
-            #{num_rows := N} -> {ok, N};
-            {error, _} -> {error, 0};
-            _ -> {ok, 0}
+            #{rows := Rows} -> {ok, length(Rows), undefined};
+            #{num_rows := N} -> {ok, N, undefined};
+            {error, Reason} -> {error, 0, Reason};
+            _ -> {ok, 0, undefined}
         end,
     Source = extract_source(SQLBin),
     #{
@@ -158,7 +158,9 @@ build_telemetry_metadata(RepoMod, SQL, Params, Result) ->
         repo => RepoMod,
         result => ResultStatus,
         num_rows => NumRows,
-        source => Source
+        source => Source,
+        tenant => kura_tenant:get_tenant(),
+        error_reason => ErrorReason
     }.
 
 extract_source(SQL) ->
