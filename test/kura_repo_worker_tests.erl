@@ -82,14 +82,17 @@ build_telemetry_metadata_ok_test() ->
     ?assertEqual(<<"SELECT * FROM users">>, maps:get(query, Meta)),
     ?assertEqual(ok, maps:get(result, Meta)),
     ?assertEqual(1, maps:get(num_rows, Meta)),
-    ?assertEqual(<<"users">>, maps:get(source, Meta)).
+    ?assertEqual(<<"users">>, maps:get(source, Meta)),
+    ?assertEqual(undefined, maps:get(tenant, Meta)),
+    ?assertEqual(undefined, maps:get(error_reason, Meta)).
 
 build_telemetry_metadata_error_test() ->
     Meta = kura_repo_worker:build_telemetry_metadata(
         my_repo, <<"SELECT 1">>, [], {error, timeout}
     ),
     ?assertEqual(error, maps:get(result, Meta)),
-    ?assertEqual(0, maps:get(num_rows, Meta)).
+    ?assertEqual(0, maps:get(num_rows, Meta)),
+    ?assertEqual(timeout, maps:get(error_reason, Meta)).
 
 %%----------------------------------------------------------------------
 %% extract_source

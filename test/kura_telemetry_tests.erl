@@ -52,7 +52,9 @@ build_telemetry_metadata_select_test() ->
     ?assertEqual(my_repo, maps:get(repo, Meta)),
     ?assertEqual(ok, maps:get(result, Meta)),
     ?assertEqual(1, maps:get(num_rows, Meta)),
-    ?assertEqual(<<"users">>, maps:get(source, Meta)).
+    ?assertEqual(<<"users">>, maps:get(source, Meta)),
+    ?assertEqual(undefined, maps:get(tenant, Meta)),
+    ?assertEqual(undefined, maps:get(error_reason, Meta)).
 
 build_telemetry_metadata_insert_test() ->
     Result = #{command => insert, rows => [#{id => 1}]},
@@ -60,7 +62,8 @@ build_telemetry_metadata_insert_test() ->
         my_repo, <<"INSERT INTO \"posts\" (title) VALUES ($1)">>, [<<"Hello">>], Result
     ),
     ?assertEqual(<<"posts">>, maps:get(source, Meta)),
-    ?assertEqual(ok, maps:get(result, Meta)).
+    ?assertEqual(ok, maps:get(result, Meta)),
+    ?assertEqual(undefined, maps:get(error_reason, Meta)).
 
 build_telemetry_metadata_update_test() ->
     Result = #{command => update, rows => [#{id => 1}]},
@@ -75,7 +78,8 @@ build_telemetry_metadata_error_test() ->
         my_repo, <<"INSERT INTO \"users\"">>, [], Result
     ),
     ?assertEqual(error, maps:get(result, Meta)),
-    ?assertEqual(0, maps:get(num_rows, Meta)).
+    ?assertEqual(0, maps:get(num_rows, Meta)),
+    ?assertEqual(#{code => <<"23505">>}, maps:get(error_reason, Meta)).
 
 build_telemetry_metadata_no_source_test() ->
     Result = #{command => select, rows => []},
