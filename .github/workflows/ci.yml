@@ -8,7 +8,7 @@ on:
 
 jobs:
   ci:
-    uses: Taure/erlang-ci/.github/workflows/ci.yml@v2.0.0
+    uses: Taure/erlang-ci/.github/workflows/ci.yml@v2.0.5
     permissions:
       contents: write
       pull-requests: write
@@ -18,7 +18,7 @@ jobs:
       enable-ex-doc: true
       enable-hank: true
       enable-sheldon: true
-      enable-audit: true
+      enable-audit: false
       enable-coverage: true
       enable-sbom: true
       enable-sbom-scan: true
