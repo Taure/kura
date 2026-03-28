@@ -17,12 +17,18 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
 -type kura_type() ::
     id
     | integer
+    | bigint
+    | smallint
     | float
+    | decimal
     | string
     | text
+    | binary
     | boolean
     | date
+    | time
     | utc_datetime
+    | naive_datetime
     | uuid
     | jsonb
     | {enum, [atom()]}
@@ -41,12 +47,18 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
 -spec to_pg_type(kura_type()) -> binary().
 to_pg_type(id) -> ~"BIGSERIAL";
 to_pg_type(integer) -> ~"INTEGER";
+to_pg_type(bigint) -> ~"BIGINT";
+to_pg_type(smallint) -> ~"SMALLINT";
 to_pg_type(float) -> ~"DOUBLE PRECISION";
+to_pg_type(decimal) -> ~"NUMERIC";
 to_pg_type(string) -> ~"VARCHAR(255)";
 to_pg_type(text) -> ~"TEXT";
+to_pg_type(binary) -> ~"BYTEA";
 to_pg_type(boolean) -> ~"BOOLEAN";
 to_pg_type(date) -> ~"DATE";
+to_pg_type(time) -> ~"TIME";
 to_pg_type(utc_datetime) -> ~"TIMESTAMPTZ";
+to_pg_type(naive_datetime) -> ~"TIMESTAMP";
 to_pg_type(uuid) -> ~"UUID";
 to_pg_type(jsonb) -> ~"JSONB";
 to_pg_type({enum, _}) -> ~"VARCHAR(255)";
@@ -72,6 +84,20 @@ cast(integer, V) when is_integer(V) ->
     {ok, V};
 cast(integer, V) when is_binary(V) ->
     try_parse_integer(V);
+cast(bigint, V) when is_integer(V) ->
+    {ok, V};
+cast(bigint, V) when is_binary(V) ->
+    try_parse_integer(V);
+cast(smallint, V) when is_integer(V) ->
+    {ok, V};
+cast(smallint, V) when is_binary(V) ->
+    try_parse_integer(V);
+cast(decimal, V) when is_number(V) ->
+    {ok, V};
+cast(decimal, V) when is_binary(V) ->
+    try_parse_float(V);
+cast(binary, V) when is_binary(V) ->
+    {ok, V};
 cast(float, V) when is_float(V) ->
     {ok, V};
 cast(float, V) when is_integer(V) ->
@@ -102,9 +128,17 @@ cast(date, {Y, M, D} = V) when is_integer(Y), is_integer(M), is_integer(D) ->
     {ok, V};
 cast(date, V) when is_binary(V) ->
     parse_date(V);
+cast(time, {H, M, S} = V) when is_integer(H), is_integer(M), is_integer(S) ->
+    {ok, V};
+cast(time, V) when is_binary(V) ->
+    parse_time(V);
 cast(utc_datetime, {{_, _, _}, {_, _, _}} = V) ->
     {ok, V};
 cast(utc_datetime, V) when is_binary(V) ->
+    parse_datetime(V);
+cast(naive_datetime, {{_, _, _}, {_, _, _}} = V) ->
+    {ok, V};
+cast(naive_datetime, V) when is_binary(V) ->
     parse_datetime(V);
 cast(uuid, V) when is_binary(V), byte_size(V) =:= 36 ->
     {ok, V};
@@ -166,6 +200,14 @@ dump(id, V) when is_integer(V) ->
     {ok, V};
 dump(integer, V) when is_integer(V) ->
     {ok, V};
+dump(bigint, V) when is_integer(V) ->
+    {ok, V};
+dump(smallint, V) when is_integer(V) ->
+    {ok, V};
+dump(decimal, V) when is_number(V) ->
+    {ok, V};
+dump(binary, V) when is_binary(V) ->
+    {ok, V};
 dump(float, V) when is_float(V) ->
     {ok, V};
 dump(float, V) when is_integer(V) ->
@@ -178,7 +220,11 @@ dump(boolean, V) when is_boolean(V) ->
     {ok, V};
 dump(date, {Y, M, D} = V) when is_integer(Y), is_integer(M), is_integer(D) ->
     {ok, V};
+dump(time, {H, M, S} = V) when is_integer(H), is_integer(M), is_integer(S) ->
+    {ok, V};
 dump(utc_datetime, {{_, _, _}, {_, _, _}} = V) ->
+    {ok, V};
+dump(naive_datetime, {{_, _, _}, {_, _, _}} = V) ->
     {ok, V};
 dump(uuid, V) when is_binary(V) ->
     {ok, V};
@@ -209,6 +255,14 @@ load(id, V) when is_integer(V) ->
     {ok, V};
 load(integer, V) when is_integer(V) ->
     {ok, V};
+load(bigint, V) when is_integer(V) ->
+    {ok, V};
+load(smallint, V) when is_integer(V) ->
+    {ok, V};
+load(decimal, V) when is_number(V) ->
+    {ok, V};
+load(binary, V) when is_binary(V) ->
+    {ok, V};
 load(float, V) when is_number(V) ->
     {ok, erlang:float(V)};
 load(string, V) when is_binary(V) ->
@@ -219,7 +273,11 @@ load(boolean, V) when is_boolean(V) ->
     {ok, V};
 load(date, {Y, M, D} = V) when is_integer(Y), is_integer(M), is_integer(D) ->
     {ok, V};
+load(time, {H, M, S} = V) when is_integer(H), is_integer(M), is_integer(S) ->
+    {ok, V};
 load(utc_datetime, {{_, _, _}, {_, _, _}} = V) ->
+    {ok, V};
+load(naive_datetime, {{_, _, _}, {_, _, _}} = V) ->
     {ok, V};
 load(uuid, V) when is_binary(V), byte_size(V) =:= 16 ->
     {ok, format_uuid(binary:encode_hex(V, lowercase))};
