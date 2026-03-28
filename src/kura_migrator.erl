@@ -162,11 +162,21 @@ with_migration_lock(RepoMod, Fun) ->
             )
         )
     catch
-        error:{migration_failed, Version, MigReason}:_ ->
-            logger:error("Kura: migration ~p failed: ~p", [Version, MigReason]),
+        error:{migration_failed, Version, MigReason}:Stack ->
+            logger:error(#{
+                msg => ~"migration_failed",
+                version => Version,
+                reason => MigReason,
+                stacktrace => Stack
+            }),
             {error, {migration_failed, Version, MigReason}};
-        _:ExReason:_ ->
-            logger:error("Kura: migration failed: ~p", [ExReason]),
+        Class:ExReason:Stack ->
+            logger:error(#{
+                msg => ~"migration_failed",
+                class => Class,
+                reason => ExReason,
+                stacktrace => Stack
+            }),
             {error, ExReason}
     end.
 
