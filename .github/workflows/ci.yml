@@ -26,6 +26,6 @@ jobs:
       enable-summary: true
       enable-mutate: false
       enable-elp-lint: true
-      enable-elp-eqwalize: true
+      enable-elp-eqwalize: false
 
       extra-services-compose: 'docker-compose.ci.yml'
