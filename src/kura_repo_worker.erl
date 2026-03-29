@@ -274,7 +274,8 @@ insert(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
 insert(_RepoMod, CS = #kura_changeset{valid = false}, _Opts) ->
     {error, CS#kura_changeset{action = insert}};
 insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opts) ->
-    Changes1 = maybe_add_timestamps(SchemaMod, Changes, insert),
+    Changes0 = maybe_generate_pk(SchemaMod, Changes),
+    Changes1 = maybe_add_timestamps(SchemaMod, Changes0, insert),
     DumpedChanges = dump_changes(SchemaMod, Changes1),
     Fields = maps:keys(DumpedChanges),
     {SQL, Params} = kura_query_compiler:insert(SchemaMod, Fields, DumpedChanges, Opts),
@@ -501,7 +502,8 @@ insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}) ->
             {error, ErrCS#kura_changeset{action = insert}};
         {ok, CS} ->
             Changes = maybe_apply_tenant_changes(CS#kura_changeset.changes),
-            Changes1 = maybe_add_timestamps(SchemaMod, Changes, insert),
+            Changes0 = maybe_generate_pk(SchemaMod, Changes),
+            Changes1 = maybe_add_timestamps(SchemaMod, Changes0, insert),
             DumpedChanges = dump_changes(SchemaMod, Changes1),
             Fields = maps:keys(DumpedChanges),
             {SQL, Params} = kura_query_compiler:insert(SchemaMod, Fields, DumpedChanges),
@@ -817,6 +819,26 @@ maybe_add_timestamps(SchemaMod, Changes, Action) ->
         true -> Changes1#{updated_at => maps:get(updated_at, Changes1, Now)};
         false -> Changes1
     end.
+
+maybe_generate_pk(SchemaMod, Changes) ->
+    PK = kura_schema:primary_key(SchemaMod),
+    case maps:is_key(PK, Changes) of
+        true ->
+            Changes;
+        false ->
+            Types = kura_schema:field_types(SchemaMod),
+            case maps:get(PK, Types, undefined) of
+                uuid -> Changes#{PK => generate_uuid_v4()};
+                _ -> Changes
+            end
+    end.
+
+generate_uuid_v4() ->
+    <<A:48, _:4, B:12, _:2, C:62>> = crypto:strong_rand_bytes(16),
+    Bytes = <<A:48, 4:4, B:12, 2:2, C:62>>,
+    Hex = binary:encode_hex(Bytes, lowercase),
+    <<P1:8/binary, P2:4/binary, P3:4/binary, P4:4/binary, P5:12/binary>> = Hex,
+    <<P1/binary, "-", P2/binary, "-", P3/binary, "-", P4/binary, "-", P5/binary>>.
 
 handle_pg_error(CS, {pgsql_error, Fields}) when is_map(Fields) ->
     handle_pg_error(CS, Fields);

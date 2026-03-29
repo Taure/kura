@@ -22,6 +22,7 @@ across multiple nodes.
     migrate/1,
     rollback/1, rollback/2,
     status/1,
+    ensure_database/1,
     ensure_schema_migrations/1,
     compile_operation/1,
     check_unsafe_operations/2
@@ -41,7 +42,8 @@ across multiple nodes.
     to_module_list/1,
     parse_version/1,
     exec_operations/3,
-    check_alter_ops/3
+    check_alter_ops/3,
+    topo_sort_ops/1
 ]).
 -endif.
 
@@ -51,6 +53,7 @@ across multiple nodes.
 -doc "Run all pending migrations in order.".
 -spec migrate(module()) -> {ok, [integer()]} | {error, term()}.
 migrate(RepoMod) ->
+    ensure_database(RepoMod),
     ensure_schema_migrations(RepoMod),
     with_migration_lock(RepoMod, fun(PoolOpts) ->
         Applied = get_applied_versions(RepoMod),
@@ -91,6 +94,49 @@ tag_status(V, M, Applied) ->
     case lists:member(V, Applied) of
         true -> {V, M, up};
         false -> {V, M, pending}
+    end.
+
+%%----------------------------------------------------------------------
+%% Database creation
+%%----------------------------------------------------------------------
+
+-spec ensure_database(module()) -> ok.
+ensure_database(RepoMod) ->
+    Config = kura_repo:config(RepoMod),
+    Database = binary_to_list(maps:get(database, Config)),
+    Host = binary_to_list(maps:get(hostname, Config, ~"localhost")),
+    Port = maps:get(port, Config, 5432),
+    User = binary_to_list(maps:get(username, Config, ~"postgres")),
+    Password = binary_to_list(maps:get(password, Config, <<>>)),
+    TmpPool = kura_migrator_tmp_pool,
+    TmpConfig = #{
+        host => Host,
+        port => Port,
+        database => "postgres",
+        user => User,
+        password => Password,
+        pool_size => 1,
+        decode_opts => [return_rows_as_maps, column_name_as_atom]
+    },
+    case pgo_sup:start_child(TmpPool, TmpConfig) of
+        {ok, _} -> ok;
+        {error, {already_started, _}} -> ok
+    end,
+    PoolOpts = #{pool => TmpPool},
+    DbBin = list_to_binary(Database),
+    case
+        pgo:query(
+            ~"SELECT 1 FROM pg_database WHERE datname = $1", [DbBin], PoolOpts
+        )
+    of
+        #{rows := []} ->
+            QuotedDb = iolist_to_binary([<<"\"">>, DbBin, <<"\"">>]),
+            SQL = iolist_to_binary([~"CREATE DATABASE ", QuotedDb]),
+            _ = pgo:query(SQL, [], PoolOpts),
+            logger:info("Kura: created database ~s", [Database]),
+            ok;
+        #{rows := [_ | _]} ->
+            ok
     end.
 
 %%----------------------------------------------------------------------
@@ -213,12 +259,16 @@ run_migrations([{Version, Module} | Rest], Dir, PoolOpts, Acc) ->
     run_migrations(Rest, Dir, PoolOpts, [Version | Acc]).
 
 -spec exec_operations([kura_migration:operation()], integer(), map()) -> ok.
-exec_operations([], _Version, _PoolOpts) ->
+exec_operations(Ops, Version, PoolOpts) ->
+    Sorted = topo_sort_ops(Ops),
+    exec_operations_seq(Sorted, Version, PoolOpts).
+
+exec_operations_seq([], _Version, _PoolOpts) ->
     ok;
-exec_operations([Op | Rest], Version, PoolOpts) ->
+exec_operations_seq([Op | Rest], Version, PoolOpts) ->
     SQL = compile_operation(Op),
     exec(SQL, [], Version, PoolOpts),
-    exec_operations(Rest, Version, PoolOpts).
+    exec_operations_seq(Rest, Version, PoolOpts).
 
 -spec exec(binary(), list(), integer(), map()) -> ok.
 exec(SQL, Params, Version, PoolOpts) ->
@@ -577,7 +627,11 @@ format_default(Val) when is_binary(Val) ->
 format_default(true) ->
     ~"TRUE";
 format_default(false) ->
-    ~"FALSE".
+    ~"FALSE";
+format_default(Val) when is_map(Val) ->
+    <<"'", (json:encode(Val))/binary, "'::jsonb">>;
+format_default(Val) when is_list(Val) ->
+    <<"'", (json:encode(Val))/binary, "'::jsonb">>.
 
 %%----------------------------------------------------------------------
 %% Internal: type narrowing helpers for eqWAlizer
@@ -679,3 +733,81 @@ check_alter_ops([], _Table, _SafeEntries) ->
     [];
 check_alter_ops([AltOp | Rest], Table, SafeEntries) ->
     check_alter_op(AltOp, Table, SafeEntries) ++ check_alter_ops(Rest, Table, SafeEntries).
+
+%%----------------------------------------------------------------------
+%% Topological sort for create_table operations
+%%----------------------------------------------------------------------
+
+-spec topo_sort_ops([kura_migration:operation()]) -> [kura_migration:operation()].
+topo_sort_ops(Ops) ->
+    Creates = [Op || Op <- Ops, is_create_table(Op)],
+    case Creates of
+        [] ->
+            Ops;
+        _ ->
+            Sorted = topo_sort_creates(Creates),
+            replace_creates(Ops, Sorted)
+    end.
+
+is_create_table({create_table, _, _}) -> true;
+is_create_table({create_table, _, _, _}) -> true;
+is_create_table(_) -> false.
+
+table_name({create_table, Name, _}) -> Name;
+table_name({create_table, Name, _, _}) -> Name.
+
+table_columns({create_table, _, Cols}) -> Cols;
+table_columns({create_table, _, Cols, _}) -> Cols.
+
+table_deps(Op) ->
+    Name = table_name(Op),
+    Cols = table_columns(Op),
+    lists:usort([T || #kura_column{references = {T, _}} <- Cols, T =/= Name]).
+
+topo_sort_creates(Creates) ->
+    ByName = maps:from_list([{table_name(C), C} || C <- Creates]),
+    DepMap = maps:from_list([{table_name(C), table_deps(C)} || C <- Creates]),
+    AllNames = maps:keys(ByName),
+    InDeg = lists:foldl(
+        fun(Name, Acc) ->
+            Deps = maps:get(Name, DepMap),
+            Count = length([D || D <- Deps, maps:is_key(D, ByName)]),
+            Acc#{Name => Count}
+        end,
+        #{},
+        AllNames
+    ),
+    Queue = [N || N <- AllNames, maps:get(N, InDeg) =:= 0],
+    kahn_loop(Queue, InDeg, DepMap, ByName, []).
+
+kahn_loop([], _InDeg, _DepMap, _ByName, Acc) ->
+    lists:reverse(Acc);
+kahn_loop([Name | Rest], InDeg, DepMap, ByName, Acc) ->
+    Op = maps:get(Name, ByName),
+    Dependents = [
+        N
+     || N <- maps:keys(ByName),
+        lists:member(Name, maps:get(N, DepMap, []))
+    ],
+    {NewQueue, NewInDeg} = lists:foldl(
+        fun(Dep, {Q, ID}) ->
+            NewDeg = maps:get(Dep, ID) - 1,
+            ID1 = ID#{Dep => NewDeg},
+            case NewDeg of
+                0 -> {Q ++ [Dep], ID1};
+                _ -> {Q, ID1}
+            end
+        end,
+        {Rest, InDeg},
+        Dependents
+    ),
+    kahn_loop(NewQueue, NewInDeg, DepMap, ByName, [Op | Acc]).
+
+replace_creates([], _Sorted) ->
+    [];
+replace_creates([{create_table, _, _} | Rest], [Next | Sorted]) ->
+    [Next | replace_creates(Rest, Sorted)];
+replace_creates([{create_table, _, _, _} | Rest], [Next | Sorted]) ->
+    [Next | replace_creates(Rest, Sorted)];
+replace_creates([Op | Rest], Sorted) ->
+    [Op | replace_creates(Rest, Sorted)].
