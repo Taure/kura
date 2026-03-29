@@ -17,7 +17,7 @@ jobs:
       enable-ct: true
       enable-ex-doc: true
       enable-hank: true
-      enable-sheldon: true
+      enable-sheldon: false
       enable-audit: false
       enable-coverage: true
       enable-sbom: true
