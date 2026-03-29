@@ -103,7 +103,12 @@ tag_status(V, M, Applied) ->
 -spec ensure_database(module()) -> ok.
 ensure_database(RepoMod) ->
     Config = kura_repo:config(RepoMod),
-    Database = binary_to_list(maps:get(database, Config)),
+    case maps:find(database, Config) of
+        error -> ok;
+        {ok, DbName} -> do_ensure_database(Config, binary_to_list(DbName))
+    end.
+
+do_ensure_database(Config, Database) ->
     Host = binary_to_list(maps:get(hostname, Config, ~"localhost")),
     Port = maps:get(port, Config, 5432),
     User = binary_to_list(maps:get(username, Config, ~"postgres")),
