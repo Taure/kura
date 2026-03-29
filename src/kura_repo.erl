@@ -58,13 +58,33 @@ init(Config) ->
 -doc "Read the repo configuration from application environment.".
 -spec config(module()) -> map().
 config(RepoMod) ->
-    App = RepoMod:otp_app(),
-    Config =
-        case application:get_env(App, RepoMod) of
-            {ok, C} when is_map(C) -> C;
-            _ -> #{}
-        end,
+    Config = read_config(RepoMod),
     case erlang:function_exported(RepoMod, init, 1) of
         true -> RepoMod:init(Config);
         false -> Config
+    end.
+
+-spec read_config(module()) -> map().
+read_config(RepoMod) ->
+    %% Try kura app env first, fall back to repo's otp_app env for
+    %% backward compatibility.
+    case application:get_env(kura, repo) of
+        {ok, RepoMod} ->
+            Env = fun(Key, Default) ->
+                application:get_env(kura, Key, Default)
+            end,
+            #{
+                hostname => list_to_binary(Env(host, "localhost")),
+                port => Env(port, 5432),
+                database => list_to_binary(Env(database, "postgres")),
+                username => list_to_binary(Env(user, "postgres")),
+                password => list_to_binary(Env(password, "")),
+                pool_size => Env(pool_size, 10)
+            };
+        _ ->
+            App = RepoMod:otp_app(),
+            case application:get_env(App, RepoMod) of
+                {ok, C} when is_map(C) -> C;
+                _ -> #{}
+            end
     end.
