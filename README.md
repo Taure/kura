@@ -162,10 +162,30 @@ kura_migrator:status(my_repo).
 
 ## Configuration
 
-Database config is read from application environment using `application:get_env(OtpApp, RepoModule)`:
+Configure the database connection under the `kura` application env. Kura starts
+the pgo pool automatically during application startup:
 
 ```erlang
 %% sys.config
+[{kura, [
+    {repo, my_repo},
+    {host, "localhost"},
+    {port, 5432},
+    {database, "my_app_dev"},
+    {user, "postgres"},
+    {password, "postgres"},
+    {pool_size, 10}     %% default: 10
+]}].
+```
+
+Defaults: `host` = `"localhost"`, `port` = `5432`, `user` = `"postgres"`, `pool_size` = `10`.
+
+UUID primary keys are auto-generated on insert when no value is provided.
+
+<details>
+<summary>Legacy per-app config (still supported)</summary>
+
+```erlang
 [{my_app, [
     {my_repo, #{
         database => ~"my_app_dev",
@@ -177,6 +197,11 @@ Database config is read from application environment using `application:get_env(
     }}
 ]}].
 ```
+
+With this style the consuming app must call `my_repo:start()` to create the
+pgo pool. The kura app env config is checked first; if `{kura, [{repo, _}]}`
+is not set, Kura falls back to this pattern.
+</details>
 
 Migrations are discovered automatically from compiled modules implementing the `kura_migration` behaviour.
 

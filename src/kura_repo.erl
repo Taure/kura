@@ -2,8 +2,8 @@
 -moduledoc """
 Behaviour for defining a repository (database connection).
 
-Configuration is read from application environment. Implement `otp_app/0`
-to tell Kura which application holds your database config.
+Implement `otp_app/0` to tell Kura which application owns the repo's
+migrations.
 
 ```erlang
 -module(my_repo).
@@ -13,23 +13,24 @@ to tell Kura which application holds your database config.
 otp_app() -> my_app.
 ```
 
-Then in your sys.config (or runtime config):
+Configure the database connection under the `kura` application env.
+Kura starts the pgo pool automatically during application startup:
 
 ```erlang
-[{my_app, [
-    {my_repo, #{
-        database => <<"my_db">>,
-        hostname => <<"localhost">>,
-        port => 5432,
-        username => <<"postgres">>,
-        password => <<"secret">>,
-        pool_size => 10
-    }}
+[{kura, [
+    {repo, my_repo},
+    {host, "localhost"},
+    {port, 5432},
+    {database, "my_db"},
+    {user, "postgres"},
+    {password, "secret"},
+    {pool_size, 10}
 ]}].
 ```
 
-The config is looked up as `application:get_env(OtpApp, RepoModule)`,
-so each repo has its own config key. This supports multiple repos per application.
+For backward compatibility, Kura also supports per-app config via
+`application:get_env(OtpApp, RepoModule)`. The kura app env is checked
+first.
 
 Optionally implement `init/1` to modify config at runtime — useful for reading
 secrets from files, environment variables, or external services:

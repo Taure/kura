@@ -49,29 +49,23 @@ otp_app() -> my_app.
 Then add database configuration to your `sys.config`:
 
 ```erlang
-[{my_app, [
-    {my_repo, #{
-        database => ~"my_app_dev",
-        hostname => ~"localhost",
-        port => 5432,
-        username => ~"postgres",
-        password => ~"postgres",
-        pool_size => 10
-    }}
-]},
- {pg_types, [
-    {uuid_format, string}
+[{kura, [
+    {repo, my_repo},
+    {host, "localhost"},
+    {port, 5432},
+    {database, "my_app_dev"},
+    {user, "postgres"},
+    {password, "postgres"},
+    {pool_size, 10}
 ]}].
 ```
 
-The repo config is looked up as `application:get_env(OtpApp, RepoModule)`, so
-each repo has its own config key. This supports multiple repos per application.
+Kura starts the pgo pool automatically and configures `pg_types` to return
+UUIDs as formatted strings. UUID primary keys are auto-generated on insert
+when no value is provided.
 
-The `pg_types` config controls how PostgreSQL types are decoded by pgo. Kura
-recommends `{uuid_format, string}` so UUIDs are returned as formatted strings
-(e.g. `~"550e8400-e29b-41d4-a716-446655440000"`) rather than raw 16-byte
-binaries. Without this setting, Kura's `kura_types:load/2` will still format
-UUIDs correctly, but setting it avoids the extra conversion step.
+Defaults: `host` = `"localhost"`, `port` = `5432`, `user` = `"postgres"`,
+`pool_size` = `10`.
 
 ## Define a Migration
 
