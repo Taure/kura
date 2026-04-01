@@ -34,6 +34,7 @@ fields() ->
     embed/2,
     constraints/1,
     indexes/1,
+    generate_id/1,
     run_before_insert/2,
     run_after_insert/2,
     run_before_update/2,
@@ -52,6 +53,7 @@ fields() ->
     embeds/0,
     constraints/0,
     indexes/0,
+    generate_id/0,
     before_insert/1,
     after_insert/1,
     before_update/1,
@@ -65,6 +67,8 @@ fields() ->
 -callback embeds() -> [#kura_embed{}].
 -callback constraints() -> [kura_migration:table_constraint()].
 -callback indexes() -> [kura_migration:index_def()].
+
+-callback generate_id() -> term().
 
 -callback before_insert(#kura_changeset{}) -> {ok, #kura_changeset{}} | {error, #kura_changeset{}}.
 -callback after_insert(map()) -> {ok, map()} | {error, term()}.
@@ -213,6 +217,19 @@ embed_column_map([], Acc) ->
     Acc;
 embed_column_map([E | Rest], Acc) ->
     embed_column_map(Rest, Acc#{E#kura_embed.name => atom_to_binary(E#kura_embed.name, utf8)}).
+
+%%----------------------------------------------------------------------
+%% ID generation
+%%----------------------------------------------------------------------
+
+-doc "Generate a primary key value if the schema defines `generate_id/0`.".
+-spec generate_id(module()) -> {ok, term()} | undefined.
+generate_id(Mod) ->
+    _ = code:ensure_loaded(Mod),
+    case erlang:function_exported(Mod, generate_id, 0) of
+        true -> {ok, Mod:generate_id()};
+        false -> undefined
+    end.
 
 %%----------------------------------------------------------------------
 %% Lifecycle hooks

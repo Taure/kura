@@ -826,10 +826,15 @@ maybe_generate_pk(SchemaMod, Changes) ->
         true ->
             Changes;
         false ->
-            Types = kura_schema:field_types(SchemaMod),
-            case maps:get(PK, Types, undefined) of
-                uuid -> Changes#{PK => generate_uuid_v4()};
-                _ -> Changes
+            case kura_schema:generate_id(SchemaMod) of
+                {ok, Id} ->
+                    Changes#{PK => Id};
+                undefined ->
+                    Types = kura_schema:field_types(SchemaMod),
+                    case maps:get(PK, Types, undefined) of
+                        uuid -> Changes#{PK => generate_uuid_v4()};
+                        _ -> Changes
+                    end
             end
     end.
 
