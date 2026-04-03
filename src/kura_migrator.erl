@@ -109,12 +109,12 @@ ensure_database(RepoMod) ->
     end.
 
 do_ensure_database(Config, Database) ->
+    TmpPool = kura_migrator_tmp_pool,
     Host = binary_to_list(maps:get(hostname, Config, ~"localhost")),
     Port = maps:get(port, Config, 5432),
     User = binary_to_list(maps:get(username, Config, ~"postgres")),
     Password = binary_to_list(maps:get(password, Config, <<>>)),
-    TmpPool = kura_migrator_tmp_pool,
-    TmpConfig = #{
+    TmpBase = #{
         host => Host,
         port => Port,
         database => "postgres",
@@ -123,6 +123,12 @@ do_ensure_database(Config, Database) ->
         pool_size => 1,
         decode_opts => [return_rows_as_maps, column_name_as_atom]
     },
+    SocketOpts = application:get_env(kura, socket_options, []),
+    TmpConfig =
+        case SocketOpts of
+            Opts when is_list(Opts), Opts =/= [] -> TmpBase#{socket_options => Opts};
+            _ -> TmpBase
+        end,
     case pgo_sup:start_child(TmpPool, TmpConfig) of
         {ok, _} -> ok;
         {error, {already_started, _}} -> ok
@@ -139,10 +145,16 @@ do_ensure_database(Config, Database) ->
             SQL = iolist_to_binary([~"CREATE DATABASE ", QuotedDb]),
             _ = pgo:query(SQL, [], PoolOpts),
             logger:info("Kura: created database ~s", [Database]),
-            ok;
+            stop_tmp_pool(TmpPool);
         #{rows := [_ | _]} ->
-            ok
+            stop_tmp_pool(TmpPool)
     end.
+
+-spec stop_tmp_pool(atom()) -> ok.
+stop_tmp_pool(TmpPool) ->
+    _ = supervisor:terminate_child(pgo_sup, TmpPool),
+    _ = supervisor:delete_child(pgo_sup, TmpPool),
+    ok.
 
 %%----------------------------------------------------------------------
 %% Schema migrations table
