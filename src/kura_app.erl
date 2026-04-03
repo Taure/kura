@@ -2,7 +2,7 @@
 -moduledoc false.
 -behaviour(application).
 
--export([start/2, stop/1]).
+-export([start/2, stop/1, pool_config/0]).
 
 start(_StartType, _StartArgs) ->
     configure_pg_types(),
