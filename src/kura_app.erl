@@ -29,7 +29,7 @@ ensure_pool() ->
 -spec pool_config() -> map().
 pool_config() ->
     Env = fun(Key, Default) -> application:get_env(kura, Key, Default) end,
-    #{
+    Base = #{
         host => Env(host, "localhost"),
         port => Env(port, 5432),
         database => Env(database, "postgres"),
@@ -37,7 +37,11 @@ pool_config() ->
         password => Env(password, ""),
         pool_size => Env(pool_size, 10),
         decode_opts => [return_rows_as_maps, column_name_as_atom]
-    }.
+    },
+    case Env(socket_options, []) of
+        Opts when is_list(Opts), Opts =/= [] -> Base#{socket_options => Opts};
+        _ -> Base
+    end.
 
 -spec configure_pg_types() -> ok.
 configure_pg_types() ->
