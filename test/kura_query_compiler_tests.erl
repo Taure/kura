@@ -233,6 +233,60 @@ prefix_test() ->
     {SQL, _} = kura_query_compiler:to_sql(Q),
     ?assertEqual(<<"SELECT * FROM \"tenant_1\".\"user\"">>, SQL).
 
+prefix_insert_test() ->
+    kura_prefix:put(<<"tenant_1">>),
+    {SQL, _} = kura_query_compiler:insert(user, [name], #{name => <<"Bob">>}),
+    kura_prefix:delete(),
+    ?assert(binary:match(SQL, <<"\"tenant_1\".\"user\"">>) =/= nomatch).
+
+prefix_update_test() ->
+    kura_prefix:put(<<"tenant_1">>),
+    {SQL, _} = kura_query_compiler:update(user, [name], #{name => <<"Bob">>}, {id, 1}),
+    kura_prefix:delete(),
+    ?assert(binary:match(SQL, <<"\"tenant_1\".\"user\"">>) =/= nomatch).
+
+prefix_delete_test() ->
+    kura_prefix:put(<<"tenant_1">>),
+    {SQL, _} = kura_query_compiler:delete(user, id, 1),
+    kura_prefix:delete(),
+    ?assert(binary:match(SQL, <<"\"tenant_1\".\"user\"">>) =/= nomatch).
+
+prefix_update_all_test() ->
+    Q = kura_query:prefix(kura_query:from(user), <<"tenant_1">>),
+    {SQL, _} = kura_query_compiler:update_all(Q, #{name => <<"Bob">>}),
+    ?assert(binary:match(SQL, <<"\"tenant_1\".\"user\"">>) =/= nomatch).
+
+prefix_delete_all_test() ->
+    Q = kura_query:prefix(kura_query:from(user), <<"tenant_1">>),
+    {SQL, _} = kura_query_compiler:delete_all(Q),
+    ?assert(binary:match(SQL, <<"\"tenant_1\".\"user\"">>) =/= nomatch).
+
+prefix_insert_all_test() ->
+    kura_prefix:put(<<"tenant_1">>),
+    {SQL, _} = kura_query_compiler:insert_all(user, [name], [#{name => <<"Bob">>}]),
+    kura_prefix:delete(),
+    ?assert(binary:match(SQL, <<"\"tenant_1\".\"user\"">>) =/= nomatch).
+
+prefix_process_dict_select_test() ->
+    kura_prefix:put(<<"tenant_2">>),
+    Q = kura_query:from(user),
+    {SQL, _} = kura_query_compiler:to_sql(Q),
+    kura_prefix:delete(),
+    ?assertEqual(<<"SELECT * FROM \"tenant_2\".\"user\"">>, SQL).
+
+prefix_explicit_overrides_process_test() ->
+    kura_prefix:put(<<"tenant_2">>),
+    Q = kura_query:prefix(kura_query:from(user), <<"tenant_1">>),
+    {SQL, _} = kura_query_compiler:to_sql(Q),
+    kura_prefix:delete(),
+    ?assertEqual(<<"SELECT * FROM \"tenant_1\".\"user\"">>, SQL).
+
+prefix_cleared_no_prefix_test() ->
+    kura_prefix:delete(),
+    Q = kura_query:from(user),
+    {SQL, _} = kura_query_compiler:to_sql(Q),
+    ?assertEqual(<<"SELECT * FROM \"user\"">>, SQL).
+
 %%----------------------------------------------------------------------
 %% Aggregates
 %%----------------------------------------------------------------------

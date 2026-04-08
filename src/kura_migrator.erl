@@ -19,10 +19,11 @@ across multiple nodes.
 -define(MIGRATION_LOCK_KEY, 571629482).
 
 -export([
-    migrate/1,
+    migrate/1, migrate/2,
     rollback/1, rollback/2,
     status/1,
-    ensure_schema_migrations/1,
+    create_schema/2,
+    ensure_schema_migrations/1, ensure_schema_migrations/2,
     compile_operation/1,
     check_unsafe_operations/2
 ]).
@@ -38,6 +39,60 @@ migrate(RepoMod) ->
         Sorted = lists:sort(fun({V1, _}, {V2, _}) -> V1 =< V2 end, Pending),
         run_migrations(Sorted, up, PoolOpts, [])
     end).
+
+-doc """
+Run all pending migrations within a schema prefix.
+
+Creates the schema if it doesn't exist, then runs migrations with
+`search_path` set to that schema. Used for multi-tenant provisioning.
+
+```erlang
+kura_migrator:migrate(my_repo, #{prefix => <<"tenant_abc">>}).
+```
+""".
+-spec migrate(module(), map()) -> {ok, [integer()]} | {error, term()}.
+migrate(RepoMod, #{prefix := Prefix}) ->
+    create_schema(RepoMod, Prefix),
+    ensure_schema_migrations(RepoMod, Prefix),
+    with_migration_lock(RepoMod, fun(PoolOpts) ->
+        set_search_path(RepoMod, Prefix),
+        try
+            Applied = get_applied_versions(RepoMod),
+            Migrations = discover_migrations(RepoMod),
+            Pending = [{V, M} || {V, M} <- Migrations, not lists:member(V, Applied)],
+            Sorted = lists:sort(fun({V1, _}, {V2, _}) -> V1 =< V2 end, Pending),
+            run_migrations(Sorted, up, PoolOpts, [])
+        after
+            reset_search_path(RepoMod)
+        end
+    end);
+migrate(RepoMod, _Opts) ->
+    migrate(RepoMod).
+
+-doc "Create a PostgreSQL schema. No-op if it already exists.".
+-spec create_schema(module(), binary()) -> ok.
+create_schema(RepoMod, SchemaName) ->
+    Pool = get_pool(RepoMod),
+    SQL = iolist_to_binary([
+        <<"CREATE SCHEMA IF NOT EXISTS ">>,
+        <<$", SchemaName/binary, $">>
+    ]),
+    _ = pgo:query(SQL, [], #{pool => Pool}),
+    ok.
+
+-doc "Ensure schema_migrations table exists within a prefixed schema.".
+-spec ensure_schema_migrations(module(), binary()) -> ok.
+ensure_schema_migrations(RepoMod, Prefix) ->
+    Pool = get_pool(RepoMod),
+    SQL = iolist_to_binary([
+        <<"CREATE TABLE IF NOT EXISTS ">>,
+        <<$", Prefix/binary, $">>,
+        <<".schema_migrations (">>,
+        <<"version BIGINT PRIMARY KEY, ">>,
+        <<"inserted_at TIMESTAMPTZ NOT NULL DEFAULT now())">>
+    ]),
+    _ = pgo:query(SQL, [], #{pool => Pool}),
+    ok.
 
 -doc "Roll back the last migration.".
 -spec rollback(module()) -> {ok, [integer()]} | {error, term()}.
@@ -519,6 +574,17 @@ log_warnings(Module, Warnings) ->
 %%----------------------------------------------------------------------
 %% Internal helpers
 %%----------------------------------------------------------------------
+
+set_search_path(RepoMod, Prefix) ->
+    Pool = get_pool(RepoMod),
+    SQL = iolist_to_binary([<<"SET search_path TO ">>, <<$", Prefix/binary, $">>, <<", public">>]),
+    _ = pgo:query(SQL, [], #{pool => Pool}),
+    ok.
+
+reset_search_path(RepoMod) ->
+    Pool = get_pool(RepoMod),
+    _ = pgo:query(<<"SET search_path TO public">>, [], #{pool => Pool}),
+    ok.
 
 -spec get_pool(module()) -> atom().
 get_pool(RepoMod) ->
