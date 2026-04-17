@@ -123,11 +123,22 @@ do_ensure_database(Config, Database) ->
         pool_size => 1,
         decode_opts => [return_rows_as_maps, column_name_as_atom]
     },
-    SocketOpts = application:get_env(kura, socket_options, []),
-    TmpConfig =
-        case SocketOpts of
+    TmpWithSocket =
+        case application:get_env(kura, socket_options, []) of
             Opts when is_list(Opts), Opts =/= [] -> TmpBase#{socket_options => Opts};
             _ -> TmpBase
+        end,
+    TmpWithSSL =
+        case application:get_env(kura, ssl, false) of
+            true -> TmpWithSocket#{ssl => true};
+            _ -> TmpWithSocket
+        end,
+    TmpConfig =
+        case application:get_env(kura, ssl_options, []) of
+            SSLOpts when is_list(SSLOpts), SSLOpts =/= [] ->
+                TmpWithSSL#{ssl_options => SSLOpts};
+            _ ->
+                TmpWithSSL
         end,
     case pgo_sup:start_child(TmpPool, TmpConfig) of
         {ok, _} -> ok;
