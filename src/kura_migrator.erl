@@ -53,7 +53,10 @@ across multiple nodes.
 -doc "Run all pending migrations in order.".
 -spec migrate(module()) -> {ok, [integer()]} | {error, term()}.
 migrate(RepoMod) ->
-    ensure_database(RepoMod),
+    case application:get_env(kura, ensure_database, true) of
+        true -> ensure_database(RepoMod);
+        false -> ok
+    end,
     ensure_schema_migrations(RepoMod),
     with_migration_lock(RepoMod, fun(PoolOpts) ->
         Applied = get_applied_versions(RepoMod),
@@ -110,56 +113,72 @@ ensure_database(RepoMod) ->
 
 do_ensure_database(Config, Database) ->
     TmpPool = kura_migrator_tmp_pool,
-    Host = binary_to_list(maps:get(hostname, Config, ~"localhost")),
-    Port = maps:get(port, Config, 5432),
-    User = binary_to_list(maps:get(username, Config, ~"postgres")),
-    Password = binary_to_list(maps:get(password, Config, <<>>)),
-    TmpBase = #{
-        host => Host,
-        port => Port,
-        database => "postgres",
-        user => User,
-        password => Password,
+    TmpBase = base_pool_config(Config, Database),
+    TmpConfig = apply_pool_extras(TmpBase),
+    case try_connect(TmpPool, TmpConfig) of
+        ok ->
+            stop_tmp_pool(TmpPool);
+        {error, _} ->
+            stop_tmp_pool(TmpPool),
+            create_database(Config, Database)
+    end.
+
+base_pool_config(Config, Database) ->
+    #{
+        host => binary_to_list(maps:get(hostname, Config, ~"localhost")),
+        port => maps:get(port, Config, 5432),
+        database => Database,
+        user => binary_to_list(maps:get(username, Config, ~"postgres")),
+        password => binary_to_list(maps:get(password, Config, <<>>)),
         pool_size => 1,
         decode_opts => [return_rows_as_maps, column_name_as_atom]
-    },
-    TmpWithSocket =
+    }.
+
+apply_pool_extras(Base) ->
+    WithSocket =
         case application:get_env(kura, socket_options, []) of
-            Opts when is_list(Opts), Opts =/= [] -> TmpBase#{socket_options => Opts};
-            _ -> TmpBase
+            Opts when is_list(Opts), Opts =/= [] -> Base#{socket_options => Opts};
+            _ -> Base
         end,
-    TmpWithSSL =
+    WithSSL =
         case application:get_env(kura, ssl, false) of
-            true -> TmpWithSocket#{ssl => true};
-            _ -> TmpWithSocket
+            true -> WithSocket#{ssl => true};
+            _ -> WithSocket
         end,
-    TmpConfig =
-        case application:get_env(kura, ssl_options, []) of
-            SSLOpts when is_list(SSLOpts), SSLOpts =/= [] ->
-                TmpWithSSL#{ssl_options => SSLOpts};
-            _ ->
-                TmpWithSSL
-        end,
+    case application:get_env(kura, ssl_options, []) of
+        SSLOpts when is_list(SSLOpts), SSLOpts =/= [] ->
+            WithSSL#{ssl_options => SSLOpts};
+        _ ->
+            WithSSL
+    end.
+
+try_connect(TmpPool, TmpConfig) ->
+    case pgo_sup:start_child(TmpPool, TmpConfig) of
+        {ok, _} ->
+            case pgo:query(~"SELECT 1", [], #{pool => TmpPool}) of
+                #{rows := _} -> ok;
+                {error, Reason} -> {error, Reason}
+            end;
+        {error, {already_started, _}} ->
+            ok;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+create_database(Config, Database) ->
+    TmpPool = kura_migrator_create_pool,
+    TmpBase = base_pool_config(Config, "postgres"),
+    TmpConfig = apply_pool_extras(TmpBase),
     case pgo_sup:start_child(TmpPool, TmpConfig) of
         {ok, _} -> ok;
         {error, {already_started, _}} -> ok
     end,
-    PoolOpts = #{pool => TmpPool},
     DbBin = list_to_binary(Database),
-    case
-        pgo:query(
-            ~"SELECT 1 FROM pg_database WHERE datname = $1", [DbBin], PoolOpts
-        )
-    of
-        #{rows := []} ->
-            QuotedDb = iolist_to_binary([<<"\"">>, DbBin, <<"\"">>]),
-            SQL = iolist_to_binary([~"CREATE DATABASE ", QuotedDb]),
-            _ = pgo:query(SQL, [], PoolOpts),
-            logger:info("Kura: created database ~s", [Database]),
-            stop_tmp_pool(TmpPool);
-        #{rows := [_ | _]} ->
-            stop_tmp_pool(TmpPool)
-    end.
+    QuotedDb = iolist_to_binary([<<"\"">>, DbBin, <<"\"">>]),
+    SQL = iolist_to_binary([~"CREATE DATABASE ", QuotedDb]),
+    _ = pgo:query(SQL, [], #{pool => TmpPool}),
+    logger:info("Kura: created database ~s", [Database]),
+    stop_tmp_pool(TmpPool).
 
 -spec stop_tmp_pool(atom()) -> ok.
 stop_tmp_pool(TmpPool) ->
