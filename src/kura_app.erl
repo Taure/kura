@@ -38,9 +38,19 @@ pool_config() ->
         pool_size => Env(pool_size, 10),
         decode_opts => [return_rows_as_maps, column_name_as_atom]
     },
-    case Env(socket_options, []) of
-        Opts when is_list(Opts), Opts =/= [] -> Base#{socket_options => Opts};
-        _ -> Base
+    WithSocket =
+        case Env(socket_options, []) of
+            Opts when is_list(Opts), Opts =/= [] -> Base#{socket_options => Opts};
+            _ -> Base
+        end,
+    WithSSL =
+        case Env(ssl, false) of
+            true -> WithSocket#{ssl => true};
+            _ -> WithSocket
+        end,
+    case Env(ssl_options, []) of
+        SSLOpts when is_list(SSLOpts), SSLOpts =/= [] -> WithSSL#{ssl_options => SSLOpts};
+        _ -> WithSSL
     end.
 
 -spec configure_pg_types() -> ok.
