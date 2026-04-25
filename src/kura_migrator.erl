@@ -67,13 +67,21 @@ migrate(RepoMod) ->
     case wait_for_pool(RepoMod) of
         ok ->
             ensure_schema_migrations(RepoMod),
-            with_migration_lock(RepoMod, fun(PoolOpts) ->
-                Applied = get_applied_versions(RepoMod),
-                Migrations = discover_migrations(RepoMod),
-                Pending = [{V, M} || {V, M} <- Migrations, not lists:member(V, Applied)],
-                Sorted = sort_migrations(Pending),
+            T0 = erlang:monotonic_time(),
+            Applied = get_applied_versions(RepoMod),
+            Migrations = discover_migrations(RepoMod),
+            Pending = [{V, M} || {V, M} <- Migrations, not lists:member(V, Applied)],
+            Sorted = sort_migrations(Pending),
+            telemetry_event(
+                [kura, migrator, migrate, start],
+                #{system_time => erlang:system_time()},
+                #{repo => RepoMod, pending_count => length(Sorted), direction => up}
+            ),
+            Result = with_migration_lock(RepoMod, fun(PoolOpts) ->
                 run_migrations(Sorted, up, PoolOpts, [])
-            end);
+            end),
+            emit_migrate_stop(RepoMod, T0, up, Result),
+            Result;
         {error, _} = Err ->
             Err
     end.
@@ -89,16 +97,58 @@ rollback(RepoMod, Steps) ->
     case wait_for_pool(RepoMod) of
         ok ->
             ensure_schema_migrations(RepoMod),
-            with_migration_lock(RepoMod, fun(PoolOpts) ->
-                Applied = get_applied_versions(RepoMod),
-                Migrations = discover_migrations(RepoMod),
-                SortedApplied = sort_integers(Applied),
-                ToRollback = take_integers(reverse_integers(SortedApplied, []), Steps),
-                Pairs = build_rollback_pairs(ToRollback, maps:from_list(Migrations)),
+            T0 = erlang:monotonic_time(),
+            Applied = get_applied_versions(RepoMod),
+            Migrations = discover_migrations(RepoMod),
+            SortedApplied = sort_integers(Applied),
+            ToRollback = take_integers(reverse_integers(SortedApplied, []), Steps),
+            Pairs = build_rollback_pairs(ToRollback, maps:from_list(Migrations)),
+            telemetry_event(
+                [kura, migrator, migrate, start],
+                #{system_time => erlang:system_time()},
+                #{repo => RepoMod, pending_count => length(Pairs), direction => down}
+            ),
+            Result = with_migration_lock(RepoMod, fun(PoolOpts) ->
                 run_migrations(Pairs, down, PoolOpts, [])
-            end);
+            end),
+            emit_migrate_stop(RepoMod, T0, down, Result),
+            Result;
         {error, _} = Err ->
             Err
+    end.
+
+-spec emit_migrate_stop(module(), integer(), up | down, term()) -> ok.
+emit_migrate_stop(RepoMod, T0, Direction, Result) ->
+    DurationNative = erlang:monotonic_time() - T0,
+    {ResultStatus, AppliedCount, ErrorReason} =
+        case Result of
+            {ok, Versions} when is_list(Versions) -> {ok, length(Versions), undefined};
+            {error, R} -> {error, 0, R}
+        end,
+    telemetry_event(
+        [kura, migrator, migrate, stop],
+        #{duration => DurationNative},
+        #{
+            repo => RepoMod,
+            direction => Direction,
+            result => ResultStatus,
+            applied_count => AppliedCount,
+            error_reason => ErrorReason
+        }
+    ).
+
+-spec telemetry_event([atom()], map(), map()) -> ok.
+telemetry_event(EventName, Measurements, Metadata) ->
+    %% telemetry is a hard dependency of kura via pgo, but we still
+    %% guard the call: telemetry handlers run inline and an exception
+    %% inside one must not abort a migration. The whole point of
+    %% emitting these events is operational observability, and dropping
+    %% an event is far less bad than dropping a transaction.
+    try
+        telemetry:execute(EventName, Measurements, Metadata),
+        ok
+    catch
+        _:_ -> ok
     end.
 
 -doc "Return the status of all discovered migrations (`:up` or `:pending`).".
@@ -372,6 +422,7 @@ with_migration_lock(RepoMod, Fun) ->
 run_migrations([], _Dir, _PoolOpts, Acc) ->
     reverse_integers(Acc, []);
 run_migrations([{Version, Module} | Rest], Dir, PoolOpts, Acc) ->
+    T0 = erlang:monotonic_time(),
     Ops = get_migration_ops(Module, Dir),
     SafeEntries = get_safe_entries(Module),
     Warnings = check_unsafe_operations(Ops, SafeEntries),
@@ -394,6 +445,16 @@ run_migrations([{Version, Module} | Rest], Dir, PoolOpts, Acc) ->
             )
     end,
     logger:info("Kura: ~s migration ~p (~p)", [Dir, Version, Module]),
+    telemetry_event(
+        [kura, migrator, migration, apply],
+        #{duration => erlang:monotonic_time() - T0},
+        #{
+            version => Version,
+            module => Module,
+            direction => Dir,
+            op_count => length(Ops)
+        }
+    ),
     run_migrations(Rest, Dir, PoolOpts, [Version | Acc]).
 
 -spec exec_operations([kura_migration:operation()], integer(), map()) -> ok.
