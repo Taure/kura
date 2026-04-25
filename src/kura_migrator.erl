@@ -18,12 +18,19 @@ across multiple nodes.
 %% sharing a PostgreSQL database contend on this single lock.
 -define(MIGRATION_LOCK_KEY, 571629482).
 
+%% Defaults for the pool-readiness wait at the start of migrator operations.
+%% pgo workers connect asynchronously, so the pool may exist but have no
+%% available connections yet; we retry `SELECT 1` until the pool answers.
+-define(POOL_READY_TIMEOUT_MS, 5000).
+-define(POOL_READY_INTERVAL_MS, 50).
+
 -export([
     migrate/1,
     rollback/1, rollback/2,
     status/1,
     ensure_database/1,
     ensure_schema_migrations/1,
+    wait_for_pool/1, wait_for_pool/2,
     compile_operation/1,
     check_unsafe_operations/2
 ]).
@@ -57,14 +64,19 @@ migrate(RepoMod) ->
         true -> ensure_database(RepoMod);
         false -> ok
     end,
-    ensure_schema_migrations(RepoMod),
-    with_migration_lock(RepoMod, fun(PoolOpts) ->
-        Applied = get_applied_versions(RepoMod),
-        Migrations = discover_migrations(RepoMod),
-        Pending = [{V, M} || {V, M} <- Migrations, not lists:member(V, Applied)],
-        Sorted = sort_migrations(Pending),
-        run_migrations(Sorted, up, PoolOpts, [])
-    end).
+    case wait_for_pool(RepoMod) of
+        ok ->
+            ensure_schema_migrations(RepoMod),
+            with_migration_lock(RepoMod, fun(PoolOpts) ->
+                Applied = get_applied_versions(RepoMod),
+                Migrations = discover_migrations(RepoMod),
+                Pending = [{V, M} || {V, M} <- Migrations, not lists:member(V, Applied)],
+                Sorted = sort_migrations(Pending),
+                run_migrations(Sorted, up, PoolOpts, [])
+            end);
+        {error, _} = Err ->
+            Err
+    end.
 
 -doc "Roll back the last migration.".
 -spec rollback(module()) -> {ok, [integer()]} | {error, term()}.
@@ -74,24 +86,34 @@ rollback(RepoMod) ->
 -doc "Roll back the last `Steps` migrations.".
 -spec rollback(module(), non_neg_integer()) -> {ok, [integer()]} | {error, term()}.
 rollback(RepoMod, Steps) ->
-    ensure_schema_migrations(RepoMod),
-    with_migration_lock(RepoMod, fun(PoolOpts) ->
-        Applied = get_applied_versions(RepoMod),
-        Migrations = discover_migrations(RepoMod),
-        SortedApplied = sort_integers(Applied),
-        ToRollback = take_integers(reverse_integers(SortedApplied, []), Steps),
-        Pairs = build_rollback_pairs(ToRollback, maps:from_list(Migrations)),
-        run_migrations(Pairs, down, PoolOpts, [])
-    end).
+    case wait_for_pool(RepoMod) of
+        ok ->
+            ensure_schema_migrations(RepoMod),
+            with_migration_lock(RepoMod, fun(PoolOpts) ->
+                Applied = get_applied_versions(RepoMod),
+                Migrations = discover_migrations(RepoMod),
+                SortedApplied = sort_integers(Applied),
+                ToRollback = take_integers(reverse_integers(SortedApplied, []), Steps),
+                Pairs = build_rollback_pairs(ToRollback, maps:from_list(Migrations)),
+                run_migrations(Pairs, down, PoolOpts, [])
+            end);
+        {error, _} = Err ->
+            Err
+    end.
 
 -doc "Return the status of all discovered migrations (`:up` or `:pending`).".
 -spec status(module()) -> [{integer(), module(), up | pending}].
 status(RepoMod) ->
-    ensure_schema_migrations(RepoMod),
-    Applied = get_applied_versions(RepoMod),
-    Migrations = discover_migrations(RepoMod),
-    Sorted = sort_migrations(Migrations),
-    [tag_status(V, M, Applied) || {V, M} <- Sorted].
+    case wait_for_pool(RepoMod) of
+        ok ->
+            ensure_schema_migrations(RepoMod),
+            Applied = get_applied_versions(RepoMod),
+            Migrations = discover_migrations(RepoMod),
+            Sorted = sort_migrations(Migrations),
+            [tag_status(V, M, Applied) || {V, M} <- Sorted];
+        {error, _} ->
+            []
+    end.
 
 tag_status(V, M, Applied) ->
     case lists:member(V, Applied) of
@@ -201,6 +223,75 @@ ensure_schema_migrations(RepoMod) ->
     >>,
     _ = pgo:query(SQL, [], #{pool => Pool}),
     ok.
+
+%%----------------------------------------------------------------------
+%% Pool readiness
+%%----------------------------------------------------------------------
+
+-doc """
+Wait until the repo's connection pool has at least one ready worker.
+
+`pgo` workers connect asynchronously, so when an application starts
+and immediately calls `migrate/1` the pool may exist but reject queries
+with `none_available` until handshake completes. The migrator races
+this every time on fast CT startup. Other operations (rollback, status)
+share the same hazard. We retry `SELECT 1` until it succeeds or the
+configured timeout elapses; any successful round-trip proves the pool
+is serving queries.
+
+Timeout/interval are configurable via the `kura` app env keys
+`migration_pool_ready_timeout` and `migration_pool_ready_interval`
+(both in milliseconds).
+""".
+-spec wait_for_pool(module()) -> ok | {error, pool_unavailable}.
+wait_for_pool(RepoMod) ->
+    Timeout = read_pos_int_env(migration_pool_ready_timeout, ?POOL_READY_TIMEOUT_MS),
+    wait_for_pool(RepoMod, Timeout).
+
+-spec wait_for_pool(module(), non_neg_integer()) -> ok | {error, pool_unavailable}.
+wait_for_pool(RepoMod, Timeout) ->
+    Interval = read_pos_int_env(migration_pool_ready_interval, ?POOL_READY_INTERVAL_MS),
+    Pool = kura_db:get_pool(RepoMod),
+    Deadline = erlang:monotonic_time(millisecond) + Timeout,
+    wait_for_pool_loop(Pool, Interval, Deadline).
+
+-spec read_pos_int_env(atom(), non_neg_integer()) -> non_neg_integer().
+read_pos_int_env(Key, Default) ->
+    case application:get_env(kura, Key, Default) of
+        N when is_integer(N), N >= 0 -> N;
+        _ -> Default
+    end.
+
+-spec wait_for_pool_loop(atom(), non_neg_integer(), integer()) ->
+    ok | {error, pool_unavailable}.
+wait_for_pool_loop(Pool, Interval, Deadline) ->
+    case probe_pool(Pool) of
+        ok ->
+            ok;
+        {error, Reason} ->
+            Now = erlang:monotonic_time(millisecond),
+            case Now >= Deadline of
+                true ->
+                    logger:error(#{
+                        msg => ~"kura_migrator pool not ready",
+                        pool => Pool,
+                        reason => Reason
+                    }),
+                    {error, pool_unavailable};
+                false ->
+                    timer:sleep(Interval),
+                    wait_for_pool_loop(Pool, Interval, Deadline)
+            end
+    end.
+
+-spec probe_pool(atom()) -> ok | {error, term()}.
+probe_pool(Pool) ->
+    try pgo:query(~"SELECT 1", [], #{pool => Pool}) of
+        #{rows := _} -> ok;
+        {error, Reason} -> {error, Reason}
+    catch
+        Class:CatchReason -> {error, {Class, CatchReason}}
+    end.
 
 %%----------------------------------------------------------------------
 %% Migration discovery
