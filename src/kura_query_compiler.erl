@@ -519,11 +519,20 @@ combination_type(except) -> ~"EXCEPT".
 
 compile_on_conflict({Field, nothing}, _Fields, _Data, _Counter) when is_atom(Field) ->
     {[~" ON CONFLICT (", quote_ident(atom_to_binary(Field, utf8)), ~") DO NOTHING"], []};
+compile_on_conflict({{columns, Columns}, nothing}, _Fields, _Data, _Counter) when
+    is_list(Columns)
+->
+    {[~" ON CONFLICT (", columns_target(Columns), ~") DO NOTHING"], []};
 compile_on_conflict({{constraint, Name}, nothing}, _Fields, _Data, _Counter) ->
     {[~" ON CONFLICT ON CONSTRAINT ", quote_ident(Name), ~" DO NOTHING"], []};
 compile_on_conflict({Field, replace_all}, Fields, Data, Counter) when is_atom(Field) ->
     UpdateFields = [F || F <- Fields, F =/= Field],
     compile_on_conflict({Field, {replace, UpdateFields}}, Fields, Data, Counter);
+compile_on_conflict({{columns, Columns}, replace_all}, Fields, Data, Counter) when
+    is_list(Columns)
+->
+    UpdateFields = [F || F <- Fields, not lists:member(F, Columns)],
+    compile_on_conflict({{columns, Columns}, {replace, UpdateFields}}, Fields, Data, Counter);
 compile_on_conflict({{constraint, Name}, replace_all}, Fields, Data, Counter) ->
     compile_on_conflict_update(
         [~" ON CONFLICT ON CONSTRAINT ", quote_ident(Name)], Fields, Data, Counter
@@ -535,6 +544,15 @@ compile_on_conflict({Field, {replace, UpdateFields}}, _Fields, Data, Counter) wh
         Data,
         Counter
     );
+compile_on_conflict({{columns, Columns}, {replace, UpdateFields}}, _Fields, Data, Counter) when
+    is_list(Columns)
+->
+    compile_on_conflict_update(
+        [~" ON CONFLICT (", columns_target(Columns), ~")"],
+        UpdateFields,
+        Data,
+        Counter
+    );
 compile_on_conflict({{constraint, Name}, {replace, UpdateFields}}, _Fields, Data, Counter) ->
     compile_on_conflict_update(
         [~" ON CONFLICT ON CONSTRAINT ", quote_ident(Name)],
@@ -542,6 +560,9 @@ compile_on_conflict({{constraint, Name}, {replace, UpdateFields}}, _Fields, Data
         Data,
         Counter
     ).
+
+columns_target(Columns) ->
+    join_comma([quote_ident(atom_to_binary(C, utf8)) || C <- Columns]).
 
 compile_on_conflict_update(ConflictTarget, UpdateFields, Data, Counter) ->
     {Sets, Params, _} = build_set_parts(UpdateFields, Data, Counter),

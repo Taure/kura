@@ -381,6 +381,59 @@ insert_on_conflict_replace_fields_test() ->
     ),
     ?assertEqual([<<"Alice">>, <<"a@b.com">>, <<"Alice">>], Params).
 
+insert_on_conflict_columns_nothing_test() ->
+    {SQL, Params} = kura_query_compiler:insert(
+        kura_test_schema,
+        [name, email],
+        #{name => <<"Alice">>, email => <<"a@b.com">>},
+        #{on_conflict => {{columns, [name, email]}, nothing}}
+    ),
+    ?assertEqual(
+        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) ON CONFLICT (\"name\", \"email\") DO NOTHING RETURNING *">>,
+        SQL
+    ),
+    ?assertEqual([<<"Alice">>, <<"a@b.com">>], Params).
+
+insert_on_conflict_columns_replace_all_test() ->
+    {SQL, Params} = kura_query_compiler:insert(
+        kura_test_schema,
+        [name, email, age],
+        #{name => <<"Alice">>, email => <<"a@b.com">>, age => 30},
+        #{on_conflict => {{columns, [name, email]}, replace_all}}
+    ),
+    ?assertEqual(
+        <<"INSERT INTO \"users\" (\"name\", \"email\", \"age\") VALUES ($1, $2, $3) ON CONFLICT (\"name\", \"email\") DO UPDATE SET \"age\" = $4 RETURNING *">>,
+        SQL
+    ),
+    ?assertEqual([<<"Alice">>, <<"a@b.com">>, 30, 30], Params).
+
+insert_on_conflict_columns_replace_fields_test() ->
+    {SQL, Params} = kura_query_compiler:insert(
+        kura_test_schema,
+        [name, email, age],
+        #{name => <<"Alice">>, email => <<"a@b.com">>, age => 30},
+        #{on_conflict => {{columns, [name, email]}, {replace, [age]}}}
+    ),
+    ?assertEqual(
+        <<"INSERT INTO \"users\" (\"name\", \"email\", \"age\") VALUES ($1, $2, $3) ON CONFLICT (\"name\", \"email\") DO UPDATE SET \"age\" = $4 RETURNING *">>,
+        SQL
+    ),
+    ?assertEqual([<<"Alice">>, <<"a@b.com">>, 30, 30], Params).
+
+insert_on_conflict_columns_preserves_order_test() ->
+    %% Column order in the conflict target must match the index definition;
+    %% reversing should produce a different SQL clause.
+    {SQL, _Params} = kura_query_compiler:insert(
+        kura_test_schema,
+        [name, email],
+        #{name => <<"Alice">>, email => <<"a@b.com">>},
+        #{on_conflict => {{columns, [email, name]}, nothing}}
+    ),
+    ?assertEqual(
+        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) ON CONFLICT (\"email\", \"name\") DO NOTHING RETURNING *">>,
+        SQL
+    ).
+
 insert_no_opts_fallback_test() ->
     {SQL, Params} = kura_query_compiler:insert(
         kura_test_schema, [name], #{name => <<"Alice">>}, #{}
