@@ -349,7 +349,17 @@ my_repo:insert(CS, #{on_conflict => {email, {replace, [name, updated_at]}}}).
 
 %% Use a named constraint instead of a column
 my_repo:insert(CS, #{on_conflict => {{constraint, ~"users_email_index"}, nothing}}).
+
+%% Multi-column conflict target (matches a multi-column unique INDEX)
+my_repo:insert(CS, #{on_conflict =>
+    {{columns, [world_id, zone_x, zone_y]}, {replace, [updated_at, payload]}}}).
 ```
+
+Use `{columns, [...]}` when your unique index spans multiple columns. `kura_migration`'s
+`create_index ... #{unique => true}` emits a unique INDEX (not a CONSTRAINT), so
+`ON CONFLICT (cols)` is the form PostgreSQL accepts — `{constraint, Name}` only
+works for indexes promoted to constraints (e.g. via `ADD CONSTRAINT ... UNIQUE USING INDEX`).
+Column order in the target must match the index definition.
 
 ## Quick Reference
 

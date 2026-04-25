@@ -45,6 +45,7 @@ groups() ->
             delete_all_counts,
             delete_not_found,
             insert_with_opts_on_conflict,
+            insert_with_opts_on_conflict_columns,
             insert_all_with_returning,
             insert_all_without_returning,
             reload_no_primary_key,
@@ -448,6 +449,43 @@ insert_with_opts_on_conflict(_Config) ->
     Result = kura_test_repo:insert(CS, #{on_conflict => {email, nothing}}),
     ?assertMatch({ok, _}, Result),
     kura_test_repo:query("DROP INDEX IF EXISTS users_email_unique", []).
+
+insert_with_opts_on_conflict_columns(_Config) ->
+    %% Multi-column conflict target via {{columns, [...]}, ...}.
+    %% Mirrors asobi's zone_snapshots use case: a unique INDEX (not constraint)
+    %% over multiple columns where ON CONFLICT (cols) is the only legal form.
+    kura_test_repo:query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS users_name_email_unique ON users (name, email)", []
+    ),
+    Email = <<"multicol@test.com">>,
+    Name = <<"MultiCol">>,
+    CS1 = kura_changeset:cast(
+        kura_test_schema, #{}, #{name => Name, email => Email, age => 30}, [name, email, age]
+    ),
+    {ok, Row1} = kura_test_repo:insert(
+        CS1, #{on_conflict => {{columns, [name, email]}, {replace, [age]}}}
+    ),
+    ?assertEqual(30, maps:get(age, Row1)),
+    %% Re-insert with same (name, email) but different age — should UPDATE not error.
+    CS2 = kura_changeset:cast(
+        kura_test_schema, #{}, #{name => Name, email => Email, age => 99}, [name, email, age]
+    ),
+    {ok, Row2} = kura_test_repo:insert(
+        CS2, #{on_conflict => {{columns, [name, email]}, {replace, [age]}}}
+    ),
+    ?assertEqual(99, maps:get(age, Row2)),
+    ?assertEqual(maps:get(id, Row1), maps:get(id, Row2)),
+    %% DO NOTHING variant — second insert returns ok with the original row.
+    Email2 = <<"multicol2@test.com">>,
+    CS3 = kura_changeset:cast(
+        kura_test_schema, #{}, #{name => Name, email => Email2, age => 1}, [name, email, age]
+    ),
+    {ok, _} = kura_test_repo:insert(CS3, #{on_conflict => {{columns, [name, email]}, nothing}}),
+    CS4 = kura_changeset:cast(
+        kura_test_schema, #{}, #{name => Name, email => Email2, age => 2}, [name, email, age]
+    ),
+    {ok, _} = kura_test_repo:insert(CS4, #{on_conflict => {{columns, [name, email]}, nothing}}),
+    kura_test_repo:query("DROP INDEX IF EXISTS users_name_email_unique", []).
 
 insert_with_opts_returning_rows(_Config) ->
     %% Insert with on_conflict returning empty rows (noop branch, line 175-176)
