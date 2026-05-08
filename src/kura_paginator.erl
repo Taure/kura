@@ -35,8 +35,8 @@ Offset-based pagination. Returns entries for the given page along with
 total counts.
 
 Options:
-- `page` — page number, 1-based (default: 1)
-- `page_size` — entries per page (default: 20)
+- `page` - page number, 1-based (default: 1)
+- `page_size` - entries per page (default: 20)
 """.
 -spec paginate(module(), #kura_query{}, map()) -> {ok, map()} | {error, term()}.
 paginate(Repo, Query, Opts) ->
@@ -76,14 +76,14 @@ paginate(Repo, Query, Opts) ->
     end.
 
 -doc """
-Cursor-based (keyset) pagination. Efficient for large datasets — avoids
+Cursor-based (keyset) pagination. Efficient for large datasets - avoids
 counting and offset scanning.
 
 Options:
-- `limit` — max entries to return (default: 20)
-- `cursor_field` — field to paginate on (default: `id`)
-- `'after'` — cursor value; fetch entries after this value (forward)
-- `before` — cursor value; fetch entries before this value (backward)
+- `limit` - max entries to return (default: 20)
+- `cursor_field` - field to paginate on (default: `id`)
+- `'after'` - cursor value; fetch entries after this value (forward)
+- `before` - cursor value; fetch entries before this value (backward)
 
 When neither `after` nor `before` is given, fetches from the beginning.
 """.

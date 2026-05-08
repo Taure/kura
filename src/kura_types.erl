@@ -5,9 +5,9 @@ Type system for casting, dumping, and loading values between Erlang and PostgreS
 Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
 `date`, `utc_datetime`, `uuid`, `jsonb`, `{array, Type}`.
 
-- `cast/2` — coerce external input to Erlang terms
-- `dump/2` — convert Erlang terms to pgo-compatible values
-- `load/2` — convert pgo results back to Erlang terms
+- `cast/2` - coerce external input to Erlang terms
+- `dump/2` - convert Erlang terms to pgo-compatible values
+- `load/2` - convert pgo results back to Erlang terms
 """.
 
 -export([to_pg_type/1, cast/2, dump/2, load/2]).
@@ -36,7 +36,7 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
     | {embed, embeds_one | embeds_many, module()}
     | {custom, module()}.
 
-%% eqWAlizer: cast/2 has >7 clauses narrowing on kura_type() union — exceeds eqWAlizer limit
+%% eqWAlizer: cast/2 has >7 clauses narrowing on kura_type() union - exceeds eqWAlizer limit
 -eqwalizer({nowarn_function, cast/2}).
 
 %%----------------------------------------------------------------------

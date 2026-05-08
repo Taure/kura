@@ -5,7 +5,7 @@
 -include("kura.hrl").
 
 %%----------------------------------------------------------------------
-%% Test fixture — reuses kura_test_schema (users) + kura_test_post_simple_schema
+%% Test fixture - reuses kura_test_schema (users) + kura_test_post_simple_schema
 %%----------------------------------------------------------------------
 
 conditional_preload_test_() ->

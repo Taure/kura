@@ -535,7 +535,7 @@ t_join_inner() ->
 t_join_left() ->
     {ok, _User} = insert_user(<<"LeftJoin">>, <<"leftjoin@test.com">>),
 
-    %% User with no posts — LEFT JOIN should still return the user
+    %% User with no posts - LEFT JOIN should still return the user
     Q = kura_query:from(kura_test_schema),
     Q1 = kura_query:join(Q, left, posts, {id, author_id}),
     Q2 = kura_query:where(Q1, {name, <<"LeftJoin">>}),

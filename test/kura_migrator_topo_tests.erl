@@ -6,7 +6,7 @@
 %% Topological sort tests for create_table operations
 %%----------------------------------------------------------------------
 
-%% No create_table ops — pass through unchanged.
+%% No create_table ops - pass through unchanged.
 no_creates_test() ->
     Ops = [{drop_table, <<"foo">>}, {create_index, <<"idx">>, <<"foo">>, [name]}],
     ?assertEqual(Ops, kura_migrator:topo_sort_ops(Ops)).
@@ -31,7 +31,7 @@ simple_dependency_test() ->
             #kura_column{name = id, type = uuid, primary_key = true},
             #kura_column{name = player_id, type = uuid, references = {<<"players">>, id}}
         ]},
-    %% B before A in input — should be reordered to A, B
+    %% B before A in input - should be reordered to A, B
     Result = kura_migrator:topo_sort_ops([B, A]),
     ?assertEqual([A, B], Result).
 

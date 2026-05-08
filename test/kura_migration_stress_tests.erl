@@ -14,7 +14,7 @@ migration_stress_test_() ->
         [
             {"advisory lock serializes concurrent acquirers",
                 {timeout, 30, fun t_advisory_lock_serializes/0}},
-            {"concurrent migrate — only one wins",
+            {"concurrent migrate - only one wins",
                 {timeout, 30, fun t_concurrent_migrate_one_wins/0}},
             {"migration failure releases lock",
                 {timeout, 30, fun t_migration_failure_releases_lock/0}},
@@ -258,7 +258,7 @@ t_rollback_correctness() ->
     case pgo:query(<<"SELECT 1 FROM mig_stress_test LIMIT 1">>, [], #{pool => Pool}) of
         {error, _} -> ok
     end,
-    %% Migrate up again — should succeed cleanly
+    %% Migrate up again - should succeed cleanly
     pgo:transaction(
         fun() ->
             pgo:query(

@@ -3,7 +3,7 @@
 -include("kura.hrl").
 
 %%----------------------------------------------------------------------
-%% Schema helpers — associations/1, association/2
+%% Schema helpers - associations/1, association/2
 %%----------------------------------------------------------------------
 
 associations_returns_empty_for_no_callback_test() ->

@@ -6,7 +6,7 @@
 -eqwalizer({nowarn_function, t_large_result_set/0}).
 
 %%----------------------------------------------------------------------
-%% Test fixtures — non-docker tests run first, docker tests last
+%% Test fixtures - non-docker tests run first, docker tests last
 %%----------------------------------------------------------------------
 
 resilience_test_() ->
@@ -208,7 +208,7 @@ t_query_during_pg_downtime() ->
     clean_tables(),
     stop_pg(),
     timer:sleep(3000),
-    %% Query should fail — try multiple times since pool may have cached connections
+    %% Query should fail - try multiple times since pool may have cached connections
     Results = [kura_stress_repo:query("SELECT 1", []) || _ <- lists:seq(1, 5)],
     HasError = lists:any(
         fun
@@ -223,7 +223,7 @@ t_query_during_pg_downtime() ->
     wait_for_pg(60).
 
 t_recovery_after_restart() ->
-    %% Ensure PG is up and pool is good — wait for pgo to reconnect from previous test
+    %% Ensure PG is up and pool is good - wait for pgo to reconnect from previous test
     ensure_pg_running(),
     wait_for_pg(60),
     try
@@ -253,7 +253,7 @@ t_recovery_after_restart() ->
         1000
     ),
     clean_tables(),
-    %% Insert data before shutdown — retry in case pool still recovering
+    %% Insert data before shutdown - retry in case pool still recovering
     CS = kura_changeset:cast(
         kura_stress_schema,
         #{},
@@ -267,7 +267,7 @@ t_recovery_after_restart() ->
     timer:sleep(3000),
     start_pg(),
     wait_for_pg(60),
-    %% Pool may need to reconnect — restart pool
+    %% Pool may need to reconnect - restart pool
     try
         kura_stress_repo:start()
     catch

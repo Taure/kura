@@ -76,7 +76,7 @@ Types = #{email => string, password => string},
 CS = kura_changeset:cast(Types, #{}, Params, [email, password]).
 ```
 
-Schemaless changesets are validation-only — they cannot be persisted via `kura_repo`.
+Schemaless changesets are validation-only - they cannot be persisted via `kura_repo`.
 """.
 -spec cast(module() | #{atom() => kura_types:kura_type()}, map(), map(), [atom()]) ->
     #kura_changeset{}.
@@ -224,7 +224,7 @@ validate_confirmation(CS, Field, Opts) ->
     end.
 
 confirmation_field(Field) ->
-    %% elp:ignore W0023 — bounded by schema field names
+    %% elp:ignore W0023 - bounded by schema field names
     list_to_atom(atom_to_list(Field) ++ "_confirmation").
 
 -doc "Validate `Field` with a custom function returning `ok` or `{error, Message}`.".
@@ -387,7 +387,7 @@ traverse_errors(#kura_changeset{errors = Errors}, Fun) ->
 cast_assoc(CS, AssocName) ->
     kura_changeset_assoc:cast_assoc(CS, AssocName).
 
--doc "Cast nested association parameters with options. Opts: `with` — custom changeset function.".
+-doc "Cast nested association parameters with options. Opts: `with` - custom changeset function.".
 -spec cast_assoc(#kura_changeset{}, atom(), map()) -> #kura_changeset{}.
 cast_assoc(CS, AssocName, Opts) ->
     kura_changeset_assoc:cast_assoc(CS, AssocName, Opts).
@@ -406,7 +406,7 @@ put_assoc(CS, AssocName, Value) ->
 cast_embed(CS, EmbedName) ->
     kura_changeset_assoc:cast_embed(CS, EmbedName).
 
--doc "Cast nested embedded schema parameters with options. Opts: `with` — custom changeset function.".
+-doc "Cast nested embedded schema parameters with options. Opts: `with` - custom changeset function.".
 -spec cast_embed(#kura_changeset{}, atom(), map()) -> #kura_changeset{}.
 cast_embed(CS, EmbedName, Opts) ->
     kura_changeset_assoc:cast_embed(CS, EmbedName, Opts).
