@@ -1,6 +1,6 @@
 # Telemetry
 
-Kura emits [`telemetry`](https://github.com/beam-telemetry/telemetry) events for every database query. You can attach any handler — logging, metrics, OpenTelemetry — without Kura knowing about it.
+Kura emits [`telemetry`](https://github.com/beam-telemetry/telemetry) events for every database query. You can attach any handler - logging, metrics, OpenTelemetry - without Kura knowing about it.
 
 ## Events
 
@@ -27,6 +27,8 @@ Emitted after every query execution.
 | `num_rows` | `integer()` | Number of rows returned or affected |
 | `repo` | `module()` | The repo module that ran the query |
 | `source` | `binary() \| undefined` | The table name extracted from the query |
+| `tenant` | `undefined \| {prefix, binary()} \| {attribute, {atom(), term()}}` | Current tenant (if any) at query time |
+| `error_reason` | `term() \| undefined` | The error term when `result =:= error` |
 
 ## Attaching Handlers
 

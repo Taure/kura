@@ -42,8 +42,8 @@ CREATE TABLE posts_tags (
 
 In Kura, this involves two layers:
 
-1. **Migrations** — define foreign keys, cascade rules, and indexes at the database level
-2. **Schemas** — define associations for querying and preloading at the application level
+1. **Migrations** - define foreign keys, cascade rules, and indexes at the database level
+2. **Schemas** - define associations for querying and preloading at the application level
 
 ### The Migration
 
@@ -110,10 +110,10 @@ The `#kura_column{}` record supports:
 
 Common patterns:
 
-- **`cascade`** — delete the child when the parent is deleted (posts when user is deleted)
-- **`set_null`** — set the FK to NULL when the parent is deleted (keep the comment, lose the author)
-- **`restrict`** — prevent deleting the parent if children exist
-- **`no_action`** — like restrict, but checked at end of transaction
+- **`cascade`** - delete the child when the parent is deleted (posts when user is deleted)
+- **`set_null`** - set the FK to NULL when the parent is deleted (keep the comment, lose the author)
+- **`restrict`** - prevent deleting the parent if children exist
+- **`no_action`** - like restrict, but checked at end of transaction
 
 ### The Schemas
 
@@ -216,7 +216,7 @@ Like `has_many` but returns a single record (or `nil`):
 
 ### In Queries
 
-Add preloads to a query — they are executed after the main query:
+Add preloads to a query - they are executed after the main query:
 
 ```erlang
 Q = kura_query:from(my_post),
@@ -275,22 +275,24 @@ CS = kura_changeset:cast(user, User, #{}, []),
 %% Comments on those posts are also deleted (post → comment cascade)
 ```
 
-No Kura code needed — the database does the work.
+No Kura code needed - the database does the work.
 
 ### Handling Foreign Key Errors
 
-If you try to delete a record that has children with `on_delete = restrict` (or no cascade), PostgreSQL raises a foreign key violation. Use `foreign_key_constraint/2` to get a friendly error:
+If you try to delete a record that has children with `on_delete = restrict` (or `no_action`, or none specified), PostgreSQL raises a foreign key violation. The constraint that fires is on the **child** table (typically `<child_table>_<fk_col>_fkey`), so the changeset must be told the actual constraint name to map - the default `{table}_{field}_fkey` derived from the parent schema will not match.
 
 ```erlang
 delete_changeset(User) ->
     CS = kura_changeset:cast(user, User, #{}, []),
-    kura_changeset:foreign_key_constraint(CS, id).
+    kura_changeset:foreign_key_constraint(CS, id, #{
+        name => ~"posts_user_id_fkey",
+        message => ~"has posts"
+    }).
 
 case my_repo:delete(delete_changeset(User)) of
     {ok, _} ->
         ok;
-    {error, #kura_changeset{errors = [{id, ~"does not exist"}]}} ->
-        %% Can't delete — children still reference this user
+    {error, #kura_changeset{errors = [{id, ~"has posts"}]}} ->
         {error, has_children}
 end.
 ```
@@ -304,7 +306,7 @@ Many-to-many associations use a join table:
             join_through = ~"posts_tags", join_keys = {post_id, tag_id}}.
 ```
 
-- `join_through` — the join table name
-- `join_keys` — `{FK to self, FK to related}`
+- `join_through` - the join table name
+- `join_keys` - `{FK to self, FK to related}`
 
 Persisting via `cast_assoc` or `put_assoc` deletes existing join rows and inserts new ones. See the [Nested Changesets](cast_assoc.md) guide for details.

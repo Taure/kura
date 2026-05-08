@@ -48,13 +48,15 @@ Four indexes are created automatically: `(table_name, record_id)`, `(action)`, `
 
 ```erlang
 %% Find all changes to a specific record
-Q = kura_query:from(kura_audit_log),
-Q1 = kura_query:where(Q, #{table_name => ~"users", record_id => ~"42"}),
+Q  = kura_query:from(kura_audit_log),
+Q1 = kura_query:where(Q, {'and', [{table_name, ~"users"},
+                                  {record_id, ~"42"}]}),
 {ok, Entries} = my_repo:all(Q1).
 
 %% Find all deletes by a specific actor
-Q = kura_query:from(kura_audit_log),
-Q1 = kura_query:where(Q, #{action => ~"delete", actor => ~"admin-1"}),
+Q  = kura_query:from(kura_audit_log),
+Q1 = kura_query:where(Q, {'and', [{action, ~"delete"},
+                                  {actor, ~"admin-1"}]}),
 {ok, Entries} = my_repo:all(Q1).
 ```
 

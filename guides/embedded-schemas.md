@@ -1,21 +1,26 @@
 # Embedded Schemas
 
-Embedded schemas let you nest structured data inside a parent schema, stored as JSONB in PostgreSQL. They're useful for semi-structured data that doesn't need its own table — addresses, settings, metadata, tags, etc.
+Embedded schemas let you nest structured data inside a parent schema, stored as JSONB in PostgreSQL. They're useful for semi-structured data that doesn't need its own table - addresses, settings, metadata, tags, etc.
 
 Kura supports two embed types:
 
-- `embeds_one` — a single nested map
-- `embeds_many` — a list of nested maps
+- `embeds_one` - a single nested map
+- `embeds_many` - a list of nested maps
 
 ## Defining Embedded Schemas
 
-An embedded schema is a regular `kura_schema` module. By convention, set its table to `<<"_embedded">>` since it won't have its own database table:
+An embedded schema is a regular `kura_schema` module. The behaviour
+requires both `table/0` and `fields/0`, even when the module never backs
+its own table. By convention, return `<<"_embedded">>` from `table/0` so
+it is obviously not a real table.
 
 ```erlang
 -module(address).
 -behaviour(kura_schema).
 -include_lib("kura/include/kura.hrl").
--export([fields/0]).
+-export([table/0, fields/0]).
+
+table() -> ~"_embedded".
 
 fields() ->
     [
@@ -29,7 +34,9 @@ fields() ->
 -module(tag).
 -behaviour(kura_schema).
 -include_lib("kura/include/kura.hrl").
--export([fields/0]).
+-export([table/0, fields/0]).
+
+table() -> ~"_embedded".
 
 fields() ->
     [
@@ -64,21 +71,19 @@ embeds() ->
     ].
 ```
 
-The corresponding migration would define these columns as JSONB:
+The corresponding migration defines the embed columns as JSONB:
 
 ```erlang
-up(Pool) ->
-    kura_migrator:execute(Pool,
-        "CREATE TABLE profiles ("
-        "  id BIGSERIAL PRIMARY KEY,"
-        "  name VARCHAR(255) NOT NULL,"
-        "  bio TEXT,"
-        "  address JSONB,"
-        "  tags JSONB DEFAULT '[]'::jsonb,"
-        "  inserted_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
-        "  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()"
-        ")"
-    ).
+up() ->
+    [{create_table, ~"profiles", [
+        #kura_column{name = id, type = id, primary_key = true},
+        #kura_column{name = name, type = string, nullable = false},
+        #kura_column{name = bio, type = text},
+        #kura_column{name = address, type = jsonb},
+        #kura_column{name = tags, type = jsonb, default = []},
+        #kura_column{name = inserted_at, type = utc_datetime, nullable = false},
+        #kura_column{name = updated_at, type = utc_datetime, nullable = false}
+    ]}].
 ```
 
 ## Casting Embeds
@@ -127,7 +132,7 @@ CS1 = kura_changeset:cast_embed(CS, tags),
 
 ## Custom Validation with `with`
 
-By default, `cast_embed` casts all non-virtual fields of the embedded schema. To apply custom validation or restrict fields, pass a `with` option — a function that takes existing data and params, and returns a changeset:
+By default, `cast_embed` casts all non-virtual fields of the embedded schema. To apply custom validation or restrict fields, pass a `with` option - a function that takes existing data and params, and returns a changeset:
 
 ```erlang
 WithFun = fun(_Data, EmbedParams) ->

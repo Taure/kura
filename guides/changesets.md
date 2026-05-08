@@ -14,7 +14,7 @@ CS = kura_changeset:cast(my_user, #{}, Params, [name, email, age]).
 CS = kura_changeset:cast(my_user, ExistingUser, Params, [name, email]).
 ```
 
-Parameters can have binary or atom keys — they are normalized automatically. Only fields in the allowed list are cast. Values are automatically cast to the type defined in the schema.
+Parameters can have binary or atom keys - they are normalized automatically. Only fields in the allowed list are cast. Values are automatically cast to the type defined in the schema.
 
 ## Validations
 
@@ -74,7 +74,7 @@ Constraints map PostgreSQL constraint violations to friendly changeset errors on
 
 ### Automatic Registration via `indexes/0`
 
-The recommended approach is to declare unique indexes on your schema. They are automatically registered as changeset constraints — no manual calls needed:
+The recommended approach is to declare unique indexes on your schema. They are automatically registered as changeset constraints - no manual calls needed:
 
 ```erlang
 %% In your schema module
@@ -136,7 +136,7 @@ CS1 = kura_changeset:add_error(CS, email, ~"is not allowed").
 %% Merge changes into data (ignores validity)
 Map = kura_changeset:apply_changes(CS).
 
-%% Apply with action check — returns error if invalid
+%% Apply with action check - returns error if invalid
 {ok, Map} = kura_changeset:apply_action(CS, insert).
 {error, CS1} = kura_changeset:apply_action(InvalidCS, insert).
 ```

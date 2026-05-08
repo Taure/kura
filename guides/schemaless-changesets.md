@@ -30,12 +30,12 @@ CS3 = kura_changeset:validate_length(CS2, password, [{min, 8}]).
 Use `apply_action/2` to extract the validated data:
 
 ```erlang
-case kura_changeset:apply_action(CS, :validate) of
+case kura_changeset:apply_action(CS, validate) of
     {ok, Data} ->
         %% Data is a map with changes merged into the base data
         Data;
     {error, CS1} ->
-        %% CS1 has errors
+        %% CS1#kura_changeset.errors holds the errors
         CS1#kura_changeset.errors
 end.
 ```
@@ -48,7 +48,7 @@ Constraint declarations (`unique_constraint`, `foreign_key_constraint`) require 
 %% This works
 CS1 = kura_changeset:unique_constraint(CS, email, #{name => ~"users_email_key"}).
 
-%% This raises an error — no table to derive the constraint name
+%% This raises an error - no table to derive the constraint name
 CS1 = kura_changeset:unique_constraint(CS, email).
 ```
 
@@ -85,6 +85,6 @@ parse_search(Params) ->
 
 ## Limitations
 
-- Schemaless changesets **cannot be persisted** via `kura_repo` — they are validation-only
+- Schemaless changesets **cannot be persisted** via `kura_repo` - they are validation-only
 - Association casting (`cast_assoc`, `put_assoc`) is not supported on schemaless changesets
 - The `schema` field on the changeset record is `undefined`

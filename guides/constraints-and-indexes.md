@@ -60,7 +60,7 @@ Key points:
 - `nullable = false` maps to SQL `NOT NULL`
 - `primary_key = true` maps to SQL `PRIMARY KEY`
 - `indexes/0` declares which columns get unique indexes
-- `virtual = true` on `password` means it participates in casting/validation but is never stored in the database — you'd hash it before insert
+- `virtual = true` on `password` means it participates in casting/validation but is never stored in the database - you'd hash it before insert
 
 ### The Migration
 
@@ -94,7 +94,7 @@ down() ->
      {drop_table, ~"users"}].
 ```
 
-> If you use [rebar3_kura](https://github.com/Taure/rebar3_kura), the migration is generated automatically from your schema — you don't write it by hand.
+> If you use [rebar3_kura](https://github.com/Taure/rebar3_kura), the migration is generated automatically from your schema - you don't write it by hand.
 
 ### The Changeset
 
@@ -109,7 +109,7 @@ registration_changeset(Params) ->
     CS4 = kura_changeset:validate_format(CS3, email, ~"^[^@]+@[^@]+$"),
     hash_password(CS4).
 
-%% Insert — constraint errors are handled automatically
+%% Insert - constraint errors are handled automatically
 case my_repo:insert(registration_changeset(Params)) of
     {ok, User} ->
         User;
@@ -119,19 +119,19 @@ case my_repo:insert(registration_changeset(Params)) of
 end.
 ```
 
-No manual `unique_constraint/2` calls needed — the `indexes/0` callback handles it.
+No manual `unique_constraint/2` calls needed - the `indexes/0` callback handles it.
 
 ## Constraints
 
 ### How Constraint Errors Work
 
-When PostgreSQL rejects an insert or update due to a constraint violation, Kura maps the error back to a changeset field error instead of crashing. This mapping works through **constraint declarations** — records that say "if PG constraint X fires, put error Y on field Z".
+When PostgreSQL rejects an insert or update due to a constraint violation, Kura maps the error back to a changeset field error instead of crashing. This mapping works through **constraint declarations** - records that say "if PG constraint X fires, put error Y on field Z".
 
 There are three ways to declare constraints:
 
-1. **`indexes/0`** — auto-registers unique constraints for indexes (recommended for single/multi-column unique)
-2. **`constraints/0`** — auto-registers constraints for composite unique and check constraints
-3. **Manual** — `unique_constraint/2`, `foreign_key_constraint/2`, `check_constraint/3` on the changeset
+1. **`indexes/0`** - auto-registers unique constraints for indexes (recommended for single/multi-column unique)
+2. **`constraints/0`** - auto-registers constraints for composite unique and check constraints
+3. **Manual** - `unique_constraint/2`, `foreign_key_constraint/2`, `check_constraint/3` on the changeset
 
 ### Unique Constraints
 
@@ -216,6 +216,13 @@ Or declare it on the schema with `constraints/0`:
 constraints() ->
     [{check, ~"quantity > 0"}].
 ```
+
+Auto-registered check constraints from `constraints/0` use the name
+`{table}_check` and report errors on the atom field `base`. If you want a
+different name or want the error attached to a specific field, declare
+the constraint with an explicit name in the migration via
+`{execute, ~"ALTER TABLE ... ADD CONSTRAINT ..."}` and use
+`check_constraint/3,4` on the changeset to map it.
 
 ### Manual Constraint Declarations
 
@@ -369,8 +376,8 @@ Column order in the target must match the index definition.
 | `PRIMARY KEY` | `primary_key = true` | `primary_key = true` |
 | `UNIQUE` (single col) | `indexes/0` with `#{unique => true}` | `{create_index, T, [col], #{unique => true}}` |
 | `UNIQUE` (multi col) | `constraints/0` with `{unique, [cols]}` | 4-tuple `{create_table, T, Cols, [{unique, [cols]}]}` |
-| `REFERENCES` | — | `references = {Table, col}` on `#kura_column{}` |
-| `ON DELETE CASCADE` | — | `on_delete = cascade` on `#kura_column{}` |
+| `REFERENCES` | - | `references = {Table, col}` on `#kura_column{}` |
+| `ON DELETE CASCADE` | - | `on_delete = cascade` on `#kura_column{}` |
 | `CHECK (expr)` | `constraints/0` with `{check, Expr}` | `{check, Expr}` in table constraints |
 | `CREATE INDEX` | `indexes/0` with `#{}` | `{create_index, T, [cols], #{}}` |
 | `CREATE UNIQUE INDEX ... WHERE` | `indexes/0` with `#{unique => true, where => Expr}` | `{create_index, T, [cols], #{unique => true, where => Expr}}` |

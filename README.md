@@ -4,27 +4,27 @@
   <img src="priv/kura.png" alt="Kura" width="600" />
 </p>
 
-Database layer for Erlang — Ecto-equivalent abstractions in pure Erlang, targeting PostgreSQL via [pgo](https://github.com/erleans/pgo).
+Database layer for Erlang - Ecto-equivalent abstractions in pure Erlang, targeting PostgreSQL via [pgo](https://github.com/erleans/pgo).
 
 ## Features
 
-- **Schema** — behaviour-based schema definitions with type metadata
-- **Changeset** — cast external params, validate, track changes and errors
-- **Query Builder** — composable, functional query construction
-- **SQL Compiler** — parameterized SQL generation (no string interpolation)
-- **Repo** — CRUD operations with automatic type conversion and PG error mapping
-- **Associations** — `belongs_to`, `has_one`, `has_many`, `many_to_many` with preloading
-- **Embedded Schemas** — `embeds_one`, `embeds_many` stored as JSONB
-- **Multi** — atomic transaction pipelines
-- **Migrations** — DDL operations with automatic module-based discovery
-- **Enums** — atom-backed enum types stored as `VARCHAR`
-- **Telemetry** — query logging with timing
-- **Lifecycle Hooks** — before/after callbacks for insert, update, delete
-- **Audit Trail** — automatic change tracking with actor context
-- **Pagination** — offset-based and cursor-based pagination
-- **Streaming** — server-side cursor streaming for large result sets
-- **Multitenancy** — schema prefix and attribute-based tenant isolation
-- **Optimistic Locking** — concurrent update conflict detection
+- **Schema** - behaviour-based schema definitions with type metadata
+- **Changeset** - cast external params, validate, track changes and errors
+- **Query Builder** - composable, functional query construction
+- **SQL Compiler** - parameterized SQL generation (no string interpolation)
+- **Repo** - CRUD operations with automatic type conversion and PG error mapping
+- **Associations** - `belongs_to`, `has_one`, `has_many`, `many_to_many` with preloading
+- **Embedded Schemas** - `embeds_one`, `embeds_many` stored as JSONB
+- **Multi** - atomic transaction pipelines
+- **Migrations** - DDL operations with automatic module-based discovery
+- **Enums** - atom-backed enum types stored as `VARCHAR`
+- **Telemetry** - query logging with timing
+- **Lifecycle Hooks** - before/after callbacks for insert, update, delete
+- **Audit Trail** - automatic change tracking with actor context
+- **Pagination** - offset-based and cursor-based pagination
+- **Streaming** - server-side cursor streaming for large result sets
+- **Multitenancy** - schema prefix and attribute-based tenant isolation
+- **Optimistic Locking** - concurrent update conflict detection
 
 ## Quick Start
 
@@ -215,12 +215,12 @@ Optional telemetry/logging config:
 
 ## Plugins
 
-- [rebar3_kura](https://github.com/Taure/rebar3_kura) — Rebar3 plugin that auto-generates migration files from schema changes. Add a field to your schema, run `rebar3 compile`, and the migration is created for you.
-- [opentelemetry_kura](https://github.com/novaframework/opentelemetry_kura) — OpenTelemetry instrumentation. Subscribes to Kura's telemetry events and creates spans for every database query.
+- [rebar3_kura](https://github.com/Taure/rebar3_kura) - Rebar3 plugin that auto-generates migration files from schema changes. Add a field to your schema, run `rebar3 compile`, and the migration is created for you.
+- [opentelemetry_kura](https://github.com/novaframework/opentelemetry_kura) - OpenTelemetry instrumentation. Subscribes to Kura's telemetry events and creates spans for every database query.
 
 ## Examples
 
-- [pet_store](https://github.com/Taure/pet_store) — A sample REST API built with Kura and Nova demonstrating schemas, changesets, queries, migrations, and associations in practice.
+- [pet_store](https://github.com/Taure/pet_store) - A sample REST API built with Kura and Nova demonstrating schemas, changesets, queries, migrations, and associations in practice.
 
 ## Requirements
 
