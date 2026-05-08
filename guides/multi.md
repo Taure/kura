@@ -80,7 +80,11 @@ Combine two multi pipelines:
 Combined = kura_multi:append(Multi1, Multi2).
 ```
 
-Operations from `Multi2` are appended after `Multi1`. Step names must be unique across both.
+Operations from `Multi2` execute after `Multi1`. Per-multi `add_operation`
+catches duplicate step names within a single multi (raises
+`{duplicate_step, Name}`), but `append/2` does not check across the two -
+overlapping names will silently overwrite earlier results in the result
+map. Use distinct step names yourself when appending.
 
 ## Error Handling
 

@@ -106,6 +106,14 @@ This means:
 - Tests can run in any order without interference
 - No manual cleanup of test data needed
 
+### Cross-Process Tests
+
+By default, only the process that called `checkout/1` sees the sandbox
+transaction. If your test spawns helper processes that need to share the
+same in-test view of the database, either pass `#{shared => true}` to
+`checkout/2`, or call `kura_sandbox:allow/3` to grant a specific child
+process access to the owner's connection.
+
 ## Testing Constraints
 
 Unique indexes declared via `indexes/0` are automatically tested when you try to insert duplicate data:

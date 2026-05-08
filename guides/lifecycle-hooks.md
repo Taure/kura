@@ -142,7 +142,7 @@ after_insert(Record) ->
         ok ->
             {ok, Record};
         {error, Reason} ->
-            %% The INSERT is rolled back — no row is persisted
+            %% The INSERT is rolled back - no row is persisted
             {error, Reason}
     end.
 ```

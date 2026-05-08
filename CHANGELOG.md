@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Breaking**: `kura_repo` behaviour now requires `otp_app/0` callback instead of `config/0` — database configuration is read from application environment via `application:get_env(OtpApp, RepoModule)`
-- Optional `init/1` callback on `kura_repo` — modify config at runtime (read secrets from env vars, files, external services)
+- **Breaking**: `kura_repo` behaviour now requires `otp_app/0` callback instead of `config/0` - database configuration is read from application environment via `application:get_env(OtpApp, RepoModule)`
+- Optional `init/1` callback on `kura_repo` - modify config at runtime (read secrets from env vars, files, external services)
 - `kura_repo:config/1` function reads config from app env, then calls `init/1` if defined
 - All internal `get_pool/1` calls now use `kura_repo:config/1` instead of `RepoMod:config()`
 
@@ -18,9 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `telemetry` library integration — every query emits a `[kura, repo, query]` telemetry event with measurements (`duration`, `duration_us`) and metadata (`query`, `params`, `repo`, `result`, `num_rows`, `source`)
+- `telemetry` library integration - every query emits a `[kura, repo, query]` telemetry event with measurements (`duration`, `duration_us`) and metadata (`query`, `params`, `repo`, `result`, `num_rows`, `source`)
 - `build_telemetry_metadata/4` and `extract_source/1` exported from `kura_repo_worker` for testing
-- `source` field in telemetry metadata — table name extracted from the SQL query
+- `source` field in telemetry metadata - table name extracted from the SQL query
 
 ### Changed
 
@@ -30,19 +30,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Ecto-style index support — `indexes/0` optional callback on `kura_schema` for declaring indexes at the schema level
+- Ecto-style index support - `indexes/0` optional callback on `kura_schema` for declaring indexes at the schema level
 - Map-based `{create_index, Table, Cols, Opts}` migration operation with auto-generated index names (`{table}_{cols}_index`)
 - `kura_migration:index_name/2` helper for generating Ecto-style index names
-- Unique indexes declared via `indexes/0` auto-register changeset constraints — no manual `unique_constraint/3` calls needed
+- Unique indexes declared via `indexes/0` auto-register changeset constraints - no manual `unique_constraint/3` calls needed
 - New types: `index_def()`, `index_opts_map()` in `kura_migration`
 
 ## [1.5.0] - 2026-03-05
 
 ### Added
 
-- Table-level constraints in migrations — `{create_table, Table, Columns, Constraints}` 4-tuple variant supporting `{unique, [atom()]}` and `{check, binary()}` inline constraints
-- `constraints/0` optional callback on `kura_schema` behaviour — declares table-level constraints on the schema
-- Auto-registration of schema constraints on `kura_changeset:cast/4` — duplicate inserts get friendly error messages without manual `unique_constraint/3` calls
+- Table-level constraints in migrations - `{create_table, Table, Columns, Constraints}` 4-tuple variant supporting `{unique, [atom()]}` and `{check, binary()}` inline constraints
+- `constraints/0` optional callback on `kura_schema` behaviour - declares table-level constraints on the schema
+- Auto-registration of schema constraints on `kura_changeset:cast/4` - duplicate inserts get friendly error messages without manual `unique_constraint/3` calls
 
 ## [1.4.0] - 2026-03-05
 
@@ -56,10 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Dialyzer warnings in `get_field/2,3` — `maps:find/2` returns `{ok, V} | error`, not map patterns
-- Atom exhaustion risk in enum `load/2` — now validates against declared values list instead of `binary_to_atom`
-- Atom exhaustion risk in `kura_repo_worker` error handlers — NOT NULL and constraint errors fall back to `base` atom for unknown columns
-- CI running resilience tests that require docker compose control — explicitly list test modules
+- Dialyzer warnings in `get_field/2,3` - `maps:find/2` returns `{ok, V} | error`, not map patterns
+- Atom exhaustion risk in enum `load/2` - now validates against declared values list instead of `binary_to_atom`
+- Atom exhaustion risk in `kura_repo_worker` error handlers - NOT NULL and constraint errors fall back to `base` atom for unknown columns
+- CI running resilience tests that require docker compose control - explicitly list test modules
 
 ### Added
 
@@ -84,8 +84,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Changeset validators: `validate_exclusion`, `validate_subset`, `traverse_errors`, `prepare_changes`, `optimistic_lock`
 - Query extensions: subqueries in WHERE, CTEs, UNION/INTERSECT/EXCEPT, window functions (`select_expr`), query scopes
-- `kura_sandbox` — test transaction rollback for isolated concurrent tests
-- `kura_stream` — server-side cursor batching for large result sets
+- `kura_sandbox` - test transaction rollback for isolated concurrent tests
+- `kura_stream` - server-side cursor batching for large result sets
 - `insert_all` with RETURNING support
 
 ### Changed
@@ -96,16 +96,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Foreign key constraints in migrations — `references`, `on_delete`, `on_update` fields on `#kura_column{}` generate inline `REFERENCES "table"("col") ON DELETE CASCADE` etc.
-- `kura_changeset:validate_confirmation/2,3` — validates a field has a matching `<field>_confirmation` in params (for password/email confirmation flows)
-- `kura_repo_worker:exists/2` — checks if any record matches a query, returns `{ok, true | false}`
-- `kura_repo_worker:reload/3` — re-fetches a record from the database by its primary key
+- Foreign key constraints in migrations - `references`, `on_delete`, `on_update` fields on `#kura_column{}` generate inline `REFERENCES "table"("col") ON DELETE CASCADE` etc.
+- `kura_changeset:validate_confirmation/2,3` - validates a field has a matching `<field>_confirmation` in params (for password/email confirmation flows)
+- `kura_repo_worker:exists/2` - checks if any record matches a query, returns `{ok, true | false}`
+- `kura_repo_worker:reload/3` - re-fetches a record from the database by its primary key
 
 ## [1.0.4] - 2026-02-26
 
 ### Fixed
 
-- ExDoc build failure — `doc/architecture.md` was wiped by edoc before ex_doc could read it; moved to `guides/architecture.md`
+- ExDoc build failure - `doc/architecture.md` was wiped by edoc before ex_doc could read it; moved to `guides/architecture.md`
 - Removed `doc` from hex include_files (generated output, not source)
 
 ### Added
@@ -116,7 +116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Rolling deployment safety warnings — detect dangerous migration operations (`drop_column`, `rename_column`, `modify_column`, `drop_table`, `add_column NOT NULL` without default) and log warnings before execution
+- Rolling deployment safety warnings - detect dangerous migration operations (`drop_column`, `rename_column`, `modify_column`, `drop_table`, `add_column NOT NULL` without default) and log warnings before execution
 - Optional `safe/0` callback on `kura_migration` behaviour to suppress warnings when the expand-contract pattern has been followed
 - Rolling deployments guide (`guides/rolling_deployments.md`) documenting the expand-contract pattern with step-by-step examples
 
@@ -124,8 +124,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `kura_preloader` module — extracted preload logic from `kura_repo_worker` into a dedicated module
-- `kura_changeset_assoc` module — extracted `cast_assoc`, `put_assoc`, and association coercion from `kura_changeset`
+- `kura_preloader` module - extracted preload logic from `kura_repo_worker` into a dedicated module
+- `kura_changeset_assoc` module - extracted `cast_assoc`, `put_assoc`, and association coercion from `kura_changeset`
 - Comprehensive integration tests (356 total) covering all query operators, aggregates, joins, bulk ops, multi pipelines, on_conflict upserts, constraint errors, type round-trips, and all association/preload types
 
 ### Fixed
@@ -161,7 +161,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Embedded schemas (`embeds_one`, `embeds_many`) stored as JSONB with `cast_embed/2,3`
 - Many-to-many associations with `join_through` / `join_keys`, preloading, and persistence via `cast_assoc` / `put_assoc`
-- Schemaless changesets — `cast/4` accepts a types map for validation-only workflows
+- Schemaless changesets - `cast/4` accepts a types map for validation-only workflows
 - `Makefile` for local test lifecycle management (`make test` with Docker Compose)
 - Schemaless changesets guide (`guides/schemaless-changesets.md`)
 
@@ -175,12 +175,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Enum type (`{enum, [atom()]}`) — stored as `VARCHAR(255)`, cast/dump/load between atoms and binaries
-- Query telemetry via `sys.config` — `{kura, [{log, true | {M,F}}]}` with timing on every query
-- `kura_changeset:cast_assoc/2,3` — nested changeset casting for `has_many` and `has_one` associations
-- `kura_changeset:put_assoc/3` — directly attach maps or pre-built changesets as association changes
+- Enum type (`{enum, [atom()]}`) - stored as `VARCHAR(255)`, cast/dump/load between atoms and binaries
+- Query telemetry via `sys.config` - `{kura, [{log, true | {M,F}}]}` with timing on every query
+- `kura_changeset:cast_assoc/2,3` - nested changeset casting for `has_many` and `has_one` associations
+- `kura_changeset:put_assoc/3` - directly attach maps or pre-built changesets as association changes
 - `assoc_changes` field on `#kura_changeset{}` record
-- Nested insert/update — automatic transaction wrapping with FK propagation when `assoc_changes` present
+- Nested insert/update - automatic transaction wrapping with FK propagation when `assoc_changes` present
 - `kura_repo_worker:build_log_event/5` and `default_logger/0` exported for testability
 - Architecture documentation (`guides/architecture.md`)
 - Feature guides: enums, telemetry, cast_assoc (`guides/`)

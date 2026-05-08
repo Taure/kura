@@ -655,7 +655,7 @@ t_inner_join_three() ->
 t_left_join_sparse() ->
     clean(),
     seed_users(200),
-    %% Only 20 users get posts — 180 will have NULL on the right
+    %% Only 20 users get posts - 180 will have NULL on the right
     seed_posts(20, 3),
     {_P50, _P95, P99, _Avg, _Rate} = bench("LEFT JOIN (sparse, 10% have posts)", 500, fun() ->
         Q = kura_query:join(
@@ -743,7 +743,7 @@ t_self_join_pattern() ->
     clean(),
     seed_users(100),
     seed_posts(100, 5),
-    %% Find posts by same user — simulates self-referencing via join on same FK
+    %% Find posts by same user - simulates self-referencing via join on same FK
     {_P50, _P95, P99, _Avg, _Rate} = bench("self-join pattern (posts by same user)", 300, fun() ->
         Q0 = kura_query:from(kura_bench_schema_post),
         Q1 = kura_query:join(Q0, inner, kura_bench_schema_post, {user_id, user_id}, p2),
@@ -1217,7 +1217,7 @@ t_concurrent_mixed() ->
 %%======================================================================
 
 t_changeset_overhead() ->
-    %% Pure in-memory, no DB — measures changeset construction cost
+    %% Pure in-memory, no DB - measures changeset construction cost
     N = 10000,
     T1 = erlang:monotonic_time(microsecond),
     lists:foreach(

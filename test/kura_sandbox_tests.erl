@@ -138,7 +138,7 @@ t_shared_mode() ->
         receive
             go -> ok
         end,
-        %% No explicit allow needed — shared mode
+        %% No explicit allow needed - shared mode
         {ok, _} = insert_user(<<"Shared">>, <<"shared@test.com">>),
         N = count_users(),
         Self ! {done, N}

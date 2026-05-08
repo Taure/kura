@@ -517,7 +517,7 @@ optimistic_lock_from_nil_test() ->
     ?assertEqual(1, kura_changeset:get_change(CS2, lock_version)).
 
 %%----------------------------------------------------------------------
-%% validate_number — boundary and equal_to
+%% validate_number - boundary and equal_to
 %%----------------------------------------------------------------------
 
 validate_number_gte_boundary_pass_test() ->

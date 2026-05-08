@@ -16,29 +16,40 @@ Add a `lock_version` integer field to your schema:
 ```erlang
 -module(my_product).
 -behaviour(kura_schema).
+-include_lib("kura/include/kura.hrl").
 
 -export([table/0, fields/0]).
 
 table() -> ~"products".
 
 fields() ->
-    #{
-        id => #{type => integer, primary_key => true},
-        name => #{type => string},
-        price => #{type => integer},
-        lock_version => #{type => integer, default => 0}
-    }.
+    [#kura_field{name = id, type = id, primary_key = true, nullable = false},
+     #kura_field{name = name, type = string, nullable = false},
+     #kura_field{name = price, type = integer, nullable = false},
+     #kura_field{name = lock_version, type = integer,
+                 nullable = false, default = 0}].
 ```
 
 Make sure the corresponding migration includes the column:
 
 ```erlang
-kura_migration:create_table(~"products", [
-    {~"id", ~"serial PRIMARY KEY"},
-    {~"name", ~"text NOT NULL"},
-    {~"price", ~"integer NOT NULL"},
-    {~"lock_version", ~"integer NOT NULL DEFAULT 0"}
-]).
+-module(m20260101120000_create_products).
+-behaviour(kura_migration).
+-include_lib("kura/include/kura.hrl").
+
+-export([up/0, down/0]).
+
+up() ->
+    [{create_table, ~"products", [
+        #kura_column{name = id, type = id, primary_key = true},
+        #kura_column{name = name, type = string, nullable = false},
+        #kura_column{name = price, type = integer, nullable = false},
+        #kura_column{name = lock_version, type = integer,
+                     nullable = false, default = 0}
+    ]}].
+
+down() ->
+    [{drop_table, ~"products"}].
 ```
 
 ## Using Optimistic Locking

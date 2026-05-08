@@ -360,7 +360,7 @@ t_update() ->
 
 t_update_noop() ->
     {ok, User} = insert_user(<<"NoopUser">>, <<"noop@example.com">>),
-    %% Cast with same value — no changes
+    %% Cast with same value - no changes
     CS = kura_changeset:cast(kura_test_schema, User, #{<<"name">> => <<"NoopUser">>}, [name]),
     {ok, Result} = kura_test_repo:update(CS),
     ?assertEqual(maps:get(id, User), maps:get(id, Result)).
@@ -755,7 +755,7 @@ t_delete_all() ->
 
 t_insert_on_conflict_nothing() ->
     {ok, First} = insert_user(<<"OcNothing">>, <<"ocnothing@example.com">>),
-    %% Try to insert same email — should do nothing
+    %% Try to insert same email - should do nothing
     CS = kura_changeset:cast(
         kura_test_schema,
         #{},
@@ -769,7 +769,7 @@ t_insert_on_conflict_nothing() ->
 
 t_insert_on_conflict_replace() ->
     {ok, _} = insert_user(<<"OcReplace">>, <<"ocreplace@example.com">>),
-    %% Insert same email — should update name
+    %% Insert same email - should update name
     CS = kura_changeset:cast(
         kura_test_schema,
         #{},
@@ -886,7 +886,7 @@ t_schema_constraints() ->
         [chat_id, user_id]
     ),
     {ok, _} = kura_test_repo:insert(CS1),
-    %% Insert duplicate — should get friendly error without manual unique_constraint call
+    %% Insert duplicate - should get friendly error without manual unique_constraint call
     CS2 = kura_changeset:cast(
         kura_test_participant_schema,
         #{},

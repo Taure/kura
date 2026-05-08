@@ -35,7 +35,7 @@ You can combine pagination with any query filters or ordering:
 ```erlang
 Q = kura_query:from(my_user),
 Q1 = kura_query:where(Q, {active, true}),
-Q2 = kura_query:order_by(Q1, {name, asc}),
+Q2 = kura_query:order_by(Q1, [{name, asc}]),
 {ok, Page} = kura_paginator:paginate(my_repo, Q2, #{page => 1, page_size => 10}).
 ```
 

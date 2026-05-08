@@ -53,7 +53,12 @@ kura_types:load({enum, [draft, published]}, ~"draft").
 %% {ok, draft}
 ```
 
-Load uses `binary_to_existing_atom/2` first, falling back to `binary_to_atom/2` if the atom doesn't exist yet. This fallback ensures data migration safety -- if you remove a value from your enum list, existing rows can still be loaded without crashing.
+Load uses `binary_to_existing_atom/2` and validates against the schema's
+allowed list. If the value in the database is not in the current enum
+list (or the atom does not yet exist in the VM), load returns
+`{error, ~"unknown enum value"}` rather than crashing. Be careful when
+removing values from an enum list - rows already containing the removed
+value will fail to load until you migrate them.
 
 ## Querying
 

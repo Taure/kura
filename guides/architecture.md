@@ -64,7 +64,7 @@ params and manages the `assoc_changes` list on the parent changeset.
 Composable, functional query builder. Queries are built by chaining
 calls like `from/1`, `where/2`, `order_by/2`, `limit/2`, and
 `preload/2`. The query record accumulates conditions without executing
-anything — execution happens in `kura_repo_worker`.
+anything - execution happens in `kura_repo_worker`.
 
 ### `kura_query_compiler`
 
@@ -74,10 +74,17 @@ bulk operations. Supports fragments for raw SQL escape hatches.
 
 ### `kura_repo` and `kura_repo_worker`
 
-`kura_repo` is a thin behaviour — user repo modules implement `otp_app/0`
-and delegate operations to `kura_repo_worker`. Database configuration is
-read from application environment via `application:get_env(OtpApp, RepoModule)`.
-The worker handles:
+`kura_repo` is a thin behaviour - user repo modules implement `otp_app/0`
+(plus optional `init/1` to mutate config at runtime). The repo module itself
+holds no CRUD callbacks; operations are invoked as
+`kura_repo_worker:insert(MyRepo, CS)` etc., or wrapped with thin
+delegations like `insert(CS) -> kura_repo_worker:insert(?MODULE, CS).`
+in the user's repo module.
+
+Database configuration is read from `application:get_env(kura, ...)` first
+(`host`, `port`, `database`, `user`, `password`, `pool_size`, `ssl`,
+`socket_options`). The legacy `application:get_env(OtpApp, RepoModule)`
+form is still accepted as a fallback. The worker handles:
 
 - Query execution via `pgo`
 - Type conversion between Erlang terms and PostgreSQL values (dump/load)
@@ -109,20 +116,46 @@ PG), and `load` (PG → internal). Supported types include `id`, `integer`,
 ### `kura_migration` and `kura_migrator`
 
 `kura_migration` is a behaviour for writing migrations with `up/0` and
-`down/0` callbacks. `kura_migrator` discovers migration modules,
-maintains a `schema_migrations` table, and applies pending migrations
-in order.
+`down/0` callbacks (plus optional `safe/0` to acknowledge intentionally
+unsafe operations during rolling deployments). `kura_migrator` discovers
+migration modules, maintains a `schema_migrations` table, and applies
+pending migrations in order. All migrations run inside a single
+transaction guarded by a PostgreSQL advisory lock, so concurrent nodes
+do not race.
+
+## Other Modules
+
+- **`kura_db`** - central wrapper around `pgo`. All query execution,
+  transactions, pool lookup, sandbox routing, and telemetry events go
+  through here.
+- **`kura_type`** - behaviour for user-defined custom field types
+  (`cast/1`, `dump/1`, `load/1`, `pg_type/0`).
+- **`kura_query_cache`** - ETS-backed cache for compiled SQL strings,
+  keyed by query shape.
+- **`kura_paginator`** - offset and cursor pagination on top of
+  `kura_query`.
+- **`kura_stream`** - server-side cursor streaming for very large
+  result sets.
+- **`kura_tenant`** - process-dictionary-scoped schema prefix for
+  multi-tenant deployments.
+- **`kura_sandbox`** - test sandbox that runs each test in its own
+  transaction and rolls back on completion.
+- **`kura_audit`** / **`kura_audit_log`** - automatic change tracking
+  with actor context, written to a separate audit table.
+- **`kura_app`** / **`kura_sup`** - OTP application and root
+  supervisor. The application callback also starts the configured pool
+  and seeds `pg_types` defaults.
 
 ## Data Flow
 
 A typical insert operation flows through the system like this:
 
-1. User calls `MyRepo:insert(Changeset)`
-2. `kura_repo_worker:insert/2` validates the changeset
-3. If `assoc_changes` is non-empty, wraps everything in a transaction
-4. `kura_query_compiler` generates `INSERT INTO ... RETURNING *`
-5. `kura_types` dumps each changed field to its PG representation
-6. `pgo` executes the query
-7. `kura_types` loads the returned row back into Erlang terms
-8. If there are association changes, child records are persisted with the parent's PK set as their foreign key
-9. On PG constraint errors, the error is mapped back to a changeset error via declared constraints
+1. User calls `kura_repo_worker:insert(MyRepo, Changeset)` (or a thin wrapper on the repo module).
+2. If the changeset is invalid, returns `{error, CS}` immediately.
+3. If `assoc_changes` is non-empty, or the schema declares lifecycle hooks that need a transaction, the operation is wrapped in `kura_db:transaction_ok/2`.
+4. `kura_types:dump/2` converts each changed field to its PostgreSQL representation.
+5. `kura_query_compiler:insert/4` generates a parameterized `INSERT ... RETURNING ...` statement.
+6. `pgo` executes the query through the configured pool.
+7. `kura_db:load_row/2` loads the returned row back into Erlang terms.
+8. Any association changes are persisted with the parent's primary key set as their foreign key.
+9. PostgreSQL constraint errors are mapped back to changeset errors via the constraints declared on the changeset.

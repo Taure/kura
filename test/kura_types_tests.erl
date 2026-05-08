@@ -150,9 +150,9 @@ cast_enum_test_() ->
         ?_assertMatch(
             {error, _}, kura_types:cast({enum, [active, inactive]}, <<"nonexistent_atom_xyz">>)
         ),
-        %% list enum — invalid existing atom
+        %% list enum - invalid existing atom
         ?_assertMatch({error, _}, kura_types:cast({enum, [active, inactive]}, "banned")),
-        %% list enum — nonexistent atom
+        %% list enum - nonexistent atom
         ?_assertMatch(
             {error, _}, kura_types:cast({enum, [active, inactive]}, "nonexistent_atom_list_xyz")
         )
@@ -179,7 +179,7 @@ cast_error_unknown_type_test() ->
     ?assertMatch({error, _}, kura_types:cast(integer, make_ref())).
 
 %%----------------------------------------------------------------------
-%% dump — all types
+%% dump - all types
 %%----------------------------------------------------------------------
 
 dump_null_test() ->
@@ -244,7 +244,7 @@ dump_error_test() ->
     ?assertMatch({error, _}, kura_types:dump(integer, <<"not_an_int">>)).
 
 %%----------------------------------------------------------------------
-%% load — all types
+%% load - all types
 %%----------------------------------------------------------------------
 
 load_null_test() ->

@@ -1,5 +1,5 @@
 {application, kura, [
-    {description, "Database layer for Erlang — Ecto-equivalent abstractions"},
+    {description, "Database layer for Erlang - Ecto-equivalent abstractions"},
     {vsn, "git"},
     {registered, []},
     {mod, {kura_app, []}},

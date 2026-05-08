@@ -28,9 +28,9 @@ Kura detects these dangerous operations at migration time and logs warnings.
 
 Split dangerous migrations into safe steps across multiple deployments:
 
-1. **Expand** — Add the new structure alongside the old
-2. **Deploy** — Roll out code that works with both old and new structures
-3. **Contract** — Remove the old structure once all nodes use the new code
+1. **Expand** - Add the new structure alongside the old
+2. **Deploy** - Roll out code that works with both old and new structures
+3. **Contract** - Remove the old structure once all nodes use the new code
 
 ### Drop a Column
 
@@ -152,6 +152,6 @@ Each entry in the `safe/0` list suppresses the warning for a specific operation:
 Warnings are emitted via `logger:warning/2` before each migration runs:
 
 ```text
-Kura: unsafe operation in m20250601_drop_email: drop_column email on "users" —
+Kura: unsafe operation in m20250601_drop_email: drop_column email on "users" -
   Deploy code that stops using the column first, then drop in a later migration
 ```

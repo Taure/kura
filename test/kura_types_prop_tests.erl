@@ -4,7 +4,7 @@
 -include_lib("proper/include/proper.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
-%% eqWAlizer: proper macros generate term() — suppress affected functions
+%% eqWAlizer: proper macros generate term() - suppress affected functions
 -eqwalizer({nowarn_function, gen_binary_string/0}).
 -eqwalizer({nowarn_function, gen_uuid_hex/0}).
 -eqwalizer({nowarn_function, prop_uuid_36_roundtrip/0}).
@@ -19,7 +19,7 @@
 -define(NUMTESTS, 200).
 
 %%----------------------------------------------------------------------
-%% EUnit wrapper — runs PropEr tests inside EUnit
+%% EUnit wrapper - runs PropEr tests inside EUnit
 %%----------------------------------------------------------------------
 
 property_test_() ->

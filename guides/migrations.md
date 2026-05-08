@@ -29,7 +29,7 @@ down() ->
     [{drop_table, ~"users"}].
 ```
 
-Place migration files in `src/migrations/` (or any subdirectory under `src/`). Kura automatically discovers them by scanning the application's compiled modules for names matching the `m<YYYYMMDDHHMMSS>_<name>` pattern — no configuration needed.
+Place migration files in `src/migrations/` (or any subdirectory under `src/`). Kura automatically discovers them by scanning the application's compiled modules for names matching the `m<YYYYMMDDHHMMSS>_<name>` pattern - no configuration needed.
 
 Since migrations are regular `.erl` files in `src/`, they are compiled normally by rebar3. If you use `{src_dirs, [{"src", [{recursive, true}]}]}` in your `rebar.config`, subdirectories like `src/migrations/` are included automatically.
 
@@ -47,9 +47,9 @@ Since migrations are regular `.erl` files in `src/`, they are compiled normally 
 ```
 
 Column options:
-- `primary_key` — `true | false` (default: `false`)
-- `nullable` — `true | false` (default: `true`)
-- `default` — literal value (integer, float, binary, boolean) or `undefined` for none
+- `primary_key` - `true | false` (default: `false`)
+- `nullable` - `true | false` (default: `true`)
+- `default` - literal value (integer, float, binary, boolean) or `undefined` for none
 
 ### Drop Table
 
@@ -115,7 +115,15 @@ The index name is auto-generated via `kura_migration:index_name/2`. If you need 
 {ok, AppliedVersions} = kura_migrator:migrate(my_repo).
 ```
 
-Each migration runs in its own transaction. If a migration fails, it is rolled back and subsequent migrations are not attempted.
+All pending migrations run inside a single PostgreSQL transaction guarded by
+`pg_advisory_xact_lock`, so concurrent nodes never run migrations in parallel.
+If any migration fails, the entire batch rolls back and `{error, Reason}` is
+returned. The `schema_migrations` table is updated row-by-row inside the same
+transaction, so partial progress is impossible.
+
+By default, `migrate/1` also calls `ensure_database/1` first, creating the
+configured database if it does not yet exist. To disable, set
+`{kura, [{ensure_database, false}]}` in your sys.config.
 
 ## Rolling Back
 
@@ -136,7 +144,7 @@ Status = kura_migrator:status(my_repo).
 
 ## Schema-Level Indexes
 
-Instead of manually writing index operations in migrations, you can declare indexes on your schema module. This is the recommended approach — it keeps index definitions alongside your schema and allows [rebar3_kura](https://github.com/Taure/rebar3_kura) to auto-generate the migration operations for you.
+Instead of manually writing index operations in migrations, you can declare indexes on your schema module. This is the recommended approach - it keeps index definitions alongside your schema and allows [rebar3_kura](https://github.com/Taure/rebar3_kura) to auto-generate the migration operations for you.
 
 ```erlang
 -module(my_user).
@@ -159,7 +167,7 @@ indexes() ->
      {[phone_number], #{unique => true, where => ~"phone_number IS NOT NULL"}}].
 ```
 
-Unique indexes declared via `indexes/0` are automatically registered as changeset constraints — no manual `unique_constraint/2` calls needed. When a PostgreSQL unique violation fires (e.g. `users_email_index`), it maps to `{email, <<"has already been taken">>}` on the changeset.
+Unique indexes declared via `indexes/0` are automatically registered as changeset constraints - no manual `unique_constraint/2` calls needed. When a PostgreSQL unique violation fires (e.g. `users_email_index`), it maps to `{email, <<"has already been taken">>}` on the changeset.
 
 ## Schema Migrations Table
 

@@ -109,9 +109,18 @@ Q2 = kura_query:offset(Q1, 20).
 
 ## GROUP BY / HAVING
 
+`having/2` accepts the same condition shapes as `where/2`. To filter on an
+aggregate, use a fragment:
+
 ```erlang
 Q1 = kura_query:group_by(Q, [role]),
-Q2 = kura_query:having(Q1, {count, '>', 5}).
+Q2 = kura_query:having(Q1, {fragment, ~"count(*) > ?", [5]}).
+```
+
+A non-aggregate `HAVING` works with the regular tuple form too:
+
+```erlang
+kura_query:having(Q1, {age, '>', 5}).
 ```
 
 ## DISTINCT
@@ -139,12 +148,28 @@ kura_query:prefix(Q, ~"my_schema").
 
 ## JOINs
 
+The `On` argument is `{LeftCol, RightCol}`. `LeftCol` is on the previous
+table (the `from` for the first join, or the last joined table for chained
+joins). `RightCol` is on the joined table.
+
 ```erlang
 Q = kura_query:from(my_user),
-Q1 = kura_query:join(Q, inner, posts, {user_id, id}).
+Q1 = kura_query:join(Q, inner, my_post, {id, user_id}).
+%% => SELECT ... FROM "my_user"
+%%      INNER JOIN "my_post" ON "my_user"."id" = "my_post"."user_id"
 
 %% With alias
-Q1 = kura_query:join(Q, left, posts, {user_id, id}, p).
+Q1 = kura_query:join(Q, left, my_post, {id, user_id}, p).
+%% => ... LEFT JOIN "my_post" AS "p" ON ...
+```
+
+For chained joins the left side automatically advances to the just-joined
+table, so column names are taken from there:
+
+```erlang
+Q1 = kura_query:join(Q, inner, my_post, {id, user_id}),
+Q2 = kura_query:join(Q1, inner, my_comment, {id, post_id}).
+%% => ... INNER JOIN "my_comment" ON "my_post"."id" = "my_comment"."post_id"
 ```
 
 Join types: `inner`, `left`, `right`, `full`.

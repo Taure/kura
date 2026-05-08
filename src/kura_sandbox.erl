@@ -4,7 +4,7 @@ Test sandbox that wraps each test in a rolled-back transaction.
 
 Supports three modes:
 
-**Single-process** (default) — the test process owns the connection:
+**Single-process** (default) - the test process owns the connection:
 
 ```erlang
 init_per_testcase(_TestCase, Config) ->
@@ -16,14 +16,14 @@ end_per_testcase(_TestCase, _Config) ->
     ok.
 ```
 
-**Allow** — let spawned processes share the sandbox connection:
+**Allow** - let spawned processes share the sandbox connection:
 
 ```erlang
 kura_sandbox:checkout(my_repo),
 kura_sandbox:allow(my_repo, self(), WorkerPid).
 ```
 
-**Shared** — all processes use a single sandbox connection (simplest
+**Shared** - all processes use a single sandbox connection (simplest
 for tests that spawn many processes):
 
 ```erlang
@@ -65,7 +65,7 @@ checkout(RepoMod) ->
 Check out a sandbox connection.
 
 Options:
-- `shared` — when `true`, all processes use this connection (default: `false`)
+- `shared` - when `true`, all processes use this connection (default: `false`)
 """.
 -spec checkout(module(), map()) -> ok.
 checkout(RepoMod, Opts) ->

@@ -32,7 +32,7 @@ For backward compatibility, Kura also supports per-app config via
 `application:get_env(OtpApp, RepoModule)`. The kura app env is checked
 first.
 
-Optionally implement `init/1` to modify config at runtime — useful for reading
+Optionally implement `init/1` to modify config at runtime - useful for reading
 secrets from files, environment variables, or external services:
 
 ```erlang

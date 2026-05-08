@@ -69,7 +69,9 @@ Defaults: `host` = `"localhost"`, `port` = `5432`, `user` = `"postgres"`,
 
 ## Define a Migration
 
-Create a migration module in `priv/migrations/`:
+Create a migration module under `src/` (any subdirectory works, e.g. `src/migrations/`). Migrations are regular Erlang modules and must be compiled by rebar3 - files in `priv/` are not compiled and will not be discovered.
+
+The module name must match `m<YYYYMMDDHHMMSS>_<name>`:
 
 ```erlang
 -module(m20250101120000_create_users).
@@ -93,12 +95,21 @@ down() ->
      {drop_table, ~"users"}].
 ```
 
-## Start the Pool & Run Migrations
+If your `rebar.config` does not already enable recursive `src/` compilation, add it so subdirectories are picked up:
 
 ```erlang
-ok = kura_repo_worker:start(my_repo),
+{erl_opts, [{src_dirs, [{"src", [{recursive, true}]}]}]}.
+```
+
+## Run Migrations
+
+Once the `kura` application starts, the connection pool is up. Run pending migrations with:
+
+```erlang
 {ok, _Versions} = kura_migrator:migrate(my_repo).
 ```
+
+If you start the pool manually outside of `kura_app` (for example in a test setup), use `kura_repo_worker:start/1` first.
 
 ## Basic CRUD
 

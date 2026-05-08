@@ -54,7 +54,7 @@ across multiple nodes.
 ]).
 -endif.
 
-%% eqWAlizer: operation() union has >7 variants — exceeds clause narrowing limit
+%% eqWAlizer: operation() union has >7 variants - exceeds clause narrowing limit
 -eqwalizer({nowarn_function, compile_operation/1}).
 
 -doc "Run all pending migrations in order.".
@@ -778,7 +778,7 @@ log_warnings(Module, Warnings) ->
     lists:foreach(
         fun(#{op := Op, target := Target, safe_alt := SafeAlt} = Warning) ->
             logger:warning(
-                "Kura: unsafe operation in ~p: ~s ~p~s — ~s",
+                "Kura: unsafe operation in ~p: ~s ~p~s - ~s",
                 [
                     Module,
                     Op,
