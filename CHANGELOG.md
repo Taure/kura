@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- `kura_pool` behaviour — pluggable connection-pool contract with `start_pool/2`, `stop_pool/1`, `checkout/2`, `checkin/2`, `give_away/3`, optional `resize/2`. The same behaviour fits Postgres pools (caller-driven socket I/O), gen_server-style driver pools (MySQL, HTTP clients), and embedded backends. Includes a `with_conn/3,4` helper for the lease-and-return-around-a-fun pattern.
+- `kura_pool_pgo` — default `kura_pool` implementation, a thin adapter on top of `pgo_pool`. Zero per-query overhead beyond pgo's own (caller-driven I/O on the socket, ETS-holder transfer for checkout/checkin). `give_away/3` transfers ownership of pgo's per-conn holder ETS so test fixtures can hand a connection between processes.
+
 ## [1.8.0] - 2026-03-06
 
 ### Changed
