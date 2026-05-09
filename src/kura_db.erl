@@ -54,7 +54,7 @@ query(RepoMod, SQL, Params) ->
 run_query(Pool, SQL, Params) ->
     case kura_sandbox:get_conn(Pool) of
         {ok, SandboxConn} ->
-            pgo:query(SQL, Params, #{decode_opts => ?DECODE_OPTS}, SandboxConn);
+            translate_result(epgsql:equery(SandboxConn, SQL, Params), SQL);
         not_found ->
             case get(?TX_CONN_KEY) of
                 {Conn, Pool} ->

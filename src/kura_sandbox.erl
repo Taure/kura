@@ -43,6 +43,7 @@ No test data persists.
     get_conn/1
 ]).
 
+-define(POOL_IMPL, kura_pool_hnc).
 -define(TABLE, kura_sandbox_registry).
 
 -doc "Create the sandbox ETS table. Call once before tests run.".
@@ -71,19 +72,17 @@ Options:
 checkout(RepoMod, Opts) ->
     ensure_started(),
     Pool = get_pool(RepoMod),
-    {ok, Ref, Conn} = pgo:checkout(Pool),
+    {ok, Worker, Token} = ?POOL_IMPL:checkout(Pool, #{}),
+    {ok, Conn} = kura_pg_conn:get_conn(Worker),
     Self = self(),
 
     case maps:get(shared, Opts, false) of
         true ->
-            ets:insert(?TABLE, {{Pool, shared}, {Ref, Conn, Self}});
+            ets:insert(?TABLE, {{Pool, shared}, {Token, Conn, Self}});
         false ->
-            ets:insert(?TABLE, {{Pool, Self}, {Ref, Conn}})
+            ets:insert(?TABLE, {{Pool, Self}, {Token, Conn}})
     end,
-
-    %% Set process dict so pgo:query in this process uses the connection
-    erlang:put(pgo_transaction_connection, Conn),
-    _ = pgo:query(~"BEGIN", [], #{pool => Pool}),
+    {ok, [], []} = epgsql:squery(Conn, ~"BEGIN"),
     ok.
 
 -doc "Roll back the sandbox transaction and return the connection to the pool.".
@@ -92,16 +91,16 @@ checkin(RepoMod) ->
     Pool = get_pool(RepoMod),
     Self = self(),
 
-    {Ref, Conn} =
+    {Token, Conn} =
         case ets:lookup(?TABLE, {Pool, Self}) of
-            [{_, {R, C}}] ->
+            [{_, {T, C}}] ->
                 ets:delete(?TABLE, {Pool, Self}),
-                {R, C};
+                {T, C};
             [] ->
                 case ets:lookup(?TABLE, {Pool, shared}) of
-                    [{_, {R, C, Self}}] ->
+                    [{_, {T, C, Self}}] ->
                         ets:delete(?TABLE, {Pool, shared}),
-                        {R, C};
+                        {T, C};
                     _ ->
                         {undefined, undefined}
                 end
@@ -111,9 +110,8 @@ checkin(RepoMod) ->
         undefined ->
             ok;
         _ ->
-            _ = pgo:query(~"ROLLBACK", [], #{pool => Pool}),
-            erlang:erase(pgo_transaction_connection),
-            pgo:checkin(Ref, Conn),
+            _ = epgsql:squery(Conn, ~"ROLLBACK"),
+            ?POOL_IMPL:checkin(Pool, Token),
             %% Clean up any allowances for this owner
             ets:match_delete(?TABLE, {{Pool, '_', allowed}, Self}),
             ok
@@ -134,9 +132,9 @@ allow(RepoMod, OwnerPid, ChildPid) ->
 Look up a sandbox connection for the current process and pool.
 
 Returns `{ok, Conn}` if a sandbox connection exists (owned, allowed,
-or shared), `not_found` otherwise. Called from `kura_repo_worker`.
+or shared), `not_found` otherwise. Called from `kura_db:run_query`.
 """.
--spec get_conn(atom()) -> {ok, term()} | not_found.
+-spec get_conn(atom()) -> {ok, pid()} | not_found.
 get_conn(Pool) ->
     case ets:whereis(?TABLE) of
         undefined -> not_found;
@@ -151,20 +149,20 @@ lookup_conn(Pool) ->
     Self = self(),
     %% 1. Direct owner
     case ets:lookup(?TABLE, {Pool, Self}) of
-        [{_, {_Ref, Conn}}] ->
+        [{_, {_Token, Conn}}] ->
             {ok, Conn};
         [] ->
             %% 2. Allowed by an owner
             case ets:lookup(?TABLE, {Pool, Self, allowed}) of
                 [{_, OwnerPid}] ->
                     case ets:lookup(?TABLE, {Pool, OwnerPid}) of
-                        [{_, {_Ref, Conn}}] -> {ok, Conn};
+                        [{_, {_Token, Conn}}] -> {ok, Conn};
                         [] -> not_found
                     end;
                 [] ->
                     %% 3. Shared mode
                     case ets:lookup(?TABLE, {Pool, shared}) of
-                        [{_, {_Ref, Conn, _Owner}}] -> {ok, Conn};
+                        [{_, {_Token, Conn, _Owner}}] -> {ok, Conn};
                         [] -> not_found
                     end
             end
