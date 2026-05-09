@@ -31,14 +31,31 @@ See `pgo:pool_config/0` for the full list.
 """.
 
 -behaviour(kura_pool).
+-behaviour(kura_capabilities).
 
 -export([
     start_pool/2,
     stop_pool/1,
     checkout/2,
     checkin/2,
-    give_away/3
+    give_away/3,
+    capabilities/0
 ]).
+
+-spec capabilities() -> kura_capabilities:capability_set().
+capabilities() ->
+    [
+        returning,
+        jsonb,
+        arrays,
+        advisory_locks,
+        listen_notify,
+        select_for_update_skip_locked,
+        partial_indexes,
+        transactions,
+        savepoints,
+        prepared_statements
+    ].
 
 -spec start_pool(kura_pool:name(), kura_pool:opts()) -> {ok, pid()} | {error, term()}.
 start_pool(Name, Opts) ->

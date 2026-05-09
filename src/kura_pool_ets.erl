@@ -36,6 +36,7 @@ ok = kura_pool_ets:stop_pool(my_test_pool).
 """.
 
 -behaviour(kura_pool).
+-behaviour(kura_capabilities).
 
 -export([
     start_pool/2,
@@ -43,13 +44,24 @@ ok = kura_pool_ets:stop_pool(my_test_pool).
     checkout/2,
     checkin/2,
     give_away/3,
-    resize/2
+    resize/2,
+    capabilities/0
 ]).
 
 -export_type([conn/0]).
 
 -doc "Opaque connection ref. Tests may pattern-match on it; production code must not.".
 -type conn() :: reference().
+
+-doc """
+Empty capability set. This pool does not speak any database protocol,
+so it supports none of the standard SQL feature flags. Consumers that
+require any capability via `kura_capabilities:require/2` will refuse
+to start when configured against this pool, which is the correct
+behavior for a fake test pool.
+""".
+-spec capabilities() -> kura_capabilities:capability_set().
+capabilities() -> [].
 
 %%----------------------------------------------------------------------
 %% kura_pool callbacks

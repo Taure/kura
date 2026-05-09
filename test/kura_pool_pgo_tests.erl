@@ -15,6 +15,8 @@ with_pool_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(_) ->
         [
             {"behaviour declares kura_pool", fun behaviour_declared/0},
+            {"behaviour declares kura_capabilities", fun capabilities_behaviour_declared/0},
+            {"capabilities lists the standard PG feature set", fun capabilities_set/0},
             {"checkout returns a usable pgo conn", fun checkout_returns_conn/0},
             {"with_conn runs the fun and checks back in", fun with_conn_roundtrip/0},
             {"sequential checkouts reuse a connection from the pool", fun sequential_checkouts/0},
@@ -40,6 +42,32 @@ behaviour_declared() ->
     Attrs = kura_pool_pgo:module_info(attributes),
     Behaviours = lists:append([V || {behaviour, V} <- Attrs] ++ [V || {behavior, V} <- Attrs]),
     ?assert(lists:member(kura_pool, Behaviours)).
+
+capabilities_behaviour_declared() ->
+    Attrs = kura_pool_pgo:module_info(attributes),
+    Behaviours = lists:append([V || {behaviour, V} <- Attrs] ++ [V || {behavior, V} <- Attrs]),
+    ?assert(lists:member(kura_capabilities, Behaviours)).
+
+capabilities_set() ->
+    %% require/2 with the full standard PG set should pass.
+    ?assertEqual(
+        ok,
+        kura_capabilities:require(
+            kura_pool_pgo,
+            [
+                returning,
+                jsonb,
+                arrays,
+                advisory_locks,
+                listen_notify,
+                select_for_update_skip_locked,
+                partial_indexes,
+                transactions,
+                savepoints,
+                prepared_statements
+            ]
+        )
+    ).
 
 checkout_returns_conn() ->
     {ok, Conn, Token} = kura_pool_pgo:checkout(?POOL, #{}),
