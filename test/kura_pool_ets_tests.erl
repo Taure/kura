@@ -187,3 +187,23 @@ with_conn_checks_in_on_throw_test() ->
     after
         kura_pool_ets:stop_pool(Name)
     end.
+
+%%----------------------------------------------------------------------
+%% kura_capabilities integration
+%%----------------------------------------------------------------------
+
+declares_kura_capabilities_behaviour_test() ->
+    Attrs = kura_pool_ets:module_info(attributes),
+    Behaviours = lists:append([V || {behaviour, V} <- Attrs] ++ [V || {behavior, V} <- Attrs]),
+    ?assert(lists:member(kura_capabilities, Behaviours)).
+
+capabilities_is_empty_test() ->
+    %% This pool runs no SQL and supports no DB features.
+    ?assertEqual([], kura_capabilities:supported(kura_pool_ets)).
+
+require_any_capability_returns_missing_test() ->
+    %% Consumers that need any feature should refuse to start on this pool.
+    ?assertEqual(
+        {error, {missing_capabilities, [returning]}},
+        kura_capabilities:require(kura_pool_ets, [returning])
+    ).
