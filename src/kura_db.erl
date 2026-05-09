@@ -32,7 +32,6 @@ pool lookup, sandbox support, telemetry, and type loading.
 ]).
 -endif.
 
--define(DECODE_OPTS, [return_rows_as_maps, column_name_as_atom]).
 -define(POOL_IMPL, kura_pool_hnc).
 -define(TX_CONN_KEY, {?MODULE, tx_conn}).
 
@@ -53,11 +52,11 @@ query(RepoMod, SQL, Params) ->
 
 run_query(Pool, SQL, Params) ->
     case kura_sandbox:get_conn(Pool) of
-        {ok, SandboxConn} ->
+        {ok, SandboxConn} when is_pid(SandboxConn) ->
             translate_result(epgsql:equery(SandboxConn, SQL, Params), SQL);
         not_found ->
             case get(?TX_CONN_KEY) of
-                {Conn, Pool} ->
+                {Conn, Pool} when is_pid(Conn) ->
                     translate_result(epgsql:equery(Conn, SQL, Params), SQL);
                 _ ->
                     kura_pool:with_conn(?POOL_IMPL, Pool, fun(Worker) ->
@@ -76,7 +75,7 @@ run_on_worker(Worker, SQL, Params) ->
 -spec query_pool(atom(), iodata(), [term()]) -> map() | {error, term()}.
 query_pool(Pool, SQL, Params) ->
     case get(?TX_CONN_KEY) of
-        {Conn, Pool} ->
+        {Conn, Pool} when is_pid(Conn) ->
             translate_result(epgsql:equery(Conn, SQL, Params), SQL);
         _ ->
             kura_pool:with_conn(?POOL_IMPL, Pool, fun(Worker) ->
@@ -291,7 +290,7 @@ extract_num_rows(_) -> 0.
 
 -doc false.
 -spec translate_result(term(), iodata()) -> map() | {error, term()}.
-translate_result({ok, Cols, Rows}, SQL) ->
+translate_result({ok, Cols, Rows}, SQL) when is_list(Cols), is_list(Rows) ->
     #{
         command => command_from_sql(SQL),
         num_rows => length(Rows),
@@ -303,7 +302,9 @@ translate_result({ok, Count}, SQL) when is_integer(Count) ->
         num_rows => Count,
         rows => []
     };
-translate_result({ok, Count, Cols, Rows}, SQL) ->
+translate_result({ok, Count, Cols, Rows}, SQL) when
+    is_integer(Count), is_list(Cols), is_list(Rows)
+->
     #{
         command => command_from_sql(SQL),
         num_rows => Count,
@@ -317,13 +318,20 @@ translate_result({error, _} = Err, _SQL) ->
 rows_as_maps(_Cols, []) ->
     [];
 rows_as_maps(Cols, Rows) ->
-    Specs = [{binary_to_atom(C#column.name, utf8), C#column.type} || C <- Cols],
-    [row_to_map(Specs, R) || R <- Rows].
+    Specs = [{column_atom(C#column.name), C#column.type} || C <- Cols],
+    [row_to_map(Specs, tuple_to_list(R), #{}) || R <- Rows].
 
-row_to_map(Specs, Row) ->
-    maps:from_list(
-        [{N, decode_value(T, V)} || {{N, T}, V} <- lists:zip(Specs, tuple_to_list(Row))]
-    ).
+row_to_map([], [], Acc) ->
+    Acc;
+row_to_map([{N, T} | Specs], [V | Vs], Acc) ->
+    row_to_map(Specs, Vs, Acc#{N => decode_value(T, V)}).
+
+column_atom(Bin) ->
+    try
+        binary_to_existing_atom(Bin, utf8)
+    catch
+        error:badarg -> Bin
+    end.
 
 decode_value(_, null) ->
     null;
@@ -373,12 +381,19 @@ command_from_sql(SQL) ->
         )
     of
         {match, [Cmd]} ->
-            binary_to_atom(Cmd, utf8);
+            safe_command_atom(Cmd);
         nomatch ->
             case re:run(Lower, ~"^\\s*(\\w+)", [{capture, [1], binary}]) of
-                {match, [Cmd]} -> binary_to_atom(Cmd, utf8);
+                {match, [Cmd]} -> safe_command_atom(Cmd);
                 nomatch -> unknown
             end
+    end.
+
+safe_command_atom(Bin) ->
+    try
+        binary_to_existing_atom(Bin, utf8)
+    catch
+        error:badarg -> unknown
     end.
 
 translate_error(#error{

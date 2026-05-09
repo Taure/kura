@@ -15,13 +15,13 @@ stop(_State) ->
 -spec ensure_pool() -> ok.
 ensure_pool() ->
     case application:get_env(kura, repo) of
-        {ok, Repo} ->
+        {ok, Repo} when is_atom(Repo) ->
             Config = pool_config(),
             case kura_pool_hnc:start_pool(Repo, Config) of
                 {ok, _Pid} -> ok;
                 {error, {already_started, _Pid}} -> ok
             end;
-        undefined ->
+        _ ->
             ok
     end.
 

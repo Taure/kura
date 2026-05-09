@@ -94,7 +94,7 @@ end_per_suite(_Config) ->
     ok.
 
 init_per_testcase(_TC, Config) ->
-    case pgo_sup:start_child(?LIVE_POOL, pool_config()) of
+    case kura_pool_hnc:start_pool(?LIVE_POOL, pool_config()) of
         {ok, _} -> ok;
         {error, {already_started, _}} -> ok
     end,
@@ -260,13 +260,14 @@ set_default_repo_config() ->
 
 pool_config() ->
     #{
-        host => "localhost",
-        port => 5555,
-        database => "kura_test",
-        user => "postgres",
-        password => "root",
-        pool_size => 2,
-        decode_opts => [return_rows_as_maps, column_name_as_atom]
+        connection => #{
+            host => "localhost",
+            port => 5555,
+            database => "kura_test",
+            username => "postgres",
+            password => "root"
+        },
+        pool_opts => #{size => {2, 2}}
     }.
 
 drain_events(Filter) ->

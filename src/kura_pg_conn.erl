@@ -59,7 +59,7 @@ Future commits will add a per-connection prepared-statement cache and
 Start a connection worker linked to the caller. `Config` is passed through to
 `epgsql:connect/1` after stripping kura-specific keys (`ping_interval`).
 """.
--spec start_link(config()) -> {ok, pid()} | {error, term()}.
+-spec start_link(config()) -> gen_server:start_ret().
 start_link(Config) ->
     gen_server:start_link(?MODULE, Config, []).
 
@@ -68,7 +68,10 @@ Return the underlying epgsql connection pid for direct use by adapter code.
 """.
 -spec get_conn(pid()) -> {ok, pid()} | {error, no_connection}.
 get_conn(Pid) ->
-    gen_server:call(Pid, get_conn).
+    case gen_server:call(Pid, get_conn) of
+        {ok, Conn} when is_pid(Conn) -> {ok, Conn};
+        {error, no_connection} -> {error, no_connection}
+    end.
 
 -doc """
 Run `SELECT 1` on the connection. Useful for health probes outside the
@@ -76,7 +79,10 @@ worker's automatic ping schedule.
 """.
 -spec ping(pid()) -> ok | {error, term()}.
 ping(Pid) ->
-    gen_server:call(Pid, ping).
+    case gen_server:call(Pid, ping) of
+        ok -> ok;
+        {error, _} = Err -> Err
+    end.
 
 -doc """
 Stop the worker and close the underlying connection.
@@ -155,5 +161,9 @@ cancel_timer(Ref) ->
 close_conn(undefined) ->
     ok;
 close_conn(Conn) when is_pid(Conn) ->
-    catch epgsql:close(Conn),
+    try
+        epgsql:close(Conn)
+    catch
+        _:_ -> ok
+    end,
     ok.

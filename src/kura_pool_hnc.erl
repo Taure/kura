@@ -64,13 +64,13 @@ checkout(Name, Opts) ->
     end.
 
 -spec checkin(kura_pool:name(), kura_pool:token()) -> ok.
-checkin(_Name, WorkerRef) ->
-    _ = hnc:checkin(WorkerRef),
+checkin(_Name, Token) ->
+    _ = hnc:checkin(Token),
     ok.
 
 -spec give_away(kura_pool:token(), pid(), term()) -> ok | {error, term()}.
-give_away(WorkerRef, NewOwner, GiftData) ->
-    hnc:give_away(WorkerRef, NewOwner, GiftData).
+give_away(Token, NewOwner, GiftData) ->
+    hnc:give_away(Token, NewOwner, GiftData).
 
 -spec resize(kura_pool:name(), pos_integer()) -> ok | {error, term()}.
 resize(Name, Size) when is_integer(Size), Size > 0 ->

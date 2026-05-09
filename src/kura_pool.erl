@@ -32,7 +32,7 @@ Use `with_conn/3,4` to lease a connection for the duration of a transaction.
 -type name() :: atom().
 -type pool_opts() :: map().
 -type checkout_opts() :: map().
--type token() :: term().
+-type token() :: dynamic().
 
 -callback start_pool(name(), pool_opts()) -> {ok, pid()} | {error, term()}.
 -callback stop_pool(name()) -> ok.
