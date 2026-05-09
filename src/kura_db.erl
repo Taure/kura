@@ -10,10 +10,12 @@ pool lookup, sandbox support, telemetry, and type loading.
 
 -export([
     query/3,
+    query_pool/3,
     transaction/2,
     transaction_ok/2,
     get_pool/1,
     load_row/2,
+    translate_result/2,
     build_log_event/5,
     build_telemetry_metadata/4,
     extract_source/1,
@@ -68,6 +70,13 @@ run_on_worker(Worker, SQL, Params) ->
         {ok, Conn} -> translate_result(epgsql:equery(Conn, SQL, Params), SQL);
         {error, _} = Err -> Err
     end.
+
+-doc false.
+-spec query_pool(atom(), iodata(), [term()]) -> map() | {error, term()}.
+query_pool(Pool, SQL, Params) ->
+    kura_pool:with_conn(?POOL_IMPL, Pool, fun(Worker) ->
+        run_on_worker(Worker, SQL, Params)
+    end).
 
 %%----------------------------------------------------------------------
 %% Transaction
@@ -264,6 +273,8 @@ extract_num_rows(_) -> 0.
 %% Result translation (epgsql -> kura/pgo result shape)
 %%----------------------------------------------------------------------
 
+-doc false.
+-spec translate_result(term(), iodata()) -> map() | {error, term()}.
 translate_result({ok, Cols, Rows}, SQL) ->
     #{
         command => command_from_sql(SQL),

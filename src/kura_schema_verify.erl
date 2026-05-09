@@ -176,7 +176,7 @@ load_columns(Pool) ->
     %% at compare time.
     SQL =
         ~"SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = current_schema()",
-    case pgo:query(SQL, [], #{pool => Pool}) of
+    case kura_db:query_pool(Pool, SQL, []) of
         #{rows := Rows} when is_list(Rows) ->
             {ok, build_col_state(Rows, #{})};
         {error, Reason} ->
@@ -199,7 +199,7 @@ build_col_state([_ | Rest], Acc) ->
     {ok, #{binary() => sets:set(binary())}} | {error, term()}.
 load_indexes(Pool) ->
     SQL = ~"SELECT tablename, indexname FROM pg_indexes WHERE schemaname = current_schema()",
-    case pgo:query(SQL, [], #{pool => Pool}) of
+    case kura_db:query_pool(Pool, SQL, []) of
         #{rows := Rows} when is_list(Rows) ->
             {ok, build_idx_state(Rows, #{})};
         {error, Reason} ->
