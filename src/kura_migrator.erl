@@ -56,6 +56,7 @@ across multiple nodes.
 
 %% eqWAlizer: operation() union has >7 variants - exceeds clause narrowing limit
 -eqwalizer({nowarn_function, compile_operation/1}).
+-eqwalizer({nowarn_function, format_default/1}).
 
 -doc "Run all pending migrations in order.".
 -spec migrate(module()) -> {ok, [integer()]} | {error, term()}.
@@ -77,8 +78,8 @@ migrate(RepoMod) ->
                 #{system_time => erlang:system_time()},
                 #{repo => RepoMod, pending_count => length(Sorted), direction => up}
             ),
-            Result = with_migration_lock(RepoMod, fun(PoolOpts) ->
-                run_migrations(Sorted, up, PoolOpts, [])
+            Result = with_migration_lock(RepoMod, fun() ->
+                run_migrations(Sorted, up, RepoMod, [])
             end),
             emit_migrate_stop(RepoMod, T0, up, Result),
             Result;
@@ -108,8 +109,8 @@ rollback(RepoMod, Steps) ->
                 #{system_time => erlang:system_time()},
                 #{repo => RepoMod, pending_count => length(Pairs), direction => down}
             ),
-            Result = with_migration_lock(RepoMod, fun(PoolOpts) ->
-                run_migrations(Pairs, down, PoolOpts, [])
+            Result = with_migration_lock(RepoMod, fun() ->
+                run_migrations(Pairs, down, RepoMod, [])
             end),
             emit_migrate_stop(RepoMod, T0, down, Result),
             Result;
@@ -264,14 +265,13 @@ stop_tmp_pool(TmpPool) ->
 
 -spec ensure_schema_migrations(module()) -> ok.
 ensure_schema_migrations(RepoMod) ->
-    Pool = kura_db:get_pool(RepoMod),
     SQL = <<
         "CREATE TABLE IF NOT EXISTS schema_migrations ("
         "version BIGINT PRIMARY KEY, "
         "inserted_at TIMESTAMPTZ NOT NULL DEFAULT now()"
         ")"
     >>,
-    _ = pgo:query(SQL, [], #{pool => Pool}),
+    _ = kura_db:query(RepoMod, SQL, []),
     ok.
 
 %%----------------------------------------------------------------------
@@ -376,24 +376,19 @@ parse_migration_module(Module) ->
 %% Advisory lock
 %%----------------------------------------------------------------------
 
--spec with_migration_lock(module(), fun((map()) -> [integer()])) ->
+-spec with_migration_lock(module(), fun(() -> [integer()])) ->
     {ok, [integer()]} | {error, term()}.
 with_migration_lock(RepoMod, Fun) ->
-    Pool = kura_db:get_pool(RepoMod),
-    PoolOpts = #{pool => Pool},
     try
         narrow_migration_result(
-            pgo:transaction(
-                fun() ->
-                    #{command := _} = pgo:query(
-                        ~"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock",
-                        [?MIGRATION_LOCK_KEY],
-                        PoolOpts
-                    ),
-                    Fun(PoolOpts)
-                end,
-                PoolOpts
-            )
+            kura_db:transaction(RepoMod, fun() ->
+                #{command := _} = kura_db:query(
+                    RepoMod,
+                    ~"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock",
+                    [?MIGRATION_LOCK_KEY]
+                ),
+                Fun()
+            end)
         )
     catch
         error:{migration_failed, Version, MigReason}:Stack ->
@@ -418,30 +413,30 @@ with_migration_lock(RepoMod, Fun) ->
 %% Migration execution (runs inside advisory lock transaction)
 %%----------------------------------------------------------------------
 
--spec run_migrations([{integer(), module()}], up | down, map(), [integer()]) -> [integer()].
-run_migrations([], _Dir, _PoolOpts, Acc) ->
+-spec run_migrations([{integer(), module()}], up | down, module(), [integer()]) -> [integer()].
+run_migrations([], _Dir, _RepoMod, Acc) ->
     reverse_integers(Acc, []);
-run_migrations([{Version, Module} | Rest], Dir, PoolOpts, Acc) ->
+run_migrations([{Version, Module} | Rest], Dir, RepoMod, Acc) ->
     T0 = erlang:monotonic_time(),
     Ops = get_migration_ops(Module, Dir),
     SafeEntries = get_safe_entries(Module),
     Warnings = check_unsafe_operations(Ops, SafeEntries),
     log_warnings(Module, Warnings),
-    exec_operations(Ops, Version, PoolOpts),
+    exec_operations(Ops, Version, RepoMod),
     case Dir of
         up ->
             exec(
                 ~"INSERT INTO schema_migrations (version) VALUES ($1)",
                 [Version],
                 Version,
-                PoolOpts
+                RepoMod
             );
         down ->
             exec(
                 ~"DELETE FROM schema_migrations WHERE version = $1",
                 [Version],
                 Version,
-                PoolOpts
+                RepoMod
             )
     end,
     logger:info("Kura: ~s migration ~p (~p)", [Dir, Version, Module]),
@@ -455,23 +450,23 @@ run_migrations([{Version, Module} | Rest], Dir, PoolOpts, Acc) ->
             op_count => length(Ops)
         }
     ),
-    run_migrations(Rest, Dir, PoolOpts, [Version | Acc]).
+    run_migrations(Rest, Dir, RepoMod, [Version | Acc]).
 
--spec exec_operations([kura_migration:operation()], integer(), map()) -> ok.
-exec_operations(Ops, Version, PoolOpts) ->
+-spec exec_operations([kura_migration:operation()], integer(), module()) -> ok.
+exec_operations(Ops, Version, RepoMod) ->
     Sorted = topo_sort_ops(Ops),
-    exec_operations_seq(Sorted, Version, PoolOpts).
+    exec_operations_seq(Sorted, Version, RepoMod).
 
-exec_operations_seq([], _Version, _PoolOpts) ->
+exec_operations_seq([], _Version, _RepoMod) ->
     ok;
-exec_operations_seq([Op | Rest], Version, PoolOpts) ->
+exec_operations_seq([Op | Rest], Version, RepoMod) ->
     SQL = compile_operation(Op),
-    exec(SQL, [], Version, PoolOpts),
-    exec_operations_seq(Rest, Version, PoolOpts).
+    exec(SQL, [], Version, RepoMod),
+    exec_operations_seq(Rest, Version, RepoMod).
 
--spec exec(binary(), list(), integer(), map()) -> ok.
-exec(SQL, Params, Version, PoolOpts) ->
-    case pgo:query(SQL, Params, PoolOpts) of
+-spec exec(binary(), list(), integer(), module()) -> ok.
+exec(SQL, Params, Version, RepoMod) ->
+    case kura_db:query(RepoMod, SQL, Params) of
         #{command := _} ->
             ok;
         {error, Reason} ->
@@ -800,10 +795,7 @@ log_warnings(Module, Warnings) ->
 
 -spec get_applied_versions(module()) -> [integer()].
 get_applied_versions(RepoMod) ->
-    Pool = kura_db:get_pool(RepoMod),
-    case
-        pgo:query(~"SELECT version FROM schema_migrations ORDER BY version", [], #{pool => Pool})
-    of
+    case kura_db:query(RepoMod, ~"SELECT version FROM schema_migrations ORDER BY version", []) of
         #{rows := Rows} ->
             [V || #{version := V} <- Rows];
         _ ->
@@ -828,9 +820,11 @@ format_default(true) ->
 format_default(false) ->
     ~"FALSE";
 format_default(Val) when is_map(Val) ->
-    <<"'", (json:encode(Val))/binary, "'::jsonb">>;
+    Json = iolist_to_binary(json:encode(Val)),
+    <<"'", Json/binary, "'::jsonb">>;
 format_default(Val) when is_list(Val) ->
-    <<"'", (json:encode(Val))/binary, "'::jsonb">>.
+    Json = iolist_to_binary(json:encode(Val)),
+    <<"'", Json/binary, "'::jsonb">>.
 
 %%----------------------------------------------------------------------
 %% Internal: type narrowing helpers for eqWAlizer
@@ -963,24 +957,34 @@ table_deps(Op) ->
     Cols = table_columns(Op),
     lists:usort([T || #kura_column{references = {T, _}} <- Cols, T =/= Name]).
 
+-spec topo_sort_creates([kura_migration:operation()]) -> [kura_migration:operation()].
 topo_sort_creates(Creates) ->
     ByName = maps:from_list([{table_name(C), C} || C <- Creates]),
     DepMap = maps:from_list([{table_name(C), table_deps(C)} || C <- Creates]),
     AllNames = maps:keys(ByName),
-    InDeg = lists:foldl(
-        fun(Name, Acc) ->
-            Deps = maps:get(Name, DepMap),
-            Count = length([D || D <- Deps, maps:is_key(D, ByName)]),
-            Acc#{Name => Count}
-        end,
-        #{},
-        AllNames
-    ),
+    InDeg = build_indeg(AllNames, DepMap, ByName, #{}),
     Queue = [N || N <- AllNames, maps:get(N, InDeg) =:= 0],
     kahn_loop(Queue, InDeg, DepMap, ByName, []).
 
+-spec build_indeg([binary()], #{binary() => [binary()]}, #{binary() => term()}, #{
+    binary() => non_neg_integer()
+}) -> #{binary() => non_neg_integer()}.
+build_indeg([], _DepMap, _ByName, Acc) ->
+    Acc;
+build_indeg([Name | Rest], DepMap, ByName, Acc) ->
+    Deps = maps:get(Name, DepMap),
+    Count = length([D || D <- Deps, maps:is_key(D, ByName)]),
+    build_indeg(Rest, DepMap, ByName, Acc#{Name => Count}).
+
+-spec kahn_loop(
+    [binary()],
+    #{binary() => non_neg_integer()},
+    #{binary() => [binary()]},
+    #{binary() => kura_migration:operation()},
+    [kura_migration:operation()]
+) -> [kura_migration:operation()].
 kahn_loop([], _InDeg, _DepMap, _ByName, Acc) ->
-    lists:reverse(Acc);
+    reverse_ops(Acc, []);
 kahn_loop([Name | Rest], InDeg, DepMap, ByName, Acc) ->
     Op = maps:get(Name, ByName),
     Dependents = [
@@ -988,19 +992,25 @@ kahn_loop([Name | Rest], InDeg, DepMap, ByName, Acc) ->
      || N <- maps:keys(ByName),
         lists:member(Name, maps:get(N, DepMap, []))
     ],
-    {NewQueue, NewInDeg} = lists:foldl(
-        fun(Dep, {Q, ID}) ->
-            NewDeg = maps:get(Dep, ID) - 1,
-            ID1 = ID#{Dep => NewDeg},
-            case NewDeg of
-                0 -> {Q ++ [Dep], ID1};
-                _ -> {Q, ID1}
-            end
-        end,
-        {Rest, InDeg},
-        Dependents
-    ),
+    {NewQueue, NewInDeg} = decrement_deps(Dependents, Rest, InDeg),
     kahn_loop(NewQueue, NewInDeg, DepMap, ByName, [Op | Acc]).
+
+-spec reverse_ops([kura_migration:operation()], [kura_migration:operation()]) ->
+    [kura_migration:operation()].
+reverse_ops([], Acc) -> Acc;
+reverse_ops([H | T], Acc) -> reverse_ops(T, [H | Acc]).
+
+-spec decrement_deps([binary()], [binary()], #{binary() => non_neg_integer()}) ->
+    {[binary()], #{binary() => non_neg_integer()}}.
+decrement_deps([], Q, ID) ->
+    {Q, ID};
+decrement_deps([Dep | Rest], Q, ID) ->
+    NewDeg = maps:get(Dep, ID) - 1,
+    ID1 = ID#{Dep => NewDeg},
+    case NewDeg of
+        0 -> decrement_deps(Rest, Q ++ [Dep], ID1);
+        _ -> decrement_deps(Rest, Q, ID1)
+    end.
 
 replace_creates([], _Sorted) ->
     [];

@@ -69,7 +69,7 @@ transaction(RepoMod, Fun) ->
         not_found ->
             DriverMod = get_driver_module(RepoMod),
             PoolMod = get_pool_module(RepoMod),
-            DriverMod:transaction(PoolMod, Pool, Fun)
+            DriverMod:transaction(PoolMod, Pool, Fun, #{})
     end.
 
 -spec transaction_ok(module(), fun(() -> term())) -> {ok, term()} | {error, term()}.

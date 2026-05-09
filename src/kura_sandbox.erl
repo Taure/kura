@@ -71,50 +71,54 @@ Options:
 checkout(RepoMod, Opts) ->
     ensure_started(),
     Pool = get_pool(RepoMod),
-    {ok, Ref, Conn} = pgo:checkout(Pool),
+    PoolMod = kura_db:get_pool_module(RepoMod),
+    DriverMod = kura_db:get_driver_module(RepoMod),
+    {ok, Conn, Token} = PoolMod:checkout(Pool, #{}),
     Self = self(),
 
     case maps:get(shared, Opts, false) of
         true ->
-            ets:insert(?TABLE, {{Pool, shared}, {Ref, Conn, Self}});
+            ets:insert(?TABLE, {{Pool, shared}, {PoolMod, Token, Conn, Self}});
         false ->
-            ets:insert(?TABLE, {{Pool, Self}, {Ref, Conn}})
+            ets:insert(?TABLE, {{Pool, Self}, {PoolMod, Token, Conn}})
     end,
 
-    %% Set process dict so pgo:query in this process uses the connection
+    %% Keep the pgo process-dict marker so any legacy code path that
+    %% still calls pgo:query/2 inside the sandbox finds the right conn.
+    %% Real query routing goes through kura_db -> get_conn/1 -> driver.
     erlang:put(pgo_transaction_connection, Conn),
-    _ = pgo:query(~"BEGIN", [], #{pool => Pool}),
+    _ = DriverMod:query_on(Conn, ~"BEGIN", [], #{}),
     ok.
 
 -doc "Roll back the sandbox transaction and return the connection to the pool.".
 -spec checkin(module()) -> ok.
 checkin(RepoMod) ->
     Pool = get_pool(RepoMod),
+    DriverMod = kura_db:get_driver_module(RepoMod),
     Self = self(),
 
-    {Ref, Conn} =
+    Lookup =
         case ets:lookup(?TABLE, {Pool, Self}) of
-            [{_, {R, C}}] ->
+            [{_, {Pm, Tk, Cn}}] ->
                 ets:delete(?TABLE, {Pool, Self}),
-                {R, C};
+                {Pm, Tk, Cn};
             [] ->
                 case ets:lookup(?TABLE, {Pool, shared}) of
-                    [{_, {R, C, Self}}] ->
+                    [{_, {Pm, Tk, Cn, Self}}] ->
                         ets:delete(?TABLE, {Pool, shared}),
-                        {R, C};
+                        {Pm, Tk, Cn};
                     _ ->
-                        {undefined, undefined}
+                        undefined
                 end
         end,
 
-    case Conn of
+    case Lookup of
         undefined ->
             ok;
-        _ ->
-            _ = pgo:query(~"ROLLBACK", [], #{pool => Pool}),
+        {PoolMod, Token, Conn} ->
+            _ = DriverMod:query_on(Conn, ~"ROLLBACK", [], #{}),
             erlang:erase(pgo_transaction_connection),
-            pgo:checkin(Ref, Conn),
-            %% Clean up any allowances for this owner
+            ok = PoolMod:checkin(Pool, Token),
             ets:match_delete(?TABLE, {{Pool, '_', allowed}, Self}),
             ok
     end.
@@ -151,20 +155,20 @@ lookup_conn(Pool) ->
     Self = self(),
     %% 1. Direct owner
     case ets:lookup(?TABLE, {Pool, Self}) of
-        [{_, {_Ref, Conn}}] ->
+        [{_, {_PoolMod, _Token, Conn}}] ->
             {ok, Conn};
         [] ->
             %% 2. Allowed by an owner
             case ets:lookup(?TABLE, {Pool, Self, allowed}) of
                 [{_, OwnerPid}] ->
                     case ets:lookup(?TABLE, {Pool, OwnerPid}) of
-                        [{_, {_Ref, Conn}}] -> {ok, Conn};
+                        [{_, {_PoolMod, _Token, Conn}}] -> {ok, Conn};
                         [] -> not_found
                     end;
                 [] ->
                     %% 3. Shared mode
                     case ets:lookup(?TABLE, {Pool, shared}) of
-                        [{_, {_Ref, Conn, _Owner}}] -> {ok, Conn};
+                        [{_, {_PoolMod, _Token, Conn, _Owner}}] -> {ok, Conn};
                         [] -> not_found
                     end
             end

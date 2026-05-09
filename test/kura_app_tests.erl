@@ -63,5 +63,11 @@ pool_config_socket_options_not_set_test() ->
     clear_kura_env().
 
 clear_kura_env() ->
-    Keys = [host, port, database, user, password, pool_size, socket_options],
-    lists:foreach(fun(K) -> application:unset_env(kura, K) end, Keys).
+    unset_keys([host, port, database, user, password, pool_size, socket_options]).
+
+-spec unset_keys([atom()]) -> ok.
+unset_keys([]) ->
+    ok;
+unset_keys([K | Rest]) ->
+    application:unset_env(kura, K),
+    unset_keys(Rest).
