@@ -15,9 +15,15 @@ run(Opts) ->
     setup_table(),
     Cases = [
         {seq_insert, fun() -> seq_insert(Rows) end},
-        {bulk_insert, fun() -> reset_data(), bulk_insert(Rows) end},
+        {bulk_insert, fun() ->
+            reset_data(),
+            bulk_insert(Rows)
+        end},
         {seq_select, fun() -> seq_select(Rows) end},
-        {par_insert, fun() -> reset_data(), par_insert(Conc, Rows div Conc) end},
+        {par_insert, fun() ->
+            reset_data(),
+            par_insert(Conc, Rows div Conc)
+        end},
         {par_select, fun() -> par_select(Conc, Rows div Conc) end}
     ],
     Results = [{Name, time_us(Fun)} || {Name, Fun} <- Cases],
