@@ -11,6 +11,7 @@ pool lookup, sandbox support, telemetry, and type loading.
     transaction/2,
     transaction_ok/2,
     get_pool/1,
+    get_pool_module/1,
     load_row/2,
     build_log_event/5,
     build_telemetry_metadata/4,
@@ -44,7 +45,8 @@ query(RepoMod, SQL, Params) ->
             not_found ->
                 case erlang:get(pgo_transaction_connection) of
                     undefined ->
-                        kura_pool:with_conn(kura_pool_pgo, Pool, fun(Conn) ->
+                        PoolMod = get_pool_module(RepoMod),
+                        kura_pool:with_conn(PoolMod, Pool, fun(Conn) ->
                             pgo:query(SQL, Params, #{decode_opts => ?DECODE_OPTS}, Conn)
                         end);
                     _TxConn ->
@@ -85,6 +87,18 @@ transaction_ok(RepoMod, Fun) ->
 get_pool(RepoMod) ->
     Config = kura_repo:config(RepoMod),
     maps:get(pool, Config, RepoMod).
+
+-doc """
+Resolve the `kura_pool` implementation module for a repo. Reads
+`pool_module` from the repo config and falls back to `kura_pool_pgo`.
+""".
+-spec get_pool_module(module()) -> module().
+get_pool_module(RepoMod) ->
+    Config = kura_repo:config(RepoMod),
+    case maps:get(pool_module, Config, kura_pool_pgo) of
+        M when is_atom(M) -> M;
+        _ -> kura_pool_pgo
+    end.
 
 %%----------------------------------------------------------------------
 %% Row loading
