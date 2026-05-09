@@ -1,10 +1,12 @@
 -module(kura_db).
 -moduledoc """
-Central database wrapper for all pgo interactions.
+Central database wrapper for all driver interactions.
 
-All pgo calls go through this module, providing a single place for
+All driver calls go through this module, providing a single place for
 pool lookup, sandbox support, telemetry, and type loading.
 """.
+
+-include_lib("epgsql/include/epgsql.hrl").
 
 -export([
     query/3,
@@ -28,6 +30,8 @@ pool lookup, sandbox support, telemetry, and type loading.
 -endif.
 
 -define(DECODE_OPTS, [return_rows_as_maps, column_name_as_atom]).
+-define(POOL_IMPL, kura_pool_hnc).
+-define(TX_CONN_KEY, {?MODULE, tx_conn}).
 
 %%----------------------------------------------------------------------
 %% Query
@@ -37,18 +41,33 @@ pool lookup, sandbox support, telemetry, and type loading.
 query(RepoMod, SQL, Params) ->
     Pool = get_pool(RepoMod),
     T0 = erlang:monotonic_time(),
-    Result =
-        case kura_sandbox:get_conn(Pool) of
-            {ok, Conn} ->
-                pgo:query(SQL, Params, #{decode_opts => ?DECODE_OPTS}, Conn);
-            not_found ->
-                pgo:query(SQL, Params, #{pool => Pool, decode_opts => ?DECODE_OPTS})
-        end,
+    Result = run_query(Pool, SQL, Params),
     T1 = erlang:monotonic_time(),
     DurationNative = T1 - T0,
     DurationUs = erlang:convert_time_unit(DurationNative, native, microsecond),
     emit_telemetry(RepoMod, SQL, Params, Result, DurationNative, DurationUs),
     Result.
+
+run_query(Pool, SQL, Params) ->
+    case kura_sandbox:get_conn(Pool) of
+        {ok, SandboxConn} ->
+            pgo:query(SQL, Params, #{decode_opts => ?DECODE_OPTS}, SandboxConn);
+        not_found ->
+            case get(?TX_CONN_KEY) of
+                {Conn, Pool} ->
+                    translate_result(epgsql:equery(Conn, SQL, Params), SQL);
+                _ ->
+                    kura_pool:with_conn(?POOL_IMPL, Pool, fun(Worker) ->
+                        run_on_worker(Worker, SQL, Params)
+                    end)
+            end
+    end.
+
+run_on_worker(Worker, SQL, Params) ->
+    case kura_pg_conn:get_conn(Worker) of
+        {ok, Conn} -> translate_result(epgsql:equery(Conn, SQL, Params), SQL);
+        {error, _} = Err -> Err
+    end.
 
 %%----------------------------------------------------------------------
 %% Transaction
@@ -61,7 +80,39 @@ transaction(RepoMod, Fun) ->
         {ok, _Conn} ->
             Fun();
         not_found ->
-            pgo:transaction(Fun, #{pool => Pool})
+            case get(?TX_CONN_KEY) of
+                {_Conn, Pool} ->
+                    Fun();
+                _ ->
+                    run_transaction(Pool, Fun)
+            end
+    end.
+
+run_transaction(Pool, Fun) ->
+    kura_pool:with_conn(?POOL_IMPL, Pool, fun(Worker) ->
+        case kura_pg_conn:get_conn(Worker) of
+            {ok, Conn} ->
+                run_in_tx(Conn, Pool, Fun);
+            {error, Reason} ->
+                {error, Reason}
+        end
+    end).
+
+run_in_tx(Conn, Pool, Fun) ->
+    put(?TX_CONN_KEY, {Conn, Pool}),
+    try
+        {ok, [], []} = epgsql:squery(Conn, ~"BEGIN"),
+        try Fun() of
+            Result ->
+                {ok, [], []} = epgsql:squery(Conn, ~"COMMIT"),
+                Result
+        catch
+            Class:Reason:Stack ->
+                _ = epgsql:squery(Conn, ~"ROLLBACK"),
+                erlang:raise(Class, Reason, Stack)
+        end
+    after
+        erase(?TX_CONN_KEY)
     end.
 
 -spec transaction_ok(module(), fun(() -> term())) -> {ok, term()} | {error, term()}.
@@ -208,3 +259,109 @@ extract_result_status(_) -> ok.
 extract_num_rows(#{num_rows := N}) when is_integer(N) -> N;
 extract_num_rows(#{rows := Rows}) when is_list(Rows) -> length(Rows);
 extract_num_rows(_) -> 0.
+
+%%----------------------------------------------------------------------
+%% Result translation (epgsql -> kura/pgo result shape)
+%%----------------------------------------------------------------------
+
+translate_result({ok, Cols, Rows}, SQL) ->
+    #{
+        command => command_from_sql(SQL),
+        num_rows => length(Rows),
+        rows => rows_as_maps(Cols, Rows)
+    };
+translate_result({ok, Count}, SQL) when is_integer(Count) ->
+    #{
+        command => command_from_sql(SQL),
+        num_rows => Count,
+        rows => []
+    };
+translate_result({ok, Count, Cols, Rows}, SQL) ->
+    #{
+        command => command_from_sql(SQL),
+        num_rows => Count,
+        rows => rows_as_maps(Cols, Rows)
+    };
+translate_result({error, #error{} = E}, _SQL) ->
+    {error, translate_error(E)};
+translate_result({error, _} = Err, _SQL) ->
+    Err.
+
+rows_as_maps(_Cols, []) ->
+    [];
+rows_as_maps(Cols, Rows) ->
+    Specs = [{binary_to_atom(C#column.name, utf8), C#column.type} || C <- Cols],
+    [row_to_map(Specs, R) || R <- Rows].
+
+row_to_map(Specs, Row) ->
+    maps:from_list(
+        [{N, decode_value(T, V)} || {{N, T}, V} <- lists:zip(Specs, tuple_to_list(Row))]
+    ).
+
+decode_value(_, null) ->
+    null;
+decode_value(numeric, V) ->
+    parse_numeric_text(V);
+decode_value({unknown_oid, 1700}, V) ->
+    parse_numeric_text(V);
+decode_value(Ts, {{_, _, _} = D, {H, Mi, S}}) when
+    Ts =:= timestamp; Ts =:= timestamptz
+->
+    {D, {H, Mi, normalize_seconds(S)}};
+decode_value(T, {H, Mi, S}) when
+    T =:= time orelse T =:= timetz, is_integer(H), is_integer(Mi)
+->
+    {H, Mi, normalize_seconds(S)};
+decode_value(_, V) ->
+    V.
+
+parse_numeric_text(V) when is_binary(V) ->
+    case string:to_float(V) of
+        {F, <<>>} when is_float(F) ->
+            F;
+        _ ->
+            case string:to_integer(V) of
+                {I, <<>>} when is_integer(I) -> I;
+                _ -> V
+            end
+    end;
+parse_numeric_text(V) ->
+    V.
+
+normalize_seconds(S) when is_integer(S) ->
+    S;
+normalize_seconds(S) when is_float(S) ->
+    case S - trunc(S) of
+        +0.0 -> trunc(S);
+        _ -> S
+    end.
+
+command_from_sql(SQL) ->
+    Lower = string:lowercase(iolist_to_binary(SQL)),
+    case
+        re:run(
+            Lower,
+            ~"^\\s*with\\s.*?\\)\\s+(select|insert|update|delete)\\b",
+            [{capture, [1], binary}, dotall]
+        )
+    of
+        {match, [Cmd]} ->
+            binary_to_atom(Cmd, utf8);
+        nomatch ->
+            case re:run(Lower, ~"^\\s*(\\w+)", [{capture, [1], binary}]) of
+                {match, [Cmd]} -> binary_to_atom(Cmd, utf8);
+                nomatch -> unknown
+            end
+    end.
+
+translate_error(#error{
+    severity = Sev, code = Code, codename = CodeName, message = Msg, extra = Extra
+}) ->
+    Base = #{severity => Sev, code => Code, codename => CodeName, message => Msg},
+    Translated = [translate_extra_field(KV) || KV <- Extra],
+    maps:merge(Base, maps:from_list(Translated)).
+
+translate_extra_field({constraint_name, V}) -> {constraint, V};
+translate_extra_field({column_name, V}) -> {column, V};
+translate_extra_field({detail_message, V}) -> {detail, V};
+translate_extra_field(KV) -> KV.

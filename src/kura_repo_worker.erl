@@ -58,24 +58,26 @@ kura_repo_worker:start(MyRepo),
 %%----------------------------------------------------------------------
 
 -doc "Start the connection pool for the given repo module.".
--spec start(module()) -> ok.
+-spec start(module()) -> ok | {error, term()}.
 start(RepoMod) ->
     Config = kura_repo:config(RepoMod),
     Pool = maps:get(pool, Config, RepoMod),
-    PgoConfig = #{
+    Connection = #{
         host => binary_to_list(maps:get(hostname, Config, ~"localhost")),
         port => maps:get(port, Config, 5432),
         database => binary_to_list(maps:get(database, Config)),
-        user => binary_to_list(maps:get(username, Config, ~"postgres")),
-        password => binary_to_list(maps:get(password, Config, <<>>)),
-        pool_size => maps:get(pool_size, Config, 10),
-        decode_opts => [return_rows_as_maps, column_name_as_atom]
+        username => binary_to_list(maps:get(username, Config, ~"postgres")),
+        password => binary_to_list(maps:get(password, Config, <<>>))
     },
-    %% pgo spec says {ok, pid()} but supervisor:start_child underneath
-    %% can return {error, {already_started, Pid}} when pool exists.
-    case pgo_sup:start_child(Pool, PgoConfig) of
+    PoolSize = maps:get(pool_size, Config, 10),
+    PoolOpts = #{
+        connection => Connection,
+        pool_opts => #{size => {PoolSize, PoolSize}}
+    },
+    case kura_pool_hnc:start_pool(Pool, PoolOpts) of
         {ok, _Pid} -> ok;
-        {error, {already_started, _Pid}} -> ok
+        {error, {already_started, _Pid}} -> ok;
+        {error, _} = Err -> Err
     end.
 
 -doc "Execute a query and return all matching rows.".
