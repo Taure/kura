@@ -119,7 +119,6 @@ comprehensive_bench_test_() ->
 %%----------------------------------------------------------------------
 
 setup() ->
-    application:ensure_all_started(pgo),
     application:ensure_all_started(kura),
     kura_stress_repo:start(),
     create_tables(),

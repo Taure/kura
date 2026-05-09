@@ -64,7 +64,6 @@ all() ->
     ].
 
 init_per_suite(Config) ->
-    application:ensure_all_started(pgo),
     application:ensure_all_started(kura),
     AppSpec =
         {application, ?APP, [
@@ -99,7 +98,7 @@ end_per_suite(_Config) ->
 
 init_per_testcase(_TC, Config) ->
     %% Most tests need a live pool. Start it idempotently.
-    case pgo_sup:start_child(?LIVE_POOL, pool_config()) of
+    case kura_pool_hnc:start_pool(?LIVE_POOL, pool_config()) of
         {ok, _} -> ok;
         {error, {already_started, _}} -> ok
     end,
@@ -235,76 +234,75 @@ set_default_repo_config() ->
 
 pool_config() ->
     #{
-        host => "localhost",
-        port => 5555,
-        database => "kura_test",
-        user => "postgres",
-        password => "root",
-        pool_size => 2,
-        decode_opts => [return_rows_as_maps, column_name_as_atom]
+        connection => #{
+            host => "localhost",
+            port => 5555,
+            database => "kura_test",
+            username => "postgres",
+            password => "root"
+        },
+        pool_opts => #{size => {2, 2}}
     }.
 
 drop_test_table() ->
-    _ = pgo:query(
-        ~"DROP TABLE IF EXISTS kura_verify_test_t CASCADE", [], #{pool => ?LIVE_POOL}
+    _ = kura_db:query_pool(
+        ?LIVE_POOL, ~"DROP TABLE IF EXISTS kura_verify_test_t CASCADE", []
     ),
-    _ = pgo:query(
-        ~"DROP TABLE IF EXISTS kura_verify_test_aliased CASCADE",
-        [],
-        #{pool => ?LIVE_POOL}
+    _ = kura_db:query_pool(
+        ?LIVE_POOL, ~"DROP TABLE IF EXISTS kura_verify_test_aliased CASCADE", []
     ),
-    _ = pgo:query(
-        ~"DROP TABLE IF EXISTS kura_verify_test_no_idx CASCADE", [], #{pool => ?LIVE_POOL}
+    _ = kura_db:query_pool(
+        ?LIVE_POOL, ~"DROP TABLE IF EXISTS kura_verify_test_no_idx CASCADE", []
     ),
     ok.
 
 create_aligned_table() ->
     %% Matches `kura_schema_verify_test_complete_schema`.
-    _ = pgo:query(
+    _ = kura_db:query_pool(
+        ?LIVE_POOL,
         ~"CREATE TABLE kura_verify_test_t (id BIGSERIAL PRIMARY KEY, email VARCHAR(255), name VARCHAR(255))",
-        [],
-        #{pool => ?LIVE_POOL}
+        []
     ),
-    _ = pgo:query(
+    _ = kura_db:query_pool(
+        ?LIVE_POOL,
         ~"CREATE UNIQUE INDEX kura_verify_test_t_email_index ON kura_verify_test_t (email)",
-        [],
-        #{pool => ?LIVE_POOL}
+        []
     ),
     ok.
 
 create_aligned_table_without_index() ->
     %% Has all columns but is missing the declared unique email index
-    %% — pins the asobi failure mode.
-    _ = pgo:query(
+    %% - pins the asobi failure mode.
+    _ = kura_db:query_pool(
+        ?LIVE_POOL,
         ~"CREATE TABLE kura_verify_test_t (id BIGSERIAL PRIMARY KEY, email VARCHAR(255), name VARCHAR(255))",
-        [],
-        #{pool => ?LIVE_POOL}
+        []
     ),
     ok.
 
 create_table_missing_email() ->
-    _ = pgo:query(
+    _ = kura_db:query_pool(
+        ?LIVE_POOL,
         ~"CREATE TABLE kura_verify_test_t (id BIGSERIAL PRIMARY KEY, name VARCHAR(255))",
-        [],
-        #{pool => ?LIVE_POOL}
+        []
     ),
     ok.
 
 create_aliased_table() ->
-    %% Matches `kura_schema_verify_test_aliased_schema` — the schema
+    %% Matches `kura_schema_verify_test_aliased_schema` - the schema
     %% maps its `email` field to physical column `email_address`.
-    _ = pgo:query(
+    _ = kura_db:query_pool(
+        ?LIVE_POOL,
         ~"CREATE TABLE kura_verify_test_aliased (id BIGSERIAL PRIMARY KEY, email_address VARCHAR(255))",
-        [],
-        #{pool => ?LIVE_POOL}
+        []
     ),
     ok.
 
 create_table_for_no_indexes_schema() ->
-    _ = pgo:query(
+    _ = kura_db:query_pool(
+        ?LIVE_POOL,
         ~"CREATE TABLE kura_verify_test_no_idx (id BIGSERIAL PRIMARY KEY, body TEXT)",
-        [],
-        #{pool => ?LIVE_POOL}
+        []
     ),
     ok.
 
@@ -313,7 +311,7 @@ poll_pool_ready(Pool, Timeout) ->
     poll_pool_loop(Pool, Deadline).
 
 poll_pool_loop(Pool, Deadline) ->
-    case pgo:query(~"SELECT 1", [], #{pool => Pool}) of
+    case kura_db:query_pool(Pool, ~"SELECT 1", []) of
         #{rows := _} ->
             ok;
         {error, _} ->

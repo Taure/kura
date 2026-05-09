@@ -9,14 +9,14 @@ stop_with_any_state_test() ->
 
 pool_config_defaults_test() ->
     clear_kura_env(),
-    Config = kura_app:pool_config(),
-    ?assertEqual("localhost", maps:get(host, Config)),
-    ?assertEqual(5432, maps:get(port, Config)),
-    ?assertEqual("postgres", maps:get(database, Config)),
-    ?assertEqual("postgres", maps:get(user, Config)),
-    ?assertEqual("", maps:get(password, Config)),
-    ?assertEqual(10, maps:get(pool_size, Config)),
-    ?assertNot(maps:is_key(socket_options, Config)).
+    #{connection := Conn, pool_opts := PoolOpts} = kura_app:pool_config(),
+    ?assertEqual("localhost", maps:get(host, Conn)),
+    ?assertEqual(5432, maps:get(port, Conn)),
+    ?assertEqual("postgres", maps:get(database, Conn)),
+    ?assertEqual("postgres", maps:get(username, Conn)),
+    ?assertEqual("", maps:get(password, Conn)),
+    ?assertEqual({10, 10}, maps:get(size, PoolOpts)),
+    ?assertNot(maps:is_key(tcp_opts, Conn)).
 
 pool_config_custom_values_test() ->
     clear_kura_env(),
@@ -26,40 +26,40 @@ pool_config_custom_values_test() ->
     application:set_env(kura, user, "myuser"),
     application:set_env(kura, password, "secret"),
     application:set_env(kura, pool_size, 20),
-    Config = kura_app:pool_config(),
-    ?assertEqual("db.example.com", maps:get(host, Config)),
-    ?assertEqual(5433, maps:get(port, Config)),
-    ?assertEqual("mydb", maps:get(database, Config)),
-    ?assertEqual("myuser", maps:get(user, Config)),
-    ?assertEqual("secret", maps:get(password, Config)),
-    ?assertEqual(20, maps:get(pool_size, Config)),
+    #{connection := Conn, pool_opts := PoolOpts} = kura_app:pool_config(),
+    ?assertEqual("db.example.com", maps:get(host, Conn)),
+    ?assertEqual(5433, maps:get(port, Conn)),
+    ?assertEqual("mydb", maps:get(database, Conn)),
+    ?assertEqual("myuser", maps:get(username, Conn)),
+    ?assertEqual("secret", maps:get(password, Conn)),
+    ?assertEqual({20, 20}, maps:get(size, PoolOpts)),
     clear_kura_env().
 
 pool_config_socket_options_inet6_test() ->
     clear_kura_env(),
     application:set_env(kura, socket_options, [inet6]),
-    Config = kura_app:pool_config(),
-    ?assertEqual([inet6], maps:get(socket_options, Config)),
+    #{connection := Conn} = kura_app:pool_config(),
+    ?assertEqual([inet6], maps:get(tcp_opts, Conn)),
     clear_kura_env().
 
 pool_config_socket_options_multiple_test() ->
     clear_kura_env(),
     application:set_env(kura, socket_options, [inet6, {recbuf, 8192}]),
-    Config = kura_app:pool_config(),
-    ?assertEqual([inet6, {recbuf, 8192}], maps:get(socket_options, Config)),
+    #{connection := Conn} = kura_app:pool_config(),
+    ?assertEqual([inet6, {recbuf, 8192}], maps:get(tcp_opts, Conn)),
     clear_kura_env().
 
 pool_config_socket_options_empty_list_test() ->
     clear_kura_env(),
     application:set_env(kura, socket_options, []),
-    Config = kura_app:pool_config(),
-    ?assertNot(maps:is_key(socket_options, Config)),
+    #{connection := Conn} = kura_app:pool_config(),
+    ?assertNot(maps:is_key(tcp_opts, Conn)),
     clear_kura_env().
 
 pool_config_socket_options_not_set_test() ->
     clear_kura_env(),
-    Config = kura_app:pool_config(),
-    ?assertNot(maps:is_key(socket_options, Config)),
+    #{connection := Conn} = kura_app:pool_config(),
+    ?assertNot(maps:is_key(tcp_opts, Conn)),
     clear_kura_env().
 
 clear_kura_env() ->

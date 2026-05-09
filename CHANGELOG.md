@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Breaking**: switched the underlying PostgreSQL driver from `pgo` to
+  `epgsql`, paired with a new `hnc`-based connection pool. `pgo` is no
+  longer a dependency.
+- **Breaking**: repo configuration keys changed in shape. The flat pgo
+  config (`#{host, port, database, user, password, pool_size, ...}`)
+  is replaced by `#{connection => #{host, port, database, username,
+  password, ...}, pool_opts => #{size => {Min, Max}}}`. Note `user`
+  becomes `username`, `socket_options` becomes `tcp_opts`,
+  `ssl_options` becomes `ssl_opts`. Pool size is now a `{min, max}` tuple.
+- **Breaking**: `kura_repo_worker:pgo_query/3` removed - call
+  `kura_db:query/3` directly.
+
+### Added
+
+- `kura_pool` behaviour - pluggable connection pool. Default
+  implementation `kura_pool_hnc` wraps
+  [hnc](https://github.com/hnc-agency/hnc).
+- `kura_pg_conn` - per-connection worker that wraps a single epgsql
+  connection with idle-ping health checks.
+- `kura_db:query_pool/3` and `kura_db:transaction_pool/2` - non-repo
+  query/transaction helpers for tooling that holds a raw pool name
+  (migrator, schema verifier, cursor streaming).
+
+### Removed
+
+- `pgo` dependency.
+
 ## [1.8.0] - 2026-03-06
 
 ### Changed

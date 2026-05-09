@@ -62,7 +62,6 @@ all() ->
     ].
 
 init_per_suite(Config) ->
-    application:ensure_all_started(pgo),
     application:ensure_all_started(kura),
     MigMods = [
         m20250101120000_coverage_create_cov_table,
@@ -291,11 +290,11 @@ find_event(Name, Events) ->
     end.
 
 cleanup_db() ->
-    _ = pgo:query(
-        ~"DROP TABLE IF EXISTS coverage_items CASCADE", [], #{pool => ?LIVE_POOL}
+    _ = kura_db:query_pool(
+        ?LIVE_POOL, ~"DROP TABLE IF EXISTS coverage_items CASCADE", []
     ),
-    _ = pgo:query(
-        ~"DROP TABLE IF EXISTS schema_migrations CASCADE", [], #{pool => ?LIVE_POOL}
+    _ = kura_db:query_pool(
+        ?LIVE_POOL, ~"DROP TABLE IF EXISTS schema_migrations CASCADE", []
     ),
     ok.
 
@@ -304,7 +303,7 @@ poll_pool_ready(Pool, Timeout) ->
     poll_pool_loop(Pool, Deadline).
 
 poll_pool_loop(Pool, Deadline) ->
-    case pgo:query(~"SELECT 1", [], #{pool => Pool}) of
+    case kura_db:query_pool(Pool, ~"SELECT 1", []) of
         #{rows := _} ->
             ok;
         {error, _} ->

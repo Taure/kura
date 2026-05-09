@@ -36,7 +36,6 @@ docker_resilience_test_() ->
     end.
 
 setup() ->
-    application:ensure_all_started(pgo),
     application:ensure_all_started(kura),
     ensure_pg_running(),
     kura_stress_repo:start(),

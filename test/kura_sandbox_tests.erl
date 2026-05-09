@@ -20,7 +20,6 @@ sandbox_test_() ->
     end}.
 
 setup() ->
-    application:ensure_all_started(pgo),
     application:ensure_all_started(kura),
     kura_test_repo:start(),
     kura_sandbox:start(),

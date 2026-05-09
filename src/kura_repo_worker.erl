@@ -40,7 +40,6 @@ kura_repo_worker:start(MyRepo),
     multi/2,
     preload/4,
     query/3,
-    pgo_query/3,
     build_log_event/5,
     build_telemetry_metadata/4,
     extract_source/1,
@@ -485,11 +484,8 @@ execute_multi_op(_RepoMod, {run, Fun}, Acc) ->
     Fun(Acc).
 
 %%----------------------------------------------------------------------
-%% Internal: pgo bridge (delegates to kura_db)
+%% Internal: telemetry helpers (delegate to kura_db)
 %%----------------------------------------------------------------------
-
-pgo_query(RepoMod, SQL, Params) ->
-    kura_db:query(RepoMod, SQL, Params).
 
 build_telemetry_metadata(RepoMod, SQL, Params, Result) ->
     kura_db:build_telemetry_metadata(RepoMod, SQL, Params, Result).

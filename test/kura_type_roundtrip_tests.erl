@@ -55,7 +55,6 @@ type_roundtrip_test_() ->
     end}.
 
 setup() ->
-    application:ensure_all_started(pgo),
     application:ensure_all_started(kura),
     application:set_env(pg_types, uuid_format, string),
     kura_test_repo:start(),

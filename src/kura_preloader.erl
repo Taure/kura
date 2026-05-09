@@ -205,7 +205,7 @@ preload_many_to_many(RepoMod, Records, Schema, #kura_assoc{
                 Placeholders,
                 ~")"
             ]),
-            #{rows := JoinRows} = kura_repo_worker:pgo_query(RepoMod, JoinSQL, PKValues),
+            #{rows := JoinRows} = kura_db:query(RepoMod, JoinSQL, PKValues),
             RelatedIds = lists:usort([get_field(RelatedKey, JR) || JR <- JoinRows]),
             case RelatedIds of
                 [] ->

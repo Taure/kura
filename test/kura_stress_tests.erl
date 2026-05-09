@@ -28,7 +28,6 @@ stress_test_() ->
     end}.
 
 setup() ->
-    application:ensure_all_started(pgo),
     application:ensure_all_started(kura),
     kura_stress_repo:start(),
     {ok, _} = kura_stress_repo:query(
@@ -165,13 +164,10 @@ t_long_transaction_doesnt_block_others() ->
     Pool = maps:get(pool, kura_repo:config(kura_stress_repo)),
     %% Spawn a process that holds a transaction open for 2 seconds
     spawn_link(fun() ->
-        pgo:transaction(
-            fun() ->
-                pgo:query(<<"SELECT 1 FROM pg_sleep(2)">>, [], #{pool => Pool}),
-                ok
-            end,
-            #{pool => Pool}
-        ),
+        kura_db:transaction_pool(Pool, fun() ->
+            kura_db:query_pool(Pool, <<"SELECT 1 FROM pg_sleep(2)">>, []),
+            ok
+        end),
         Self ! long_txn_done
     end),
     %% Give the long txn a moment to start
