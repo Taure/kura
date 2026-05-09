@@ -145,6 +145,13 @@ do not race.
 - **`kura_app`** / **`kura_sup`** - OTP application and root
   supervisor. The application callback also starts the configured pool
   and seeds `pg_types` defaults.
+- **`kura_capabilities`** - capability flags for backends. A backend
+  module implements the optional `capabilities/0` callback to declare
+  features it supports (`returning`, `jsonb`, `listen_notify`,
+  `select_for_update_skip_locked`, ...). Consumers call
+  `kura_capabilities:require/2` from supervisor init so the
+  application refuses to start on a backend that lacks a required
+  feature instead of failing at runtime.
 
 ## Data Flow
 
