@@ -42,7 +42,16 @@ query(RepoMod, SQL, Params) ->
             {ok, Conn} ->
                 pgo:query(SQL, Params, #{decode_opts => ?DECODE_OPTS}, Conn);
             not_found ->
-                pgo:query(SQL, Params, #{pool => Pool, decode_opts => ?DECODE_OPTS})
+                case erlang:get(pgo_transaction_connection) of
+                    undefined ->
+                        kura_pool:with_conn(kura_pool_pgo, Pool, fun(Conn) ->
+                            pgo:query(SQL, Params, #{decode_opts => ?DECODE_OPTS}, Conn)
+                        end);
+                    _TxConn ->
+                        %% Inside a pgo transaction; let pgo route to the tx
+                        %% connection from its process dict.
+                        pgo:query(SQL, Params, #{pool => Pool, decode_opts => ?DECODE_OPTS})
+                end
         end,
     T1 = erlang:monotonic_time(),
     DurationNative = T1 - T0,

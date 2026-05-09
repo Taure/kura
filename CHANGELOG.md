@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `kura_pool` behaviour — pluggable connection-pool contract with `start_pool/2`, `stop_pool/1`, `checkout/2`, `checkin/2`, `give_away/3`, optional `resize/2`. The same behaviour fits Postgres pools (caller-driven socket I/O), gen_server-style driver pools (MySQL, HTTP clients), and embedded backends. Includes a `with_conn/3,4` helper for the lease-and-return-around-a-fun pattern.
 - `kura_pool_pgo` — default `kura_pool` implementation, a thin adapter on top of `pgo_pool`. Zero per-query overhead beyond pgo's own (caller-driven I/O on the socket, ETS-holder transfer for checkout/checkin). `give_away/3` transfers ownership of pgo's per-conn holder ETS so test fixtures can hand a connection between processes.
 
+### Changed
+
+- `kura_db:query/3` non-transaction path now routes through `kura_pool:with_conn(kura_pool_pgo, ...)` instead of calling `pgo:query/3` directly. Functionally identical (same `pgo_pool` checkout under the hood) but now driver swaps are a one-module change. In-transaction queries and the sandbox path are unchanged.
+
 ## [1.8.0] - 2026-03-06
 
 ### Changed
