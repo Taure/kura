@@ -1,9 +1,11 @@
 -module(kura_db).
 -moduledoc """
-Central database wrapper for all pgo interactions.
+Central database wrapper. Routes all SQL through a configured
+`kura_driver` impl over a configured `kura_pool` impl, so swapping
+the underlying client (pgo, esqlite, ...) is one config change.
 
-All pgo calls go through this module, providing a single place for
-pool lookup, sandbox support, telemetry, and type loading.
+All driver calls go through this module, providing a single place
+for pool lookup, sandbox support, telemetry, and type loading.
 """.
 
 -export([
@@ -12,6 +14,7 @@ pool lookup, sandbox support, telemetry, and type loading.
     transaction_ok/2,
     get_pool/1,
     get_pool_module/1,
+    get_driver_module/1,
     load_row/2,
     build_log_event/5,
     build_telemetry_metadata/4,
@@ -37,23 +40,15 @@ pool lookup, sandbox support, telemetry, and type loading.
 -spec query(module(), iodata(), [term()]) -> map() | {error, term()}.
 query(RepoMod, SQL, Params) ->
     Pool = get_pool(RepoMod),
+    DriverMod = get_driver_module(RepoMod),
     T0 = erlang:monotonic_time(),
     Result =
         case kura_sandbox:get_conn(Pool) of
             {ok, Conn} ->
-                pgo:query(SQL, Params, #{decode_opts => ?DECODE_OPTS}, Conn);
+                DriverMod:query_on(Conn, SQL, Params, #{decode_opts => ?DECODE_OPTS});
             not_found ->
-                case erlang:get(pgo_transaction_connection) of
-                    undefined ->
-                        PoolMod = get_pool_module(RepoMod),
-                        kura_pool:with_conn(PoolMod, Pool, fun(Conn) ->
-                            pgo:query(SQL, Params, #{decode_opts => ?DECODE_OPTS}, Conn)
-                        end);
-                    _TxConn ->
-                        %% Inside a pgo transaction; let pgo route to the tx
-                        %% connection from its process dict.
-                        pgo:query(SQL, Params, #{pool => Pool, decode_opts => ?DECODE_OPTS})
-                end
+                PoolMod = get_pool_module(RepoMod),
+                DriverMod:query(PoolMod, Pool, SQL, Params, #{decode_opts => ?DECODE_OPTS})
         end,
     T1 = erlang:monotonic_time(),
     DurationNative = T1 - T0,
@@ -72,7 +67,9 @@ transaction(RepoMod, Fun) ->
         {ok, _Conn} ->
             Fun();
         not_found ->
-            pgo:transaction(Fun, #{pool => Pool})
+            DriverMod = get_driver_module(RepoMod),
+            PoolMod = get_pool_module(RepoMod),
+            DriverMod:transaction(PoolMod, Pool, Fun)
     end.
 
 -spec transaction_ok(module(), fun(() -> term())) -> {ok, term()} | {error, term()}.
@@ -98,6 +95,19 @@ get_pool_module(RepoMod) ->
     case maps:get(pool_module, Config, kura_pool_pgo) of
         M when is_atom(M) -> M;
         _ -> kura_pool_pgo
+    end.
+
+-doc """
+Resolve the `kura_driver` implementation module for a repo. Reads
+`driver_module` from the repo config and falls back to
+`kura_driver_pgo`.
+""".
+-spec get_driver_module(module()) -> module().
+get_driver_module(RepoMod) ->
+    Config = kura_repo:config(RepoMod),
+    case maps:get(driver_module, Config, kura_driver_pgo) of
+        M when is_atom(M) -> M;
+        _ -> kura_driver_pgo
     end.
 
 %%----------------------------------------------------------------------

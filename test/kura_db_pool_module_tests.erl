@@ -68,6 +68,40 @@ ignores_non_atom_pool_module_test() ->
     end.
 
 %%----------------------------------------------------------------------
+%% get_driver_module/1
+%%----------------------------------------------------------------------
+
+defaults_to_kura_driver_pgo_when_repo_omits_driver_module_test() ->
+    persistent_term:put({?MODULE, config}, #{pool => some_pool}),
+    try
+        ?assertEqual(kura_driver_pgo, kura_db:get_driver_module(?MODULE))
+    after
+        persistent_term:erase({?MODULE, config})
+    end.
+
+reads_driver_module_from_repo_config_test() ->
+    persistent_term:put({?MODULE, config}, #{
+        pool => some_pool,
+        driver_module => fake_driver_mod
+    }),
+    try
+        ?assertEqual(fake_driver_mod, kura_db:get_driver_module(?MODULE))
+    after
+        persistent_term:erase({?MODULE, config})
+    end.
+
+ignores_non_atom_driver_module_test() ->
+    persistent_term:put({?MODULE, config}, #{
+        pool => some_pool,
+        driver_module => "not an atom"
+    }),
+    try
+        ?assertEqual(kura_driver_pgo, kura_db:get_driver_module(?MODULE))
+    after
+        persistent_term:erase({?MODULE, config})
+    end.
+
+%%----------------------------------------------------------------------
 %% kura_repo callbacks
 %%----------------------------------------------------------------------
 
