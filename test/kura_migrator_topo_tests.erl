@@ -8,7 +8,7 @@
 
 %% No create_table ops - pass through unchanged.
 no_creates_test() ->
-    Ops = [{drop_table, <<"foo">>}, {create_index, <<"idx">>, <<"foo">>, [name]}],
+    Ops = [{drop_table, <<"foo">>}, {create_index, <<"idx">>, <<"foo">>, [name], []}],
     ?assertEqual(Ops, kura_migrator:topo_sort_ops(Ops)).
 
 %% Single table, no deps.
@@ -81,7 +81,7 @@ mixed_ops_test() ->
             #kura_column{name = id, type = uuid, primary_key = true},
             #kura_column{name = player_id, type = uuid, references = {<<"players">>, id}}
         ]},
-    Idx = {create_index, <<"idx_wallets">>, <<"wallets">>, [player_id]},
+    Idx = {create_index, <<"idx_wallets">>, <<"wallets">>, [player_id], []},
     %% B before A, with an index op in between
     Input = [B, Idx, A],
     Result = kura_migrator:topo_sort_ops(Input),

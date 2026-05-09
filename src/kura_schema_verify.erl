@@ -132,8 +132,7 @@ implements_kura_schema(Module) ->
 -spec run_checks(module(), [module()]) ->
     ok | {drift, [drift_issue()]} | {error, term()}.
 run_checks(RepoMod, SchemaMods) ->
-    Pool = kura_db:get_pool(RepoMod),
-    case load_existing_state(Pool) of
+    case load_existing_state(RepoMod) of
         {error, _} = Err ->
             Err;
         {ok, ColState, IdxState} ->
@@ -153,30 +152,30 @@ collect_issues([], _Cols, _Idx) ->
 collect_issues([Mod | Rest], Cols, Idx) ->
     check_schema(Mod, Cols, Idx) ++ collect_issues(Rest, Cols, Idx).
 
--spec load_existing_state(atom()) ->
+-spec load_existing_state(module()) ->
     {ok, #{binary() => sets:set(binary())}, #{binary() => sets:set(binary())}}
     | {error, term()}.
-load_existing_state(Pool) ->
-    case load_columns(Pool) of
+load_existing_state(RepoMod) ->
+    case load_columns(RepoMod) of
         {error, _} = Err ->
             Err;
         {ok, ColState} ->
-            case load_indexes(Pool) of
+            case load_indexes(RepoMod) of
                 {error, _} = IdxErr -> IdxErr;
                 {ok, IdxState} -> {ok, ColState, IdxState}
             end
     end.
 
--spec load_columns(atom()) ->
+-spec load_columns(module()) ->
     {ok, #{binary() => sets:set(binary())}} | {error, term()}.
-load_columns(Pool) ->
+load_columns(RepoMod) ->
     %% Store column names as binaries (not atoms) to avoid atom-table
     %% exhaustion when the live DB has columns the running app doesn't
     %% know about. Schema-declared column names are converted to binary
     %% at compare time.
     SQL =
         ~"SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = current_schema()",
-    case pgo:query(SQL, [], #{pool => Pool}) of
+    case kura_db:query(RepoMod, SQL, []) of
         #{rows := Rows} when is_list(Rows) ->
             {ok, build_col_state(Rows, #{})};
         {error, Reason} ->
@@ -195,11 +194,11 @@ build_col_state([#{table_name := TableBin, column_name := ColBin} | Rest], Acc) 
 build_col_state([_ | Rest], Acc) ->
     build_col_state(Rest, Acc).
 
--spec load_indexes(atom()) ->
+-spec load_indexes(module()) ->
     {ok, #{binary() => sets:set(binary())}} | {error, term()}.
-load_indexes(Pool) ->
+load_indexes(RepoMod) ->
     SQL = ~"SELECT tablename, indexname FROM pg_indexes WHERE schemaname = current_schema()",
-    case pgo:query(SQL, [], #{pool => Pool}) of
+    case kura_db:query(RepoMod, SQL, []) of
         #{rows := Rows} when is_list(Rows) ->
             {ok, build_idx_state(Rows, #{})};
         {error, Reason} ->

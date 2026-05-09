@@ -22,7 +22,7 @@ so non-pgo drivers can substitute their own transaction conventions.
 -export([
     query/5,
     query_on/4,
-    transaction/3
+    transaction/4
 ]).
 
 -define(DEFAULT_DECODE_OPTS, [return_rows_as_maps, column_name_as_atom]).
@@ -46,6 +46,7 @@ query_on(Conn, SQL, Params, Opts) ->
     Decode = maps:get(decode_opts, Opts, ?DEFAULT_DECODE_OPTS),
     pgo:query(SQL, Params, #{decode_opts => Decode}, Conn).
 
--spec transaction(module(), kura_pool:name(), fun(() -> term())) -> term().
-transaction(_PoolMod, Pool, Fun) ->
-    pgo:transaction(Fun, #{pool => Pool}).
+-spec transaction(module(), kura_pool:name(), fun(() -> term()), map()) -> term().
+transaction(_PoolMod, Pool, Fun, Opts) ->
+    PgoOpts = maps:with([pool_options], Opts),
+    pgo:transaction(Pool, Fun, PgoOpts).

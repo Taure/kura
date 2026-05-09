@@ -16,13 +16,15 @@ stop(_State) ->
 -spec ensure_pool() -> ok.
 ensure_pool() ->
     case application:get_env(kura, repo) of
-        {ok, Repo} ->
+        {ok, Repo} when is_atom(Repo) ->
             Config = pool_config(),
-            case pgo_sup:start_child(Repo, Config) of
+            PoolMod = kura_db:get_pool_module(Repo),
+            case PoolMod:start_pool(Repo, Config) of
                 {ok, _Pid} -> ok;
-                {error, {already_started, _Pid}} -> ok
+                {error, {already_started, _Pid}} -> ok;
+                {error, _} -> ok
             end;
-        undefined ->
+        _ ->
             ok
     end.
 

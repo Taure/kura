@@ -54,13 +54,18 @@ query_on_explicit_conn() ->
     end.
 
 transaction_routes_inner_queries() ->
-    Result = kura_driver_pgo:transaction(kura_pool_pgo, ?POOL, fun() ->
-        %% Inside a pgo transaction, query/5 should observe the
-        %% process-dict-stashed conn and route to it instead of
-        %% leasing a fresh one.
-        ?assertNotEqual(undefined, erlang:get(pgo_transaction_connection)),
-        kura_driver_pgo:query(kura_pool_pgo, ?POOL, ~"SELECT 3::integer AS n", [], #{})
-    end),
+    Result = kura_driver_pgo:transaction(
+        kura_pool_pgo,
+        ?POOL,
+        fun() ->
+            %% Inside a pgo transaction, query/5 should observe the
+            %% process-dict-stashed conn and route to it instead of
+            %% leasing a fresh one.
+            ?assertNotEqual(undefined, erlang:get(pgo_transaction_connection)),
+            kura_driver_pgo:query(kura_pool_pgo, ?POOL, ~"SELECT 3::integer AS n", [], #{})
+        end,
+        #{}
+    ),
     ?assertMatch(#{rows := [_]}, Result).
 
 transaction_rollback() ->
@@ -69,9 +74,12 @@ transaction_rollback() ->
     ?assertException(
         throw,
         boom,
-        kura_driver_pgo:transaction(kura_pool_pgo, ?POOL, fun() ->
-            erlang:throw(boom)
-        end)
+        kura_driver_pgo:transaction(
+            kura_pool_pgo,
+            ?POOL,
+            fun() -> erlang:throw(boom) end,
+            #{}
+        )
     ).
 
 %%----------------------------------------------------------------------

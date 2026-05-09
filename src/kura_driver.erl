@@ -85,8 +85,13 @@ its lifetime.
 Wrap `Fun` in a database transaction over a pool. Queries inside
 `Fun` route to the transaction's connection by whatever convention
 the driver uses (pgo: process dict).
+
+`Opts` carries driver-specific options. The pgo driver honors
+`pool_options => [{timeout, infinity | non_neg_integer()}]` for
+long-running streams. Other drivers may ignore unknown keys.
 """.
--callback transaction(PoolMod, Pool, Fun) -> term() when
+-callback transaction(PoolMod, Pool, Fun, Opts) -> term() when
     PoolMod :: module(),
     Pool :: kura_pool:name(),
-    Fun :: fun(() -> term()).
+    Fun :: fun(() -> term()),
+    Opts :: opts().

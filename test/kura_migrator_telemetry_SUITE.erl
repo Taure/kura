@@ -149,16 +149,17 @@ migrate_emits_per_migration_apply_event(_Config) ->
 
     ApplyEvents = [E || {[kura, migrator, migration, apply], _, _} = E <- Events],
     ?assertEqual(2, length(ApplyEvents)),
-    lists:foreach(
-        fun({_, Ms, Md}) ->
-            ?assert(is_integer(maps:get(duration, Ms))),
-            ?assert(is_integer(maps:get(version, Md))),
-            ?assert(is_atom(maps:get(module, Md))),
-            ?assertEqual(up, maps:get(direction, Md)),
-            ?assert(is_integer(maps:get(op_count, Md)))
-        end,
-        ApplyEvents
-    ).
+    assert_apply_events(ApplyEvents).
+
+assert_apply_events([]) ->
+    ok;
+assert_apply_events([{_, Ms, Md} | Rest]) when is_map(Ms), is_map(Md) ->
+    ?assert(is_integer(maps:get(duration, Ms))),
+    ?assert(is_integer(maps:get(version, Md))),
+    ?assert(is_atom(maps:get(module, Md))),
+    ?assertEqual(up, maps:get(direction, Md)),
+    ?assert(is_integer(maps:get(op_count, Md))),
+    assert_apply_events(Rest).
 
 migrate_idempotent_run_emits_zero_pending(_Config) ->
     %% A no-op migrate run still emits start and stop, but with

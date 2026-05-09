@@ -31,6 +31,8 @@ stream(RepoMod, Query, Fun, Opts) ->
     {SQL, Params} = kura_query_compiler:to_sql(Query),
     Schema = Query#kura_query.from,
     Pool = kura_db:get_pool(RepoMod),
+    PoolMod = kura_db:get_pool_module(RepoMod),
+    DriverMod = kura_db:get_driver_module(RepoMod),
     CursorName = generate_cursor_name(),
     DeclareSQL = iolist_to_binary([
         ~"DECLARE ",
@@ -45,14 +47,15 @@ stream(RepoMod, Query, Fun, Opts) ->
         CursorName
     ]),
     CloseSQL = iolist_to_binary([~"CLOSE ", CursorName]),
-    Result = pgo:transaction(
+    Result = DriverMod:transaction(
+        PoolMod,
         Pool,
         fun() ->
-            _ = pgo:query(DeclareSQL, Params),
+            _ = kura_db:query(RepoMod, DeclareSQL, Params),
             try
-                fetch_loop(FetchSQL, Schema, Fun)
+                fetch_loop(RepoMod, FetchSQL, Schema, Fun)
             after
-                pgo:query(CloseSQL, [])
+                kura_db:query(RepoMod, CloseSQL, [])
             end
         end,
         #{pool_options => [{timeout, infinity}]}
@@ -63,14 +66,14 @@ stream(RepoMod, Query, Fun, Opts) ->
 narrow_transaction_result(ok) -> ok;
 narrow_transaction_result({error, _} = Err) -> Err.
 
-fetch_loop(FetchSQL, Schema, Fun) ->
-    case pgo:query(FetchSQL, []) of
+fetch_loop(RepoMod, FetchSQL, Schema, Fun) ->
+    case kura_db:query(RepoMod, FetchSQL, []) of
         #{rows := []} ->
             ok;
         #{rows := Rows} ->
             Loaded = [kura_db:load_row(Schema, Row) || Row <- Rows],
             Fun(Loaded),
-            fetch_loop(FetchSQL, Schema, Fun);
+            fetch_loop(RepoMod, FetchSQL, Schema, Fun);
         {error, _} = Err ->
             Err
     end.

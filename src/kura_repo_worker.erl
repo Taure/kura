@@ -62,6 +62,7 @@ kura_repo_worker:start(MyRepo),
 start(RepoMod) ->
     Config = kura_repo:config(RepoMod),
     Pool = maps:get(pool, Config, RepoMod),
+    PoolMod = kura_db:get_pool_module(RepoMod),
     PgoConfig = #{
         host => binary_to_list(maps:get(hostname, Config, ~"localhost")),
         port => maps:get(port, Config, 5432),
@@ -71,11 +72,10 @@ start(RepoMod) ->
         pool_size => maps:get(pool_size, Config, 10),
         decode_opts => [return_rows_as_maps, column_name_as_atom]
     },
-    %% pgo spec says {ok, pid()} but supervisor:start_child underneath
-    %% can return {error, {already_started, Pid}} when pool exists.
-    case pgo_sup:start_child(Pool, PgoConfig) of
+    case PoolMod:start_pool(Pool, PgoConfig) of
         {ok, _Pid} -> ok;
-        {error, {already_started, _Pid}} -> ok
+        {error, {already_started, _Pid}} -> ok;
+        {error, _} -> ok
     end.
 
 -doc "Execute a query and return all matching rows.".
