@@ -12,6 +12,7 @@ pool lookup, sandbox support, telemetry, and type loading.
     query/3,
     query_pool/3,
     transaction/2,
+    transaction_pool/2,
     transaction_ok/2,
     get_pool/1,
     load_row/2,
@@ -74,9 +75,24 @@ run_on_worker(Worker, SQL, Params) ->
 -doc false.
 -spec query_pool(atom(), iodata(), [term()]) -> map() | {error, term()}.
 query_pool(Pool, SQL, Params) ->
-    kura_pool:with_conn(?POOL_IMPL, Pool, fun(Worker) ->
-        run_on_worker(Worker, SQL, Params)
-    end).
+    case get(?TX_CONN_KEY) of
+        {Conn, Pool} ->
+            translate_result(epgsql:equery(Conn, SQL, Params), SQL);
+        _ ->
+            kura_pool:with_conn(?POOL_IMPL, Pool, fun(Worker) ->
+                run_on_worker(Worker, SQL, Params)
+            end)
+    end.
+
+-doc false.
+-spec transaction_pool(atom(), fun(() -> term())) -> term().
+transaction_pool(Pool, Fun) ->
+    case get(?TX_CONN_KEY) of
+        {_Conn, Pool} ->
+            Fun();
+        _ ->
+            run_transaction(Pool, Fun)
+    end.
 
 %%----------------------------------------------------------------------
 %% Transaction

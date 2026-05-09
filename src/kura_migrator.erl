@@ -196,38 +196,44 @@ do_ensure_database(Config, Database) ->
     end.
 
 base_pool_config(Config, Database) ->
-    #{
+    Connection = #{
         host => binary_to_list(maps:get(hostname, Config, ~"localhost")),
         port => maps:get(port, Config, 5432),
         database => Database,
-        user => binary_to_list(maps:get(username, Config, ~"postgres")),
-        password => binary_to_list(maps:get(password, Config, <<>>)),
-        pool_size => 1,
-        decode_opts => [return_rows_as_maps, column_name_as_atom]
+        username => binary_to_list(maps:get(username, Config, ~"postgres")),
+        password => binary_to_list(maps:get(password, Config, <<>>))
+    },
+    #{
+        connection => Connection,
+        pool_opts => #{size => {1, 1}}
     }.
 
-apply_pool_extras(Base) ->
+apply_pool_extras(#{connection := Connection} = Base) ->
     WithSocket =
         case application:get_env(kura, socket_options, []) of
-            Opts when is_list(Opts), Opts =/= [] -> Base#{socket_options => Opts};
-            _ -> Base
+            Opts when is_list(Opts), Opts =/= [] ->
+                Connection#{tcp_opts => Opts};
+            _ ->
+                Connection
         end,
     WithSSL =
         case application:get_env(kura, ssl, false) of
             true -> WithSocket#{ssl => true};
             _ -> WithSocket
         end,
-    case application:get_env(kura, ssl_options, []) of
-        SSLOpts when is_list(SSLOpts), SSLOpts =/= [] ->
-            WithSSL#{ssl_options => SSLOpts};
-        _ ->
-            WithSSL
-    end.
+    Final =
+        case application:get_env(kura, ssl_options, []) of
+            SSLOpts when is_list(SSLOpts), SSLOpts =/= [] ->
+                WithSSL#{ssl_opts => SSLOpts};
+            _ ->
+                WithSSL
+        end,
+    Base#{connection => Final}.
 
 try_connect(TmpPool, TmpConfig) ->
-    case pgo_sup:start_child(TmpPool, TmpConfig) of
+    case kura_pool_hnc:start_pool(TmpPool, TmpConfig) of
         {ok, _} ->
-            case pgo:query(~"SELECT 1", [], #{pool => TmpPool}) of
+            case kura_db:query_pool(TmpPool, ~"SELECT 1", []) of
                 #{rows := _} -> ok;
                 {error, Reason} -> {error, Reason}
             end;
@@ -241,21 +247,20 @@ create_database(Config, Database) ->
     TmpPool = kura_migrator_create_pool,
     TmpBase = base_pool_config(Config, "postgres"),
     TmpConfig = apply_pool_extras(TmpBase),
-    case pgo_sup:start_child(TmpPool, TmpConfig) of
+    case kura_pool_hnc:start_pool(TmpPool, TmpConfig) of
         {ok, _} -> ok;
         {error, {already_started, _}} -> ok
     end,
     DbBin = list_to_binary(Database),
     QuotedDb = iolist_to_binary([<<"\"">>, DbBin, <<"\"">>]),
     SQL = iolist_to_binary([~"CREATE DATABASE ", QuotedDb]),
-    _ = pgo:query(SQL, [], #{pool => TmpPool}),
+    _ = kura_db:query_pool(TmpPool, SQL, []),
     logger:info("Kura: created database ~s", [Database]),
     stop_tmp_pool(TmpPool).
 
 -spec stop_tmp_pool(atom()) -> ok.
 stop_tmp_pool(TmpPool) ->
-    _ = supervisor:terminate_child(pgo_sup, TmpPool),
-    _ = supervisor:delete_child(pgo_sup, TmpPool),
+    _ = kura_pool_hnc:stop_pool(TmpPool),
     ok.
 
 %%----------------------------------------------------------------------
@@ -271,7 +276,7 @@ ensure_schema_migrations(RepoMod) ->
         "inserted_at TIMESTAMPTZ NOT NULL DEFAULT now()"
         ")"
     >>,
-    _ = pgo:query(SQL, [], #{pool => Pool}),
+    _ = kura_db:query_pool(Pool, SQL, []),
     ok.
 
 %%----------------------------------------------------------------------
@@ -336,7 +341,7 @@ wait_for_pool_loop(Pool, Interval, Deadline) ->
 
 -spec probe_pool(atom()) -> ok | {error, term()}.
 probe_pool(Pool) ->
-    try pgo:query(~"SELECT 1", [], #{pool => Pool}) of
+    try kura_db:query_pool(Pool, ~"SELECT 1", []) of
         #{rows := _} -> ok;
         {error, Reason} -> {error, Reason}
     catch
@@ -376,24 +381,20 @@ parse_migration_module(Module) ->
 %% Advisory lock
 %%----------------------------------------------------------------------
 
--spec with_migration_lock(module(), fun((map()) -> [integer()])) ->
+-spec with_migration_lock(module(), fun((atom()) -> [integer()])) ->
     {ok, [integer()]} | {error, term()}.
 with_migration_lock(RepoMod, Fun) ->
     Pool = kura_db:get_pool(RepoMod),
-    PoolOpts = #{pool => Pool},
     try
         narrow_migration_result(
-            pgo:transaction(
-                fun() ->
-                    #{command := _} = pgo:query(
-                        ~"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock",
-                        [?MIGRATION_LOCK_KEY],
-                        PoolOpts
-                    ),
-                    Fun(PoolOpts)
-                end,
-                PoolOpts
-            )
+            kura_db:transaction_pool(Pool, fun() ->
+                #{command := _} = kura_db:query_pool(
+                    Pool,
+                    ~"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock",
+                    [?MIGRATION_LOCK_KEY]
+                ),
+                Fun(Pool)
+            end)
         )
     catch
         error:{migration_failed, Version, MigReason}:Stack ->
@@ -418,30 +419,30 @@ with_migration_lock(RepoMod, Fun) ->
 %% Migration execution (runs inside advisory lock transaction)
 %%----------------------------------------------------------------------
 
--spec run_migrations([{integer(), module()}], up | down, map(), [integer()]) -> [integer()].
-run_migrations([], _Dir, _PoolOpts, Acc) ->
+-spec run_migrations([{integer(), module()}], up | down, atom(), [integer()]) -> [integer()].
+run_migrations([], _Dir, _Pool, Acc) ->
     reverse_integers(Acc, []);
-run_migrations([{Version, Module} | Rest], Dir, PoolOpts, Acc) ->
+run_migrations([{Version, Module} | Rest], Dir, Pool, Acc) ->
     T0 = erlang:monotonic_time(),
     Ops = get_migration_ops(Module, Dir),
     SafeEntries = get_safe_entries(Module),
     Warnings = check_unsafe_operations(Ops, SafeEntries),
     log_warnings(Module, Warnings),
-    exec_operations(Ops, Version, PoolOpts),
+    exec_operations(Ops, Version, Pool),
     case Dir of
         up ->
             exec(
                 ~"INSERT INTO schema_migrations (version) VALUES ($1)",
                 [Version],
                 Version,
-                PoolOpts
+                Pool
             );
         down ->
             exec(
                 ~"DELETE FROM schema_migrations WHERE version = $1",
                 [Version],
                 Version,
-                PoolOpts
+                Pool
             )
     end,
     logger:info("Kura: ~s migration ~p (~p)", [Dir, Version, Module]),
@@ -455,23 +456,23 @@ run_migrations([{Version, Module} | Rest], Dir, PoolOpts, Acc) ->
             op_count => length(Ops)
         }
     ),
-    run_migrations(Rest, Dir, PoolOpts, [Version | Acc]).
+    run_migrations(Rest, Dir, Pool, [Version | Acc]).
 
--spec exec_operations([kura_migration:operation()], integer(), map()) -> ok.
-exec_operations(Ops, Version, PoolOpts) ->
+-spec exec_operations([kura_migration:operation()], integer(), atom()) -> ok.
+exec_operations(Ops, Version, Pool) ->
     Sorted = topo_sort_ops(Ops),
-    exec_operations_seq(Sorted, Version, PoolOpts).
+    exec_operations_seq(Sorted, Version, Pool).
 
-exec_operations_seq([], _Version, _PoolOpts) ->
+exec_operations_seq([], _Version, _Pool) ->
     ok;
-exec_operations_seq([Op | Rest], Version, PoolOpts) ->
+exec_operations_seq([Op | Rest], Version, Pool) ->
     SQL = compile_operation(Op),
-    exec(SQL, [], Version, PoolOpts),
-    exec_operations_seq(Rest, Version, PoolOpts).
+    exec(SQL, [], Version, Pool),
+    exec_operations_seq(Rest, Version, Pool).
 
--spec exec(binary(), list(), integer(), map()) -> ok.
-exec(SQL, Params, Version, PoolOpts) ->
-    case pgo:query(SQL, Params, PoolOpts) of
+-spec exec(binary(), list(), integer(), atom()) -> ok.
+exec(SQL, Params, Version, Pool) ->
+    case kura_db:query_pool(Pool, SQL, Params) of
         #{command := _} ->
             ok;
         {error, Reason} ->
@@ -801,9 +802,7 @@ log_warnings(Module, Warnings) ->
 -spec get_applied_versions(module()) -> [integer()].
 get_applied_versions(RepoMod) ->
     Pool = kura_db:get_pool(RepoMod),
-    case
-        pgo:query(~"SELECT version FROM schema_migrations ORDER BY version", [], #{pool => Pool})
-    of
+    case kura_db:query_pool(Pool, ~"SELECT version FROM schema_migrations ORDER BY version", []) of
         #{rows := Rows} ->
             [V || #{version := V} <- Rows];
         _ ->
