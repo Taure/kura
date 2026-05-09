@@ -2,754 +2,152 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
--eqwalizer({nowarn_function, join_test/0}).
--eqwalizer({nowarn_function, left_join_test/0}).
--eqwalizer({nowarn_function, join_chained_test/0}).
--eqwalizer({nowarn_function, join_with_alias_test/0}).
--eqwalizer({nowarn_function, join_schema_module_test/0}).
--eqwalizer({nowarn_function, order_by_test/0}).
--eqwalizer({nowarn_function, group_by_test/0}).
--eqwalizer({nowarn_function, having_test/0}).
--eqwalizer({nowarn_function, limit_test/0}).
--eqwalizer({nowarn_function, limit_offset_test/0}).
--eqwalizer({nowarn_function, distinct_test/0}).
--eqwalizer({nowarn_function, distinct_on_test/0}).
--eqwalizer({nowarn_function, lock_test/0}).
+%% Verifies that kura_query_compiler delegates to a dialect that the
+%% application env can swap. The fake dialect below records its calls
+%% so we can assert the facade reached it.
+
+-behaviour(kura_dialect).
+
+-export([
+    to_sql/1,
+    to_sql_from/2,
+    insert/3,
+    insert/4,
+    update/4,
+    delete/3,
+    update_all/2,
+    delete_all/1,
+    insert_all/3,
+    insert_all/4
+]).
 
 %%----------------------------------------------------------------------
-%% SELECT compilation
+%% Default dialect
 %%----------------------------------------------------------------------
 
-simple_select_test() ->
-    Q = kura_query:from(user),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT * FROM \"user\"">>, SQL),
-    ?assertEqual([], Params).
-
-select_fields_test() ->
-    Q = kura_query:select(kura_query:from(user), [name, email]),
-    {SQL, _} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT \"name\", \"email\" FROM \"user\"">>, SQL).
-
-select_from_schema_test() ->
-    Q = kura_query:from(kura_test_schema),
-    {SQL, _} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT * FROM \"users\"">>, SQL).
+default_dialect_is_pg_test() ->
+    %% No env override - facade should resolve to kura_dialect_pg.
+    application:unset_env(kura, dialect),
+    ?assertEqual(kura_dialect_pg, kura_query_compiler:dialect()).
 
 %%----------------------------------------------------------------------
-%% WHERE
+%% Dialect override is honored by the facade
 %%----------------------------------------------------------------------
 
-where_equality_test() ->
-    Q = kura_query:where(kura_query:from(user), {name, <<"Alice">>}),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT * FROM \"user\" WHERE \"name\" = $1">>, SQL),
-    ?assertEqual([<<"Alice">>], Params).
+facade_delegates_to_configured_dialect_test() ->
+    application:set_env(kura, dialect, ?MODULE),
+    try
+        Q = #kura_query{from = my_schema},
+        Result = kura_query_compiler:to_sql(Q),
+        ?assertEqual({~"FAKE_SQL", [fake_param]}, Result)
+    after
+        application:unset_env(kura, dialect)
+    end.
 
-where_comparison_test() ->
-    Q = kura_query:where(kura_query:from(user), {age, '>', 18}),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT * FROM \"user\" WHERE \"age\" > $1">>, SQL),
-    ?assertEqual([18], Params).
-
-where_multiple_test() ->
-    Q0 = kura_query:from(user),
-    Q1 = kura_query:where(Q0, {age, '>', 18}),
-    Q2 = kura_query:where(Q1, {active, true}),
-    {SQL, Params} = kura_query_compiler:to_sql(Q2),
-    ?assertEqual(<<"SELECT * FROM \"user\" WHERE \"age\" > $1 AND \"active\" = $2">>, SQL),
-    ?assertEqual([18, true], Params).
-
-where_or_test() ->
-    Q = kura_query:where(
-        kura_query:from(user),
-        {'or', [{role, <<"admin">>}, {role, <<"mod">>}]}
-    ),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT * FROM \"user\" WHERE (\"role\" = $1 OR \"role\" = $2)">>, SQL),
-    ?assertEqual([<<"admin">>, <<"mod">>], Params).
-
-where_and_test() ->
-    Q = kura_query:where(
-        kura_query:from(user),
-        {'and', [{age, '>', 18}, {active, true}]}
-    ),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT * FROM \"user\" WHERE (\"age\" > $1 AND \"active\" = $2)">>, SQL),
-    ?assertEqual([18, true], Params).
-
-where_not_test() ->
-    Q = kura_query:where(
-        kura_query:from(user),
-        {'not', {active, false}}
-    ),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT * FROM \"user\" WHERE NOT (\"active\" = $1)">>, SQL),
-    ?assertEqual([false], Params).
-
-where_in_test() ->
-    Q = kura_query:where(kura_query:from(user), {role, in, [<<"admin">>, <<"mod">>]}),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT * FROM \"user\" WHERE \"role\" IN ($1, $2)">>, SQL),
-    ?assertEqual([<<"admin">>, <<"mod">>], Params).
-
-where_not_in_test() ->
-    Q = kura_query:where(kura_query:from(user), {role, not_in, [<<"banned">>]}),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT * FROM \"user\" WHERE \"role\" NOT IN ($1)">>, SQL),
-    ?assertEqual([<<"banned">>], Params).
-
-where_is_nil_test() ->
-    Q = kura_query:where(kura_query:from(user), {deleted_at, is_nil}),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT * FROM \"user\" WHERE \"deleted_at\" IS NULL">>, SQL),
-    ?assertEqual([], Params).
-
-where_is_not_nil_test() ->
-    Q = kura_query:where(kura_query:from(user), {email, is_not_nil}),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT * FROM \"user\" WHERE \"email\" IS NOT NULL">>, SQL),
-    ?assertEqual([], Params).
-
-where_between_test() ->
-    Q = kura_query:where(kura_query:from(user), {age, between, {18, 65}}),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT * FROM \"user\" WHERE \"age\" BETWEEN $1 AND $2">>, SQL),
-    ?assertEqual([18, 65], Params).
-
-where_like_test() ->
-    Q = kura_query:where(kura_query:from(user), {name, like, <<"%alice%">>}),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT * FROM \"user\" WHERE \"name\" LIKE $1">>, SQL),
-    ?assertEqual([<<"%alice%">>], Params).
-
-where_fragment_test() ->
-    Q = kura_query:where(
-        kura_query:from(user),
-        {fragment, <<"lower(name) = ?">>, [<<"alice">>]}
-    ),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT * FROM \"user\" WHERE lower(name) = $1">>, SQL),
-    ?assertEqual([<<"alice">>], Params).
+facade_delegates_insert_to_configured_dialect_test() ->
+    application:set_env(kura, dialect, ?MODULE),
+    try
+        Result = kura_query_compiler:insert(my_schema, [name], #{name => <<"x">>}),
+        ?assertEqual({~"FAKE_INSERT", []}, Result)
+    after
+        application:unset_env(kura, dialect)
+    end.
 
 %%----------------------------------------------------------------------
-%% JOIN
+%% to_sql_cached: cache miss + hit
 %%----------------------------------------------------------------------
 
-join_test() ->
-    Q = kura_query:join(kura_query:from(user), inner, post, {id, user_id}),
-    {SQL, _} = kura_query_compiler:to_sql(Q),
-    ?assert(binary:match(SQL, <<"INNER JOIN \"post\"">>) =/= nomatch),
-    ?assert(binary:match(SQL, <<"ON \"user\".\"id\" = \"post\".\"user_id\"">>) =/= nomatch).
+to_sql_cached_miss_compiles_and_stores_test() ->
+    application:unset_env(kura, dialect),
+    kura_query_cache:init(),
+    Q = #kura_query{from = cache_miss_schema},
+    Result = kura_query_compiler:to_sql_cached(Q),
+    %% Verify it compiled (matches what to_sql/1 would return).
+    ?assertEqual(kura_query_compiler:to_sql(Q), Result),
+    %% Verify it was actually stored.
+    Key = erlang:phash2(Q),
+    ?assertEqual({ok, Result}, kura_query_cache:get(Key)).
 
-left_join_test() ->
-    Q = kura_query:join(kura_query:from(user), left, post, {id, user_id}),
-    {SQL, _} = kura_query_compiler:to_sql(Q),
-    ?assert(binary:match(SQL, <<"LEFT JOIN \"post\"">>) =/= nomatch),
-    ?assert(binary:match(SQL, <<"ON \"user\".\"id\" = \"post\".\"user_id\"">>) =/= nomatch).
+to_sql_cached_hit_returns_stored_result_test() ->
+    application:unset_env(kura, dialect),
+    kura_query_cache:init(),
+    Q = #kura_query{from = cache_hit_schema},
+    Stored = {~"PRE_BAKED_SQL", [pre_baked_param]},
+    Key = erlang:phash2(Q),
+    kura_query_cache:put(Key, Stored),
+    %% to_sql_cached should return the stored value, not recompile.
+    ?assertEqual(Stored, kura_query_compiler:to_sql_cached(Q)).
 
-join_chained_test() ->
-    Q0 = kura_query:from(user),
-    Q1 = kura_query:join(Q0, inner, post, {id, user_id}),
-    Q2 = kura_query:join(Q1, inner, comment, {id, post_id}),
-    {SQL, _} = kura_query_compiler:to_sql(Q2),
-    ?assert(binary:match(SQL, <<"ON \"user\".\"id\" = \"post\".\"user_id\"">>) =/= nomatch),
-    ?assert(binary:match(SQL, <<"ON \"post\".\"id\" = \"comment\".\"post_id\"">>) =/= nomatch).
-
-join_with_alias_test() ->
-    Q = kura_query:join(kura_query:from(user), inner, post, {id, user_id}, p),
-    {SQL, _} = kura_query_compiler:to_sql(Q),
-    ?assert(binary:match(SQL, <<"INNER JOIN \"post\" AS \"p\"">>) =/= nomatch),
-    ?assert(binary:match(SQL, <<"ON \"user\".\"id\" = \"p\".\"user_id\"">>) =/= nomatch).
-
-join_schema_module_test() ->
-    Q = kura_query:join(
-        kura_query:from(kura_test_schema), inner, kura_test_post_schema, {id, author_id}
-    ),
-    {SQL, _} = kura_query_compiler:to_sql(Q),
-    ?assert(binary:match(SQL, <<"INNER JOIN \"posts\"">>) =/= nomatch).
-
-%%----------------------------------------------------------------------
-%% ORDER BY
-%%----------------------------------------------------------------------
-
-order_by_test() ->
-    Q = kura_query:order_by(kura_query:from(user), [{name, asc}, {age, desc}]),
-    {SQL, _} = kura_query_compiler:to_sql(Q),
-    ?assert(binary:match(SQL, <<"ORDER BY \"name\" ASC, \"age\" DESC">>) =/= nomatch).
-
-%%----------------------------------------------------------------------
-%% GROUP BY + HAVING
-%%----------------------------------------------------------------------
-
-group_by_test() ->
-    Q = kura_query:group_by(kura_query:from(user), [role]),
-    Q2 = kura_query:count(Q),
-    {SQL, _} = kura_query_compiler:to_sql(Q2),
-    ?assert(binary:match(SQL, <<"GROUP BY \"role\"">>) =/= nomatch).
-
-having_test() ->
-    Q = kura_query:group_by(kura_query:from(user), [role]),
-    Q2 = kura_query:having(Q, {age, '>', 5}),
-    Q3 = kura_query:count(Q2),
-    {SQL, Params} = kura_query_compiler:to_sql(Q3),
-    ?assert(binary:match(SQL, <<"HAVING \"age\" > $">>) =/= nomatch),
-    ?assertEqual([5], Params).
-
-%%----------------------------------------------------------------------
-%% LIMIT / OFFSET
-%%----------------------------------------------------------------------
-
-limit_test() ->
-    Q = kura_query:limit(kura_query:from(user), 10),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assert(binary:match(SQL, <<"LIMIT $1">>) =/= nomatch),
-    ?assertEqual([10], Params).
-
-limit_offset_test() ->
-    Q0 = kura_query:from(user),
-    Q1 = kura_query:limit(Q0, 10),
-    Q2 = kura_query:offset(Q1, 20),
-    {SQL, Params} = kura_query_compiler:to_sql(Q2),
-    ?assert(binary:match(SQL, <<"LIMIT $1">>) =/= nomatch),
-    ?assert(binary:match(SQL, <<"OFFSET $2">>) =/= nomatch),
-    ?assertEqual([10, 20], Params).
+facade_delegates_all_callbacks_to_dialect_test_() ->
+    application:set_env(kura, dialect, ?MODULE),
+    Q = #kura_query{from = my_schema},
+    Cleanup = fun() -> application:unset_env(kura, dialect) end,
+    {setup, fun() -> ok end, fun(_) -> Cleanup() end, [
+        ?_assertEqual(
+            {~"FAKE_SQL", [fake_param], 2},
+            kura_query_compiler:to_sql_from(Q, 1)
+        ),
+        ?_assertEqual(
+            {~"FAKE_INSERT", []},
+            kura_query_compiler:insert(my_schema, [name], #{name => <<"x">>}, #{})
+        ),
+        ?_assertEqual(
+            {~"FAKE_UPDATE", []},
+            kura_query_compiler:update(my_schema, [name], #{name => <<"x">>}, {id, 1})
+        ),
+        ?_assertEqual(
+            {~"FAKE_DELETE", []},
+            kura_query_compiler:delete(my_schema, id, 1)
+        ),
+        ?_assertEqual(
+            {~"FAKE_UPDATE_ALL", []},
+            kura_query_compiler:update_all(Q, #{name => <<"x">>})
+        ),
+        ?_assertEqual(
+            {~"FAKE_DELETE_ALL", []},
+            kura_query_compiler:delete_all(Q)
+        ),
+        ?_assertEqual(
+            {~"FAKE_INSERT_ALL", []},
+            kura_query_compiler:insert_all(my_schema, [name], [#{name => <<"x">>}])
+        ),
+        ?_assertEqual(
+            {~"FAKE_INSERT_ALL", []},
+            kura_query_compiler:insert_all(
+                my_schema, [name], [#{name => <<"x">>}], #{returning => true}
+            )
+        )
+    ]}.
 
 %%----------------------------------------------------------------------
-%% DISTINCT
+%% PG dialect still produces real SQL through the facade
 %%----------------------------------------------------------------------
 
-distinct_test() ->
-    Q = kura_query:distinct(kura_query:from(user)),
-    {SQL, _} = kura_query_compiler:to_sql(Q),
-    ?assert(binary:match(SQL, <<"SELECT DISTINCT *">>) =/= nomatch).
+pg_dialect_through_facade_produces_select_test() ->
+    application:unset_env(kura, dialect),
+    Q = #kura_query{from = my_schema},
+    {SQL, _Params} = kura_query_compiler:to_sql(Q),
+    SQLBin = iolist_to_binary(SQL),
+    ?assertMatch(<<"SELECT", _/binary>>, SQLBin).
 
-distinct_on_test() ->
-    Q = kura_query:distinct(kura_query:from(user), [email]),
-    {SQL, _} = kura_query_compiler:to_sql(Q),
-    ?assert(binary:match(SQL, <<"SELECT DISTINCT ON (\"email\") *">>) =/= nomatch).
-
-%%----------------------------------------------------------------------
-%% LOCK
-%%----------------------------------------------------------------------
-
-lock_test() ->
-    Q = kura_query:lock(kura_query:from(user), <<"FOR UPDATE">>),
-    {SQL, _} = kura_query_compiler:to_sql(Q),
-    ?assert(binary:match(SQL, <<"FOR UPDATE">>) =/= nomatch).
+pg_dialect_directly_produces_same_result_test() ->
+    Q = #kura_query{from = my_schema},
+    Direct = kura_dialect_pg:to_sql(Q),
+    application:unset_env(kura, dialect),
+    Facade = kura_query_compiler:to_sql(Q),
+    ?assertEqual(Direct, Facade).
 
 %%----------------------------------------------------------------------
-%% PREFIX (schema)
+%% Fake dialect impl
 %%----------------------------------------------------------------------
 
-prefix_test() ->
-    Q = kura_query:prefix(kura_query:from(user), <<"tenant_1">>),
-    {SQL, _} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT * FROM \"tenant_1\".\"user\"">>, SQL).
-
-%%----------------------------------------------------------------------
-%% Aggregates
-%%----------------------------------------------------------------------
-
-count_star_test() ->
-    Q = kura_query:count(kura_query:from(user)),
-    {SQL, _} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT count(*) AS \"count\" FROM \"user\"">>, SQL).
-
-count_field_test() ->
-    Q = kura_query:count(kura_query:from(user), email),
-    {SQL, _} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT count(\"email\") AS \"count\" FROM \"user\"">>, SQL).
-
-sum_test() ->
-    Q = kura_query:sum(kura_query:from(user), score),
-    {SQL, _} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT sum(\"score\") AS \"sum\" FROM \"user\"">>, SQL).
-
-%%----------------------------------------------------------------------
-%% INSERT
-%%----------------------------------------------------------------------
-
-insert_test() ->
-    {SQL, Params} = kura_query_compiler:insert(
-        kura_test_schema, [name, email], #{name => <<"Alice">>, email => <<"a@b.com">>}
-    ),
-    ?assertEqual(
-        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) RETURNING *">>, SQL
-    ),
-    ?assertEqual([<<"Alice">>, <<"a@b.com">>], Params).
-
-%%----------------------------------------------------------------------
-%% UPDATE
-%%----------------------------------------------------------------------
-
-update_test() ->
-    {SQL, Params} = kura_query_compiler:update(
-        kura_test_schema, [name], #{name => <<"Bob">>}, {id, 1}
-    ),
-    ?assertEqual(<<"UPDATE \"users\" SET \"name\" = $1 WHERE \"id\" = $2 RETURNING *">>, SQL),
-    ?assertEqual([<<"Bob">>, 1], Params).
-
-%%----------------------------------------------------------------------
-%% DELETE
-%%----------------------------------------------------------------------
-
-delete_test() ->
-    {SQL, Params} = kura_query_compiler:delete(kura_test_schema, id, 1),
-    ?assertEqual(<<"DELETE FROM \"users\" WHERE \"id\" = $1 RETURNING *">>, SQL),
-    ?assertEqual([1], Params).
-
-%%----------------------------------------------------------------------
-%% INSERT with ON CONFLICT (upsert)
-%%----------------------------------------------------------------------
-
-insert_on_conflict_nothing_test() ->
-    {SQL, Params} = kura_query_compiler:insert(
-        kura_test_schema,
-        [name, email],
-        #{name => <<"Alice">>, email => <<"a@b.com">>},
-        #{on_conflict => {email, nothing}}
-    ),
-    ?assertEqual(
-        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) ON CONFLICT (\"email\") DO NOTHING RETURNING *">>,
-        SQL
-    ),
-    ?assertEqual([<<"Alice">>, <<"a@b.com">>], Params).
-
-insert_on_conflict_constraint_nothing_test() ->
-    {SQL, Params} = kura_query_compiler:insert(
-        kura_test_schema,
-        [name, email],
-        #{name => <<"Alice">>, email => <<"a@b.com">>},
-        #{on_conflict => {{constraint, <<"uq_email">>}, nothing}}
-    ),
-    ?assertEqual(
-        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) ON CONFLICT ON CONSTRAINT \"uq_email\" DO NOTHING RETURNING *">>,
-        SQL
-    ),
-    ?assertEqual([<<"Alice">>, <<"a@b.com">>], Params).
-
-insert_on_conflict_replace_all_test() ->
-    {SQL, Params} = kura_query_compiler:insert(
-        kura_test_schema,
-        [name, email],
-        #{name => <<"Alice">>, email => <<"a@b.com">>},
-        #{on_conflict => {email, replace_all}}
-    ),
-    ?assertEqual(
-        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) ON CONFLICT (\"email\") DO UPDATE SET \"name\" = $3 RETURNING *">>,
-        SQL
-    ),
-    ?assertEqual([<<"Alice">>, <<"a@b.com">>, <<"Alice">>], Params).
-
-insert_on_conflict_constraint_replace_all_test() ->
-    {SQL, Params} = kura_query_compiler:insert(
-        kura_test_schema,
-        [name, email],
-        #{name => <<"Alice">>, email => <<"a@b.com">>},
-        #{on_conflict => {{constraint, <<"uq_email">>}, replace_all}}
-    ),
-    ?assertEqual(
-        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) ON CONFLICT ON CONSTRAINT \"uq_email\" DO UPDATE SET \"name\" = $3, \"email\" = $4 RETURNING *">>,
-        SQL
-    ),
-    ?assertEqual([<<"Alice">>, <<"a@b.com">>, <<"Alice">>, <<"a@b.com">>], Params).
-
-insert_on_conflict_constraint_replace_fields_test() ->
-    {SQL, Params} = kura_query_compiler:insert(
-        kura_test_schema,
-        [name, email],
-        #{name => <<"Alice">>, email => <<"a@b.com">>},
-        #{on_conflict => {{constraint, <<"uq_email">>}, {replace, [name]}}}
-    ),
-    ?assertEqual(
-        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) ON CONFLICT ON CONSTRAINT \"uq_email\" DO UPDATE SET \"name\" = $3 RETURNING *">>,
-        SQL
-    ),
-    ?assertEqual([<<"Alice">>, <<"a@b.com">>, <<"Alice">>], Params).
-
-insert_on_conflict_replace_fields_test() ->
-    {SQL, Params} = kura_query_compiler:insert(
-        kura_test_schema,
-        [name, email],
-        #{name => <<"Alice">>, email => <<"a@b.com">>},
-        #{on_conflict => {email, {replace, [name]}}}
-    ),
-    ?assertEqual(
-        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) ON CONFLICT (\"email\") DO UPDATE SET \"name\" = $3 RETURNING *">>,
-        SQL
-    ),
-    ?assertEqual([<<"Alice">>, <<"a@b.com">>, <<"Alice">>], Params).
-
-insert_on_conflict_columns_nothing_test() ->
-    {SQL, Params} = kura_query_compiler:insert(
-        kura_test_schema,
-        [name, email],
-        #{name => <<"Alice">>, email => <<"a@b.com">>},
-        #{on_conflict => {{columns, [name, email]}, nothing}}
-    ),
-    ?assertEqual(
-        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) ON CONFLICT (\"name\", \"email\") DO NOTHING RETURNING *">>,
-        SQL
-    ),
-    ?assertEqual([<<"Alice">>, <<"a@b.com">>], Params).
-
-insert_on_conflict_columns_replace_all_test() ->
-    {SQL, Params} = kura_query_compiler:insert(
-        kura_test_schema,
-        [name, email, age],
-        #{name => <<"Alice">>, email => <<"a@b.com">>, age => 30},
-        #{on_conflict => {{columns, [name, email]}, replace_all}}
-    ),
-    ?assertEqual(
-        <<"INSERT INTO \"users\" (\"name\", \"email\", \"age\") VALUES ($1, $2, $3) ON CONFLICT (\"name\", \"email\") DO UPDATE SET \"age\" = $4 RETURNING *">>,
-        SQL
-    ),
-    ?assertEqual([<<"Alice">>, <<"a@b.com">>, 30, 30], Params).
-
-insert_on_conflict_columns_replace_fields_test() ->
-    {SQL, Params} = kura_query_compiler:insert(
-        kura_test_schema,
-        [name, email, age],
-        #{name => <<"Alice">>, email => <<"a@b.com">>, age => 30},
-        #{on_conflict => {{columns, [name, email]}, {replace, [age]}}}
-    ),
-    ?assertEqual(
-        <<"INSERT INTO \"users\" (\"name\", \"email\", \"age\") VALUES ($1, $2, $3) ON CONFLICT (\"name\", \"email\") DO UPDATE SET \"age\" = $4 RETURNING *">>,
-        SQL
-    ),
-    ?assertEqual([<<"Alice">>, <<"a@b.com">>, 30, 30], Params).
-
-insert_on_conflict_columns_preserves_order_test() ->
-    %% Column order in the conflict target must match the index definition;
-    %% reversing should produce a different SQL clause.
-    {SQL, _Params} = kura_query_compiler:insert(
-        kura_test_schema,
-        [name, email],
-        #{name => <<"Alice">>, email => <<"a@b.com">>},
-        #{on_conflict => {{columns, [email, name]}, nothing}}
-    ),
-    ?assertEqual(
-        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) ON CONFLICT (\"email\", \"name\") DO NOTHING RETURNING *">>,
-        SQL
-    ).
-
-insert_no_opts_fallback_test() ->
-    {SQL, Params} = kura_query_compiler:insert(
-        kura_test_schema, [name], #{name => <<"Alice">>}, #{}
-    ),
-    ?assertEqual(
-        <<"INSERT INTO \"users\" (\"name\") VALUES ($1) RETURNING *">>,
-        SQL
-    ),
-    ?assertEqual([<<"Alice">>], Params).
-
-%%----------------------------------------------------------------------
-%% UPDATE ALL
-%%----------------------------------------------------------------------
-
-update_all_test() ->
-    Q = kura_query:where(kura_query:from(kura_test_schema), {age, '>', 18}),
-    {SQL, Params} = kura_query_compiler:update_all(Q, #{active => false}),
-    ?assertEqual(<<"UPDATE \"users\" SET \"active\" = $1 WHERE \"age\" > $2">>, SQL),
-    ?assertEqual([false, 18], Params).
-
-update_all_no_where_test() ->
-    Q = kura_query:from(kura_test_schema),
-    {SQL, Params} = kura_query_compiler:update_all(Q, #{role => <<"guest">>}),
-    ?assertEqual(<<"UPDATE \"users\" SET \"role\" = $1">>, SQL),
-    ?assertEqual([<<"guest">>], Params).
-
-%%----------------------------------------------------------------------
-%% DELETE ALL
-%%----------------------------------------------------------------------
-
-delete_all_test() ->
-    Q = kura_query:where(kura_query:from(kura_test_schema), {active, false}),
-    {SQL, Params} = kura_query_compiler:delete_all(Q),
-    ?assertEqual(<<"DELETE FROM \"users\" WHERE \"active\" = $1">>, SQL),
-    ?assertEqual([false], Params).
-
-delete_all_no_where_test() ->
-    Q = kura_query:from(kura_test_schema),
-    {SQL, Params} = kura_query_compiler:delete_all(Q),
-    ?assertEqual(<<"DELETE FROM \"users\"">>, SQL),
-    ?assertEqual([], Params).
-
-%%----------------------------------------------------------------------
-%% INSERT ALL
-%%----------------------------------------------------------------------
-
-insert_all_test() ->
-    Rows = [
-        #{name => <<"Alice">>, email => <<"a@b.com">>},
-        #{name => <<"Bob">>, email => <<"b@b.com">>}
-    ],
-    {SQL, Params} = kura_query_compiler:insert_all(kura_test_schema, [name, email], Rows),
-    ?assertEqual(
-        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2), ($3, $4)">>,
-        SQL
-    ),
-    ?assertEqual([<<"Alice">>, <<"a@b.com">>, <<"Bob">>, <<"b@b.com">>], Params).
-
-%%----------------------------------------------------------------------
-%% Complex query
-%%----------------------------------------------------------------------
-
-complex_query_test() ->
-    Q = kura_query:from(kura_test_schema),
-    Q1 = kura_query:select(Q, [name, email]),
-    Q2 = kura_query:where(Q1, {age, '>', 18}),
-    Q3 = kura_query:where(Q2, {active, true}),
-    Q4 = kura_query:order_by(Q3, [{name, asc}]),
-    Q5 = kura_query:limit(Q4, 10),
-    Q6 = kura_query:offset(Q5, 5),
-    {SQL, Params} = kura_query_compiler:to_sql(Q6),
-    Expected = <<
-        "SELECT \"name\", \"email\" FROM \"users\""
-        " WHERE \"age\" > $1 AND \"active\" = $2"
-        " ORDER BY \"name\" ASC"
-        " LIMIT $3 OFFSET $4"
-    >>,
-    ?assertEqual(Expected, SQL),
-    ?assertEqual([18, true, 10, 5], Params).
-
-%%----------------------------------------------------------------------
-%% to_sql_from/2 (keystone refactor)
-%%----------------------------------------------------------------------
-
-to_sql_from_start_counter_test() ->
-    Q = kura_query:where(kura_query:from(user), {name, <<"Alice">>}),
-    {SQL, Params, NextCounter} = kura_query_compiler:to_sql_from(Q, 5),
-    ?assertEqual(<<"SELECT * FROM \"user\" WHERE \"name\" = $5">>, SQL),
-    ?assertEqual([<<"Alice">>], Params),
-    ?assertEqual(6, NextCounter).
-
-%%----------------------------------------------------------------------
-%% Subqueries in WHERE
-%%----------------------------------------------------------------------
-
-subquery_in_test() ->
-    SubQ = kura_query:select(kura_query:from(post), [user_id]),
-    Q = kura_query:where(kura_query:from(user), {id, in, {subquery, SubQ}}),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(
-        <<"SELECT * FROM \"user\" WHERE \"id\" IN (SELECT \"user_id\" FROM \"post\")">>,
-        SQL
-    ),
-    ?assertEqual([], Params).
-
-subquery_in_with_where_test() ->
-    SubQ = kura_query:where(
-        kura_query:select(kura_query:from(post), [user_id]),
-        {published, true}
-    ),
-    Q = kura_query:where(kura_query:from(user), {id, in, {subquery, SubQ}}),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(
-        <<"SELECT * FROM \"user\" WHERE \"id\" IN (SELECT \"user_id\" FROM \"post\" WHERE \"published\" = $1)">>,
-        SQL
-    ),
-    ?assertEqual([true], Params).
-
-exists_subquery_test() ->
-    SubQ = kura_query:where(kura_query:from(post), {user_id, 1}),
-    Q = kura_query:where(kura_query:from(user), {exists, {subquery, SubQ}}),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(
-        <<"SELECT * FROM \"user\" WHERE EXISTS (SELECT * FROM \"post\" WHERE \"user_id\" = $1)">>,
-        SQL
-    ),
-    ?assertEqual([1], Params).
-
-not_exists_subquery_test() ->
-    SubQ = kura_query:where(kura_query:from(post), {user_id, 1}),
-    Q = kura_query:where(kura_query:from(user), {not_exists, {subquery, SubQ}}),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(
-        <<"SELECT * FROM \"user\" WHERE NOT EXISTS (SELECT * FROM \"post\" WHERE \"user_id\" = $1)">>,
-        SQL
-    ),
-    ?assertEqual([1], Params).
-
-%%----------------------------------------------------------------------
-%% Window Functions (select_expr)
-%%----------------------------------------------------------------------
-
-select_expr_row_number_test() ->
-    Q = kura_query:select_expr(kura_query:from(user), [
-        {row_num, {fragment, <<"ROW_NUMBER() OVER (ORDER BY id)">>, []}}
-    ]),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(
-        <<"SELECT ROW_NUMBER() OVER (ORDER BY id) AS \"row_num\" FROM \"user\"">>,
-        SQL
-    ),
-    ?assertEqual([], Params).
-
-select_expr_sum_over_test() ->
-    Q = kura_query:select_expr(kura_query:from(user), [
-        {total, {fragment, <<"SUM(score) OVER (PARTITION BY role)">>, []}}
-    ]),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(
-        <<"SELECT SUM(score) OVER (PARTITION BY role) AS \"total\" FROM \"user\"">>,
-        SQL
-    ),
-    ?assertEqual([], Params).
-
-select_expr_with_params_test() ->
-    Q = kura_query:select_expr(kura_query:from(user), [
-        {result, {fragment, <<"CASE WHEN age > ? THEN 'senior' ELSE 'junior' END">>, [50]}}
-    ]),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(
-        <<"SELECT CASE WHEN age > $1 THEN 'senior' ELSE 'junior' END AS \"result\" FROM \"user\"">>,
-        SQL
-    ),
-    ?assertEqual([50], Params).
-
-%%----------------------------------------------------------------------
-%% CTEs (WITH clause)
-%%----------------------------------------------------------------------
-
-single_cte_test() ->
-    CteQ = kura_query:where(kura_query:from(user), {active, true}),
-    Q = kura_query:with_cte(kura_query:from(active_users), <<"active_users">>, CteQ),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(
-        <<"WITH active_users AS (SELECT * FROM \"user\" WHERE \"active\" = $1) SELECT * FROM \"active_users\"">>,
-        SQL
-    ),
-    ?assertEqual([true], Params).
-
-multiple_ctes_test() ->
-    CteQ1 = kura_query:where(kura_query:from(user), {active, true}),
-    CteQ2 = kura_query:where(kura_query:from(user), {role, <<"admin">>}),
-    Q0 = kura_query:from(active_users),
-    Q1 = kura_query:with_cte(Q0, <<"active_users">>, CteQ1),
-    Q2 = kura_query:with_cte(Q1, <<"admin_users">>, CteQ2),
-    {SQL, Params} = kura_query_compiler:to_sql(Q2),
-    ?assertEqual(
-        <<"WITH active_users AS (SELECT * FROM \"user\" WHERE \"active\" = $1), admin_users AS (SELECT * FROM \"user\" WHERE \"role\" = $2) SELECT * FROM \"active_users\"">>,
-        SQL
-    ),
-    ?assertEqual([true, <<"admin">>], Params).
-
-%%----------------------------------------------------------------------
-%% UNION / INTERSECT / EXCEPT
-%%----------------------------------------------------------------------
-
-union_test() ->
-    Q1 = kura_query:where(kura_query:from(user), {role, <<"admin">>}),
-    Q2 = kura_query:where(kura_query:from(user), {role, <<"mod">>}),
-    Q = kura_query:union(Q1, Q2),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(
-        <<"SELECT * FROM \"user\" WHERE \"role\" = $1 UNION SELECT * FROM \"user\" WHERE \"role\" = $2">>,
-        SQL
-    ),
-    ?assertEqual([<<"admin">>, <<"mod">>], Params).
-
-union_all_test() ->
-    Q1 = kura_query:where(kura_query:from(user), {role, <<"admin">>}),
-    Q2 = kura_query:where(kura_query:from(user), {role, <<"mod">>}),
-    Q = kura_query:union_all(Q1, Q2),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(
-        <<"SELECT * FROM \"user\" WHERE \"role\" = $1 UNION ALL SELECT * FROM \"user\" WHERE \"role\" = $2">>,
-        SQL
-    ),
-    ?assertEqual([<<"admin">>, <<"mod">>], Params).
-
-intersect_test() ->
-    Q1 = kura_query:where(kura_query:from(user), {active, true}),
-    Q2 = kura_query:where(kura_query:from(user), {role, <<"admin">>}),
-    Q = kura_query:intersect(Q1, Q2),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(
-        <<"SELECT * FROM \"user\" WHERE \"active\" = $1 INTERSECT SELECT * FROM \"user\" WHERE \"role\" = $2">>,
-        SQL
-    ),
-    ?assertEqual([true, <<"admin">>], Params).
-
-except_test() ->
-    Q1 = kura_query:where(kura_query:from(user), {active, true}),
-    Q2 = kura_query:where(kura_query:from(user), {role, <<"banned">>}),
-    Q = kura_query:except(Q1, Q2),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(
-        <<"SELECT * FROM \"user\" WHERE \"active\" = $1 EXCEPT SELECT * FROM \"user\" WHERE \"role\" = $2">>,
-        SQL
-    ),
-    ?assertEqual([true, <<"banned">>], Params).
-
-chained_union_test() ->
-    Q1 = kura_query:where(kura_query:from(user), {role, <<"a">>}),
-    Q2 = kura_query:where(kura_query:from(user), {role, <<"b">>}),
-    Q3 = kura_query:where(kura_query:from(user), {role, <<"c">>}),
-    Q = kura_query:union(kura_query:union(Q1, Q2), Q3),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(
-        <<"SELECT * FROM \"user\" WHERE \"role\" = $1 UNION SELECT * FROM \"user\" WHERE \"role\" = $2 UNION SELECT * FROM \"user\" WHERE \"role\" = $3">>,
-        SQL
-    ),
-    ?assertEqual([<<"a">>, <<"b">>, <<"c">>], Params).
-
-%%----------------------------------------------------------------------
-%% Query Scopes
-%%----------------------------------------------------------------------
-
-scope_single_test() ->
-    Active = fun(Q) -> kura_query:where(Q, {active, true}) end,
-    Q = kura_query:scope(kura_query:from(user), Active),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(<<"SELECT * FROM \"user\" WHERE \"active\" = $1">>, SQL),
-    ?assertEqual([true], Params).
-
-scope_chained_test() ->
-    Active = fun(Q) -> kura_query:where(Q, {active, true}) end,
-    Admin = fun(Q) -> kura_query:where(Q, {role, <<"admin">>}) end,
-    Q = kura_query:scope(kura_query:scope(kura_query:from(user), Active), Admin),
-    {SQL, Params} = kura_query_compiler:to_sql(Q),
-    ?assertEqual(
-        <<"SELECT * FROM \"user\" WHERE \"active\" = $1 AND \"role\" = $2">>,
-        SQL
-    ),
-    ?assertEqual([true, <<"admin">>], Params).
-
-%%----------------------------------------------------------------------
-%% INSERT ALL with RETURNING
-%%----------------------------------------------------------------------
-
-insert_all_returning_true_test() ->
-    Rows = [#{name => <<"A">>, email => <<"a@b.com">>}],
-    {SQL, Params} = kura_query_compiler:insert_all(
-        kura_test_schema, [name, email], Rows, #{returning => true}
-    ),
-    ?assertEqual(
-        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) RETURNING *">>,
-        SQL
-    ),
-    ?assertEqual([<<"A">>, <<"a@b.com">>], Params).
-
-insert_all_returning_fields_test() ->
-    Rows = [#{name => <<"A">>, email => <<"a@b.com">>}],
-    {SQL, Params} = kura_query_compiler:insert_all(
-        kura_test_schema, [name, email], Rows, #{returning => [id, name]}
-    ),
-    ?assertEqual(
-        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) RETURNING \"id\", \"name\"">>,
-        SQL
-    ),
-    ?assertEqual([<<"A">>, <<"a@b.com">>], Params).
-
-insert_all_no_returning_test() ->
-    Rows = [#{name => <<"A">>, email => <<"a@b.com">>}],
-    {SQL, _} = kura_query_compiler:insert_all(
-        kura_test_schema, [name, email], Rows, #{}
-    ),
-    ?assertEqual(
-        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2)">>,
-        SQL
-    ).
+to_sql(_Q) -> {~"FAKE_SQL", [fake_param]}.
+to_sql_from(_Q, C) -> {~"FAKE_SQL", [fake_param], C + 1}.
+insert(_S, _F, _D) -> {~"FAKE_INSERT", []}.
+insert(_S, _F, _D, _O) -> {~"FAKE_INSERT", []}.
+update(_S, _F, _C, _PK) -> {~"FAKE_UPDATE", []}.
+delete(_S, _PK, _V) -> {~"FAKE_DELETE", []}.
+update_all(_Q, _M) -> {~"FAKE_UPDATE_ALL", []}.
+delete_all(_Q) -> {~"FAKE_DELETE_ALL", []}.
+insert_all(_S, _F, _R) -> {~"FAKE_INSERT_ALL", []}.
+insert_all(_S, _F, _R, _O) -> {~"FAKE_INSERT_ALL", []}.

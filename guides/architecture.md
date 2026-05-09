@@ -28,7 +28,12 @@ modules fit together.
            │
     ┌──────▼──────────────┐
     │ kura_query_compiler │
-    │ (SQL generation)    │
+    │ (facade, cache)     │
+    └──────┬──────────────┘
+           │
+    ┌──────▼──────────────┐
+    │   kura_dialect_pg   │
+    │ (kura_dialect impl) │
     └──────┬──────────────┘
            │
     ┌──────▼──────┐
@@ -66,11 +71,19 @@ calls like `from/1`, `where/2`, `order_by/2`, `limit/2`, and
 `preload/2`. The query record accumulates conditions without executing
 anything - execution happens in `kura_repo_worker`.
 
-### `kura_query_compiler`
+### `kura_query_compiler` and `kura_dialect`
 
-Translates a `#kura_query{}` record into parameterized SQL (`$1`, `$2`,
-etc.) suitable for `pgo`. Handles SELECT, INSERT, UPDATE, DELETE, and
-bulk operations. Supports fragments for raw SQL escape hatches.
+`#kura_query{}` is the portable AST. `kura_dialect` is the behaviour
+that turns it into SQL bytes for a specific backend.
+
+- `kura_dialect_pg` is the PostgreSQL dialect (`$N` placeholders,
+  `RETURNING`, `ON CONFLICT (...) DO UPDATE`, etc.).
+- `kura_query_compiler` is the public-facing facade. It owns the
+  query cache, resolves the configured dialect via
+  `application:get_env(kura, dialect, kura_dialect_pg)`, and
+  delegates each call. Today it always resolves to `kura_dialect_pg`
+  unless overridden in tests; future SQLite or MySQL support is a
+  matter of adding another `kura_dialect` impl.
 
 ### `kura_repo` and `kura_repo_worker`
 
