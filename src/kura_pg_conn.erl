@@ -35,6 +35,7 @@ Future commits will add a per-connection prepared-statement cache and
 -export_type([config/0]).
 
 -define(DEFAULT_PING_INTERVAL, 15000).
+-define(PING_STMT_NAME, "kura_ping").
 
 -type config() :: #{
     host => string() | binary(),
@@ -96,6 +97,7 @@ init(Config) when is_map(Config) ->
         {ok, Conn} ->
             MRef = erlang:monitor(process, Conn),
             Interval = maps:get(ping_interval, Config, ?DEFAULT_PING_INTERVAL),
+            _ = epgsql:parse(Conn, ?PING_STMT_NAME, ~"SELECT 1", []),
             State = #state{
                 conn = Conn,
                 monitor = MRef,
@@ -144,7 +146,11 @@ epgsql_config(Config) ->
     maps:merge(Defaults, maps:without([ping_interval], Config)).
 
 run_ping(Conn) ->
-    case epgsql:equery(Conn, ~"SELECT 1", []) of
+    %% Use a NAMED prepared statement so ping never touches the unnamed
+    %% slot. equery / squery would clobber the unnamed slot mid-flight
+    %% if a user transaction's parse/bind/execute sequence is interleaved
+    %% with the ping; named statements are independent.
+    case epgsql:prepared_query(Conn, ?PING_STMT_NAME, []) of
         {ok, _Cols, _Rows} -> ok;
         {error, _} = Err -> Err
     end.
