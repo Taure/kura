@@ -76,3 +76,11 @@ Returns the next free counter so callers can chain sub-compilations.
 
 -doc "Compile a bulk INSERT with options (`returning => true | [Field]`).".
 -callback insert_all(atom() | module(), [atom()], [map()], map()) -> {sql(), params()}.
+
+-doc "Optional. SQL bytes for a kura column type, used by `kura_migrator` DDL.".
+-callback column_type(kura_types:kura_type()) -> binary().
+
+-doc "Optional. SQL bytes for a column default value, used by `kura_migrator` DDL.".
+-callback format_default(term()) -> binary().
+
+-optional_callbacks([column_type/1, format_default/1]).

@@ -56,7 +56,7 @@ across multiple nodes.
 
 %% eqWAlizer: operation() union has >7 variants - exceeds clause narrowing limit
 -eqwalizer({nowarn_function, compile_operation/1}).
--eqwalizer({nowarn_function, format_default/1}).
+-eqwalizer({nowarn_function, default_default/1}).
 
 -doc "Run all pending migrations in order.".
 -spec migrate(module()) -> {ok, [integer()]} | {error, term()}.
@@ -503,7 +503,7 @@ compile_column_def(#kura_column{
     on_update = OnUpdate
 }) ->
     NameBin = atom_to_binary(Name, utf8),
-    TypeBin = kura_types:to_pg_type(Type),
+    TypeBin = column_type(Type),
     PKPart =
         case PK of
             true -> ~" PRIMARY KEY";
@@ -585,7 +585,7 @@ compile_alter_op({modify_column, Name, Type}) ->
         ~"ALTER COLUMN ",
         quote(atom_to_binary(Name, utf8)),
         ~" TYPE ",
-        kura_types:to_pg_type(Type)
+        column_type(Type)
     ].
 
 %%----------------------------------------------------------------------
@@ -743,21 +743,54 @@ quote(Name) when is_binary(Name) ->
 quote(Name) when is_atom(Name) ->
     quote(atom_to_binary(Name, utf8)).
 
+%% Dispatch DDL emission through the configured dialect, falling back
+%% to PG when no dialect is configured (DDL was hardcoded PG pre-2.1).
+-spec column_type(kura_types:kura_type()) -> binary().
+column_type(Type) ->
+    case ddl_dialect() of
+        {ok, M} ->
+            case erlang:function_exported(M, column_type, 1) of
+                true -> M:column_type(Type);
+                false -> kura_types:to_pg_type(Type)
+            end;
+        none ->
+            kura_types:to_pg_type(Type)
+    end.
+
 -spec format_default(term()) -> binary().
-format_default(Val) when is_integer(Val) ->
+format_default(Val) ->
+    case ddl_dialect() of
+        {ok, M} ->
+            case erlang:function_exported(M, format_default, 1) of
+                true -> M:format_default(Val);
+                false -> default_default(Val)
+            end;
+        none ->
+            default_default(Val)
+    end.
+
+-spec ddl_dialect() -> {ok, module()} | none.
+ddl_dialect() ->
+    case application:get_env(kura, dialect) of
+        {ok, M} when is_atom(M) -> {ok, M};
+        _ -> none
+    end.
+
+-spec default_default(term()) -> binary().
+default_default(Val) when is_integer(Val) ->
     integer_to_binary(Val);
-format_default(Val) when is_float(Val) ->
+default_default(Val) when is_float(Val) ->
     float_to_binary(Val);
-format_default(Val) when is_binary(Val) ->
+default_default(Val) when is_binary(Val) ->
     <<"'", Val/binary, "'">>;
-format_default(true) ->
+default_default(true) ->
     ~"TRUE";
-format_default(false) ->
+default_default(false) ->
     ~"FALSE";
-format_default(Val) when is_map(Val) ->
+default_default(Val) when is_map(Val) ->
     Json = iolist_to_binary(json:encode(Val)),
     <<"'", Json/binary, "'::jsonb">>;
-format_default(Val) when is_list(Val) ->
+default_default(Val) when is_list(Val) ->
     Json = iolist_to_binary(json:encode(Val)),
     <<"'", Json/binary, "'::jsonb">>.
 

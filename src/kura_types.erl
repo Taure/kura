@@ -116,6 +116,10 @@ cast(text, V) when is_list(V) ->
     {ok, list_to_binary(V)};
 cast(boolean, V) when is_boolean(V) ->
     {ok, V};
+cast(boolean, 1) ->
+    {ok, true};
+cast(boolean, 0) ->
+    {ok, false};
 cast(boolean, ~"true") ->
     {ok, true};
 cast(boolean, ~"false") ->
