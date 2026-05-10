@@ -195,10 +195,13 @@ ensure_database(RepoMod) ->
 
 -spec ensure_schema_migrations(module()) -> ok.
 ensure_schema_migrations(RepoMod) ->
+    %% Portable SQL: TIMESTAMP + CURRENT_TIMESTAMP work in both Postgres
+    %% and SQLite. Postgres treats TIMESTAMP as WITHOUT TIME ZONE which
+    %% is fine for an internal bookkeeping column.
     SQL = <<
         "CREATE TABLE IF NOT EXISTS schema_migrations ("
         "version BIGINT PRIMARY KEY, "
-        "inserted_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+        "inserted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"
         ")"
     >>,
     _ = kura_db:query(RepoMod, SQL, []),
