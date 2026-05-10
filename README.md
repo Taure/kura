@@ -4,7 +4,7 @@
   <img src="priv/kura.png" alt="Kura" width="600" />
 </p>
 
-Database layer for Erlang - Ecto-equivalent abstractions in pure Erlang, targeting PostgreSQL via [pgo](https://github.com/erleans/pgo).
+Database layer for Erlang - Ecto-equivalent abstractions in pure Erlang. Pluggable backends: [`kura_postgres`](https://github.com/Taure/kura_postgres) (PostgreSQL via pgo), [`kura_sqlite`](https://github.com/Taure/kura_sqlite) (SQLite via esqlite).
 
 ## Features
 
@@ -162,12 +162,13 @@ kura_migrator:status(my_repo).
 
 ## Configuration
 
-Configure the database connection under the `kura` application env. Kura starts
-the pgo pool automatically during application startup:
+Add a backend package and a dialect entry to `sys.config`. Kura starts
+the configured pool automatically during application startup:
 
 ```erlang
 %% sys.config
 [{kura, [
+    {dialect, kura_dialect_pg},   %% from kura_postgres (or kura_dialect_sqlite)
     {repo, my_repo},
     {host, "localhost"},
     {port, 5432},

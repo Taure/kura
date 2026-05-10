@@ -67,6 +67,7 @@ all() ->
 
 init_per_suite(Config) ->
     application:ensure_all_started(pgo),
+    application:set_env(kura, dialect, kura_dialect_pg),
     application:ensure_all_started(kura),
     %% Register a fake application that owns the migration modules so
     %% `kura_migrator:discover_migrations/1` finds them.

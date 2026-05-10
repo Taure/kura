@@ -63,6 +63,7 @@ all() ->
 
 init_per_suite(Config) ->
     application:ensure_all_started(pgo),
+    application:set_env(kura, dialect, kura_dialect_pg),
     application:ensure_all_started(kura),
     MigMods = [
         m20250101120000_coverage_create_cov_table,

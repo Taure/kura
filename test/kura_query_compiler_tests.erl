@@ -22,13 +22,12 @@
 ]).
 
 %%----------------------------------------------------------------------
-%% Default dialect
+%% No default dialect: must be configured.
 %%----------------------------------------------------------------------
 
-default_dialect_is_pg_test() ->
-    %% No env override - facade should resolve to kura_dialect_pg.
+dialect_unconfigured_errors_test() ->
     application:unset_env(kura, dialect),
-    ?assertEqual(kura_dialect_pg, kura_query_compiler:dialect()).
+    ?assertError(no_dialect_configured, kura_query_compiler:dialect()).
 
 %%----------------------------------------------------------------------
 %% Dialect override is honored by the facade
@@ -58,18 +57,16 @@ facade_delegates_insert_to_configured_dialect_test() ->
 %%----------------------------------------------------------------------
 
 to_sql_cached_miss_compiles_and_stores_test() ->
-    application:unset_env(kura, dialect),
+    application:set_env(kura, dialect, kura_dialect_pg),
     kura_query_cache:init(),
     Q = #kura_query{from = cache_miss_schema},
     Result = kura_query_compiler:to_sql_cached(Q),
-    %% Verify it compiled (matches what to_sql/1 would return).
     ?assertEqual(kura_query_compiler:to_sql(Q), Result),
-    %% Verify it was actually stored.
     Key = erlang:phash2(Q),
     ?assertEqual({ok, Result}, kura_query_cache:get(Key)).
 
 to_sql_cached_hit_returns_stored_result_test() ->
-    application:unset_env(kura, dialect),
+    application:set_env(kura, dialect, kura_dialect_pg),
     kura_query_cache:init(),
     Q = #kura_query{from = cache_hit_schema},
     Stored = {~"PRE_BAKED_SQL", [pre_baked_param]},
@@ -124,16 +121,16 @@ facade_delegates_all_callbacks_to_dialect_test_() ->
 %%----------------------------------------------------------------------
 
 pg_dialect_through_facade_produces_select_test() ->
-    application:unset_env(kura, dialect),
+    application:set_env(kura, dialect, kura_dialect_pg),
     Q = #kura_query{from = my_schema},
     {SQL, _Params} = kura_query_compiler:to_sql(Q),
     SQLBin = iolist_to_binary(SQL),
     ?assertMatch(<<"SELECT", _/binary>>, SQLBin).
 
 pg_dialect_directly_produces_same_result_test() ->
+    application:set_env(kura, dialect, kura_dialect_pg),
     Q = #kura_query{from = my_schema},
     Direct = kura_dialect_pg:to_sql(Q),
-    application:unset_env(kura, dialect),
     Facade = kura_query_compiler:to_sql(Q),
     ?assertEqual(Direct, Facade).
 

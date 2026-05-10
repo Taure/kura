@@ -65,6 +65,7 @@ all() ->
 
 init_per_suite(Config) ->
     application:ensure_all_started(pgo),
+    application:set_env(kura, dialect, kura_dialect_pg),
     application:ensure_all_started(kura),
     AppSpec =
         {application, ?APP, [
