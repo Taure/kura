@@ -22,11 +22,14 @@ configured for the running app.
     update_all/2,
     delete_all/1,
     insert_all/3,
-    insert_all/4
+    insert_all/4,
+    column_type/1,
+    format_default/1
 ]).
 
 %% eqWAlizer: compile_condition/2 has >16 clauses narrowing on condition union
 -eqwalizer({nowarn_function, compile_condition/2}).
+-eqwalizer({nowarn_function, format_default/1}).
 
 -doc "Compile a query record into `{SQL, Params}`.".
 -spec to_sql(#kura_query{}) -> {iodata(), [term()]}.
@@ -723,3 +726,29 @@ compile_combinations_loop([{Type, Q2} | Rest], Counter) ->
     Part = [~" ", TypeBin, ~" ", SQL2],
     {Parts, MoreParams, C3} = compile_combinations_loop(Rest, C2),
     {[Part | Parts], Params2 ++ MoreParams, C3}.
+
+%%----------------------------------------------------------------------
+%% DDL: column type + default value emit (used by kura_migrator)
+%%----------------------------------------------------------------------
+
+-spec column_type(kura_types:kura_type()) -> binary().
+column_type(Type) ->
+    kura_types:to_pg_type(Type).
+
+-spec format_default(term()) -> binary().
+format_default(Val) when is_integer(Val) ->
+    integer_to_binary(Val);
+format_default(Val) when is_float(Val) ->
+    float_to_binary(Val);
+format_default(Val) when is_binary(Val) ->
+    <<"'", Val/binary, "'">>;
+format_default(true) ->
+    ~"TRUE";
+format_default(false) ->
+    ~"FALSE";
+format_default(Val) when is_map(Val) ->
+    Json = iolist_to_binary(json:encode(Val)),
+    <<"'", Json/binary, "'::jsonb">>;
+format_default(Val) when is_list(Val) ->
+    Json = iolist_to_binary(json:encode(Val)),
+    <<"'", Json/binary, "'::jsonb">>.
