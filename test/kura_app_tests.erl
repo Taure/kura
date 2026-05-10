@@ -9,6 +9,7 @@ stop_with_any_state_test() ->
 
 pool_config_defaults_test() ->
     clear_kura_env(),
+    application:set_env(kura, dialect, kura_dialect_pg),
     Config = kura_app:pool_config(),
     ?assertEqual("localhost", maps:get(host, Config)),
     ?assertEqual(5432, maps:get(port, Config)),
@@ -16,10 +17,12 @@ pool_config_defaults_test() ->
     ?assertEqual("postgres", maps:get(user, Config)),
     ?assertEqual("", maps:get(password, Config)),
     ?assertEqual(10, maps:get(pool_size, Config)),
-    ?assertNot(maps:is_key(socket_options, Config)).
+    ?assertNot(maps:is_key(socket_options, Config)),
+    clear_kura_env().
 
 pool_config_custom_values_test() ->
     clear_kura_env(),
+    application:set_env(kura, dialect, kura_dialect_pg),
     application:set_env(kura, host, "db.example.com"),
     application:set_env(kura, port, 5433),
     application:set_env(kura, database, "mydb"),
@@ -37,6 +40,7 @@ pool_config_custom_values_test() ->
 
 pool_config_socket_options_inet6_test() ->
     clear_kura_env(),
+    application:set_env(kura, dialect, kura_dialect_pg),
     application:set_env(kura, socket_options, [inet6]),
     Config = kura_app:pool_config(),
     ?assertEqual([inet6], maps:get(socket_options, Config)),
@@ -44,6 +48,7 @@ pool_config_socket_options_inet6_test() ->
 
 pool_config_socket_options_multiple_test() ->
     clear_kura_env(),
+    application:set_env(kura, dialect, kura_dialect_pg),
     application:set_env(kura, socket_options, [inet6, {recbuf, 8192}]),
     Config = kura_app:pool_config(),
     ?assertEqual([inet6, {recbuf, 8192}], maps:get(socket_options, Config)),
@@ -51,6 +56,7 @@ pool_config_socket_options_multiple_test() ->
 
 pool_config_socket_options_empty_list_test() ->
     clear_kura_env(),
+    application:set_env(kura, dialect, kura_dialect_pg),
     application:set_env(kura, socket_options, []),
     Config = kura_app:pool_config(),
     ?assertNot(maps:is_key(socket_options, Config)),
@@ -58,12 +64,55 @@ pool_config_socket_options_empty_list_test() ->
 
 pool_config_socket_options_not_set_test() ->
     clear_kura_env(),
+    application:set_env(kura, dialect, kura_dialect_pg),
     Config = kura_app:pool_config(),
     ?assertNot(maps:is_key(socket_options, Config)),
     clear_kura_env().
 
+%%----------------------------------------------------------------------
+%% generic_pool_config (non-PG dialects): pass-through of all kura env
+%%----------------------------------------------------------------------
+
+pool_config_generic_passes_through_user_keys_test() ->
+    clear_kura_env(),
+    application:set_env(kura, dialect, kura_dialect_sqlite),
+    application:set_env(kura, database, <<":memory:">>),
+    application:set_env(kura, pool_size, 1),
+    Config = kura_app:pool_config(),
+    ?assertEqual(<<":memory:">>, maps:get(database, Config)),
+    ?assertEqual(1, maps:get(pool_size, Config)),
+    ?assertNot(maps:is_key(host, Config)),
+    ?assertNot(maps:is_key(port, Config)),
+    clear_kura_env().
+
+pool_config_generic_excludes_bookkeeping_keys_test() ->
+    clear_kura_env(),
+    application:set_env(kura, dialect, kura_dialect_sqlite),
+    application:set_env(kura, repo, my_repo),
+    application:set_env(kura, backend, my_backend),
+    application:set_env(kura, pool_module, kura_pool_sqlite),
+    Config = kura_app:pool_config(),
+    ?assertNot(maps:is_key(repo, Config)),
+    ?assertNot(maps:is_key(backend, Config)),
+    ?assertNot(maps:is_key(dialect, Config)),
+    ?assertNot(maps:is_key(pool_module, Config)),
+    clear_kura_env().
+
 clear_kura_env() ->
-    unset_keys([host, port, database, user, password, pool_size, socket_options]).
+    unset_keys([
+        host,
+        port,
+        database,
+        user,
+        password,
+        pool_size,
+        socket_options,
+        dialect,
+        repo,
+        backend,
+        pool_module,
+        driver_module
+    ]).
 
 -spec unset_keys([atom()]) -> ok.
 unset_keys([]) ->

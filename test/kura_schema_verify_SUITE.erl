@@ -83,6 +83,8 @@ init_per_suite(Config) ->
     ok = application:load(AppSpec),
     application:set_env(?APP, ?REPO, #{
         pool => ?LIVE_POOL,
+        pool_module => kura_pool_pgo,
+        driver_module => kura_driver_pgo,
         database => <<"kura_test">>,
         hostname => <<"localhost">>,
         port => 5555,
@@ -185,6 +187,8 @@ verify_returns_pool_error_when_pool_missing(_Config) ->
     %% down on a transient pool unavailability.
     application:set_env(?APP, ?REPO, #{
         pool => kura_no_such_pool_for_verify_test,
+        pool_module => kura_pool_pgo,
+        driver_module => kura_driver_pgo,
         pool_size => 1
     }),
     Schemas = [kura_schema_verify_test_complete_schema],
@@ -206,6 +210,8 @@ verify_with_empty_module_list_short_circuits(_Config) ->
     %% A pre-boot caller passing [] must not get a spurious error.
     application:set_env(?APP, ?REPO, #{
         pool => kura_no_such_pool_for_empty_short_circuit,
+        pool_module => kura_pool_pgo,
+        driver_module => kura_driver_pgo,
         pool_size => 1
     }),
     ?assertEqual(ok, kura_schema_verify:verify(?REPO, [])),
@@ -226,6 +232,8 @@ discover_schemas_finds_implementing_modules(_Config) ->
 set_default_repo_config() ->
     application:set_env(?APP, ?REPO, #{
         pool => ?LIVE_POOL,
+        pool_module => kura_pool_pgo,
+        driver_module => kura_driver_pgo,
         database => <<"kura_test">>,
         hostname => <<"localhost">>,
         port => 5555,

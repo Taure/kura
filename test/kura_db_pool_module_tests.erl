@@ -2,9 +2,9 @@
 -include_lib("eunit/include/eunit.hrl").
 
 %% Verifies that kura_db:get_pool_module/1 reads the configured pool
-%% impl from a repo's config and falls back to kura_pool_pgo when none
-%% is set. This is the seam that lets a repo plug in kura_pool_ets
-%% (for tests) or any future kura_pool impl without touching kura_db.
+%% impl from a repo's config and errors when none is set. This is the
+%% seam that lets a repo plug in kura_pool_ets (for tests) or any
+%% future kura_pool impl without touching kura_db.
 
 -export([
     otp_app/0,
@@ -37,10 +37,10 @@
 %% Tests
 %%----------------------------------------------------------------------
 
-defaults_to_kura_pool_pgo_when_repo_omits_pool_module_test() ->
+errors_when_pool_module_unset_test() ->
     persistent_term:put({?MODULE, config}, #{pool => some_pool}),
     try
-        ?assertEqual(kura_pool_pgo, kura_db:get_pool_module(?MODULE))
+        ?assertError({no_pool_module_configured, _}, kura_db:get_pool_module(?MODULE))
     after
         persistent_term:erase({?MODULE, config})
     end.
@@ -56,13 +56,13 @@ reads_pool_module_from_repo_config_test() ->
         persistent_term:erase({?MODULE, config})
     end.
 
-ignores_non_atom_pool_module_test() ->
+errors_on_non_atom_pool_module_test() ->
     persistent_term:put({?MODULE, config}, #{
         pool => some_pool,
         pool_module => "not an atom"
     }),
     try
-        ?assertEqual(kura_pool_pgo, kura_db:get_pool_module(?MODULE))
+        ?assertError({no_pool_module_configured, _}, kura_db:get_pool_module(?MODULE))
     after
         persistent_term:erase({?MODULE, config})
     end.
@@ -71,10 +71,10 @@ ignores_non_atom_pool_module_test() ->
 %% get_driver_module/1
 %%----------------------------------------------------------------------
 
-defaults_to_kura_driver_pgo_when_repo_omits_driver_module_test() ->
+errors_when_driver_module_unset_test() ->
     persistent_term:put({?MODULE, config}, #{pool => some_pool}),
     try
-        ?assertEqual(kura_driver_pgo, kura_db:get_driver_module(?MODULE))
+        ?assertError({no_driver_module_configured, _}, kura_db:get_driver_module(?MODULE))
     after
         persistent_term:erase({?MODULE, config})
     end.
@@ -90,13 +90,13 @@ reads_driver_module_from_repo_config_test() ->
         persistent_term:erase({?MODULE, config})
     end.
 
-ignores_non_atom_driver_module_test() ->
+errors_on_non_atom_driver_module_test() ->
     persistent_term:put({?MODULE, config}, #{
         pool => some_pool,
         driver_module => "not an atom"
     }),
     try
-        ?assertEqual(kura_driver_pgo, kura_db:get_driver_module(?MODULE))
+        ?assertError({no_driver_module_configured, _}, kura_db:get_driver_module(?MODULE))
     after
         persistent_term:erase({?MODULE, config})
     end.

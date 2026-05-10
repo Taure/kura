@@ -85,29 +85,22 @@ get_pool(RepoMod) ->
     Config = kura_repo:config(RepoMod),
     maps:get(pool, Config, RepoMod).
 
--doc """
-Resolve the `kura_pool` implementation module for a repo. Reads
-`pool_module` from the repo config and falls back to `kura_pool_pgo`.
-""".
+-doc "Resolve the `kura_pool` implementation module for a repo.".
 -spec get_pool_module(module()) -> module().
 get_pool_module(RepoMod) ->
     Config = kura_repo:config(RepoMod),
-    case maps:get(pool_module, Config, kura_pool_pgo) of
-        M when is_atom(M) -> M;
-        _ -> kura_pool_pgo
+    case maps:get(pool_module, Config, undefined) of
+        M when is_atom(M), M =/= undefined -> M;
+        _ -> error({no_pool_module_configured, RepoMod})
     end.
 
--doc """
-Resolve the `kura_driver` implementation module for a repo. Reads
-`driver_module` from the repo config and falls back to
-`kura_driver_pgo`.
-""".
+-doc "Resolve the `kura_driver` implementation module for a repo.".
 -spec get_driver_module(module()) -> module().
 get_driver_module(RepoMod) ->
     Config = kura_repo:config(RepoMod),
-    case maps:get(driver_module, Config, kura_driver_pgo) of
-        M when is_atom(M) -> M;
-        _ -> kura_driver_pgo
+    case maps:get(driver_module, Config, undefined) of
+        M when is_atom(M), M =/= undefined -> M;
+        _ -> error({no_driver_module_configured, RepoMod})
     end.
 
 %%----------------------------------------------------------------------

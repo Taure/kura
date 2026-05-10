@@ -31,6 +31,8 @@ start() ->
     application:set_env(kura, dialect, kura_dialect_pg),
     application:set_env(kura, kura_test_repo, #{
         pool => kura_test_repo,
+        pool_module => kura_pool_pgo,
+        driver_module => kura_driver_pgo,
         database => <<"kura_test">>,
         hostname => <<"localhost">>,
         port => 5555,

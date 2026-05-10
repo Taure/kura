@@ -116,6 +116,8 @@ init_per_group(migrator, Config) ->
     ok = application:load(AppSpec),
     application:set_env(kura_coverage_mig_app, kura_coverage_mig_repo, #{
         pool => kura_test_repo,
+        pool_module => kura_pool_pgo,
+        driver_module => kura_driver_pgo,
         database => <<"kura_test">>,
         hostname => <<"localhost">>,
         port => 5555,
@@ -376,7 +378,9 @@ migrate_error_bad_sql(_Config) ->
         ]},
     ok = application:load(AppSpec),
     application:set_env(kura_coverage_mig_app, kura_coverage_mig_repo, #{
-        pool => kura_test_repo
+        pool => kura_test_repo,
+        pool_module => kura_pool_pgo,
+        driver_module => kura_driver_pgo
     }),
     {error, _Reason} = kura_migrator:migrate(kura_coverage_mig_repo),
     application:unload(kura_coverage_mig_app).
@@ -407,7 +411,9 @@ migrate_with_safe_callback(_Config) ->
         ]},
     ok = application:load(AppSpec),
     application:set_env(kura_coverage_mig_app, kura_coverage_mig_repo, #{
-        pool => kura_test_repo
+        pool => kura_test_repo,
+        pool_module => kura_pool_pgo,
+        driver_module => kura_driver_pgo
     }),
     {ok, [20250101110000]} = kura_migrator:migrate(kura_coverage_mig_repo),
     application:unload(kura_coverage_mig_app),

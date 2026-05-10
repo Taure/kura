@@ -9,6 +9,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `{kura, [{backend, kura_backend_postgres}]}` aggregator wiring. Setting
+  the backend in app env auto-populates `dialect`, `pool_module`, and
+  `driver_module` from the aggregator at app start. Explicit per-key
+  overrides still win.
+
+### Changed (BREAKING)
+
+- `kura_db:get_pool_module/1` and `get_driver_module/1` now error with
+  `{no_pool_module_configured, _}` / `{no_driver_module_configured, _}`
+  when not configured. Previous silent fallback to `kura_pool_pgo` /
+  `kura_driver_pgo` removed. Set `{backend, ...}` (recommended) or
+  `pool_module`/`driver_module` explicitly.
+- `kura_app:pool_config/0` is dialect-aware. PG-shaped defaults
+  (port 5432, user/database `"postgres"`, decode_opts) only apply when
+  `dialect` is `kura_dialect_pg`. Other dialects get a pass-through
+  map of user-set kura env keys.
+- `kura_app:configure_pg_types/0` only runs when `dialect` is
+  `kura_dialect_pg`.
+- `kura_repo:read_config/1` returns a pass-through map of all kura env
+  keys (minus bookkeeping). Previously hardcoded the PG-shaped subset
+  and silently dropped `pool_module`, `driver_module`, `backend`.
+
+## [2.3.0] - 2026-05-10
+
+### Changed
+
+- Moved `kura_dialect_pg` from `test/` back into `src/`. It's the
+  default ANSI-ish SQL emitter that other dialects (SQLite, future
+  MySQL) delegate to for AST→SQL emission. Putting it in core unbreaks
+  installs that use only kura_sqlite (which previously crashed with
+  `undef` on the first query).
+- `kura_dialect_pg_tests` now exercise the dialect directly instead of
+  going through `kura_query_compiler`, removing dependence on test-order
+  env leakage.
+
+## [2.2.0] - 2026-05-10
+
+### Changed
+
+- `kura_migrator` skips `pg_advisory_xact_lock` when the configured
+  pool doesn't declare the `advisory_locks` capability. The migration
+  transaction alone serializes runs on backends that lack advisory
+  locks (SQLite, etc.).
+
+## [2.1.0] - 2026-05-10
+
+### Added
+
+- Optional `kura_dialect:column_type/1` and `format_default/1`
+  callbacks for backend-specific DDL emission. `kura_migrator` falls
+  back to `kura_types:to_pg_type/1` and a generic default formatter
+  when the configured dialect doesn't implement them.
+- `kura_types:cast(boolean, 0|1)` so SQLite (which stores booleans as
+  INTEGER) round-trips cleanly.
+
+## [2.0.0] - 2026-05-10
+
+### Added
+
 - `kura_pool` behaviour — pluggable connection-pool contract.
 - `kura_capabilities` behaviour — backend feature flags.
 - `kura_dialect` behaviour — SQL dialect contract.
