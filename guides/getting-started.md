@@ -76,6 +76,35 @@ package and point kura at it via `{backend, ...}`:
 Kura starts the configured pool automatically. UUID primary keys are
 auto-generated on insert when no value is provided.
 
+### Multiple repos
+
+Run two or more repos in the same app, each with its own backend, by
+swapping `{repo, ...}` for a `{repos, #{Name => Cfg}}` map:
+
+```erlang
+%% Postgres primary + SQLite analytics
+[{kura, [
+    {repos, #{
+        my_repo => #{
+            backend => kura_backend_postgres,
+            host => "localhost",
+            database => "my_app_dev",
+            user => "postgres",
+            pool_size => 10
+        },
+        analytics_repo => #{
+            backend => kura_backend_sqlite,
+            database => <<":memory:">>
+        }
+    }}
+]}].
+```
+
+Each repo module declares itself the same way (`-behaviour(kura_repo)`
++ `otp_app/0`). Queries through `my_repo` emit Postgres SQL; queries
+through `analytics_repo` emit SQLite SQL. The query cache is keyed per
+repo so the dialects never share entries.
+
 ## Define a Migration
 
 Create a migration module under `src/` (any subdirectory works, e.g. `src/migrations/`). Migrations are regular Erlang modules and must be compiled by rebar3 - files in `priv/` are not compiled and will not be discovered.

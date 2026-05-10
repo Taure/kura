@@ -10,7 +10,7 @@ Pick the backend you use and add it to `rebar.config`:
 
 ```erlang
 {deps, [
-    {kura, "~> 2.4"},
+    {kura, "~> 2.0"},
     {kura_postgres, "~> 0.4"}    %% or kura_sqlite, "~> 0.2"
 ]}.
 ```
@@ -49,6 +49,33 @@ Set the backend in `sys.config`. kura's app start populates `dialect`,
 If you prefer per-key wiring instead of `{backend, ...}`, set
 `pool_module`, `driver_module`, and `dialect` explicitly. They override
 the aggregator defaults when present.
+
+### Multiple repos
+
+If your app needs more than one database (e.g. Postgres primary plus a
+SQLite analytics store), use `{repos, #{Name => Cfg}}` instead of the
+flat `{repo, ...}` form:
+
+```erlang
+[{kura, [
+    {repos, #{
+        my_repo => #{
+            backend => kura_backend_postgres,
+            host => "localhost",
+            database => "my_app",
+            pool_size => 10
+        },
+        analytics_repo => #{
+            backend => kura_backend_sqlite,
+            database => <<":memory:">>
+        }
+    }}
+]}].
+```
+
+Each repo's dialect, pool, and driver are resolved from its `backend`
+key. Queries through different repos use their own dialects; the query
+cache is keyed per repo so they never share entries.
 
 ## 3. Module locations
 
