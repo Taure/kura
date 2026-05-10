@@ -31,15 +31,18 @@ modules fit together.
     │ (facade, cache)     │
     └──────┬──────────────┘
            │
-    ┌──────▼──────────────┐
-    │   kura_dialect_pg   │
-    │ (kura_dialect impl) │
-    └──────┬──────────────┘
-           │
-    ┌──────▼──────┐
-    │     pgo     │
-    │ (PG driver) │
-    └─────────────┘
+    ┌──────▼──────────────────────────────────┐
+    │  kura_pool / kura_driver / kura_dialect │
+    │  / kura_capabilities (behaviours)       │
+    └──────┬──────────────────────┬───────────┘
+           │                      │
+    ┌──────▼──────┐        ┌──────▼──────┐
+    │ kura_pool_pgo │      │ kura_pool_sqlite │
+    │ kura_driver_pgo │    │ kura_driver_sqlite │
+    │ kura_dialect_pg │    │ kura_dialect_sqlite │
+    │   (via pgo)    │     │  (via esqlite)     │
+    └──────┬──────┘        └──────┬──────┘
+       Postgres                 SQLite
 ```
 
 ## Core Modules
@@ -76,14 +79,15 @@ anything - execution happens in `kura_repo_worker`.
 `#kura_query{}` is the portable AST. `kura_dialect` is the behaviour
 that turns it into SQL bytes for a specific backend.
 
-- `kura_dialect_pg` is the PostgreSQL dialect (`$N` placeholders,
-  `RETURNING`, `ON CONFLICT (...) DO UPDATE`, etc.).
-- `kura_query_compiler` is the public-facing facade. It owns the
-  query cache, resolves the configured dialect via
-  `application:get_env(kura, dialect, kura_dialect_pg)`, and
-  delegates each call. Today it always resolves to `kura_dialect_pg`
-  unless overridden in tests; future SQLite or MySQL support is a
-  matter of adding another `kura_dialect` impl.
+- `kura_dialect_pg` is the default ANSI-ish SQL emitter (`$N` placeholders,
+  `RETURNING`, `ON CONFLICT (...) DO UPDATE`, etc.). Lives in kura core.
+- `kura_dialect_sqlite` (in `kura_sqlite`) delegates AST emission to
+  `kura_dialect_pg` and post-processes `$N` → `?N`. Type/default emission
+  is overridden via `column_type/1` and `format_default/1`.
+- `kura_query_compiler` is the public-facing facade. It owns the query
+  cache and resolves the configured dialect via
+  `application:get_env(kura, dialect)`. The dialect is set automatically
+  when you configure `{backend, kura_backend_postgres|kura_backend_sqlite}`.
 
 ### `kura_repo` and `kura_repo_worker`
 
@@ -95,13 +99,14 @@ delegations like `insert(CS) -> kura_repo_worker:insert(?MODULE, CS).`
 in the user's repo module.
 
 Database configuration is read from `application:get_env(kura, ...)` first
-(`host`, `port`, `database`, `user`, `password`, `pool_size`, `ssl`,
-`socket_options`). The legacy `application:get_env(OtpApp, RepoModule)`
-form is still accepted as a fallback. The worker handles:
+(`backend`, plus connection keys like `database`, `pool_size`, and any
+backend-specific keys such as `host`/`port`/`user`/`password` for Postgres).
+The legacy `application:get_env(OtpApp, RepoModule)` form is still accepted
+as a fallback. The worker handles:
 
-- Query execution via `pgo`
-- Type conversion between Erlang terms and PostgreSQL values (dump/load)
-- PostgreSQL error mapping (constraint violations → changeset errors)
+- Query execution via the configured `kura_driver`
+- Type conversion between Erlang terms and database values (dump/load)
+- Constraint-violation mapping back to changeset errors
 - Transaction wrapping for changesets with `assoc_changes`
 - Query telemetry (optional logging of queries, durations, results)
 
@@ -120,11 +125,13 @@ inside a single database transaction.
 
 ### `kura_types`
 
-Type system that defines how Erlang values map to PostgreSQL column types.
+Type system that defines how Erlang values map to database column types.
 Each type implements `cast` (user input → internal), `dump` (internal →
-PG), and `load` (PG → internal). Supported types include `id`, `integer`,
-`float`, `string`, `text`, `boolean`, `date`, `utc_datetime`, `uuid`,
-`jsonb`, `{enum, [atom()]}`, `{array, T}`, and `{embed, Type, Module}`.
+backend), and `load` (backend → internal). Supported types include `id`,
+`integer`, `float`, `string`, `text`, `boolean`, `date`, `utc_datetime`,
+`uuid`, `jsonb`, `{enum, [atom()]}`, `{array, T}`, and `{embed, Type, Module}`.
+The backend dialect's `column_type/1` callback determines the SQL column
+type emitted in DDL.
 
 ### `kura_migration` and `kura_migrator`
 
@@ -133,14 +140,17 @@ PG), and `load` (PG → internal). Supported types include `id`, `integer`,
 unsafe operations during rolling deployments). `kura_migrator` discovers
 migration modules, maintains a `schema_migrations` table, and applies
 pending migrations in order. All migrations run inside a single
-transaction guarded by a PostgreSQL advisory lock, so concurrent nodes
-do not race.
+transaction. On Postgres, the transaction is guarded by an advisory
+lock so concurrent nodes do not race; on SQLite the single-writer
+transaction handles serialisation. The advisory-lock SQL is gated on
+the configured pool declaring the `advisory_locks` capability.
 
 ## Other Modules
 
-- **`kura_db`** - central wrapper around `pgo`. All query execution,
-  transactions, pool lookup, sandbox routing, and telemetry events go
-  through here.
+- **`kura_db`** - central facade. All query execution, transactions,
+  pool lookup, sandbox routing, and telemetry events go through here.
+  Resolves the configured `kura_pool` and `kura_driver` per repo and
+  routes calls accordingly.
 - **`kura_type`** - behaviour for user-defined custom field types
   (`cast/1`, `dump/1`, `load/1`, `pg_type/0`).
 - **`kura_query_cache`** - ETS-backed cache for compiled SQL strings,
@@ -156,8 +166,11 @@ do not race.
 - **`kura_audit`** / **`kura_audit_log`** - automatic change tracking
   with actor context, written to a separate audit table.
 - **`kura_app`** / **`kura_sup`** - OTP application and root
-  supervisor. The application callback also starts the configured pool
-  and seeds `pg_types` defaults.
+  supervisor. The application callback resolves the configured backend
+  aggregator (sets `dialect`, `pool_module`, `driver_module` from
+  `kura_backend_postgres` / `kura_backend_sqlite`) and starts the
+  configured pool. `pg_types` defaults are seeded only when the active
+  dialect is `kura_dialect_pg`.
 - **`kura_capabilities`** - capability flags for backends. A backend
   module implements the optional `capabilities/0` callback to declare
   features it supports (`returning`, `jsonb`, `listen_notify`,
@@ -173,9 +186,9 @@ A typical insert operation flows through the system like this:
 1. User calls `kura_repo_worker:insert(MyRepo, Changeset)` (or a thin wrapper on the repo module).
 2. If the changeset is invalid, returns `{error, CS}` immediately.
 3. If `assoc_changes` is non-empty, or the schema declares lifecycle hooks that need a transaction, the operation is wrapped in `kura_db:transaction_ok/2`.
-4. `kura_types:dump/2` converts each changed field to its PostgreSQL representation.
-5. `kura_query_compiler:insert/4` generates a parameterized `INSERT ... RETURNING ...` statement.
-6. `pgo` executes the query through the configured pool.
+4. `kura_types:dump/2` converts each changed field to its backend representation.
+5. `kura_query_compiler:insert/4` generates a parameterized `INSERT ... RETURNING ...` statement (via the configured dialect).
+6. The configured `kura_driver` executes the query through the `kura_pool` checkout.
 7. `kura_db:load_row/2` loads the returned row back into Erlang terms.
 8. Any association changes are persisted with the parent's primary key set as their foreign key.
-9. PostgreSQL constraint errors are mapped back to changeset errors via the constraints declared on the changeset.
+9. Database constraint errors are mapped back to changeset errors via the constraints declared on the changeset.

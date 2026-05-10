@@ -146,40 +146,51 @@ kura_migrator:status(my_repo).
 
 ## Type Mapping
 
-| Kura | PostgreSQL | Erlang |
-|---|---|---|
-| `id` | `BIGSERIAL` | `integer()` |
-| `integer` | `INTEGER` | `integer()` |
-| `float` | `DOUBLE PRECISION` | `float()` |
-| `string` | `VARCHAR(255)` | `binary()` |
-| `text` | `TEXT` | `binary()` |
-| `boolean` | `BOOLEAN` | `boolean()` |
-| `date` | `DATE` | `{Y, M, D}` |
-| `utc_datetime` | `TIMESTAMPTZ` | `calendar:datetime()` |
-| `uuid` | `UUID` | `binary()` |
-| `jsonb` | `JSONB` | `map()` |
-| `{array, T}` | `T[]` | `list()` |
+| Kura | PostgreSQL | SQLite | Erlang |
+|---|---|---|---|
+| `id` | `BIGSERIAL` | `INTEGER PRIMARY KEY` | `integer()` |
+| `integer` | `INTEGER` | `INTEGER` | `integer()` |
+| `float` | `DOUBLE PRECISION` | `REAL` | `float()` |
+| `string` | `VARCHAR(255)` | `TEXT` | `binary()` |
+| `text` | `TEXT` | `TEXT` | `binary()` |
+| `boolean` | `BOOLEAN` | `INTEGER` (0/1) | `boolean()` |
+| `date` | `DATE` | `TEXT` (ISO 8601) | `{Y, M, D}` |
+| `utc_datetime` | `TIMESTAMPTZ` | `TEXT` (ISO 8601) | `calendar:datetime()` |
+| `uuid` | `UUID` | `TEXT` | `binary()` |
+| `jsonb` | `JSONB` | `TEXT` | `map()` |
+| `{array, T}` | `T[]` | unsupported | `list()` |
+
+SQLite values round-trip transparently via `kura_types:cast/2` (booleans 0/1 → `true`/`false`, ISO 8601 → datetime tuples, JSON text → maps).
 
 ## Configuration
 
-Add a backend package and a dialect entry to `sys.config`. Kura starts
-the configured pool automatically during application startup:
+Pick a backend package and point kura at it via `{backend, ...}`. Kura
+auto-populates `dialect`, `pool_module`, and `driver_module` from the
+aggregator and starts the configured pool at app boot.
 
 ```erlang
-%% sys.config
+%% sys.config — Postgres
 [{kura, [
-    {dialect, kura_dialect_pg},   %% from kura_postgres (or kura_dialect_sqlite)
     {repo, my_repo},
+    {backend, kura_backend_postgres},
     {host, "localhost"},
     {port, 5432},
     {database, "my_app_dev"},
     {user, "postgres"},
     {password, "postgres"},
-    {pool_size, 10}     %% default: 10
+    {pool_size, 10}
 ]}].
 ```
 
-Defaults: `host` = `"localhost"`, `port` = `5432`, `user` = `"postgres"`, `pool_size` = `10`.
+```erlang
+%% sys.config — SQLite
+[{kura, [
+    {repo, my_repo},
+    {backend, kura_backend_sqlite},
+    {database, <<"my_app.db">>},   %% or <<":memory:">>
+    {pool_size, 4}
+]}].
+```
 
 UUID primary keys are auto-generated on insert when no value is provided.
 
@@ -189,6 +200,7 @@ UUID primary keys are auto-generated on insert when no value is provided.
 ```erlang
 [{my_app, [
     {my_repo, #{
+        backend => kura_backend_postgres,
         database => ~"my_app_dev",
         hostname => ~"localhost",
         port => 5432,
@@ -200,7 +212,7 @@ UUID primary keys are auto-generated on insert when no value is provided.
 ```
 
 With this style the consuming app must call `my_repo:start()` to create the
-pgo pool. The kura app env config is checked first; if `{kura, [{repo, _}]}`
+pool. The kura app env config is checked first; if `{kura, [{repo, _}]}`
 is not set, Kura falls back to this pattern.
 </details>
 
@@ -217,7 +229,7 @@ Optional telemetry/logging config:
 ## Plugins
 
 - [rebar3_kura](https://github.com/Taure/rebar3_kura) - Rebar3 plugin that auto-generates migration files from schema changes. Add a field to your schema, run `rebar3 compile`, and the migration is created for you.
-- [opentelemetry_kura](https://github.com/novaframework/opentelemetry_kura) - OpenTelemetry instrumentation. Subscribes to Kura's telemetry events and creates spans for every database query.
+- [opentelemetry_kura](https://github.com/Taure/opentelemetry_kura) - OpenTelemetry instrumentation. Subscribes to Kura's telemetry events and creates spans for every database query.
 
 ## Examples
 
@@ -226,4 +238,4 @@ Optional telemetry/logging config:
 ## Requirements
 
 - Erlang/OTP 28+
-- PostgreSQL 14+
+- One backend: PostgreSQL 14+ (via [kura_postgres](https://github.com/Taure/kura_postgres)) or SQLite 3.35+ (via [kura_sqlite](https://github.com/Taure/kura_sqlite))

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [2.4.0] - 2026-05-10
+
 ### Added
 
 - `{kura, [{backend, kura_backend_postgres}]}` aggregator wiring. Setting
@@ -14,12 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `driver_module` from the aggregator at app start. Explicit per-key
   overrides still win.
 
-### Changed (BREAKING)
+### Changed
 
-- `kura_db:get_pool_module/1` and `get_driver_module/1` now error with
+- `kura_db:get_pool_module/1` and `get_driver_module/1` error with
   `{no_pool_module_configured, _}` / `{no_driver_module_configured, _}`
-  when not configured. Previous silent fallback to `kura_pool_pgo` /
-  `kura_driver_pgo` removed. Set `{backend, ...}` (recommended) or
+  when not configured. Set `{backend, ...}` (recommended) or
   `pool_module`/`driver_module` explicitly.
 - `kura_app:pool_config/0` is dialect-aware. PG-shaped defaults
   (port 5432, user/database `"postgres"`, decode_opts) only apply when
