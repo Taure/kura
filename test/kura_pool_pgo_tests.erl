@@ -27,6 +27,7 @@ with_pool_test_() ->
 
 setup() ->
     application:ensure_all_started(pgo),
+    application:set_env(kura, dialect, kura_dialect_pg),
     application:ensure_all_started(kura),
     case kura_pool_pgo:start_pool(?POOL, ?CONFIG) of
         {ok, _Pid} -> ok;

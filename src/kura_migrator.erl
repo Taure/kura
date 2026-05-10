@@ -178,86 +178,15 @@ tag_status(V, M, Applied) ->
 
 -spec ensure_database(module()) -> ok.
 ensure_database(RepoMod) ->
-    Config = kura_repo:config(RepoMod),
-    case maps:find(database, Config) of
-        error -> ok;
-        {ok, DbName} -> do_ensure_database(Config, binary_to_list(DbName))
-    end.
-
-do_ensure_database(Config, Database) ->
-    TmpPool = kura_migrator_tmp_pool,
-    TmpBase = base_pool_config(Config, Database),
-    TmpConfig = apply_pool_extras(TmpBase),
-    case try_connect(TmpPool, TmpConfig) of
-        ok ->
-            stop_tmp_pool(TmpPool);
-        {error, _} ->
-            stop_tmp_pool(TmpPool),
-            create_database(Config, Database)
-    end.
-
-base_pool_config(Config, Database) ->
-    #{
-        host => binary_to_list(maps:get(hostname, Config, ~"localhost")),
-        port => maps:get(port, Config, 5432),
-        database => Database,
-        user => binary_to_list(maps:get(username, Config, ~"postgres")),
-        password => binary_to_list(maps:get(password, Config, <<>>)),
-        pool_size => 1,
-        decode_opts => [return_rows_as_maps, column_name_as_atom]
-    }.
-
-apply_pool_extras(Base) ->
-    WithSocket =
-        case application:get_env(kura, socket_options, []) of
-            Opts when is_list(Opts), Opts =/= [] -> Base#{socket_options => Opts};
-            _ -> Base
-        end,
-    WithSSL =
-        case application:get_env(kura, ssl, false) of
-            true -> WithSocket#{ssl => true};
-            _ -> WithSocket
-        end,
-    case application:get_env(kura, ssl_options, []) of
-        SSLOpts when is_list(SSLOpts), SSLOpts =/= [] ->
-            WithSSL#{ssl_options => SSLOpts};
-        _ ->
-            WithSSL
-    end.
-
-try_connect(TmpPool, TmpConfig) ->
-    case pgo_sup:start_child(TmpPool, TmpConfig) of
-        {ok, _} ->
-            case pgo:query(~"SELECT 1", [], #{pool => TmpPool}) of
-                #{rows := _} -> ok;
-                {error, Reason} -> {error, Reason}
-            end;
-        {error, {already_started, _}} ->
+    Driver = kura_db:get_driver_module(RepoMod),
+    case erlang:function_exported(Driver, ensure_database, 1) of
+        true ->
+            Config = kura_repo:config(RepoMod),
+            _ = Driver:ensure_database(Config),
             ok;
-        {error, Reason} ->
-            {error, Reason}
+        false ->
+            ok
     end.
-
-create_database(Config, Database) ->
-    TmpPool = kura_migrator_create_pool,
-    TmpBase = base_pool_config(Config, "postgres"),
-    TmpConfig = apply_pool_extras(TmpBase),
-    case pgo_sup:start_child(TmpPool, TmpConfig) of
-        {ok, _} -> ok;
-        {error, {already_started, _}} -> ok
-    end,
-    DbBin = list_to_binary(Database),
-    QuotedDb = iolist_to_binary([<<"\"">>, DbBin, <<"\"">>]),
-    SQL = iolist_to_binary([~"CREATE DATABASE ", QuotedDb]),
-    _ = pgo:query(SQL, [], #{pool => TmpPool}),
-    logger:info("Kura: created database ~s", [Database]),
-    stop_tmp_pool(TmpPool).
-
--spec stop_tmp_pool(atom()) -> ok.
-stop_tmp_pool(TmpPool) ->
-    _ = supervisor:terminate_child(pgo_sup, TmpPool),
-    _ = supervisor:delete_child(pgo_sup, TmpPool),
-    ok.
 
 %%----------------------------------------------------------------------
 %% Schema migrations table
@@ -302,8 +231,9 @@ wait_for_pool(RepoMod) ->
 wait_for_pool(RepoMod, Timeout) ->
     Interval = read_pos_int_env(migration_pool_ready_interval, ?POOL_READY_INTERVAL_MS),
     Pool = kura_db:get_pool(RepoMod),
+    Driver = kura_db:get_driver_module(RepoMod),
     Deadline = erlang:monotonic_time(millisecond) + Timeout,
-    wait_for_pool_loop(Pool, Interval, Deadline).
+    wait_for_pool_loop(Driver, Pool, Interval, Deadline).
 
 -spec read_pos_int_env(atom(), non_neg_integer()) -> non_neg_integer().
 read_pos_int_env(Key, Default) ->
@@ -312,10 +242,10 @@ read_pos_int_env(Key, Default) ->
         _ -> Default
     end.
 
--spec wait_for_pool_loop(atom(), non_neg_integer(), integer()) ->
+-spec wait_for_pool_loop(module(), atom(), non_neg_integer(), integer()) ->
     ok | {error, pool_unavailable}.
-wait_for_pool_loop(Pool, Interval, Deadline) ->
-    case probe_pool(Pool) of
+wait_for_pool_loop(Driver, Pool, Interval, Deadline) ->
+    case probe_pool(Driver, Pool) of
         ok ->
             ok;
         {error, Reason} ->
@@ -330,17 +260,22 @@ wait_for_pool_loop(Pool, Interval, Deadline) ->
                     {error, pool_unavailable};
                 false ->
                     timer:sleep(Interval),
-                    wait_for_pool_loop(Pool, Interval, Deadline)
+                    wait_for_pool_loop(Driver, Pool, Interval, Deadline)
             end
     end.
 
--spec probe_pool(atom()) -> ok | {error, term()}.
-probe_pool(Pool) ->
-    try pgo:query(~"SELECT 1", [], #{pool => Pool}) of
-        #{rows := _} -> ok;
-        {error, Reason} -> {error, Reason}
-    catch
-        Class:CatchReason -> {error, {Class, CatchReason}}
+-spec probe_pool(module(), atom()) -> ok | {error, term()}.
+probe_pool(Driver, Pool) ->
+    case erlang:function_exported(Driver, probe_pool, 1) of
+        true ->
+            try Driver:probe_pool(Pool) of
+                ok -> ok;
+                {error, Reason} -> {error, Reason}
+            catch
+                Class:CatchReason -> {error, {Class, CatchReason}}
+            end;
+        false ->
+            ok
     end.
 
 %%----------------------------------------------------------------------

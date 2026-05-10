@@ -2,17 +2,9 @@
 -moduledoc """
 Public entry point for compiling `kura_query` ASTs into SQL.
 
-Delegates to the dialect module configured for the running kura app.
-Defaults to `kura_dialect_pg`. The dialect is resolved per call via
-`application:get_env(kura, dialect, kura_dialect_pg)`, which is an
-ETS lookup and cheap.
-
-Owns the query-cache layer. Compiled `{SQL, Params}` results from
-`to_sql_cached/1` are keyed by the query record hash; today the
-default dialect is the only one in the cache so collisions across
-dialects do not occur. If a future deployment runs multiple dialects
-side-by-side, `kura_query_cache` keys will need to include the
-dialect module.
+Delegates to the dialect module configured via
+`application:set_env(kura, dialect, Module)`. Install a backend package
+(e.g. `kura_postgres`, `kura_sqlite`) which provides a dialect.
 
 This module is internal. Use `kura_repo_worker` for executing queries.
 """.
@@ -39,7 +31,7 @@ This module is internal. Use `kura_repo_worker` for executing queries.
 dialect() ->
     case application:get_env(kura, dialect) of
         {ok, M} when is_atom(M) -> M;
-        _ -> kura_dialect_pg
+        _ -> error(no_dialect_configured)
     end.
 
 -doc "Compile a query record into `{SQL, Params}`.".
