@@ -31,7 +31,7 @@ across multiple nodes.
     ensure_database/1,
     ensure_schema_migrations/1,
     wait_for_pool/1, wait_for_pool/2,
-    compile_operation/1,
+    compile_operation/2,
     check_unsafe_operations/2
 ]).
 
@@ -55,7 +55,7 @@ across multiple nodes.
 -endif.
 
 %% eqWAlizer: operation() union has >7 variants - exceeds clause narrowing limit
--eqwalizer({nowarn_function, compile_operation/1}).
+-eqwalizer({nowarn_function, compile_operation/2}).
 -eqwalizer({nowarn_function, default_default/1}).
 
 -doc "Run all pending migrations in order.".
@@ -411,7 +411,7 @@ exec_operations(Ops, Version, RepoMod) ->
 exec_operations_seq([], _Version, _RepoMod) ->
     ok;
 exec_operations_seq([Op | Rest], Version, RepoMod) ->
-    SQL = compile_operation(Op),
+    SQL = compile_operation(RepoMod, Op),
     exec(SQL, [], Version, RepoMod),
     exec_operations_seq(Rest, Version, RepoMod).
 
@@ -428,12 +428,12 @@ exec(SQL, Params, Version, RepoMod) ->
 %% DDL compilation
 %%----------------------------------------------------------------------
 
--doc "Compile a single DDL operation to SQL.".
--spec compile_operation(kura_migration:operation()) -> binary().
-compile_operation({create_table, Name, Columns}) ->
-    compile_operation({create_table, Name, Columns, []});
-compile_operation({create_table, Name, Columns, Constraints}) ->
-    ColDefs = [compile_column_def(C) || C <- Columns],
+-doc "Compile a single DDL operation to SQL using `RepoMod`'s dialect.".
+-spec compile_operation(module(), kura_migration:operation()) -> binary().
+compile_operation(RepoMod, {create_table, Name, Columns}) ->
+    compile_operation(RepoMod, {create_table, Name, Columns, []});
+compile_operation(RepoMod, {create_table, Name, Columns, Constraints}) ->
+    ColDefs = [compile_column_def(RepoMod, C) || C <- Columns],
     ConstraintDefs = [compile_table_constraint(TC) || TC <- Constraints],
     AllDefs = ColDefs ++ ConstraintDefs,
     iolist_to_binary([
@@ -443,17 +443,17 @@ compile_operation({create_table, Name, Columns, Constraints}) ->
         iolist_to_binary(lists:join(~",\n  ", AllDefs)),
         ~"\n)"
     ]);
-compile_operation({drop_table, Name}) ->
+compile_operation(_RepoMod, {drop_table, Name}) ->
     iolist_to_binary([~"DROP TABLE ", quote(Name)]);
-compile_operation({alter_table, Name, AlterOps}) ->
-    Ops = [compile_alter_op(Op) || Op <- AlterOps],
+compile_operation(RepoMod, {alter_table, Name, AlterOps}) ->
+    Ops = [compile_alter_op(RepoMod, Op) || Op <- AlterOps],
     iolist_to_binary([
         ~"ALTER TABLE ",
         quote(Name),
         ~" ",
         iolist_to_binary(lists:join(~", ", Ops))
     ]);
-compile_operation({create_index, Table, Columns, Opts}) when is_map(Opts) ->
+compile_operation(_RepoMod, {create_index, Table, Columns, Opts}) when is_map(Opts) ->
     IdxName = kura_migration:index_name(Table, Columns),
     Unique =
         case maps:get(unique, Opts, false) of
@@ -478,7 +478,7 @@ compile_operation({create_index, Table, Columns, Opts}) when is_map(Opts) ->
         ~")",
         Where
     ]);
-compile_operation({create_index, IdxName, Table, Columns, Opts}) ->
+compile_operation(_RepoMod, {create_index, IdxName, Table, Columns, Opts}) ->
     Unique =
         case lists:member(unique, Opts) of
             true -> ~"UNIQUE ";
@@ -502,13 +502,13 @@ compile_operation({create_index, IdxName, Table, Columns, Opts}) ->
         ~")",
         Where
     ]);
-compile_operation({drop_index, Name}) ->
+compile_operation(_RepoMod, {drop_index, Name}) ->
     iolist_to_binary([~"DROP INDEX ", quote(Name)]);
-compile_operation({execute, SQL}) ->
+compile_operation(_RepoMod, {execute, SQL}) ->
     SQL.
 
--spec compile_column_def(#kura_column{}) -> binary().
-compile_column_def(#kura_column{
+-spec compile_column_def(module(), #kura_column{}) -> binary().
+compile_column_def(RepoMod, #kura_column{
     name = Name,
     type = Type,
     nullable = Nullable,
@@ -519,7 +519,7 @@ compile_column_def(#kura_column{
     on_update = OnUpdate
 }) ->
     NameBin = atom_to_binary(Name, utf8),
-    TypeBin = column_type(Type),
+    TypeBin = column_type(RepoMod, Type),
     PKPart =
         case PK of
             true -> ~" PRIMARY KEY";
@@ -533,7 +533,7 @@ compile_column_def(#kura_column{
     DefaultPart =
         case Default of
             undefined -> <<>>;
-            Val -> <<" DEFAULT ", (format_default(Val))/binary>>
+            Val -> <<" DEFAULT ", (format_default(RepoMod, Val))/binary>>
         end,
     RefsPart =
         case Refs of
@@ -584,24 +584,24 @@ compile_fk_action(Prefix, set_null) ->
 compile_fk_action(Prefix, no_action) ->
     <<" ", Prefix/binary, " NO ACTION">>.
 
--spec compile_alter_op(kura_migration:alter_op()) -> iodata().
-compile_alter_op({add_column, ColDef}) ->
-    [~"ADD COLUMN ", compile_column_def(ColDef)];
-compile_alter_op({drop_column, Name}) ->
+-spec compile_alter_op(module(), kura_migration:alter_op()) -> iodata().
+compile_alter_op(RepoMod, {add_column, ColDef}) ->
+    [~"ADD COLUMN ", compile_column_def(RepoMod, ColDef)];
+compile_alter_op(_RepoMod, {drop_column, Name}) ->
     [~"DROP COLUMN ", quote(atom_to_binary(Name, utf8))];
-compile_alter_op({rename_column, From, To}) ->
+compile_alter_op(_RepoMod, {rename_column, From, To}) ->
     [
         ~"RENAME COLUMN ",
         quote(atom_to_binary(From, utf8)),
         ~" TO ",
         quote(atom_to_binary(To, utf8))
     ];
-compile_alter_op({modify_column, Name, Type}) ->
+compile_alter_op(RepoMod, {modify_column, Name, Type}) ->
     [
         ~"ALTER COLUMN ",
         quote(atom_to_binary(Name, utf8)),
         ~" TYPE ",
-        column_type(Type)
+        column_type(RepoMod, Type)
     ].
 
 %%----------------------------------------------------------------------
@@ -759,11 +759,11 @@ quote(Name) when is_binary(Name) ->
 quote(Name) when is_atom(Name) ->
     quote(atom_to_binary(Name, utf8)).
 
-%% Dispatch DDL emission through the configured dialect, falling back
-%% to PG when no dialect is configured (DDL was hardcoded PG pre-2.1).
--spec column_type(kura_types:kura_type()) -> binary().
-column_type(Type) ->
-    case ddl_dialect() of
+%% Dispatch DDL emission through the repo's configured dialect, falling
+%% back to PG when no dialect is configured.
+-spec column_type(module(), kura_types:kura_type()) -> binary().
+column_type(RepoMod, Type) ->
+    case ddl_dialect(RepoMod) of
         {ok, M} ->
             case erlang:function_exported(M, column_type, 1) of
                 true -> M:column_type(Type);
@@ -773,9 +773,9 @@ column_type(Type) ->
             kura_types:to_pg_type(Type)
     end.
 
--spec format_default(term()) -> binary().
-format_default(Val) ->
-    case ddl_dialect() of
+-spec format_default(module(), term()) -> binary().
+format_default(RepoMod, Val) ->
+    case ddl_dialect(RepoMod) of
         {ok, M} ->
             case erlang:function_exported(M, format_default, 1) of
                 true -> M:format_default(Val);
@@ -785,11 +785,17 @@ format_default(Val) ->
             default_default(Val)
     end.
 
--spec ddl_dialect() -> {ok, module()} | none.
-ddl_dialect() ->
-    case application:get_env(kura, dialect) of
-        {ok, M} when is_atom(M) -> {ok, M};
-        _ -> none
+-spec ddl_dialect(module()) -> {ok, module()} | none.
+ddl_dialect(RepoMod) ->
+    Cfg = kura_repo:config(RepoMod),
+    case maps:get(dialect, Cfg, undefined) of
+        M when is_atom(M), M =/= undefined ->
+            {ok, M};
+        _ ->
+            case application:get_env(kura, dialect) of
+                {ok, GD} when is_atom(GD) -> {ok, GD};
+                _ -> none
+            end
     end.
 
 -spec default_default(term()) -> binary().
@@ -943,8 +949,8 @@ table_deps(Op) ->
 
 -spec topo_sort_creates([kura_migration:operation()]) -> [kura_migration:operation()].
 topo_sort_creates(Creates) ->
-    ByName = maps:from_list([{table_name(C), C} || C <- Creates]),
-    DepMap = maps:from_list([{table_name(C), table_deps(C)} || C <- Creates]),
+    ByName = #{table_name(C) => C || C <- Creates},
+    DepMap = #{table_name(C) => table_deps(C) || C <- Creates},
     AllNames = maps:keys(ByName),
     InDeg = build_indeg(AllNames, DepMap, ByName, #{}),
     Queue = [N || N <- AllNames, maps:get(N, InDeg) =:= 0],

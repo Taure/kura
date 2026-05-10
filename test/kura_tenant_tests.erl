@@ -3,6 +3,14 @@
 -include("kura.hrl").
 
 -define(S, kura_tenant_test_schema).
+-define(REPO, kura_tenant_test_repo).
+
+setup() ->
+    application:set_env(kura, repos, #{?REPO => #{dialect => kura_dialect_pg}}).
+
+cleanup() ->
+    application:unset_env(kura, repos),
+    kura_tenant:clear_tenant().
 
 %%----------------------------------------------------------------------
 %% kura_tenant process dictionary tests
@@ -43,80 +51,123 @@ attribute_tenant_test() ->
 %%----------------------------------------------------------------------
 
 select_with_prefix_from_query_test() ->
-    kura_tenant:clear_tenant(),
-    Q = kura_query:prefix(kura_query:from(?S), <<"acme">>),
-    {SQL, _} = kura_query_compiler:to_sql(Q),
-    SQLBin = iolist_to_binary(SQL),
-    ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"acme\".\"posts\"">>)).
+    setup(),
+    try
+        kura_tenant:clear_tenant(),
+        Q = kura_query:prefix(kura_query:from(?S), <<"acme">>),
+        {SQL, _} = kura_query_compiler:to_sql(?REPO, Q),
+        SQLBin = iolist_to_binary(SQL),
+        ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"acme\".\"posts\"">>))
+    after
+        cleanup()
+    end.
 
 select_with_prefix_from_process_dict_test() ->
-    kura_tenant:put_tenant({prefix, <<"globex">>}),
-    Q = kura_query:from(?S),
-    {SQL, _} = kura_query_compiler:to_sql(Q),
-    SQLBin = iolist_to_binary(SQL),
-    ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"globex\".\"posts\"">>)),
-    kura_tenant:clear_tenant().
+    setup(),
+    try
+        kura_tenant:put_tenant({prefix, <<"globex">>}),
+        Q = kura_query:from(?S),
+        {SQL, _} = kura_query_compiler:to_sql(?REPO, Q),
+        SQLBin = iolist_to_binary(SQL),
+        ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"globex\".\"posts\"">>))
+    after
+        cleanup()
+    end.
 
 select_without_prefix_test() ->
-    kura_tenant:clear_tenant(),
-    Q = kura_query:from(?S),
-    {SQL, _} = kura_query_compiler:to_sql(Q),
-    SQLBin = iolist_to_binary(SQL),
-    ?assertNotEqual(nomatch, binary:match(SQLBin, <<"FROM \"posts\"">>)),
-    %% No schema qualifier dot
-    ?assertEqual(nomatch, binary:match(SQLBin, <<"\".\"posts\"">>)).
+    setup(),
+    try
+        kura_tenant:clear_tenant(),
+        Q = kura_query:from(?S),
+        {SQL, _} = kura_query_compiler:to_sql(?REPO, Q),
+        SQLBin = iolist_to_binary(SQL),
+        ?assertNotEqual(nomatch, binary:match(SQLBin, <<"FROM \"posts\"">>)),
+        ?assertEqual(nomatch, binary:match(SQLBin, <<"\".\"posts\"">>))
+    after
+        cleanup()
+    end.
 
 insert_with_prefix_test() ->
-    kura_tenant:put_tenant({prefix, <<"acme">>}),
-    {SQL, _} = kura_query_compiler:insert(?S, [title], #{title => <<"Hello">>}),
-    SQLBin = iolist_to_binary(SQL),
-    ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"acme\".\"posts\"">>)),
-    kura_tenant:clear_tenant().
+    setup(),
+    try
+        kura_tenant:put_tenant({prefix, <<"acme">>}),
+        {SQL, _} = kura_query_compiler:insert(?REPO, ?S, [title], #{title => <<"Hello">>}),
+        SQLBin = iolist_to_binary(SQL),
+        ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"acme\".\"posts\"">>))
+    after
+        cleanup()
+    end.
 
 update_with_prefix_test() ->
-    kura_tenant:put_tenant({prefix, <<"acme">>}),
-    {SQL, _} = kura_query_compiler:update(?S, [title], #{title => <<"Updated">>}, {id, 1}),
-    SQLBin = iolist_to_binary(SQL),
-    ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"acme\".\"posts\"">>)),
-    kura_tenant:clear_tenant().
+    setup(),
+    try
+        kura_tenant:put_tenant({prefix, <<"acme">>}),
+        {SQL, _} = kura_query_compiler:update(
+            ?REPO, ?S, [title], #{title => <<"Updated">>}, {id, 1}
+        ),
+        SQLBin = iolist_to_binary(SQL),
+        ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"acme\".\"posts\"">>))
+    after
+        cleanup()
+    end.
 
 delete_with_prefix_test() ->
-    kura_tenant:put_tenant({prefix, <<"acme">>}),
-    {SQL, _} = kura_query_compiler:delete(?S, id, 1),
-    SQLBin = iolist_to_binary(SQL),
-    ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"acme\".\"posts\"">>)),
-    kura_tenant:clear_tenant().
+    setup(),
+    try
+        kura_tenant:put_tenant({prefix, <<"acme">>}),
+        {SQL, _} = kura_query_compiler:delete(?REPO, ?S, id, 1),
+        SQLBin = iolist_to_binary(SQL),
+        ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"acme\".\"posts\"">>))
+    after
+        cleanup()
+    end.
 
 delete_all_with_prefix_test() ->
-    kura_tenant:put_tenant({prefix, <<"acme">>}),
-    Q = kura_query:from(?S),
-    {SQL, _} = kura_query_compiler:delete_all(Q),
-    SQLBin = iolist_to_binary(SQL),
-    ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"acme\".\"posts\"">>)),
-    kura_tenant:clear_tenant().
+    setup(),
+    try
+        kura_tenant:put_tenant({prefix, <<"acme">>}),
+        Q = kura_query:from(?S),
+        {SQL, _} = kura_query_compiler:delete_all(?REPO, Q),
+        SQLBin = iolist_to_binary(SQL),
+        ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"acme\".\"posts\"">>))
+    after
+        cleanup()
+    end.
 
 update_all_with_prefix_test() ->
-    kura_tenant:put_tenant({prefix, <<"acme">>}),
-    Q = kura_query:from(?S),
-    {SQL, _} = kura_query_compiler:update_all(Q, #{title => <<"New">>}),
-    SQLBin = iolist_to_binary(SQL),
-    ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"acme\".\"posts\"">>)),
-    kura_tenant:clear_tenant().
+    setup(),
+    try
+        kura_tenant:put_tenant({prefix, <<"acme">>}),
+        Q = kura_query:from(?S),
+        {SQL, _} = kura_query_compiler:update_all(?REPO, Q, #{title => <<"New">>}),
+        SQLBin = iolist_to_binary(SQL),
+        ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"acme\".\"posts\"">>))
+    after
+        cleanup()
+    end.
 
 insert_all_with_prefix_test() ->
-    kura_tenant:put_tenant({prefix, <<"acme">>}),
-    {SQL, _} = kura_query_compiler:insert_all(?S, [title], [
-        #{title => <<"A">>}, #{title => <<"B">>}
-    ]),
-    SQLBin = iolist_to_binary(SQL),
-    ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"acme\".\"posts\"">>)),
-    kura_tenant:clear_tenant().
+    setup(),
+    try
+        kura_tenant:put_tenant({prefix, <<"acme">>}),
+        {SQL, _} = kura_query_compiler:insert_all(?REPO, ?S, [title], [
+            #{title => <<"A">>}, #{title => <<"B">>}
+        ]),
+        SQLBin = iolist_to_binary(SQL),
+        ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"acme\".\"posts\"">>))
+    after
+        cleanup()
+    end.
 
 explicit_prefix_overrides_process_dict_test() ->
-    kura_tenant:put_tenant({prefix, <<"process_dict">>}),
-    Q = kura_query:prefix(kura_query:from(?S), <<"explicit">>),
-    {SQL, _} = kura_query_compiler:to_sql(Q),
-    SQLBin = iolist_to_binary(SQL),
-    ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"explicit\".\"posts\"">>)),
-    ?assertEqual(nomatch, binary:match(SQLBin, <<"process_dict">>)),
-    kura_tenant:clear_tenant().
+    setup(),
+    try
+        kura_tenant:put_tenant({prefix, <<"process_dict">>}),
+        Q = kura_query:prefix(kura_query:from(?S), <<"explicit">>),
+        {SQL, _} = kura_query_compiler:to_sql(?REPO, Q),
+        SQLBin = iolist_to_binary(SQL),
+        ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"explicit\".\"posts\"">>)),
+        ?assertEqual(nomatch, binary:match(SQLBin, <<"process_dict">>))
+    after
+        cleanup()
+    end.

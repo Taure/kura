@@ -6,9 +6,11 @@
 
 -compile(export_all).
 
--eqwalizer({nowarn_function, migrator_quote_atom/1}).
 -eqwalizer({nowarn_function, dump_embed_one_nested/1}).
 -eqwalizer({nowarn_function, load_embed_one_nested/1}).
+-eqwalizer({nowarn_function, migrator_quote_atom/1}).
+
+-define(REPO, kura_test_repo).
 
 %%----------------------------------------------------------------------
 %% CT callbacks
@@ -525,12 +527,13 @@ collect_batches(Acc) ->
 
 %% Covers kura_migrator line 544: quote(atom)
 migrator_quote_atom(_Config) ->
-    SQL = kura_migrator:compile_operation({drop_table, my_table}),
+    SQL = kura_migrator:compile_operation(?REPO, {drop_table, my_table}),
     ?assertEqual(<<"DROP TABLE \"my_table\"">>, SQL).
 
 %% Covers kura_migrator compile_operation 5-arity create_index (line 264-287)
 migrator_compile_index_5_arity(_Config) ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_index, <<"my_idx">>, <<"users">>, [email], [unique]}
     ),
     ?assert(binary:match(SQL, <<"UNIQUE">>) =/= nomatch),
@@ -539,6 +542,7 @@ migrator_compile_index_5_arity(_Config) ->
 %% Covers kura_migrator compile_operation 5-arity with where proplist (line 272-274)
 migrator_compile_index_where_proplist(_Config) ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_index, <<"my_idx2">>, <<"users">>, [email], [{where, <<"active = true">>}]}
     ),
     ?assert(binary:match(SQL, <<"WHERE active = true">>) =/= nomatch).

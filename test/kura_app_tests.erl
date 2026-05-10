@@ -98,6 +98,56 @@ pool_config_generic_excludes_bookkeeping_keys_test() ->
     ?assertNot(maps:is_key(pool_module, Config)),
     clear_kura_env().
 
+%%----------------------------------------------------------------------
+%% Multi-repo: {repos, #{Name => Cfg}}
+%%----------------------------------------------------------------------
+
+pool_config_multi_repo_returns_per_repo_map_test() ->
+    clear_kura_env(),
+    application:set_env(kura, repos, #{
+        primary => #{
+            dialect => kura_dialect_pg,
+            host => "primary.example.com",
+            port => 5432
+        },
+        analytics => #{
+            dialect => kura_dialect_sqlite,
+            database => <<":memory:">>
+        }
+    }),
+    PrimaryCfg = kura_app:pool_config(primary),
+    AnalyticsCfg = kura_app:pool_config(analytics),
+    ?assertEqual("primary.example.com", maps:get(host, PrimaryCfg)),
+    ?assertEqual(kura_dialect_pg, maps:get(dialect, PrimaryCfg)),
+    ?assertEqual(<<":memory:">>, maps:get(database, AnalyticsCfg)),
+    ?assertEqual(kura_dialect_sqlite, maps:get(dialect, AnalyticsCfg)),
+    application:unset_env(kura, repos),
+    clear_kura_env().
+
+pool_config_multi_repo_unknown_repo_falls_back_test() ->
+    clear_kura_env(),
+    application:set_env(kura, repos, #{primary => #{dialect => kura_dialect_pg}}),
+    application:set_env(kura, dialect, kura_dialect_pg),
+    Cfg = kura_app:pool_config(unknown_repo),
+    ?assertEqual("localhost", maps:get(host, Cfg)),
+    application:unset_env(kura, repos),
+    clear_kura_env().
+
+%%----------------------------------------------------------------------
+%% Compiler picks correct dialect per repo
+%%----------------------------------------------------------------------
+
+compiler_picks_per_repo_dialect_test() ->
+    clear_kura_env(),
+    application:set_env(kura, repos, #{
+        repo_pg => #{dialect => kura_dialect_pg},
+        repo_sqlite => #{dialect => kura_dialect_sqlite}
+    }),
+    ?assertEqual(kura_dialect_pg, kura_query_compiler:dialect(repo_pg)),
+    ?assertEqual(kura_dialect_sqlite, kura_query_compiler:dialect(repo_sqlite)),
+    application:unset_env(kura, repos),
+    clear_kura_env().
+
 clear_kura_env() ->
     unset_keys([
         host,
@@ -109,6 +159,7 @@ clear_kura_env() ->
         socket_options,
         dialect,
         repo,
+        repos,
         backend,
         pool_module,
         driver_module
