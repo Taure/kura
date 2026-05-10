@@ -164,40 +164,40 @@ SQLite values round-trip transparently via `kura_types:cast/2` (booleans 0/1 →
 
 ## Configuration
 
-Pick a backend package and point kura at it via `{backend, ...}`. Kura
-auto-populates `dialect`, `pool_module`, and `driver_module` from the
-aggregator and starts the configured pool at app boot.
+Configure repos under the `kura` app env. Each repo is a map keyed by
+its module name; pick a backend package and Kura starts the configured
+pool at app boot, populating `dialect`, `pool_module`, and `driver_module`
+from the aggregator automatically.
 
 ```erlang
-%% sys.config — Postgres
+%% sys.config — single Postgres repo
 [{kura, [
-    {repo, my_repo},
-    {backend, kura_backend_postgres},
-    {host, "localhost"},
-    {port, 5432},
-    {database, "my_app_dev"},
-    {user, "postgres"},
-    {password, "postgres"},
-    {pool_size, 10}
+    {repos, #{
+        my_repo => #{
+            backend => kura_backend_postgres,
+            host => "localhost",
+            port => 5432,
+            database => "my_app_dev",
+            user => "postgres",
+            password => "postgres",
+            pool_size => 10
+        }
+    }}
 ]}].
 ```
 
 ```erlang
-%% sys.config — SQLite
+%% sys.config — single SQLite repo
 [{kura, [
-    {repo, my_repo},
-    {backend, kura_backend_sqlite},
-    {database, <<"my_app.db">>},   %% or <<":memory:">>
-    {pool_size, 4}
+    {repos, #{
+        my_repo => #{
+            backend => kura_backend_sqlite,
+            database => <<"my_app.db">>,   %% or <<":memory:">>
+            pool_size => 4
+        }
+    }}
 ]}].
 ```
-
-UUID primary keys are auto-generated on insert when no value is provided.
-
-### Multiple repos
-
-Run two or more repos in the same app, each with its own backend, dialect,
-and pool. Pass a map of repo configs under `{repos, ...}`:
 
 ```erlang
 %% sys.config — Postgres primary + SQLite analytics
@@ -229,10 +229,28 @@ otp_app() -> my_app.
 
 Queries through `my_repo` emit Postgres SQL; queries through
 `analytics_repo` emit SQLite SQL. The query cache is keyed per repo so
-the dialects never share entries.
+the dialects never share entries. UUID primary keys are auto-generated
+on insert when no value is provided.
 
 <details>
-<summary>Legacy per-app config (still supported)</summary>
+<summary>Legacy v1.x config forms (still supported)</summary>
+
+The flat single-repo form:
+
+```erlang
+[{kura, [
+    {repo, my_repo},
+    {backend, kura_backend_postgres},
+    {host, "localhost"},
+    {port, 5432},
+    {database, "my_app_dev"},
+    {user, "postgres"},
+    {password, "postgres"},
+    {pool_size, 10}
+]}].
+```
+
+The per-app form:
 
 ```erlang
 [{my_app, [
@@ -248,9 +266,9 @@ the dialects never share entries.
 ]}].
 ```
 
-With this style the consuming app must call `my_repo:start()` to create the
-pool. The kura app env config is checked first; if `{kura, [{repo, _}]}`
-is not set, Kura falls back to this pattern.
+The per-app form requires the consuming app to call `my_repo:start()`
+manually. The `{repos, #{...}}` form (above) is preferred for new
+projects - single-repo today, no rewrite when you add a second backend.
 </details>
 
 Migrations are discovered automatically from compiled modules implementing the `kura_migration` behaviour.

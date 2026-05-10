@@ -46,43 +46,41 @@ Create a repo module that implements the `kura_repo` behaviour:
 otp_app() -> my_app.
 ```
 
-Then add database configuration to your `sys.config`. Pick a backend
-package and point kura at it via `{backend, ...}`:
+Then add database configuration to your `sys.config`. Repos go under
+the `{repos, #{Name => Cfg}}` map; pick a backend per repo:
 
 ```erlang
-%% Postgres
+%% single Postgres repo
 [{kura, [
-    {repo, my_repo},
-    {backend, kura_backend_postgres},
-    {host, "localhost"},
-    {port, 5432},
-    {database, "my_app_dev"},
-    {user, "postgres"},
-    {password, "postgres"},
-    {pool_size, 10}
+    {repos, #{
+        my_repo => #{
+            backend => kura_backend_postgres,
+            host => "localhost",
+            port => 5432,
+            database => "my_app_dev",
+            user => "postgres",
+            password => "postgres",
+            pool_size => 10
+        }
+    }}
 ]}].
 ```
 
 ```erlang
-%% SQLite
+%% single SQLite repo
 [{kura, [
-    {repo, my_repo},
-    {backend, kura_backend_sqlite},
-    {database, <<"my_app.db">>},
-    {pool_size, 4}
+    {repos, #{
+        my_repo => #{
+            backend => kura_backend_sqlite,
+            database => <<"my_app.db">>,
+            pool_size => 4
+        }
+    }}
 ]}].
 ```
 
-Kura starts the configured pool automatically. UUID primary keys are
-auto-generated on insert when no value is provided.
-
-### Multiple repos
-
-Run two or more repos in the same app, each with its own backend, by
-swapping `{repo, ...}` for a `{repos, #{Name => Cfg}}` map:
-
 ```erlang
-%% Postgres primary + SQLite analytics
+%% Postgres primary + SQLite analytics in the same app
 [{kura, [
     {repos, #{
         my_repo => #{
@@ -100,10 +98,12 @@ swapping `{repo, ...}` for a `{repos, #{Name => Cfg}}` map:
 ]}].
 ```
 
-Each repo module declares itself the same way (`-behaviour(kura_repo)`
-+ `otp_app/0`). Queries through `my_repo` emit Postgres SQL; queries
+Each repo module declares itself in code (`-behaviour(kura_repo)` +
+`otp_app/0`). Queries through `my_repo` emit Postgres SQL; queries
 through `analytics_repo` emit SQLite SQL. The query cache is keyed per
-repo so the dialects never share entries.
+repo so the dialects never share entries. Kura starts the configured
+pools automatically; UUID primary keys are auto-generated on insert
+when no value is provided.
 
 ## Define a Migration
 
