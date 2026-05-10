@@ -115,11 +115,15 @@ The index name is auto-generated via `kura_migration:index_name/2`. If you need 
 {ok, AppliedVersions} = kura_migrator:migrate(my_repo).
 ```
 
-All pending migrations run inside a single PostgreSQL transaction guarded by
-`pg_advisory_xact_lock`, so concurrent nodes never run migrations in parallel.
-If any migration fails, the entire batch rolls back and `{error, Reason}` is
-returned. The `schema_migrations` table is updated row-by-row inside the same
-transaction, so partial progress is impossible.
+All pending migrations run inside a single transaction. On Postgres, the
+transaction is guarded by `pg_advisory_xact_lock` so concurrent nodes never
+run migrations in parallel. SQLite (single-writer) relies on its serial
+write-transaction semantics. The migrator gates the advisory-lock SQL on
+the configured pool declaring the `advisory_locks` capability — backends
+that don't declare it skip it. If any migration fails, the entire batch
+rolls back and `{error, Reason}` is returned. The `schema_migrations` table
+is updated row-by-row inside the same transaction, so partial progress is
+impossible.
 
 By default, `migrate/1` also calls `ensure_database/1` first, creating the
 configured database if it does not yet exist. To disable, set
@@ -167,7 +171,7 @@ indexes() ->
      {[phone_number], #{unique => true, where => ~"phone_number IS NOT NULL"}}].
 ```
 
-Unique indexes declared via `indexes/0` are automatically registered as changeset constraints - no manual `unique_constraint/2` calls needed. When a PostgreSQL unique violation fires (e.g. `users_email_index`), it maps to `{email, <<"has already been taken">>}` on the changeset.
+Unique indexes declared via `indexes/0` are automatically registered as changeset constraints - no manual `unique_constraint/2` calls needed. When the database raises a unique-constraint violation (mapped per dialect — `users_email_index` on Postgres, the equivalent on SQLite), it maps to `{email, <<"has already been taken">>}` on the changeset.
 
 ## Schema Migrations Table
 

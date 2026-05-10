@@ -2,6 +2,8 @@
 
 `kura_tenant` provides process dictionary-based multitenancy with two strategies: schema prefix and attribute-based. Once a tenant is set, all Kura repo operations in that process are automatically scoped.
 
+> **Backend note:** the schema-prefix strategy uses PostgreSQL schemas. SQLite has no schema concept; for multi-tenant SQLite use one database file per tenant or `ATTACH DATABASE`. The attribute-based strategy works on any backend.
+
 ## Strategies
 
 ### Schema Prefix

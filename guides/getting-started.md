@@ -46,11 +46,14 @@ Create a repo module that implements the `kura_repo` behaviour:
 otp_app() -> my_app.
 ```
 
-Then add database configuration to your `sys.config`:
+Then add database configuration to your `sys.config`. Pick a backend
+package and point kura at it via `{backend, ...}`:
 
 ```erlang
+%% Postgres
 [{kura, [
     {repo, my_repo},
+    {backend, kura_backend_postgres},
     {host, "localhost"},
     {port, 5432},
     {database, "my_app_dev"},
@@ -60,12 +63,18 @@ Then add database configuration to your `sys.config`:
 ]}].
 ```
 
-Kura starts the pgo pool automatically and configures `pg_types` to return
-UUIDs as formatted strings. UUID primary keys are auto-generated on insert
-when no value is provided.
+```erlang
+%% SQLite
+[{kura, [
+    {repo, my_repo},
+    {backend, kura_backend_sqlite},
+    {database, <<"my_app.db">>},
+    {pool_size, 4}
+]}].
+```
 
-Defaults: `host` = `"localhost"`, `port` = `5432`, `user` = `"postgres"`,
-`pool_size` = `10`.
+Kura starts the configured pool automatically. UUID primary keys are
+auto-generated on insert when no value is provided.
 
 ## Define a Migration
 
