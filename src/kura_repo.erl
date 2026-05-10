@@ -14,25 +14,27 @@ otp_app() -> my_app.
 ```
 
 Configure the database connection under the `kura` application env.
-Kura starts the pool automatically during application startup.
-
-For a single repo, use the flat env keys:
+Repos go in a `{repos, #{Name => Cfg}}` map; Kura starts the pool for
+each repo automatically during application startup.
 
 ```erlang
 [{kura, [
-    {repo, my_repo},
-    {backend, kura_backend_postgres},
-    {host, "localhost"},
-    {port, 5432},
-    {database, "my_db"},
-    {user, "postgres"},
-    {password, "secret"},
-    {pool_size, 10}
+    {repos, #{
+        my_repo => #{
+            backend => kura_backend_postgres,
+            host => "localhost",
+            port => 5432,
+            database => "my_db",
+            user => "postgres",
+            password => "secret",
+            pool_size => 10
+        }
+    }}
 ]}].
 ```
 
-For multiple repos in the same app (e.g., a Postgres primary plus a
-SQLite analytics database), use `{repos, #{Name => Cfg}}`:
+The same form scales to multiple repos (e.g. a Postgres primary plus a
+SQLite analytics store):
 
 ```erlang
 [{kura, [
@@ -55,9 +57,11 @@ Each repo's dialect, pool, and driver are resolved from its `backend`
 key. Queries through different repos use their own dialects; the query
 cache is keyed per repo.
 
-For backward compatibility, Kura also supports per-app config via
-`application:get_env(OtpApp, RepoModule)`. The `repos` map is checked
-first, then the flat env, then the per-app form.
+For backward compatibility, Kura also accepts the flat single-repo
+form (`{repo, _}`/`{backend, _}`/`{host, _}` at the kura env level) and
+the per-app form (`application:get_env(OtpApp, RepoModule)`). The
+`{repos, ...}` map is checked first, then the flat env, then the per-app
+form. New projects should prefer the map form.
 
 Optionally implement `init/1` to modify config at runtime - useful for reading
 secrets from files, environment variables, or external services:

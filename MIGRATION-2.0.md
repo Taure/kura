@@ -19,44 +19,42 @@ Pick the backend you use and add it to `rebar.config`:
 
 ## 2. Point kura at the backend
 
-Set the backend in `sys.config`. kura's app start populates `dialect`,
-`pool_module`, and `driver_module` from the aggregator automatically.
+Configure repos in a `{repos, #{Name => Cfg}}` map under the kura app
+env. kura's app start populates `dialect`, `pool_module`, and
+`driver_module` from each repo's `backend` key automatically.
 
 ```erlang
-%% Postgres
+%% single Postgres repo
 [{kura, [
-    {repo, my_repo},
-    {backend, kura_backend_postgres},
-    {host, "localhost"},
-    {port, 5432},
-    {database, "my_app"},
-    {user, "postgres"},
-    {password, "postgres"},
-    {pool_size, 10}
+    {repos, #{
+        my_repo => #{
+            backend => kura_backend_postgres,
+            host => "localhost",
+            port => 5432,
+            database => "my_app",
+            user => "postgres",
+            password => "postgres",
+            pool_size => 10
+        }
+    }}
 ]}].
 ```
 
 ```erlang
-%% SQLite
+%% single SQLite repo
 [{kura, [
-    {repo, my_repo},
-    {backend, kura_backend_sqlite},
-    {database, <<"my_app.db">>},
-    {pool_size, 4}
+    {repos, #{
+        my_repo => #{
+            backend => kura_backend_sqlite,
+            database => <<"my_app.db">>,
+            pool_size => 4
+        }
+    }}
 ]}].
 ```
 
-If you prefer per-key wiring instead of `{backend, ...}`, set
-`pool_module`, `driver_module`, and `dialect` explicitly. They override
-the aggregator defaults when present.
-
-### Multiple repos
-
-If your app needs more than one database (e.g. Postgres primary plus a
-SQLite analytics store), use `{repos, #{Name => Cfg}}` instead of the
-flat `{repo, ...}` form:
-
 ```erlang
+%% Postgres primary + SQLite analytics
 [{kura, [
     {repos, #{
         my_repo => #{
@@ -76,6 +74,15 @@ flat `{repo, ...}` form:
 Each repo's dialect, pool, and driver are resolved from its `backend`
 key. Queries through different repos use their own dialects; the query
 cache is keyed per repo so they never share entries.
+
+If you prefer per-key wiring instead of `{backend, ...}`, set
+`pool_module`, `driver_module`, and `dialect` explicitly inside the
+repo's map. They override the aggregator defaults when present.
+
+The 1.x flat form (`{repo, _}/{host, _}/{user, _}` directly at the
+kura env level) and the per-app form (`application:get_env(OtpApp,
+RepoModule)`) still work as fallbacks. New projects should prefer the
+map form.
 
 ## 3. Module locations
 
