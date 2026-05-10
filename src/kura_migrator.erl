@@ -222,6 +222,23 @@ Timeout/interval are configurable via the `kura` app env keys
 `migration_pool_ready_timeout` and `migration_pool_ready_interval`
 (both in milliseconds).
 """.
+%% Acquire a session-wide migration lock when the backend supports
+%% advisory locks. SQLite and other single-writer backends rely on the
+%% transaction itself for serialization.
+-spec maybe_acquire_advisory_lock(module(), module()) -> ok.
+maybe_acquire_advisory_lock(RepoMod, PoolMod) ->
+    case kura_capabilities:has(PoolMod, advisory_locks) of
+        true ->
+            #{command := _} = kura_db:query(
+                RepoMod,
+                ~"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock",
+                [?MIGRATION_LOCK_KEY]
+            ),
+            ok;
+        false ->
+            ok
+    end.
+
 -spec wait_for_pool(module()) -> ok | {error, pool_unavailable}.
 wait_for_pool(RepoMod) ->
     Timeout = read_pos_int_env(migration_pool_ready_timeout, ?POOL_READY_TIMEOUT_MS),
@@ -314,14 +331,11 @@ parse_migration_module(Module) ->
 -spec with_migration_lock(module(), fun(() -> [integer()])) ->
     {ok, [integer()]} | {error, term()}.
 with_migration_lock(RepoMod, Fun) ->
+    PoolMod = kura_db:get_pool_module(RepoMod),
     try
         narrow_migration_result(
             kura_db:transaction(RepoMod, fun() ->
-                #{command := _} = kura_db:query(
-                    RepoMod,
-                    ~"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock",
-                    [?MIGRATION_LOCK_KEY]
-                ),
+                maybe_acquire_advisory_lock(RepoMod, PoolMod),
                 Fun()
             end)
         )
