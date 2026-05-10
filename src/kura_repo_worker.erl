@@ -82,7 +82,7 @@ start(RepoMod) ->
 -spec all(module(), #kura_query{}) -> {ok, [map()]} | {error, term()}.
 all(RepoMod, Query) ->
     Q1 = maybe_apply_soft_delete(maybe_apply_tenant_query(Query)),
-    {SQL, Params} = kura_query_compiler:to_sql_cached(Q1),
+    {SQL, Params} = kura_query_compiler:to_sql_cached(RepoMod, Q1),
 
     case kura_db:query(RepoMod, SQL, Params) of
         #{command := select, rows := Rows} ->
@@ -170,7 +170,7 @@ aggregate(RepoMod, Query, {Agg, Field}) ->
         preloads = [],
         distinct = false
     },
-    {SQL, Params} = kura_query_compiler:to_sql(AggQ),
+    {SQL, Params} = kura_query_compiler:to_sql(RepoMod, AggQ),
     case kura_db:query(RepoMod, SQL, Params) of
         #{rows := [Row]} -> {ok, maps:get(Agg, Row)};
         #{rows := []} -> {ok, nil};
@@ -278,7 +278,7 @@ insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opt
     Changes1 = maybe_add_timestamps(SchemaMod, Changes0, insert),
     DumpedChanges = dump_changes(SchemaMod, Changes1),
     Fields = maps:keys(DumpedChanges),
-    {SQL, Params} = kura_query_compiler:insert(SchemaMod, Fields, DumpedChanges, Opts),
+    {SQL, Params} = kura_query_compiler:insert(RepoMod, SchemaMod, Fields, DumpedChanges, Opts),
 
     case kura_db:query(RepoMod, SQL, Params) of
         #{command := insert, rows := [Row]} ->
@@ -344,7 +344,7 @@ delete(RepoMod, #kura_changeset{schema = SchemaMod, data = Data}) ->
 -spec update_all(module(), #kura_query{}, map()) -> {ok, non_neg_integer()} | {error, term()}.
 update_all(RepoMod, Query, Updates) ->
     Q1 = maybe_apply_soft_delete(maybe_apply_tenant_query(Query)),
-    {SQL, Params} = kura_query_compiler:update_all(Q1, Updates),
+    {SQL, Params} = kura_query_compiler:update_all(RepoMod, Q1, Updates),
 
     case kura_db:query(RepoMod, SQL, Params) of
         #{command := update, num_rows := Count} -> {ok, Count};
@@ -355,7 +355,7 @@ update_all(RepoMod, Query, Updates) ->
 -spec delete_all(module(), #kura_query{}) -> {ok, non_neg_integer()} | {error, term()}.
 delete_all(RepoMod, Query) ->
     Q1 = maybe_apply_soft_delete(maybe_apply_tenant_query(Query)),
-    {SQL, Params} = kura_query_compiler:delete_all(Q1),
+    {SQL, Params} = kura_query_compiler:delete_all(RepoMod, Q1),
 
     case kura_db:query(RepoMod, SQL, Params) of
         #{command := delete, num_rows := Count} -> {ok, Count};
@@ -376,7 +376,7 @@ insert_all(RepoMod, SchemaMod, Entries) ->
     ],
     [First | _] = Rows,
     Fields = maps:keys(First),
-    {SQL, Params} = kura_query_compiler:insert_all(SchemaMod, Fields, Rows),
+    {SQL, Params} = kura_query_compiler:insert_all(RepoMod, SchemaMod, Fields, Rows),
 
     case kura_db:query(RepoMod, SQL, Params) of
         #{command := insert, num_rows := Count} -> {ok, Count};
@@ -398,7 +398,7 @@ insert_all(RepoMod, SchemaMod, Entries, Opts) ->
     ],
     [First | _] = Rows,
     Fields = maps:keys(First),
-    {SQL, Params} = kura_query_compiler:insert_all(SchemaMod, Fields, Rows, Opts),
+    {SQL, Params} = kura_query_compiler:insert_all(RepoMod, SchemaMod, Fields, Rows, Opts),
 
     case Opts of
         #{returning := RetOpt} when RetOpt =:= true; is_list(RetOpt) ->
@@ -506,7 +506,7 @@ insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}) ->
             Changes1 = maybe_add_timestamps(SchemaMod, Changes0, insert),
             DumpedChanges = dump_changes(SchemaMod, Changes1),
             Fields = maps:keys(DumpedChanges),
-            {SQL, Params} = kura_query_compiler:insert(SchemaMod, Fields, DumpedChanges),
+            {SQL, Params} = kura_query_compiler:insert(RepoMod, SchemaMod, Fields, DumpedChanges),
             case kura_db:query(RepoMod, SQL, Params) of
                 #{command := insert, rows := [Row]} ->
                     Row1 = kura_db:load_row(SchemaMod, Row),
@@ -547,7 +547,7 @@ do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, PK, PKValue) ->
     case CS#kura_changeset.optimistic_lock of
         undefined ->
             {SQL, Params} = kura_query_compiler:update(
-                SchemaMod, Fields, DumpedChanges, {PK, PKValue}
+                RepoMod, SchemaMod, Fields, DumpedChanges, {PK, PKValue}
             ),
             case kura_db:query(RepoMod, SQL, Params) of
                 #{command := update, rows := [Row]} ->
@@ -766,7 +766,7 @@ delete_record(RepoMod, SchemaMod, Data) ->
         ok ->
             PK = kura_schema:primary_key(SchemaMod),
             PKValue = maps:get(PK, Data),
-            {SQL, Params} = kura_query_compiler:delete(SchemaMod, PK, PKValue),
+            {SQL, Params} = kura_query_compiler:delete(RepoMod, SchemaMod, PK, PKValue),
             case kura_db:query(RepoMod, SQL, Params) of
                 #{command := delete, rows := [Row]} ->
                     Row1 = kura_db:load_row(SchemaMod, Row),

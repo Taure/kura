@@ -2,6 +2,13 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-define(REPO, kura_migrator_edge_test_dialect_repo).
+-on_load(setup_dialect/0).
+
+setup_dialect() ->
+    application:set_env(kura, dialect, kura_dialect_pg),
+    ok.
+
 drop_table_unsafe_test() ->
     Ops = [{drop_table, <<"sessions">>}],
     [W] = kura_migrator:check_unsafe_operations(Ops, []),
@@ -130,6 +137,7 @@ mixed_safe_unsafe_ops_test() ->
 
 compile_default_float_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_table, <<"t">>, [
             #kura_column{name = x, type = float, default = 3.14}
         ]}
@@ -138,6 +146,7 @@ compile_default_float_test() ->
 
 compile_create_table_with_constraints_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_table, <<"t">>,
             [
                 #kura_column{name = id, type = id, primary_key = true},
@@ -151,18 +160,21 @@ compile_create_table_with_constraints_test() ->
 
 compile_create_index_no_unique_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_index, <<"users">>, [email], #{}}
     ),
     ?assertEqual(nomatch, binary:match(SQL, <<"UNIQUE">>)).
 
 compile_create_index_with_where_map_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_index, <<"users">>, [email], #{where => <<"active = true">>}}
     ),
     ?assert(binary:match(SQL, <<"WHERE active = true">>) =/= nomatch).
 
 compile_alter_table_multiple_ops_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {alter_table, <<"users">>, [
             {add_column, #kura_column{name = bio, type = text}},
             {drop_column, phone}

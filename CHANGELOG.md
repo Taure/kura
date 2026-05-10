@@ -7,21 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-## [2.4.0] - 2026-05-10
+## [2.0.0] - 2026-05-10
+
+The 2.0 line introduces pluggable backends and multi-repo support. The
+intermediate 2.1-2.5 dev tags were rolled into this release; nothing
+shipped to Hex during that window. See
+[MIGRATION-2.0.md](MIGRATION-2.0.md) for upgrade notes.
 
 ### Added
 
-- `{kura, [{backend, kura_backend_postgres}]}` aggregator wiring. Setting
-  the backend in app env auto-populates `dialect`, `pool_module`, and
-  `driver_module` from the aggregator at app start. Explicit per-key
-  overrides still win.
+- **Pluggable backends.** Pick a backend package and point kura at it
+  with `{backend, ...}`. Kura auto-populates `dialect`, `pool_module`,
+  and `driver_module` from the aggregator at app start.
+  - `kura_pool` behaviour - connection-pool contract.
+  - `kura_capabilities` behaviour - backend feature flags
+    (e.g. `advisory_locks`, `returning`, `arrays`).
+  - `kura_dialect` behaviour - SQL dialect contract, with optional
+    `column_type/1` and `format_default/1` callbacks for
+    backend-specific DDL.
+  - `kura_driver` behaviour - query/transaction driver contract.
+  - `kura_pool_ets` - in-memory pool for tests that don't need a real DB.
+- **Multi-repo configuration.** Run two or more repos in the same app,
+  each with its own backend, dialect, and pool. Configure with a map of
+  maps under `{repos, ...}`:
+
+  ```erlang
+  {kura, [
+      {repos, #{
+          primary => #{
+              backend => kura_backend_postgres,
+              host => "primary.example.com",
+              database => "main",
+              pool_size => 10
+          },
+          analytics => #{
+              backend => kura_backend_sqlite,
+              database => <<":memory:">>
+          }
+      }}
+  ]}
+  ```
+
+  Kura starts each repo's pool on app start. The dialect resolves
+  per-repo, so `primary` emits Postgres SQL while `analytics` emits
+  SQLite SQL. The query cache is keyed per repo so dialects never share
+  entries.
+- `kura_app:pool_config/1` returns the config map for a specific repo.
+- `kura_types:cast(boolean, 0|1)` so SQLite (booleans stored as INTEGER)
+  round-trips cleanly.
 
 ### Changed
 
-- `kura_db:get_pool_module/1` and `get_driver_module/1` error with
-  `{no_pool_module_configured, _}` / `{no_driver_module_configured, _}`
-  when not configured. Set `{backend, ...}` (recommended) or
-  `pool_module`/`driver_module` explicitly.
+- `kura_query_compiler:to_sql/2`, `to_sql_cached/2`, `to_sql_from/3`,
+  `insert/4`, `insert/5`, `update/5`, `delete/4`, `update_all/3`,
+  `delete_all/2`, `insert_all/4`, `insert_all/5`, and `dialect/1`
+  take `RepoMod` as the first argument so they can resolve the
+  per-repo dialect. Internal callers (`kura_repo_worker`,
+  `kura_stream`, `kura_migrator`) thread the repo through automatically.
+- `kura_query_cache` keys are tuples `{RepoMod, QueryHash}`. The cache
+  ETS table is now owned by a supervised gen_server so it survives any
+  caller exiting.
+- `kura_db:query/3` and the rest of the query path route through
+  `kura_pool` / `kura_driver`, so backends are swappable.
 - `kura_app:pool_config/0` is dialect-aware. PG-shaped defaults
   (port 5432, user/database `"postgres"`, decode_opts) only apply when
   `dialect` is `kura_dialect_pg`. Other dialects get a pass-through
@@ -31,66 +78,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `kura_repo:read_config/1` returns a pass-through map of all kura env
   keys (minus bookkeeping). Previously hardcoded the PG-shaped subset
   and silently dropped `pool_module`, `driver_module`, `backend`.
-
-## [2.3.0] - 2026-05-10
-
-### Changed
-
-- Moved `kura_dialect_pg` from `test/` back into `src/`. It's the
-  default ANSI-ish SQL emitter that other dialects (SQLite, future
-  MySQL) delegate to for AST→SQL emission. Putting it in core unbreaks
-  installs that use only kura_sqlite (which previously crashed with
-  `undef` on the first query).
-- `kura_dialect_pg_tests` now exercise the dialect directly instead of
-  going through `kura_query_compiler`, removing dependence on test-order
-  env leakage.
-
-## [2.2.0] - 2026-05-10
-
-### Changed
-
 - `kura_migrator` skips `pg_advisory_xact_lock` when the configured
   pool doesn't declare the `advisory_locks` capability. The migration
   transaction alone serializes runs on backends that lack advisory
   locks (SQLite, etc.).
-
-## [2.1.0] - 2026-05-10
-
-### Added
-
-- Optional `kura_dialect:column_type/1` and `format_default/1`
-  callbacks for backend-specific DDL emission. `kura_migrator` falls
-  back to `kura_types:to_pg_type/1` and a generic default formatter
-  when the configured dialect doesn't implement them.
-- `kura_types:cast(boolean, 0|1)` so SQLite (which stores booleans as
-  INTEGER) round-trips cleanly.
-
-## [2.0.0] - 2026-05-10
-
-### Added
-
-- `kura_pool` behaviour — pluggable connection-pool contract.
-- `kura_capabilities` behaviour — backend feature flags.
-- `kura_dialect` behaviour — SQL dialect contract.
-- `kura_driver` behaviour — query/transaction driver contract.
-- `kura_pool_ets` — in-memory pool for tests that don't need a real DB.
-
-### Changed
-
-- `kura_db:query/3` and the rest of the query path now route through
-  `kura_pool` / `kura_driver`, so backends are swappable.
+- Single-repo legacy config (flat `kura` env keys) and the per-app form
+  (`application:get_env(OtpApp, RepoMod)`) keep working unchanged. The
+  global `application:get_env(kura, dialect)` is consulted as a fallback
+  when a repo's config map omits `dialect`.
 
 ### Removed (BREAKING)
 
-- `kura_pool_pgo`, `kura_driver_pgo`, `kura_dialect_pg` no longer ship in
-  `kura`. Install [`kura_postgres`](https://github.com/Taure/kura_postgres)
-  for Postgres or [`kura_sqlite`](https://github.com/Taure/kura_sqlite) for
-  SQLite. `pgo` is no longer a runtime dependency of `kura`.
+- `kura_pool_pgo`, `kura_driver_pgo` no longer ship in `kura`. Install
+  [`kura_postgres`](https://github.com/Taure/kura_postgres) for Postgres
+  or [`kura_sqlite`](https://github.com/Taure/kura_sqlite) for SQLite.
+  `pgo` is no longer a runtime dependency of `kura`. `kura_dialect_pg`
+  remains in core as the default ANSI-ish SQL emitter that other
+  dialects delegate to.
 - `kura_query_compiler:dialect/0` no longer defaults to `kura_dialect_pg`.
-  It errors with `no_dialect_configured` if `application:set_env(kura,
-  dialect, Module)` has not been called. Backend packages set this for you.
-
-See [MIGRATION-2.0.md](MIGRATION-2.0.md).
+  Use `dialect/1` and configure the dialect per repo (recommended via
+  `{backend, ...}`), or set the global `application:set_env(kura,
+  dialect, Module)` for legacy single-dialect setups.
+- `kura_db:get_pool_module/1` and `get_driver_module/1` error with
+  `{no_pool_module_configured, _}` / `{no_driver_module_configured, _}`
+  when not configured. Set `{backend, ...}` (recommended) or
+  `pool_module`/`driver_module` explicitly.
 
 ## [1.8.0] - 2026-03-06
 

@@ -28,7 +28,7 @@ stream(RepoMod, Query, Fun) ->
 -spec stream(module(), #kura_query{}, fun(([map()]) -> ok), map()) -> ok | {error, term()}.
 stream(RepoMod, Query, Fun, Opts) ->
     BatchSize = maps:get(batch_size, Opts, 500),
-    {SQL, Params} = kura_query_compiler:to_sql(Query),
+    {SQL, Params} = kura_query_compiler:to_sql(RepoMod, Query),
     Schema = Query#kura_query.from,
     Pool = kura_db:get_pool(RepoMod),
     PoolMod = kura_db:get_pool_module(RepoMod),

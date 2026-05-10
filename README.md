@@ -194,6 +194,43 @@ aggregator and starts the configured pool at app boot.
 
 UUID primary keys are auto-generated on insert when no value is provided.
 
+### Multiple repos
+
+Run two or more repos in the same app, each with its own backend, dialect,
+and pool. Pass a map of repo configs under `{repos, ...}`:
+
+```erlang
+%% sys.config — Postgres primary + SQLite analytics
+[{kura, [
+    {repos, #{
+        my_repo => #{
+            backend => kura_backend_postgres,
+            host => "localhost",
+            database => "main",
+            user => "postgres",
+            pool_size => 10
+        },
+        analytics_repo => #{
+            backend => kura_backend_sqlite,
+            database => <<":memory:">>
+        }
+    }}
+]}].
+```
+
+Each repo module declares itself in code:
+
+```erlang
+-module(my_repo).
+-behaviour(kura_repo).
+-export([otp_app/0]).
+otp_app() -> my_app.
+```
+
+Queries through `my_repo` emit Postgres SQL; queries through
+`analytics_repo` emit SQLite SQL. The query cache is keyed per repo so
+the dialects never share entries.
+
 <details>
 <summary>Legacy per-app config (still supported)</summary>
 

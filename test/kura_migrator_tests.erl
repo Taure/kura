@@ -2,12 +2,20 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-define(REPO, kura_migrator_test_dialect_repo).
+-on_load(setup_dialect/0).
+
+setup_dialect() ->
+    application:set_env(kura, dialect, kura_dialect_pg),
+    ok.
+
 %%----------------------------------------------------------------------
 %% DDL compilation tests
 %%----------------------------------------------------------------------
 
 create_table_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_table, <<"users">>, [
             #kura_column{name = id, type = id, primary_key = true, nullable = false},
             #kura_column{name = name, type = string, nullable = false},
@@ -24,11 +32,12 @@ create_table_test() ->
     ?assert(binary:match(SQL, <<"\"active\" BOOLEAN DEFAULT TRUE">>) =/= nomatch).
 
 drop_table_test() ->
-    SQL = kura_migrator:compile_operation({drop_table, <<"users">>}),
+    SQL = kura_migrator:compile_operation(?REPO, {drop_table, <<"users">>}),
     ?assertEqual(<<"DROP TABLE \"users\"">>, SQL).
 
 alter_table_add_column_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {alter_table, <<"users">>, [
             {add_column, #kura_column{name = bio, type = text}}
         ]}
@@ -38,6 +47,7 @@ alter_table_add_column_test() ->
 
 alter_table_drop_column_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {alter_table, <<"users">>, [
             {drop_column, bio}
         ]}
@@ -46,6 +56,7 @@ alter_table_drop_column_test() ->
 
 alter_table_rename_column_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {alter_table, <<"users">>, [
             {rename_column, name, full_name}
         ]}
@@ -54,6 +65,7 @@ alter_table_rename_column_test() ->
 
 alter_table_modify_column_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {alter_table, <<"users">>, [
             {modify_column, name, text}
         ]}
@@ -62,18 +74,21 @@ alter_table_modify_column_test() ->
 
 create_index_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_index, <<"users_email_index">>, <<"users">>, [email], []}
     ),
     ?assertEqual(<<"CREATE INDEX \"users_email_index\" ON \"users\" (\"email\")">>, SQL).
 
 create_unique_index_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_index, <<"users_email_index">>, <<"users">>, [email], [unique]}
     ),
     ?assert(binary:match(SQL, <<"CREATE UNIQUE INDEX">>) =/= nomatch).
 
 create_index_with_where_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_index, <<"users_active_email">>, <<"users">>, [email], [
             unique, {where, <<"active = true">>}
         ]}
@@ -82,16 +97,19 @@ create_index_with_where_test() ->
 
 create_composite_index_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_index, <<"users_name_email">>, <<"users">>, [name, email], []}
     ),
     ?assert(binary:match(SQL, <<"(\"name\", \"email\")">>) =/= nomatch).
 
 drop_index_test() ->
-    SQL = kura_migrator:compile_operation({drop_index, <<"users_email_index">>}),
+    SQL = kura_migrator:compile_operation(?REPO, {drop_index, <<"users_email_index">>}),
     ?assertEqual(<<"DROP INDEX \"users_email_index\"">>, SQL).
 
 execute_raw_sql_test() ->
-    SQL = kura_migrator:compile_operation({execute, <<"CREATE EXTENSION IF NOT EXISTS citext">>}),
+    SQL = kura_migrator:compile_operation(
+        ?REPO, {execute, <<"CREATE EXTENSION IF NOT EXISTS citext">>}
+    ),
     ?assertEqual(<<"CREATE EXTENSION IF NOT EXISTS citext">>, SQL).
 
 %%----------------------------------------------------------------------
@@ -115,6 +133,7 @@ column_types_test_() ->
     [
         ?_assert(begin
             SQL = kura_migrator:compile_operation(
+                ?REPO,
                 {create_table, <<"test">>, [
                     #kura_column{name = col, type = T}
                 ]}
@@ -130,6 +149,7 @@ column_types_test_() ->
 
 default_integer_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_table, <<"t">>, [
             #kura_column{name = x, type = integer, default = 0}
         ]}
@@ -138,6 +158,7 @@ default_integer_test() ->
 
 default_string_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_table, <<"t">>, [
             #kura_column{name = x, type = string, default = <<"hello">>}
         ]}
@@ -146,6 +167,7 @@ default_string_test() ->
 
 default_boolean_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_table, <<"t">>, [
             #kura_column{name = x, type = boolean, default = false}
         ]}
@@ -279,6 +301,7 @@ partial_suppression_test() ->
 
 fk_inline_create_table_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_table, <<"posts">>, [
             #kura_column{name = id, type = id, primary_key = true, nullable = false},
             #kura_column{
@@ -298,6 +321,7 @@ fk_inline_create_table_test() ->
 
 fk_on_delete_cascade_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_table, <<"t">>, [
             #kura_column{
                 name = ref_id, type = integer, references = {<<"refs">>, id}, on_delete = cascade
@@ -308,6 +332,7 @@ fk_on_delete_cascade_test() ->
 
 fk_on_delete_restrict_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_table, <<"t">>, [
             #kura_column{
                 name = ref_id, type = integer, references = {<<"refs">>, id}, on_delete = restrict
@@ -318,6 +343,7 @@ fk_on_delete_restrict_test() ->
 
 fk_on_delete_set_null_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_table, <<"t">>, [
             #kura_column{
                 name = ref_id, type = integer, references = {<<"refs">>, id}, on_delete = set_null
@@ -328,6 +354,7 @@ fk_on_delete_set_null_test() ->
 
 fk_on_delete_no_action_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_table, <<"t">>, [
             #kura_column{
                 name = ref_id, type = integer, references = {<<"refs">>, id}, on_delete = no_action
@@ -338,6 +365,7 @@ fk_on_delete_no_action_test() ->
 
 fk_on_update_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_table, <<"t">>, [
             #kura_column{
                 name = ref_id, type = integer, references = {<<"refs">>, id}, on_update = cascade
@@ -348,6 +376,7 @@ fk_on_update_test() ->
 
 fk_on_delete_and_on_update_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_table, <<"t">>, [
             #kura_column{
                 name = ref_id,
@@ -363,6 +392,7 @@ fk_on_delete_and_on_update_test() ->
 
 fk_alter_table_add_column_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {alter_table, <<"posts">>, [
             {add_column, #kura_column{
                 name = author_id,
@@ -386,6 +416,7 @@ fk_alter_table_add_column_test() ->
 
 create_table_unique_constraint_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_table, <<"participant">>,
             [
                 #kura_column{name = id, type = id, primary_key = true, nullable = false},
@@ -398,6 +429,7 @@ create_table_unique_constraint_test() ->
 
 create_table_check_constraint_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_table, <<"orders">>,
             [
                 #kura_column{name = id, type = id, primary_key = true},
@@ -409,6 +441,7 @@ create_table_check_constraint_test() ->
 
 create_table_multiple_constraints_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_table, <<"t">>,
             [
                 #kura_column{name = id, type = id, primary_key = true},
@@ -427,8 +460,8 @@ create_table_no_constraints_same_as_3tuple_test() ->
         #kura_column{name = id, type = id, primary_key = true},
         #kura_column{name = name, type = string}
     ],
-    SQL3 = kura_migrator:compile_operation({create_table, <<"t">>, Cols}),
-    SQL4 = kura_migrator:compile_operation({create_table, <<"t">>, Cols, []}),
+    SQL3 = kura_migrator:compile_operation(?REPO, {create_table, <<"t">>, Cols}),
+    SQL4 = kura_migrator:compile_operation(?REPO, {create_table, <<"t">>, Cols, []}),
     ?assertEqual(SQL3, SQL4).
 
 %%----------------------------------------------------------------------
@@ -437,12 +470,14 @@ create_table_no_constraints_same_as_3tuple_test() ->
 
 create_index_map_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_index, <<"users">>, [email], #{}}
     ),
     ?assertEqual(<<"CREATE INDEX \"users_email_index\" ON \"users\" (\"email\")">>, SQL).
 
 create_unique_index_map_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_index, <<"users">>, [email], #{unique => true}}
     ),
     ?assertEqual(
@@ -451,6 +486,7 @@ create_unique_index_map_test() ->
 
 create_index_map_with_where_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_index, <<"users">>, [email], #{unique => true, where => <<"email IS NOT NULL">>}}
     ),
     ?assert(binary:match(SQL, <<"CREATE UNIQUE INDEX">>) =/= nomatch),
@@ -459,6 +495,7 @@ create_index_map_with_where_test() ->
 
 create_composite_index_map_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_index, <<"users">>, [first_name, last_name], #{}}
     ),
     ?assertEqual(
@@ -479,6 +516,7 @@ index_name_test() ->
 
 fk_no_on_delete_test() ->
     SQL = kura_migrator:compile_operation(
+        ?REPO,
         {create_table, <<"t">>, [
             #kura_column{name = ref_id, type = integer, references = {<<"refs">>, id}}
         ]}
