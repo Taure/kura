@@ -95,3 +95,11 @@ long-running streams. Other drivers may ignore unknown keys.
     Pool :: kura_pool:name(),
     Fun :: fun(() -> term()),
     Opts :: opts().
+
+-doc "Optional. Create the database if missing. Called by `kura_migrator`.".
+-callback ensure_database(Config :: map()) -> ok | {error, term()}.
+
+-doc "Optional. Round-trip a trivial query against `Pool` (e.g. SELECT 1).".
+-callback probe_pool(Pool :: kura_pool:name()) -> ok | {error, term()}.
+
+-optional_callbacks([ensure_database/1, probe_pool/1]).
