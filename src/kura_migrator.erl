@@ -179,6 +179,7 @@ tag_status(V, M, Applied) ->
 -spec ensure_database(module()) -> ok.
 ensure_database(RepoMod) ->
     Driver = kura_db:get_driver_module(RepoMod),
+    _ = code:ensure_loaded(Driver),
     case erlang:function_exported(Driver, ensure_database, 1) of
         true ->
             Config = kura_repo:config(RepoMod),
@@ -283,6 +284,7 @@ wait_for_pool_loop(Driver, Pool, Interval, Deadline) ->
 
 -spec probe_pool(module(), atom()) -> ok | {error, term()}.
 probe_pool(Driver, Pool) ->
+    _ = code:ensure_loaded(Driver),
     case erlang:function_exported(Driver, probe_pool, 1) of
         true ->
             try Driver:probe_pool(Pool) of

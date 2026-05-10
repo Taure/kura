@@ -217,6 +217,8 @@ set_repo_pool(PoolName) ->
 repo_config(PoolName) ->
     #{
         pool => PoolName,
+        pool_module => kura_pool_pgo,
+        driver_module => kura_driver_pgo,
         database => <<"kura_test">>,
         hostname => <<"localhost">>,
         port => 5555,

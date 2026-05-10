@@ -5,13 +5,36 @@
 -export([start/2, stop/1, pool_config/0]).
 
 start(_StartType, _StartArgs) ->
-    configure_pg_types(),
+    resolve_backend(),
+    maybe_configure_pg_types(),
     kura_query_cache:init(),
     ok = ensure_pool(),
     kura_sup:start_link().
 
 stop(_State) ->
     ok.
+
+%% If `{kura, [{backend, BackendMod}]}` is set, populate dialect,
+%% pool_module, and driver_module from the aggregator. Explicit
+%% per-key overrides win.
+-spec resolve_backend() -> ok.
+resolve_backend() ->
+    case application:get_env(kura, backend) of
+        {ok, Backend} when is_atom(Backend) ->
+            ensure_set_env(dialect, fun() -> Backend:dialect() end),
+            ensure_set_env(pool_module, fun() -> Backend:pool_module() end),
+            ensure_set_env(driver_module, fun() -> Backend:driver_module() end),
+            ok;
+        _ ->
+            ok
+    end.
+
+-spec ensure_set_env(atom(), fun(() -> term())) -> ok.
+ensure_set_env(Key, Resolve) ->
+    case application:get_env(kura, Key) of
+        {ok, _} -> ok;
+        _ -> application:set_env(kura, Key, Resolve())
+    end.
 
 -spec ensure_pool() -> ok.
 ensure_pool() ->
@@ -30,6 +53,34 @@ ensure_pool() ->
 
 -spec pool_config() -> map().
 pool_config() ->
+    case application:get_env(kura, dialect) of
+        {ok, kura_dialect_pg} -> pg_pool_config();
+        _ -> generic_pool_config()
+    end.
+
+%% Pass-through map of user-set kura env keys, minus bookkeeping
+%% (`repo`, `backend`, plugin-resolution keys, migrator tunables).
+%% Backends pick the keys they understand from this map.
+-spec generic_pool_config() -> map().
+generic_pool_config() ->
+    Excluded = [
+        repo,
+        backend,
+        dialect,
+        pool_module,
+        driver_module,
+        ensure_database,
+        migration_pool_ready_timeout,
+        migration_pool_ready_interval,
+        pg_types
+    ],
+    All = application:get_all_env(kura),
+    maps:from_list([{K, V} || {K, V} <- All, not lists:member(K, Excluded)]).
+
+%% PG-shaped pool config with the historical defaults (port 5432,
+%% user/database "postgres", etc.). Kept stable for back-compat.
+-spec pg_pool_config() -> map().
+pg_pool_config() ->
     Env = fun(Key, Default) -> application:get_env(kura, Key, Default) end,
     Base = #{
         host => Env(host, "localhost"),
@@ -53,6 +104,14 @@ pool_config() ->
     case Env(ssl_options, []) of
         SSLOpts when is_list(SSLOpts), SSLOpts =/= [] -> WithSSL#{ssl_options => SSLOpts};
         _ -> WithSSL
+    end.
+
+%% Only set pg_types defaults when the configured dialect is the PG one.
+-spec maybe_configure_pg_types() -> ok.
+maybe_configure_pg_types() ->
+    case application:get_env(kura, dialect) of
+        {ok, kura_dialect_pg} -> configure_pg_types();
+        _ -> ok
     end.
 
 -spec configure_pg_types() -> ok.

@@ -80,6 +80,8 @@ init_per_suite(Config) ->
     ok = application:load(AppSpec),
     application:set_env(?APP, ?REPO, #{
         pool => ?LIVE_POOL,
+        pool_module => kura_pool_pgo,
+        driver_module => kura_driver_pgo,
         database => <<"kura_test">>,
         hostname => <<"localhost">>,
         port => 5555,
@@ -193,6 +195,8 @@ migrate_pool_unavailable_does_not_emit_events(_Config) ->
     %% emitting either event for a pool failure.
     application:set_env(?APP, ?REPO, #{
         pool => kura_no_such_pool_for_telemetry_test,
+        pool_module => kura_pool_pgo,
+        driver_module => kura_driver_pgo,
         pool_size => 1
     }),
     application:set_env(kura, migration_pool_ready_timeout, 50),
@@ -253,6 +257,8 @@ broken_handler(_EventName, _Measurements, _Metadata, _Config) ->
 set_default_repo_config() ->
     application:set_env(?APP, ?REPO, #{
         pool => ?LIVE_POOL,
+        pool_module => kura_pool_pgo,
+        driver_module => kura_driver_pgo,
         database => <<"kura_test">>,
         hostname => <<"localhost">>,
         port => 5555,

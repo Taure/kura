@@ -67,21 +67,9 @@ config(RepoMod) ->
 
 -spec read_config(module()) -> map().
 read_config(RepoMod) ->
-    %% Try kura app env first, fall back to repo's otp_app env for
-    %% backward compatibility.
     case application:get_env(kura, repo) of
         {ok, RepoMod} ->
-            Env = fun(Key, Default) ->
-                application:get_env(kura, Key, Default)
-            end,
-            #{
-                hostname => list_to_binary(Env(host, "localhost")),
-                port => Env(port, 5432),
-                database => list_to_binary(Env(database, "postgres")),
-                username => list_to_binary(Env(user, "postgres")),
-                password => list_to_binary(Env(password, "")),
-                pool_size => Env(pool_size, 10)
-            };
+            kura_env_to_config();
         _ ->
             App = RepoMod:otp_app(),
             case application:get_env(App, RepoMod) of
@@ -89,3 +77,19 @@ read_config(RepoMod) ->
                 _ -> #{}
             end
     end.
+
+%% Map kura app env keys into a config map. Excludes bookkeeping keys
+%% that aren't connection config.
+-spec kura_env_to_config() -> map().
+kura_env_to_config() ->
+    Excluded = [
+        repo,
+        backend,
+        ensure_database,
+        migration_pool_ready_timeout,
+        migration_pool_ready_interval,
+        pg_types
+    ],
+    All = application:get_all_env(kura),
+    Filtered = [{K, V} || {K, V} <- All, not lists:member(K, Excluded)],
+    maps:from_list(Filtered).
