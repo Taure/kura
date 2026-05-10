@@ -763,11 +763,13 @@ quote(Name) when is_atom(Name) ->
     quote(atom_to_binary(Name, utf8)).
 
 %% Dispatch DDL emission through the repo's configured dialect, falling
-%% back to PG when no dialect is configured.
+%% back to PG when no dialect is configured. erlang:function_exported/3
+%% only sees loaded modules, so ensure_loaded the dialect first.
 -spec column_type(module(), kura_types:kura_type()) -> binary().
 column_type(RepoMod, Type) ->
     case ddl_dialect(RepoMod) of
         {ok, M} ->
+            _ = code:ensure_loaded(M),
             case erlang:function_exported(M, column_type, 1) of
                 true -> M:column_type(Type);
                 false -> kura_types:to_pg_type(Type)
@@ -780,6 +782,7 @@ column_type(RepoMod, Type) ->
 format_default(RepoMod, Val) ->
     case ddl_dialect(RepoMod) of
         {ok, M} ->
+            _ = code:ensure_loaded(M),
             case erlang:function_exported(M, format_default, 1) of
                 true -> M:format_default(Val);
                 false -> default_default(Val)
