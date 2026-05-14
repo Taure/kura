@@ -156,6 +156,11 @@ cast(jsonb, V) when is_list(V) ->
     {ok, V};
 cast(jsonb, V) when is_binary(V) ->
     json_decode(V);
+%% Postgres jsonb columns are happy with any valid JSON at the root, not
+%% just objects/arrays. Accept scalar numbers, booleans, and `null` so
+%% callers can store e.g. a single counter without a wrapper map.
+cast(jsonb, V) when is_number(V); is_boolean(V) ->
+    {ok, V};
 cast({enum, Values}, V) when is_atom(V) ->
     case lists:member(V, Values) of
         true -> {ok, V};
@@ -234,6 +239,11 @@ dump(uuid, V) when is_binary(V) ->
     {ok, V};
 dump(jsonb, V) when is_map(V); is_list(V) ->
     json_encode(V);
+%% Postgres jsonb at the wire level is just a JSON document — scalars,
+%% booleans, and null are all valid roots. Mirror the `cast/2` change so
+%% scalar values that pass cast can also be dumped.
+dump(jsonb, V) when is_number(V); is_boolean(V) ->
+    json_encode(V);
 dump({enum, _}, V) when is_atom(V) ->
     {ok, atom_to_binary(V, utf8)};
 dump({array, Inner}, V) when is_list(V) ->
@@ -290,6 +300,13 @@ load(uuid, V) when is_binary(V) ->
 load(jsonb, V) when is_binary(V) ->
     json_decode(V);
 load(jsonb, V) when is_map(V) ->
+    {ok, V};
+%% A jsonb column row whose root is a scalar/array decodes into the
+%% matching Erlang term once kura_postgres has json-decoded the wire
+%% bytes — keep them on the way back to the caller. (Null jsonb roots
+%% land in the generic `load(_, null)` clause above and become
+%% `undefined`, matching the column convention.)
+load(jsonb, V) when is_list(V); is_number(V); is_boolean(V) ->
     {ok, V};
 load({enum, Values}, V) when is_binary(V) ->
     try

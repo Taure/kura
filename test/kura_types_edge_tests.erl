@@ -73,8 +73,14 @@ cast_array_empty_test() ->
 cast_array_with_type_error_test() ->
     ?assertMatch({error, _}, kura_types:cast({array, integer}, [1, <<"bad">>, 3])).
 
-cast_jsonb_non_string_non_map_non_list_test() ->
-    ?assertMatch({error, _}, kura_types:cast(jsonb, 42)).
+cast_jsonb_scalar_test() ->
+    %% Postgres jsonb accepts any valid JSON at the root; scalars round-
+    %% trip alongside maps and arrays. `null` is handled by the generic
+    %% `cast(_, null) -> {ok, undefined}` clause higher up.
+    ?assertEqual({ok, 42}, kura_types:cast(jsonb, 42)),
+    ?assertEqual({ok, 3.14}, kura_types:cast(jsonb, 3.14)),
+    ?assertEqual({ok, true}, kura_types:cast(jsonb, true)),
+    ?assertEqual({ok, false}, kura_types:cast(jsonb, false)).
 
 dump_string_error_test() ->
     ?assertMatch({error, _}, kura_types:dump(string, 42)).
@@ -118,8 +124,12 @@ load_utc_datetime_error_test() ->
 load_uuid_error_test() ->
     ?assertMatch({error, _}, kura_types:load(uuid, 42)).
 
-load_jsonb_error_test() ->
-    ?assertMatch({error, _}, kura_types:load(jsonb, 42)).
+load_jsonb_scalar_test() ->
+    %% Scalars passing `cast/2` must also round-trip through `load/2`.
+    ?assertEqual({ok, 42}, kura_types:load(jsonb, 42)),
+    ?assertEqual({ok, 3.14}, kura_types:load(jsonb, 3.14)),
+    ?assertEqual({ok, true}, kura_types:load(jsonb, true)),
+    ?assertEqual({ok, [1, 2, 3]}, kura_types:load(jsonb, [1, 2, 3])).
 
 load_enum_atom_test() ->
     ?assertEqual({ok, active}, kura_types:load({enum, [active, inactive]}, <<"active">>)).
@@ -180,6 +190,17 @@ load_embed_many_bad_json_test() ->
 
 dump_jsonb_encode_error_test() ->
     ?assertMatch({error, _}, kura_types:dump(jsonb, #{<<"f">> => fun() -> ok end})).
+
+dump_jsonb_scalar_test() ->
+    %% Scalars passing `cast/2` must also dump cleanly. `json_encode/1`
+    %% returns the iolist form, so just assert the call succeeds with
+    %% `{ok, _}` rather than match on the exact iolist shape. (Null is
+    %% handled by the generic `dump(_, undefined) -> {ok, null}` clause
+    %% — kura values flow through `undefined` rather than literal `null`.)
+    ?assertMatch({ok, _}, kura_types:dump(jsonb, 42)),
+    ?assertMatch({ok, _}, kura_types:dump(jsonb, 3.14)),
+    ?assertMatch({ok, _}, kura_types:dump(jsonb, true)),
+    ?assertMatch({ok, _}, kura_types:dump(jsonb, false)).
 
 cast_null_to_any_type_test_() ->
     Types = [id, integer, float, string, text, boolean, date, utc_datetime, uuid, jsonb],
