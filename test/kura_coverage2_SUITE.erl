@@ -593,7 +593,7 @@ on_conflict_constraint_replace(_Config) ->
 
 %% Covers kura_schema line 105: no primary key defined
 schema_no_primary_key(_Config) ->
-    catch persistent_term:erase({kura_schema, primary_key, kura_cov2_nopk_schema}),
+    persistent_term:erase({kura_schema, primary_key, kura_cov2_nopk_schema}),
     ?assertError(
         {no_primary_key, kura_cov2_nopk_schema},
         kura_schema:primary_key(kura_cov2_nopk_schema)
@@ -605,7 +605,7 @@ schema_primary_key_field_undefined(_Config) ->
 
 %% Covers kura_schema line 78: field with explicit column name
 schema_column_map_explicit_column(_Config) ->
-    catch persistent_term:erase({kura_schema, column_map, kura_cov2_colmap_schema}),
+    persistent_term:erase({kura_schema, column_map, kura_cov2_colmap_schema}),
     Map = kura_schema:column_map(kura_cov2_colmap_schema),
     ?assertEqual(<<"custom_col">>, maps:get(name, Map)).
 

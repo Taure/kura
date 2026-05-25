@@ -24,6 +24,7 @@ jobs:
       pull-requests: write
     with:
       version-file: '.tool-versions'
+      otp-matrix: '["28", "29"]'
       enable-ct: true
       enable-ex-doc: true
       enable-hank: true
