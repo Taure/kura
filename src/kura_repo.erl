@@ -116,7 +116,7 @@ read_config(RepoMod) ->
 per_app_config(RepoMod) ->
     case
         is_atom(RepoMod) andalso
-            (catch code:ensure_loaded(RepoMod)) =/= {error, nofile} andalso
+            code:ensure_loaded(RepoMod) =/= {error, nofile} andalso
             erlang:function_exported(RepoMod, otp_app, 0)
     of
         true ->

@@ -74,7 +74,11 @@ with_actor_metadata_test() ->
 with_actor_restores_on_exception_test() ->
     try
         kura_audit:set_actor(<<"original">>),
-        catch kura_audit:with_actor(<<"crasher">>, fun() -> error(boom) end),
+        try
+            kura_audit:with_actor(<<"crasher">>, fun() -> error(boom) end)
+        catch
+            _:_ -> ok
+        end,
         ?assertEqual(<<"original">>, kura_audit:get_actor())
     after
         kura_audit:clear_actor()
