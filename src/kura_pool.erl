@@ -12,8 +12,7 @@ Different drivers want different pool shapes:
   the socket, so the pool just hands out a connection record and stays
   out of the way (`kura_pool_pgo`, the canonical PG impl).
 - gen_server-style drivers like MySQL or HTTP clients want a worker
-  process the caller calls into; a gen_server-call-style pool fits
-  (`kura_pool_hnc`, suitable for non-PG resources).
+  process the caller calls into; a gen_server-call-style pool fits.
 
 This behaviour is the contract; implementations pick the shape that
 matches their backend.
