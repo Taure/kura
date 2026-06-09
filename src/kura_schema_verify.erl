@@ -2,8 +2,8 @@
 -moduledoc """
 Runtime verification that declared schemas match the live database.
 
-Schemas declare their structure via `kura_schema:fields/0` and
-`kura_schema:indexes/0`. Migrations are *supposed* to bring the
+Schemas declare their structure via `c:kura_schema:fields/0` and
+`c:kura_schema:indexes/0`. Migrations are *supposed* to bring the
 database into agreement with those declarations — but every step in
 that chain has been a silent failure mode in production:
 
@@ -87,9 +87,10 @@ verify(RepoMod, SchemaMods) ->
 
 -doc """
 Discover all `kura_schema`-implementing modules reachable from the
-application that owns `RepoMod`. Same discovery contract as
-`kura_migrator:discover_migrations/1`: relies on the app's modules
-list. Useful as a starting point for building scoped verifiers.
+application that owns `RepoMod`. Uses the same app-modules-list
+discovery contract that the migrator uses internally to find
+migration modules. Useful as a starting point for building scoped
+verifiers.
 """.
 -spec discover_schemas(module()) -> [module()].
 discover_schemas(RepoMod) ->
@@ -100,7 +101,7 @@ discover_schemas(RepoMod) ->
 
 -doc """
 The conventional name kura generates for an index declared via
-`kura_schema:indexes/0`. Exposed so callers building diagnostics
+`c:kura_schema:indexes/0`. Exposed so callers building diagnostics
 can match against `pg_indexes.indexname`.
 """.
 -spec declared_index_name(binary(), [atom()]) -> binary().
