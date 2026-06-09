@@ -228,6 +228,14 @@ dump_jsonb_test() ->
     {ok, Encoded} = kura_types:dump(jsonb, #{<<"key">> => <<"val">>}),
     ?assert(is_binary(Encoded)).
 
+dump_jsonb_scalar_roots_test() ->
+    {ok, N} = kura_types:dump(jsonb, 42),
+    ?assertEqual(<<"42">>, iolist_to_binary(N)),
+    {ok, B} = kura_types:dump(jsonb, true),
+    ?assertEqual(<<"true">>, iolist_to_binary(B)),
+    {ok, S} = kura_types:dump(jsonb, <<"hi">>),
+    ?assertEqual(<<"\"hi\"">>, iolist_to_binary(S)).
+
 dump_enum_test() ->
     ?assertEqual({ok, <<"active">>}, kura_types:dump({enum, [active, inactive]}, active)).
 

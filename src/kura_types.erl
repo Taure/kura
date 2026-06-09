@@ -241,8 +241,11 @@ dump(jsonb, V) when is_map(V); is_list(V) ->
     json_encode(V);
 %% Postgres jsonb at the wire level is just a JSON document — scalars,
 %% booleans, and null are all valid roots. Mirror the `cast/2` change so
-%% scalar values that pass cast can also be dumped.
-dump(jsonb, V) when is_number(V); is_boolean(V) ->
+%% scalar values that pass cast can also be dumped. Binaries cover JSON
+%% string scalars produced by `cast/2` (e.g. `<<"\"hi\"">>` casts to
+%% `<<"hi">>`), which previously had no dump clause and could not
+%% round-trip.
+dump(jsonb, V) when is_number(V); is_boolean(V); is_binary(V) ->
     json_encode(V);
 dump({enum, _}, V) when is_atom(V) ->
     {ok, atom_to_binary(V, utf8)};

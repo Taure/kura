@@ -202,6 +202,15 @@ dump_jsonb_scalar_test() ->
     ?assertMatch({ok, _}, kura_types:dump(jsonb, true)),
     ?assertMatch({ok, _}, kura_types:dump(jsonb, false)).
 
+dump_jsonb_string_scalar_test() ->
+    %% A JSON string scalar enters via cast as JSON text and comes out as
+    %% a plain binary; dump must re-encode it so it round-trips.
+    {ok, Cast} = kura_types:cast(jsonb, <<"\"hi\"">>),
+    ?assertEqual(<<"hi">>, Cast),
+    {ok, Dumped} = kura_types:dump(jsonb, Cast),
+    ?assertEqual(<<"\"hi\"">>, iolist_to_binary(Dumped)),
+    ?assertEqual({ok, <<"hi">>}, kura_types:load(jsonb, iolist_to_binary(Dumped))).
+
 cast_null_to_any_type_test_() ->
     Types = [id, integer, float, string, text, boolean, date, utc_datetime, uuid, jsonb],
     [?_assertEqual({ok, undefined}, kura_types:cast(T, null)) || T <- Types].
