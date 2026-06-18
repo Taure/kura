@@ -536,7 +536,7 @@ compile_column_def(RepoMod, #kura_column{
     DefaultPart =
         case Default of
             undefined -> <<>>;
-            Val -> <<" DEFAULT ", (format_default(RepoMod, Val))/binary>>
+            Val -> <<" DEFAULT '", (format_default(RepoMod, Val))/binary, "'">>
         end,
     RefsPart =
         case Refs of
@@ -807,6 +807,8 @@ ddl_dialect(RepoMod) ->
 -spec default_default(term()) -> binary().
 default_default(Val) when is_integer(Val) ->
     integer_to_binary(Val);
+default_default(Val) when is_atom(Val) ->
+    atom_to_binary(Val);
 default_default(Val) when is_float(Val) ->
     float_to_binary(Val);
 default_default(Val) when is_binary(Val) ->

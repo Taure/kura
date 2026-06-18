@@ -736,6 +736,8 @@ column_type(Type) ->
     kura_types:to_pg_type(Type).
 
 -spec format_default(term()) -> binary().
+format_default(Val) when is_atom(Val) ->
+    atom_to_binary(Val);
 format_default(Val) when is_integer(Val) ->
     integer_to_binary(Val);
 format_default(Val) when is_float(Val) ->
