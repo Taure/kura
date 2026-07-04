@@ -174,6 +174,21 @@ default_boolean_test() ->
     ),
     ?assert(binary:match(SQL, <<"DEFAULT FALSE">>) =/= nomatch).
 
+%% Regression for #124: enum column with an atom default must render as a
+%% single-quoted string literal (DEFAULT 'draft'), not an unquoted column
+%% reference (which Postgres rejects) nor a double-quoted value.
+default_enum_atom_test() ->
+    SQL = kura_migrator:compile_operation(
+        ?REPO,
+        {create_table, <<"t">>, [
+            #kura_column{
+                name = status, type = {enum, [draft, published, archived]}, default = draft
+            }
+        ]}
+    ),
+    ?assert(binary:match(SQL, <<"DEFAULT 'draft'">>) =/= nomatch),
+    ?assertEqual(nomatch, binary:match(SQL, <<"DEFAULT ''draft''">>)).
+
 %%----------------------------------------------------------------------
 %% Unsafe operation detection tests
 %%----------------------------------------------------------------------

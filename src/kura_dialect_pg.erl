@@ -746,6 +746,8 @@ format_default(true) ->
     ~"TRUE";
 format_default(false) ->
     ~"FALSE";
+format_default(Val) when is_atom(Val) ->
+    <<"'", (atom_to_binary(Val))/binary, "'">>;
 format_default(Val) when is_map(Val) ->
     Json = iolist_to_binary(json:encode(Val)),
     <<"'", Json/binary, "'::jsonb">>;
