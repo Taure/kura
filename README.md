@@ -111,6 +111,25 @@ Q5 = kura_query:limit(Q4, 10),
 
 Supported conditions: `=`, `!=`, `<`, `>`, `<=`, `>=`, `like`, `ilike`, `in`, `not_in`, `is_nil`, `is_not_nil`, `between`, `{'and', [...]}`, `{'or', [...]}`, `{'not', ...}`, `{fragment, SQL, Params}`.
 
+#### Window functions
+
+Use `over/2` inside `select_expr/2` for `OVER (PARTITION BY ... ORDER BY ...)`
+expressions. The window function is an aggregate (`{count, '*'}`, `{sum, Field}`,
+`{avg, Field}`, `{min, Field}`, `{max, Field}`) or a ranking function
+(`row_number`, `rank`, `dense_rank`).
+
+```erlang
+Q = kura_query:select_expr(kura_query:from(sales), [
+    {category, category},
+    {row_num, kura_query:over(row_number, #{partition_by => [category], order_by => [{amount, desc}]})},
+    {running_total, kura_query:over({sum, amount}, #{partition_by => [category], order_by => [{day, asc}]})}
+]),
+
+{ok, Rows} = my_repo:all(Q).
+```
+
+Requires a backend declaring the `window_functions` capability (PostgreSQL, or SQLite 3.25+).
+
 ### Migrations
 
 ```erlang

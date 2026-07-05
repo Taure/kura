@@ -19,6 +19,7 @@ Q3 = kura_query:limit(Q2, 10).
     from/1,
     select/2,
     select_expr/2,
+    over/2,
     where/2,
     join/4, join/5,
     order_by/2,
@@ -45,6 +46,13 @@ Q3 = kura_query:limit(Q2, 10).
     max/2
 ]).
 
+-export_type([window_fn/0, window_spec/0]).
+
+-type window_fn() ::
+    {count | sum | avg | min | max, atom()} | row_number | rank | dense_rank.
+-type window_spec() ::
+    #{partition_by => [atom()], order_by => [{atom(), asc | desc}]}.
+
 -doc "Start a query from the given schema module or table atom.".
 -spec from(atom() | module()) -> #kura_query{}.
 from(Source) ->
@@ -55,10 +63,37 @@ from(Source) ->
 select(Q, Fields) ->
     Q#kura_query{select = Fields}.
 
--doc "Set raw SQL expressions in SELECT with aliases. Exprs = `[{Alias, {fragment, SQL, Params}}]`.".
+-doc """
+Set SELECT expressions with aliases. Each expression is `{Alias, Expr}`
+where `Expr` is a plain field atom, a `{fragment, SQL, Params}`, or a
+window expression from `over/2`.
+
+```erlang
+Q = kura_query:select_expr(kura_query:from(sales), [
+    {category, category},
+    {rn, kura_query:over(row_number, #{partition_by => [category], order_by => [{amount, desc}]})},
+    {running_total, kura_query:over({sum, amount}, #{partition_by => [category], order_by => [{day, asc}]})}
+]).
+```
+""".
 -spec select_expr(#kura_query{}, [term()]) -> #kura_query{}.
 select_expr(Q, Exprs) ->
     Q#kura_query{select = {exprs, Exprs}}.
+
+-doc """
+Build a window-function expression for use inside `select_expr/2`.
+
+`WindowFn` is an aggregate (`{count, '*'}`, `{count, Field}`, `{sum, Field}`,
+`{avg, Field}`, `{min, Field}`, `{max, Field}`) or a ranking function atom
+(`row_number`, `rank`, `dense_rank`). `Spec` is a map with optional
+`partition_by => [Field]` and `order_by => [{Field, asc | desc}]`.
+
+Window functions require a backend declaring the `window_functions`
+capability (PostgreSQL, or SQLite 3.25+).
+""".
+-spec over(window_fn(), window_spec()) -> {over, window_fn(), window_spec()}.
+over(WindowFn, Spec) when is_map(Spec) ->
+    {over, WindowFn, Spec}.
 
 -doc "Add a WHERE condition. Conditions: `{field, value}`, `{field, op, value}`, `{'and', [...]}`, etc.".
 -spec where(#kura_query{}, term()) -> #kura_query{}.
