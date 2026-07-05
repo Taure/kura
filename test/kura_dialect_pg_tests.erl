@@ -15,6 +15,7 @@
 -eqwalizer({nowarn_function, distinct_test/0}).
 -eqwalizer({nowarn_function, distinct_on_test/0}).
 -eqwalizer({nowarn_function, lock_test/0}).
+-eqwalizer({nowarn_function, where_matches_test/0}).
 -eqwalizer({nowarn_function, window_row_number_test/0}).
 -eqwalizer({nowarn_function, window_agg_running_total_test/0}).
 -eqwalizer({nowarn_function, window_rank_order_only_test/0}).
@@ -239,6 +240,15 @@ where_fragment_test() ->
     {SQL, Params} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(<<"SELECT * FROM \"user\" WHERE lower(name) = $1">>, SQL),
     ?assertEqual([<<"alice">>], Params).
+
+where_matches_test() ->
+    Q = kura_query:where(kura_query:from(article), {body, matches, <<"erlang database">>}),
+    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    ?assertEqual(
+        <<"SELECT * FROM \"article\" WHERE to_tsvector(\"body\") @@ plainto_tsquery($1)">>,
+        SQL
+    ),
+    ?assertEqual([<<"erlang database">>], Params).
 
 %%----------------------------------------------------------------------
 %% JOIN

@@ -26,6 +26,7 @@
 -eqwalizer({nowarn_function, t_cte/0}).
 -eqwalizer({nowarn_function, t_window_function/0}).
 -eqwalizer({nowarn_function, t_exclusion_constraint/0}).
+-eqwalizer({nowarn_function, t_full_text_search/0}).
 -eqwalizer({nowarn_function, t_window_over_api/0}).
 -eqwalizer({nowarn_function, t_insert_all_returning_true/0}).
 -eqwalizer({nowarn_function, t_insert_all_returning_fields/0}).
@@ -111,6 +112,7 @@ integration_test_() ->
             {"foreign_key_constraint maps DB error", fun t_foreign_key_constraint/0},
             {"check_constraint maps DB error", fun t_check_constraint/0},
             {"exclusion_constraint maps DB error", fun t_exclusion_constraint/0},
+            {"full-text search via matches operator", fun t_full_text_search/0},
 
             %% Transactions
             {"transaction rollback", fun t_transaction_rollback/0},
@@ -241,6 +243,16 @@ setup() ->
         []
     ),
     {ok, _} = kura_test_repo:query(
+        "CREATE TABLE articles ("
+        "  id BIGSERIAL PRIMARY KEY,"
+        "  title VARCHAR(255) NOT NULL,"
+        "  body TEXT NOT NULL,"
+        "  inserted_at TIMESTAMPTZ,"
+        "  updated_at TIMESTAMPTZ"
+        ")",
+        []
+    ),
+    {ok, _} = kura_test_repo:query(
         "CREATE TABLE hook_items ("
         "  id BIGSERIAL PRIMARY KEY,"
         "  name VARCHAR(255) NOT NULL,"
@@ -278,6 +290,7 @@ setup() ->
     ok.
 
 teardown(_) ->
+    kura_test_repo:query("DROP TABLE IF EXISTS articles CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS bookings CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS audit_log CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS audited_items CASCADE", []),
@@ -902,6 +915,25 @@ t_exclusion_constraint() ->
     ?assert(lists:keymember(room, 1, ErrCS#kura_changeset.errors)),
     {room, Msg} = lists:keyfind(room, 1, ErrCS#kura_changeset.errors),
     ?assertEqual(<<"violates an exclusion constraint">>, Msg).
+
+t_full_text_search() ->
+    insert_article(<<"Foxes">>, <<"the quick brown fox jumps over the lazy dog">>),
+    insert_article(<<"Backends">>, <<"erlang talks to a postgres database">>),
+    %% Contains "erlang" but not "database" - excluded, proving AND-of-terms
+    insert_article(<<"HalfMatch">>, <<"erlang is a functional language">>),
+    Q = kura_query:where(
+        kura_query:from(kura_test_article_schema), {body, matches, <<"erlang database">>}
+    ),
+    {ok, Hits} = kura_test_repo:all(Q),
+    ?assertEqual(1, length(Hits)),
+    ?assertEqual(<<"Backends">>, maps:get(title, hd(Hits))).
+
+insert_article(Title, Body) ->
+    CS = kura_changeset:cast(
+        kura_test_article_schema, #{}, #{title => Title, body => Body}, [title, body]
+    ),
+    {ok, Record} = kura_test_repo:insert(CS),
+    Record.
 
 t_schema_constraints() ->
     ChatId = <<"550e8400-e29b-41d4-a716-446655440000">>,

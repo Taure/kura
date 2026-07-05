@@ -333,6 +333,18 @@ compile_condition({Field, ilike, Value}, Counter) when is_atom(Field) ->
         [Value],
         Counter + 1
     };
+compile_condition({Field, matches, Value}, Counter) when is_atom(Field) ->
+    {
+        [
+            ~"to_tsvector(",
+            quote_ident(atom_to_binary(Field, utf8)),
+            ~") @@ plainto_tsquery($",
+            integer_to_binary(Counter),
+            ~")"
+        ],
+        [Value],
+        Counter + 1
+    };
 compile_condition({Field, in, {subquery, SubQ}}, Counter) when is_atom(Field) ->
     {SubSQL, SubParams, Counter2} = to_sql_from(SubQ, Counter),
     {[quote_ident(atom_to_binary(Field, utf8)), ~" IN (", SubSQL, ~")"], SubParams, Counter2};
