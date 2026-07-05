@@ -875,19 +875,21 @@ handle_pg_error(CS, {pgsql_error, Fields}) when is_map(Fields) ->
 handle_pg_error(CS, {pgsql_error, Fields}) when is_list(Fields) ->
     handle_pg_error(CS, maps:from_list(Fields));
 handle_pg_error(CS, #{code := Code, constraint := Constraint}) when
-    Code =:= ~"23505"; Code =:= ~"23503"; Code =:= ~"23514"
+    Code =:= ~"23505"; Code =:= ~"23503"; Code =:= ~"23514"; Code =:= ~"23P01"
 ->
     DefaultType =
         case Code of
             ~"23505" -> unique;
             ~"23503" -> foreign_key;
-            ~"23514" -> check
+            ~"23514" -> check;
+            ~"23P01" -> exclusion
         end,
     DefaultMsg =
         case DefaultType of
             unique -> ~"has already been taken";
             foreign_key -> ~"does not exist";
-            check -> ~"is invalid"
+            check -> ~"is invalid";
+            exclusion -> ~"violates an exclusion constraint"
         end,
     case find_constraint(CS#kura_changeset.constraints, Constraint) of
         {ok, #kura_constraint{field = Field, message = Msg}} ->

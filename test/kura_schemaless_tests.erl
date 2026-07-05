@@ -101,3 +101,16 @@ foreign_key_constraint_schemaless_without_name_errors_test() ->
     Types = #{team_id => integer},
     CS = kura_changeset:cast(Types, #{}, #{team_id => 1}, [team_id]),
     ?assertError({schemaless_constraint, _}, kura_changeset:foreign_key_constraint(CS, team_id)).
+
+exclusion_constraint_schemaless_with_name_test() ->
+    Types = #{room => integer},
+    CS = kura_changeset:cast(Types, #{}, #{room => 101}, [room]),
+    CS1 = kura_changeset:exclusion_constraint(CS, room, #{name => <<"bookings_room_excl">>}),
+    [C] = CS1#kura_changeset.constraints,
+    ?assertEqual(exclusion, C#kura_constraint.type),
+    ?assertEqual(<<"bookings_room_excl">>, C#kura_constraint.constraint).
+
+exclusion_constraint_schemaless_without_name_errors_test() ->
+    Types = #{room => integer},
+    CS = kura_changeset:cast(Types, #{}, #{room => 101}, [room]),
+    ?assertError({schemaless_constraint, _}, kura_changeset:exclusion_constraint(CS, room)).
