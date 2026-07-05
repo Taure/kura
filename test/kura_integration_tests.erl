@@ -25,6 +25,7 @@
 -eqwalizer({nowarn_function, t_subquery_in/0}).
 -eqwalizer({nowarn_function, t_cte/0}).
 -eqwalizer({nowarn_function, t_window_function/0}).
+-eqwalizer({nowarn_function, t_window_over_api/0}).
 -eqwalizer({nowarn_function, t_insert_all_returning_true/0}).
 -eqwalizer({nowarn_function, t_insert_all_returning_fields/0}).
 -eqwalizer({nowarn_function, t_audit_with_actor/0}).
@@ -142,6 +143,7 @@ integration_test_() ->
 
             %% Window functions
             {"select_expr with window function", fun t_window_function/0},
+            {"over/2 window function via typed API", fun t_window_over_api/0},
 
             %% insert_all with RETURNING
             {"insert_all returning true", fun t_insert_all_returning_true/0},
@@ -1165,6 +1167,22 @@ t_window_function() ->
     {ok, Results} = kura_test_repo:all(Q1),
     ?assertEqual(2, length(Results)),
     ?assertEqual(<<"WinA">>, maps:get(user_name, hd(Results))).
+
+t_window_over_api() ->
+    {ok, _} = insert_user(<<"OverA">>, <<"overa@example.com">>, #{<<"score">> => 10.0}),
+    {ok, _} = insert_user(<<"OverB">>, <<"overb@example.com">>, #{<<"score">> => 20.0}),
+    Q = kura_query:where(
+        kura_query:select_expr(kura_query:from(kura_test_schema), [
+            {user_name, name},
+            {row_num, kura_query:over(row_number, #{order_by => [{score, asc}]})}
+        ]),
+        {name, in, [<<"OverA">>, <<"OverB">>]}
+    ),
+    Q1 = kura_query:order_by(Q, [{row_num, asc}]),
+    {ok, Results} = kura_test_repo:all(Q1),
+    ?assertEqual(2, length(Results)),
+    ?assertEqual(<<"OverA">>, maps:get(user_name, hd(Results))),
+    ?assertEqual(1, maps:get(row_num, hd(Results))).
 
 %%----------------------------------------------------------------------
 %% insert_all with RETURNING
