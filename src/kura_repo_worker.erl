@@ -149,7 +149,6 @@ reload(RepoMod, SchemaMod, Record) ->
     end.
 
 -doc """
-<<<<<<< HEAD
 Run an aggregate function on a query. Supported: `count`, `sum`, `avg`, `min`, `max`.
 
 ```erlang
