@@ -47,6 +47,10 @@ kura_repo_worker:start(MyRepo),
     default_logger/0
 ]).
 
+-ifdef(TEST).
+-export([generate_uuid/1, uuid_version/1]).
+-endif.
+
 -eqwalizer({nowarn_function, do_insert/2}).
 -eqwalizer({nowarn_function, do_update/2}).
 -eqwalizer({nowarn_function, do_delete/2}).
@@ -151,7 +155,6 @@ reload(RepoMod, SchemaMod, Record) ->
     end.
 
 -doc """
-<<<<<<< HEAD
 Run an aggregate function on a query. Supported: `count`, `sum`, `avg`, `min`, `max`.
 
 ```erlang
@@ -290,7 +293,7 @@ insert(RepoMod, CS, Opts) ->
 do_insert(_RepoMod, CS = #kura_changeset{valid = false}, _Opts) ->
     {error, CS#kura_changeset{action = insert}};
 do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opts) ->
-    Changes0 = maybe_generate_pk(SchemaMod, Changes),
+    Changes0 = maybe_generate_pk(RepoMod, SchemaMod, Changes),
     Changes1 = maybe_add_timestamps(SchemaMod, Changes0, insert),
     DumpedChanges = dump_changes(SchemaMod, Changes1),
     Fields = maps:keys(DumpedChanges),
@@ -537,7 +540,7 @@ insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}) ->
             {error, ErrCS#kura_changeset{action = insert}};
         {ok, CS} ->
             Changes = maybe_apply_tenant_changes(CS#kura_changeset.changes),
-            Changes0 = maybe_generate_pk(SchemaMod, Changes),
+            Changes0 = maybe_generate_pk(RepoMod, SchemaMod, Changes),
             Changes1 = maybe_add_timestamps(SchemaMod, Changes0, insert),
             DumpedChanges = dump_changes(SchemaMod, Changes1),
             Fields = maps:keys(DumpedChanges),
@@ -855,7 +858,8 @@ maybe_add_timestamps(SchemaMod, Changes, Action) ->
         false -> Changes1
     end.
 
-maybe_generate_pk(SchemaMod, Changes) ->
+-spec maybe_generate_pk(module(), module(), map()) -> map().
+maybe_generate_pk(RepoMod, SchemaMod, Changes) ->
     PK = kura_schema:primary_key(SchemaMod),
     case maps:is_key(PK, Changes) of
         true ->
@@ -867,15 +871,36 @@ maybe_generate_pk(SchemaMod, Changes) ->
                 undefined ->
                     Types = kura_schema:field_types(SchemaMod),
                     case maps:get(PK, Types, undefined) of
-                        uuid -> Changes#{PK => generate_uuid_v4()};
+                        uuid -> Changes#{PK => generate_uuid(uuid_version(RepoMod))};
                         _ -> Changes
                     end
             end
     end.
 
+-spec uuid_version(module()) -> v7 | v4.
+uuid_version(RepoMod) ->
+    case maps:get(uuid_version, kura_repo:config(RepoMod), v4) of
+        v7 -> v7;
+        _ -> v4
+    end.
+
+-spec generate_uuid(v7 | v4) -> binary().
+generate_uuid(v7) -> generate_uuid_v7();
+generate_uuid(v4) -> generate_uuid_v4().
+
+-spec generate_uuid_v7() -> binary().
+generate_uuid_v7() ->
+    TsMs = os:system_time(millisecond),
+    <<RandA:12, RandB:62, _:6>> = crypto:strong_rand_bytes(10),
+    format_uuid(<<TsMs:48, 7:4, RandA:12, 2:2, RandB:62>>).
+
+-spec generate_uuid_v4() -> binary().
 generate_uuid_v4() ->
     <<A:48, _:4, B:12, _:2, C:62>> = crypto:strong_rand_bytes(16),
-    Bytes = <<A:48, 4:4, B:12, 2:2, C:62>>,
+    format_uuid(<<A:48, 4:4, B:12, 2:2, C:62>>).
+
+-spec format_uuid(binary()) -> binary().
+format_uuid(Bytes) ->
     Hex = binary:encode_hex(Bytes, lowercase),
     <<P1:8/binary, P2:4/binary, P3:4/binary, P4:4/binary, P5:12/binary>> = Hex,
     <<P1/binary, "-", P2/binary, "-", P3/binary, "-", P4/binary, "-", P5/binary>>.
@@ -885,19 +910,21 @@ handle_pg_error(CS, {pgsql_error, Fields}) when is_map(Fields) ->
 handle_pg_error(CS, {pgsql_error, Fields}) when is_list(Fields) ->
     handle_pg_error(CS, maps:from_list(Fields));
 handle_pg_error(CS, #{code := Code, constraint := Constraint}) when
-    Code =:= ~"23505"; Code =:= ~"23503"; Code =:= ~"23514"
+    Code =:= ~"23505"; Code =:= ~"23503"; Code =:= ~"23514"; Code =:= ~"23P01"
 ->
     DefaultType =
         case Code of
             ~"23505" -> unique;
             ~"23503" -> foreign_key;
-            ~"23514" -> check
+            ~"23514" -> check;
+            ~"23P01" -> exclusion
         end,
     DefaultMsg =
         case DefaultType of
             unique -> ~"has already been taken";
             foreign_key -> ~"does not exist";
-            check -> ~"is invalid"
+            check -> ~"is invalid";
+            exclusion -> ~"violates an exclusion constraint"
         end,
     case find_constraint(CS#kura_changeset.constraints, Constraint) of
         {ok, #kura_constraint{field = Field, message = Msg}} ->

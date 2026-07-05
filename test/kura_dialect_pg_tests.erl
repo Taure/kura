@@ -15,6 +15,14 @@
 -eqwalizer({nowarn_function, distinct_test/0}).
 -eqwalizer({nowarn_function, distinct_on_test/0}).
 -eqwalizer({nowarn_function, lock_test/0}).
+-eqwalizer({nowarn_function, window_row_number_test/0}).
+-eqwalizer({nowarn_function, window_agg_running_total_test/0}).
+-eqwalizer({nowarn_function, window_rank_order_only_test/0}).
+-eqwalizer({nowarn_function, window_count_partition_only_test/0}).
+-eqwalizer({nowarn_function, window_dense_rank_test/0}).
+-eqwalizer({nowarn_function, window_agg_avg_min_max_test/0}).
+-eqwalizer({nowarn_function, window_count_field_test/0}).
+-eqwalizer({nowarn_function, window_empty_spec_test/0}).
 
 %%----------------------------------------------------------------------
 %% SELECT compilation
@@ -35,6 +43,106 @@ select_from_schema_test() ->
     Q = kura_query:from(kura_test_schema),
     {SQL, _} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(<<"SELECT * FROM \"users\"">>, SQL).
+
+%%----------------------------------------------------------------------
+%% Window functions
+%%----------------------------------------------------------------------
+
+window_row_number_test() ->
+    Q = kura_query:select_expr(kura_query:from(sales), [
+        {rn,
+            kura_query:over(row_number, #{
+                partition_by => [category], order_by => [{amount, desc}]
+            })}
+    ]),
+    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    ?assertEqual(
+        <<
+            "SELECT row_number() OVER (PARTITION BY \"category\" ORDER BY \"amount\" DESC) "
+            "AS \"rn\" FROM \"sales\""
+        >>,
+        SQL
+    ),
+    ?assertEqual([], Params).
+
+window_agg_running_total_test() ->
+    Q = kura_query:select_expr(kura_query:from(sales), [
+        {category, category},
+        {total,
+            kura_query:over({sum, amount}, #{
+                partition_by => [category], order_by => [{day, asc}]
+            })}
+    ]),
+    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    ?assertEqual(
+        <<
+            "SELECT \"category\" AS \"category\", sum(\"amount\") OVER "
+            "(PARTITION BY \"category\" ORDER BY \"day\" ASC) AS \"total\" FROM \"sales\""
+        >>,
+        SQL
+    ).
+
+window_rank_order_only_test() ->
+    Q = kura_query:select_expr(kura_query:from(sales), [
+        {r, kura_query:over(rank, #{order_by => [{score, desc}]})}
+    ]),
+    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    ?assertEqual(
+        <<"SELECT rank() OVER (ORDER BY \"score\" DESC) AS \"r\" FROM \"sales\"">>,
+        SQL
+    ).
+
+window_count_partition_only_test() ->
+    Q = kura_query:select_expr(kura_query:from(sales), [
+        {cnt, kura_query:over({count, '*'}, #{partition_by => [category]})}
+    ]),
+    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    ?assertEqual(
+        <<"SELECT count(*) OVER (PARTITION BY \"category\") AS \"cnt\" FROM \"sales\"">>,
+        SQL
+    ).
+
+window_dense_rank_test() ->
+    Q = kura_query:select_expr(kura_query:from(sales), [
+        {dr, kura_query:over(dense_rank, #{order_by => [{score, desc}]})}
+    ]),
+    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    ?assertEqual(
+        <<"SELECT dense_rank() OVER (ORDER BY \"score\" DESC) AS \"dr\" FROM \"sales\"">>,
+        SQL
+    ).
+
+window_agg_avg_min_max_test() ->
+    Expected = fun(Fn) ->
+        <<"SELECT ", Fn/binary,
+            "(\"amount\") OVER (PARTITION BY \"category\") AS \"v\" FROM \"sales\"">>
+    end,
+    Compile = fun(Agg) ->
+        Q = kura_query:select_expr(kura_query:from(sales), [
+            {v, kura_query:over({Agg, amount}, #{partition_by => [category]})}
+        ]),
+        element(1, kura_dialect_pg:to_sql(Q))
+    end,
+    ?assertEqual(Expected(<<"avg">>), Compile(avg)),
+    ?assertEqual(Expected(<<"min">>), Compile(min)),
+    ?assertEqual(Expected(<<"max">>), Compile(max)).
+
+window_count_field_test() ->
+    Q = kura_query:select_expr(kura_query:from(sales), [
+        {c, kura_query:over({count, amount}, #{partition_by => [category]})}
+    ]),
+    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    ?assertEqual(
+        <<"SELECT count(\"amount\") OVER (PARTITION BY \"category\") AS \"c\" FROM \"sales\"">>,
+        SQL
+    ).
+
+window_empty_spec_test() ->
+    Q = kura_query:select_expr(kura_query:from(sales), [
+        {rn, kura_query:over(row_number, #{})}
+    ]),
+    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    ?assertEqual(<<"SELECT row_number() OVER () AS \"rn\" FROM \"sales\"">>, SQL).
 
 %%----------------------------------------------------------------------
 %% WHERE

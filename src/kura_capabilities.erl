@@ -27,6 +27,7 @@ cares about:
 - `listen_notify` — `LISTEN/NOTIFY` pubsub
 - `select_for_update_skip_locked` — `SELECT ... FOR UPDATE SKIP LOCKED`
 - `partial_indexes` — `CREATE INDEX ... WHERE`
+- `window_functions` — `OVER (PARTITION BY ... ORDER BY ...)`
 - `transactions` — `BEGIN/COMMIT/ROLLBACK`
 - `savepoints` — `SAVEPOINT`/`RELEASE`/`ROLLBACK TO`
 - `prepared_statements` — server-side prepared statements
@@ -55,8 +56,8 @@ A backend declares its set:
 
 capabilities() ->
     [returning, jsonb, arrays, advisory_locks, listen_notify,
-     select_for_update_skip_locked, partial_indexes, transactions,
-     savepoints, prepared_statements].
+     select_for_update_skip_locked, partial_indexes, window_functions,
+     transactions, savepoints, prepared_statements].
 ```
 """.
 

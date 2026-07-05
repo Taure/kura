@@ -46,7 +46,14 @@ uuid_test_() ->
             {"delete UUID-PK record", fun t_uuid_delete/0},
 
             %% Reload
-            {"reload UUID-PK record", fun t_uuid_reload/0}
+            {"reload UUID-PK record", fun t_uuid_reload/0},
+
+            %% Auto-generated PK version (v4 default, configurable v7)
+            {"auto-generated PK is UUIDv4 by default", fun t_autogen_pk_is_v4/0},
+            {"generate_uuid/1 produces valid v7 and v4", fun t_generate_uuid_versions/0},
+            {"UUIDv7 values are time-ordered", fun t_uuidv7_time_ordered/0},
+            {"uuid_version defaults to v4", fun t_uuid_version_default/0},
+            {"uuid_version honours v7 config", fun t_uuid_version_v7_config/0}
         ]
     end}.
 
@@ -370,3 +377,43 @@ t_uuid_reload() ->
     {ok, Reloaded} = kura_repo_worker:reload(kura_test_repo, kura_test_uuid_schema, Item),
     ?assertEqual(~"Reloaded", maps:get(name, Reloaded)),
     ?assertEqual(Id, maps:get(id, Reloaded)).
+
+%%----------------------------------------------------------------------
+%% Auto-generated PK version
+%%----------------------------------------------------------------------
+
+t_autogen_pk_is_v4() ->
+    CS = kura_changeset:cast(kura_test_uuid_schema, #{}, #{name => ~"AutoGen"}, [name]),
+    {ok, Record} = kura_test_repo:insert(CS),
+    Id = maps:get(id, Record),
+    ?assertEqual(36, byte_size(Id)),
+    ?assertEqual($4, binary:at(Id, 14)),
+    ?assert(lists:member(binary:at(Id, 19), [$8, $9, $a, $b])).
+
+t_generate_uuid_versions() ->
+    V7 = kura_repo_worker:generate_uuid(v7),
+    V4 = kura_repo_worker:generate_uuid(v4),
+    ?assertEqual(36, byte_size(V7)),
+    ?assertEqual($7, binary:at(V7, 14)),
+    ?assert(lists:member(binary:at(V7, 19), [$8, $9, $a, $b])),
+    ?assertEqual(36, byte_size(V4)),
+    ?assertEqual($4, binary:at(V4, 14)),
+    ?assert(lists:member(binary:at(V4, 19), [$8, $9, $a, $b])),
+    ?assertNotEqual(V7, kura_repo_worker:generate_uuid(v7)).
+
+t_uuidv7_time_ordered() ->
+    A = kura_repo_worker:generate_uuid(v7),
+    timer:sleep(2),
+    B = kura_repo_worker:generate_uuid(v7),
+    ?assert(A < B).
+
+t_uuid_version_default() ->
+    ?assertEqual(v4, kura_repo_worker:uuid_version(kura_test_repo)).
+
+t_uuid_version_v7_config() ->
+    application:set_env(kura, repos, #{v7_cfg_repo => #{uuid_version => v7}}),
+    try
+        ?assertEqual(v7, kura_repo_worker:uuid_version(v7_cfg_repo))
+    after
+        application:unset_env(kura, repos)
+    end.

@@ -36,6 +36,8 @@ CS3 = kura_changeset:unique_constraint(CS2, email).
     foreign_key_constraint/3,
     check_constraint/3,
     check_constraint/4,
+    exclusion_constraint/2,
+    exclusion_constraint/3,
     add_error/3,
     get_change/2,
     get_change/3,
@@ -308,6 +310,37 @@ check_constraint(CS, Constraint, Field) ->
 check_constraint(CS = #kura_changeset{constraints = Constraints}, Constraint, Field, Opts) ->
     Msg = maps:get(message, Opts, ~"is invalid"),
     C = #kura_constraint{type = check, constraint = Constraint, field = Field, message = Msg},
+    CS#kura_changeset{constraints = Constraints ++ [C]}.
+
+-doc "Declare a PostgreSQL exclusion (`EXCLUDE`) constraint on `Field`.".
+-spec exclusion_constraint(#kura_changeset{}, atom()) -> #kura_changeset{}.
+exclusion_constraint(CS, Field) ->
+    exclusion_constraint(CS, Field, #{}).
+
+-spec exclusion_constraint(#kura_changeset{}, atom(), map()) -> #kura_changeset{}.
+exclusion_constraint(#kura_changeset{schema = undefined}, _Field, Opts) when
+    not is_map_key(name, Opts)
+->
+    error(
+        {schemaless_constraint,
+            "exclusion_constraint on a schemaless changeset requires :name in opts"}
+    );
+exclusion_constraint(
+    CS = #kura_changeset{schema = undefined, constraints = Constraints}, Field, Opts
+) ->
+    Name = maps:get(name, Opts),
+    Msg = maps:get(message, Opts, ~"violates an exclusion constraint"),
+    C = #kura_constraint{type = exclusion, constraint = Name, field = Field, message = Msg},
+    CS#kura_changeset{constraints = Constraints ++ [C]};
+exclusion_constraint(
+    CS = #kura_changeset{schema = SchemaMod, constraints = Constraints}, Field, Opts
+) ->
+    Table = SchemaMod:table(),
+    Name = maps:get(
+        name, Opts, <<Table/binary, "_", (atom_to_binary(Field, utf8))/binary, "_excl">>
+    ),
+    Msg = maps:get(message, Opts, ~"violates an exclusion constraint"),
+    C = #kura_constraint{type = exclusion, constraint = Name, field = Field, message = Msg},
     CS#kura_changeset{constraints = Constraints ++ [C]}.
 
 -doc "Add an error to the changeset for `Field`.".
