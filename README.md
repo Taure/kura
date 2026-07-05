@@ -229,8 +229,15 @@ otp_app() -> my_app.
 
 Queries through `my_repo` emit Postgres SQL; queries through
 `analytics_repo` emit SQLite SQL. The query cache is keyed per repo so
-the dialects never share entries. UUID primary keys are auto-generated
-on insert when no value is provided.
+the dialects never share entries.
+
+UUID primary keys are auto-generated on insert when no value is
+provided. The default is **UUIDv4** (random) - secure by default, since
+a v4 key discloses nothing about the row. Set `uuid_version => v7` in a
+repo's config to use time-ordered UUIDv7 for better index locality; note
+that a v7 key embeds its creation timestamp, so avoid it for keys exposed
+in URLs or public APIs. A schema's own `generate_id/0` callback still
+takes precedence over both.
 
 <details>
 <summary>Legacy v1.x config forms (still supported)</summary>
