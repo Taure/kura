@@ -317,6 +317,25 @@ check_constraint_test() ->
     ?assertEqual(age, C#kura_constraint.field),
     ?assertEqual(<<"is invalid">>, C#kura_constraint.message).
 
+exclusion_constraint_default_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{}, []),
+    CS2 = kura_changeset:exclusion_constraint(CS, age),
+    [C] = CS2#kura_changeset.constraints,
+    ?assertEqual(exclusion, C#kura_constraint.type),
+    ?assertEqual(<<"users_age_excl">>, C#kura_constraint.constraint),
+    ?assertEqual(age, C#kura_constraint.field),
+    ?assertEqual(<<"violates an exclusion constraint">>, C#kura_constraint.message).
+
+exclusion_constraint_custom_opts_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{}, []),
+    CS2 = kura_changeset:exclusion_constraint(CS, age, #{
+        name => <<"rooms_during_excl">>, message => <<"overlaps an existing booking">>
+    }),
+    [C] = CS2#kura_changeset.constraints,
+    ?assertEqual(exclusion, C#kura_constraint.type),
+    ?assertEqual(<<"rooms_during_excl">>, C#kura_constraint.constraint),
+    ?assertEqual(<<"overlaps an existing booking">>, C#kura_constraint.message).
+
 check_constraint_custom_message_test() ->
     CS = kura_changeset:cast(kura_test_schema, #{}, #{}, []),
     CS2 = kura_changeset:check_constraint(CS, <<"age_check">>, age, #{
