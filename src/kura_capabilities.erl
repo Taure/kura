@@ -21,7 +21,8 @@ and consumers may match against them. The standard atoms kura itself
 cares about:
 
 - `returning` — `INSERT/UPDATE/DELETE ... RETURNING`
-- `jsonb` — `JSONB` column type with operators
+- `jsonb` — `JSONB` column type with operators (the SQLite backend
+  declares `json` instead, for its text-based JSON1 support)
 - `arrays` — array column types
 - `advisory_locks` — `pg_advisory_lock` family
 - `listen_notify` — `LISTEN/NOTIFY` pubsub
