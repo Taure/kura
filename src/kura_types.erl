@@ -10,7 +10,7 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
 - `load/2` - convert pgo results back to Erlang terms
 """.
 
--export([to_pg_type/1, cast/2, dump/2, load/2]).
+-export([to_pg_type/1, from_pg_type/2, cast/2, dump/2, load/2]).
 
 -export_type([kura_type/0]).
 
@@ -65,6 +65,74 @@ to_pg_type({enum, _}) -> ~"VARCHAR(255)";
 to_pg_type({array, Inner}) -> <<(to_pg_type(Inner))/binary, "[]">>;
 to_pg_type({embed, _, _}) -> ~"JSONB";
 to_pg_type({custom, Mod}) -> Mod:pg_type().
+
+-doc """
+Map a PostgreSQL catalog type name (`udt_name`, e.g. `~"int4"`) to a kura
+field type - the inverse of `to_pg_type/1`. Used by schema introspection
+(`rebar3 kura gen_schemas`) to bootstrap schemas from an existing database.
+
+`Opts` supplies context the type name alone does not carry:
+
+- `char_max_length` - distinguishes `~"varchar"` at 255 (`string`) from
+  any other length (`text`).
+- `serial` - an `~"int8"` column with a `nextval` default is kura's `id`
+  (BIGSERIAL); a plain `~"int8"` is `bigint`.
+
+`float4` (REAL) widens to `float` since kura models a single float type
+(DOUBLE PRECISION). Returns `{unsupported, TypeName}` for a PG type kura
+does not model (including native `CREATE TYPE ... AS ENUM` types), so the
+caller can skip the field and warn rather than guessing.
+""".
+-spec from_pg_type(
+    binary(), #{serial => boolean(), char_max_length => non_neg_integer()}
+) -> kura_type() | {unsupported, binary()}.
+from_pg_type(~"int8", #{serial := true}) ->
+    id;
+from_pg_type(~"int8", _) ->
+    bigint;
+from_pg_type(~"int4", _) ->
+    integer;
+from_pg_type(~"int2", _) ->
+    smallint;
+from_pg_type(~"float4", _) ->
+    float;
+from_pg_type(~"float8", _) ->
+    float;
+from_pg_type(~"numeric", _) ->
+    decimal;
+from_pg_type(~"varchar", #{char_max_length := 255}) ->
+    string;
+from_pg_type(~"varchar", _) ->
+    text;
+from_pg_type(~"bpchar", _) ->
+    text;
+from_pg_type(~"text", _) ->
+    text;
+from_pg_type(~"bytea", _) ->
+    binary;
+from_pg_type(~"bool", _) ->
+    boolean;
+from_pg_type(~"date", _) ->
+    date;
+from_pg_type(~"time", _) ->
+    time;
+from_pg_type(~"timestamptz", _) ->
+    utc_datetime;
+from_pg_type(~"timestamp", _) ->
+    naive_datetime;
+from_pg_type(~"uuid", _) ->
+    uuid;
+from_pg_type(~"json", _) ->
+    jsonb;
+from_pg_type(~"jsonb", _) ->
+    jsonb;
+from_pg_type(<<"_", Elem/binary>>, Opts) ->
+    case from_pg_type(Elem, Opts) of
+        {unsupported, _} = Unsupported -> Unsupported;
+        Inner -> {array, Inner}
+    end;
+from_pg_type(Other, _) when is_binary(Other) ->
+    {unsupported, Other}.
 
 %%----------------------------------------------------------------------
 %% Cast: coerce external input → Erlang term
