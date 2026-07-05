@@ -109,7 +109,28 @@ Q5 = kura_query:limit(Q4, 10),
 {ok, Users} = my_repo:all(Q5).
 ```
 
-Supported conditions: `=`, `!=`, `<`, `>`, `<=`, `>=`, `like`, `ilike`, `in`, `not_in`, `is_nil`, `is_not_nil`, `between`, `{'and', [...]}`, `{'or', [...]}`, `{'not', ...}`, `{fragment, SQL, Params}`.
+Supported conditions: `=`, `!=`, `<`, `>`, `<=`, `>=`, `like`, `ilike`, `matches`, `in`, `not_in`, `is_nil`, `is_not_nil`, `between`, `{'and', [...]}`, `{'or', [...]}`, `{'not', ...}`, `{fragment, SQL, Params}`.
+
+#### Full-text search
+
+`{Field, matches, Query}` is a full-text search: on PostgreSQL it compiles
+to `to_tsvector(Field) @@ plainto_tsquery($n)`, with the query text bound
+as a parameter (`plainto_tsquery` treats it as plain words, so no query
+syntax is needed or trusted). Requires a backend declaring the
+`full_text_search` capability.
+
+```erlang
+Q = kura_query:where(kura_query:from(article), {body, matches, ~"erlang database"}),
+{ok, Hits} = my_repo:all(Q).
+```
+
+Matching uses the server's `default_text_search_config` for stemming and
+stop-words. For production, add a GIN expression index so the search
+doesn't recompute a `tsvector` per row:
+
+```sql
+CREATE INDEX articles_body_fts ON articles USING gin (to_tsvector('english', body));
+```
 
 #### Window functions
 
