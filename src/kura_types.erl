@@ -33,11 +33,19 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
     | jsonb
     | {enum, [atom()]}
     | {array, kura_type()}
+    | {encrypted, kura_type()}
     | {embed, embeds_one | embeds_many, module()}
     | {custom, module()}.
 
-%% eqWAlizer: cast/2 has >7 clauses narrowing on kura_type() union - exceeds eqWAlizer limit
+%% eqWAlizer: cast/2, dump/2, load/2 each have >7 clauses narrowing on the
+%% kura_type() union - exceeds eqWAlizer's clause-narrowing limit.
 -eqwalizer({nowarn_function, cast/2}).
+-eqwalizer({nowarn_function, dump/2}).
+-eqwalizer({nowarn_function, load/2}).
+
+-ifdef(TEST).
+-export([encryptable_inner/1, encode_inner/2, decode_inner/2]).
+-endif.
 
 %%----------------------------------------------------------------------
 %% PG DDL type strings
@@ -63,6 +71,7 @@ to_pg_type(uuid) -> ~"UUID";
 to_pg_type(jsonb) -> ~"JSONB";
 to_pg_type({enum, _}) -> ~"VARCHAR(255)";
 to_pg_type({array, Inner}) -> <<(to_pg_type(Inner))/binary, "[]">>;
+to_pg_type({encrypted, _}) -> ~"BYTEA";
 to_pg_type({embed, _, _}) -> ~"JSONB";
 to_pg_type({custom, Mod}) -> Mod:pg_type().
 
@@ -260,6 +269,13 @@ cast({embed, embeds_one, _}, V) when is_map(V) ->
     {ok, V};
 cast({embed, embeds_many, _}, V) when is_list(V) ->
     {ok, V};
+cast({encrypted, Inner}, V) ->
+    case encryptable_inner(Inner) of
+        true ->
+            cast(Inner, V);
+        false ->
+            {error, <<"cannot use ", (format_type(Inner))/binary, " as an encrypted inner type">>}
+    end;
 cast({custom, Mod}, V) ->
     Mod:cast(V);
 cast(Type, _V) ->
@@ -323,6 +339,12 @@ dump({embed, embeds_one, Mod}, V) when is_map(V) ->
     json_encode(dump_embed_to_term(Mod, V));
 dump({embed, embeds_many, Mod}, V) when is_list(V) ->
     json_encode([dump_embed_to_term(Mod, Item) || Item <- V]);
+dump({encrypted, Inner}, V) ->
+    %% Raise (never return {error}) so the fail-open dump seam can't
+    %% substitute plaintext for an encrypted field.
+    encryptable_inner(Inner) orelse erlang:error({kura_crypto, {not_encryptable, Inner}}),
+    {ok, Wire} = dump(Inner, V),
+    {ok, kura_crypto:encrypt(encode_inner(Inner, Wire))};
 dump({custom, Mod}, V) ->
     Mod:dump(V);
 dump(Type, _V) ->
@@ -407,10 +429,66 @@ load({embed, embeds_many, Mod}, V) when is_binary(V) ->
     end;
 load({embed, embeds_many, Mod}, V) when is_list(V) ->
     {ok, [load_embed_map(Mod, M) || M <- V]};
+load({encrypted, Inner}, Bytes) when is_binary(Bytes) ->
+    %% Raise (never return {error}) so the fail-open load seam can't
+    %% substitute raw ciphertext for the field value.
+    encryptable_inner(Inner) orelse erlang:error({kura_crypto, {not_encryptable, Inner}}),
+    {ok, Loaded} = load(Inner, decode_inner(Inner, kura_crypto:decrypt(Bytes))),
+    {ok, Loaded};
 load({custom, Mod}, V) ->
     Mod:load(V);
 load(Type, _V) ->
     {error, <<"cannot load ", (format_type(Type))/binary>>}.
+
+%%----------------------------------------------------------------------
+%% Encrypted-field inner codec
+%%
+%% Operates on the output of dump(Inner, _) / input to load(Inner, _).
+%% Inner is statically known at both seams, so no self-describing format
+%% (no term_to_binary) is used - a bounded codec keyed on Inner, so a
+%% decrypted-but-corrupt payload can never forge an arbitrary term.
+%%----------------------------------------------------------------------
+
+-doc "Return `true` if `Inner` may be used as an `{encrypted, Inner}` inner type.".
+-spec encryptable_inner(kura_type()) -> boolean().
+encryptable_inner(string) -> true;
+encryptable_inner(text) -> true;
+encryptable_inner(binary) -> true;
+encryptable_inner(uuid) -> true;
+encryptable_inner(jsonb) -> true;
+encryptable_inner(integer) -> true;
+encryptable_inner(bigint) -> true;
+encryptable_inner(smallint) -> true;
+encryptable_inner(boolean) -> true;
+encryptable_inner(_) -> false.
+
+%% dump(Inner, _) already produced a binary for the binary-y types (jsonb
+%% included), so those are identity here.
+encode_inner(I, Wire) when I =:= string; I =:= text; I =:= binary; I =:= uuid; I =:= jsonb ->
+    Wire;
+encode_inner(I, Wire) when I =:= integer; I =:= bigint; I =:= smallint ->
+    integer_to_binary(Wire);
+encode_inner(boolean, true) ->
+    <<1>>;
+encode_inner(boolean, false) ->
+    <<0>>;
+encode_inner(_, _) ->
+    erlang:error({kura_crypto, malformed_plaintext}).
+
+decode_inner(I, Bin) when I =:= string; I =:= text; I =:= binary; I =:= uuid; I =:= jsonb ->
+    Bin;
+decode_inner(I, Bin) when I =:= integer; I =:= bigint; I =:= smallint ->
+    try
+        binary_to_integer(Bin)
+    catch
+        error:badarg -> erlang:error({kura_crypto, malformed_plaintext})
+    end;
+decode_inner(boolean, <<1>>) ->
+    true;
+decode_inner(boolean, <<0>>) ->
+    false;
+decode_inner(_, _) ->
+    erlang:error({kura_crypto, malformed_plaintext}).
 
 %%----------------------------------------------------------------------
 %% Internal helpers

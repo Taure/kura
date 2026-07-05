@@ -210,22 +210,55 @@ migration_down() ->
 %%----------------------------------------------------------------------
 
 build_audit_data(SchemaMod, insert, Record) ->
-    Filtered = sanitize(filter_virtual(SchemaMod, Record)),
+    Enc = encrypted_fields(SchemaMod),
+    Filtered = redact(sanitize(filter_virtual(SchemaMod, Record)), Enc),
     {undefined, Filtered, undefined};
 build_audit_data(SchemaMod, delete, Record) ->
-    Filtered = sanitize(filter_virtual(SchemaMod, Record)),
+    Enc = encrypted_fields(SchemaMod),
+    Filtered = redact(sanitize(filter_virtual(SchemaMod, Record)), Enc),
     {Filtered, undefined, undefined};
 build_audit_data(SchemaMod, update, NewRecord) ->
+    Enc = encrypted_fields(SchemaMod),
     case erlang:erase({kura_audit_stash, SchemaMod}) of
         undefined ->
-            Filtered = sanitize(filter_virtual(SchemaMod, NewRecord)),
+            Filtered = redact(sanitize(filter_virtual(SchemaMod, NewRecord)), Enc),
             {undefined, Filtered, undefined};
         OldData ->
             OldFiltered = sanitize(filter_virtual(SchemaMod, OldData)),
             NewFiltered = sanitize(filter_virtual(SchemaMod, NewRecord)),
+            %% Diff plaintext BEFORE redacting, else sentinel==sentinel drops the change.
             Changes = compute_diff(OldFiltered, NewFiltered),
-            {OldFiltered, NewFiltered, Changes}
+            {redact(OldFiltered, Enc), redact(NewFiltered, Enc), redact_changes(Changes, Enc)}
     end.
+
+%% Encrypted fields must never reach the audit_log in plaintext - the load
+%% step already decrypted the record, so redact them to a sentinel while
+%% keeping the "field changed" signal.
+encrypted_fields(SchemaMod) ->
+    Types = kura_schema:field_types(SchemaMod),
+    [F || {F, {encrypted, _}} <- maps:to_list(Types)].
+
+redact(Map, EncFields) ->
+    maps:map(
+        fun(K, V) ->
+            case lists:member(K, EncFields) of
+                true -> ~"[encrypted]";
+                false -> V
+            end
+        end,
+        Map
+    ).
+
+redact_changes(Changes, EncFields) ->
+    maps:map(
+        fun(K, Change) ->
+            case lists:member(K, EncFields) of
+                true -> #{old => ~"[encrypted]", new => ~"[encrypted]"};
+                false -> Change
+            end
+        end,
+        Changes
+    ).
 
 compute_diff(Old, New) ->
     maps:fold(
