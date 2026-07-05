@@ -34,6 +34,8 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
     | {enum, [atom()]}
     | {array, kura_type()}
     | {encrypted, kura_type()}
+    | vector
+    | {vector, pos_integer()}
     | {embed, embeds_one | embeds_many, module()}
     | {custom, module()}.
 
@@ -72,6 +74,8 @@ to_pg_type(jsonb) -> ~"JSONB";
 to_pg_type({enum, _}) -> ~"VARCHAR(255)";
 to_pg_type({array, Inner}) -> <<(to_pg_type(Inner))/binary, "[]">>;
 to_pg_type({encrypted, _}) -> ~"BYTEA";
+to_pg_type(vector) -> ~"VECTOR";
+to_pg_type({vector, N}) -> <<"VECTOR(", (integer_to_binary(N))/binary, ")">>;
 to_pg_type({embed, _, _}) -> ~"JSONB";
 to_pg_type({custom, Mod}) -> Mod:pg_type().
 
@@ -135,6 +139,10 @@ from_pg_type(~"json", _) ->
     jsonb;
 from_pg_type(~"jsonb", _) ->
     jsonb;
+from_pg_type(~"vector", _) ->
+    %% pgvector: dimension is not in the catalog Opts, so introspection
+    %% yields a dimensionless vector (annotate {vector, N} by hand).
+    vector;
 from_pg_type(<<"_", Elem/binary>>, Opts) ->
     case from_pg_type(Elem, Opts) of
         {unsupported, _} = Unsupported -> Unsupported;
@@ -276,6 +284,10 @@ cast({encrypted, Inner}, V) ->
         false ->
             {error, <<"cannot use ", (format_type(Inner))/binary, " as an encrypted inner type">>}
     end;
+cast(vector, V) when is_list(V) ->
+    cast_vector(V, undefined);
+cast({vector, N}, V) when is_list(V) ->
+    cast_vector(V, N);
 cast({custom, Mod}, V) ->
     Mod:cast(V);
 cast(Type, _V) ->
@@ -345,6 +357,10 @@ dump({encrypted, Inner}, V) ->
     encryptable_inner(Inner) orelse erlang:error({kura_crypto, {not_encryptable, Inner}}),
     {ok, Wire} = dump(Inner, V),
     {ok, kura_crypto:encrypt(encode_inner(Inner, Wire))};
+dump(vector, V) when is_list(V) ->
+    {ok, vector_to_text(V)};
+dump({vector, _}, V) when is_list(V) ->
+    {ok, vector_to_text(V)};
 dump({custom, Mod}, V) ->
     Mod:dump(V);
 dump(Type, _V) ->
@@ -435,6 +451,10 @@ load({encrypted, Inner}, Bytes) when is_binary(Bytes) ->
     encryptable_inner(Inner) orelse erlang:error({kura_crypto, {not_encryptable, Inner}}),
     {ok, Loaded} = load(Inner, decode_inner(Inner, kura_crypto:decrypt(Bytes))),
     {ok, Loaded};
+load(vector, V) when is_binary(V) ->
+    {ok, parse_vector(V)};
+load({vector, _}, V) when is_binary(V) ->
+    {ok, parse_vector(V)};
 load({custom, Mod}, V) ->
     Mod:load(V);
 load(Type, _V) ->
@@ -489,6 +509,78 @@ decode_inner(boolean, <<0>>) ->
     false;
 decode_inner(_, _) ->
     erlang:error({kura_crypto, malformed_plaintext}).
+
+%%----------------------------------------------------------------------
+%% pgvector codec (text form: "[1,2,3]")
+%%----------------------------------------------------------------------
+
+cast_vector(V, Dim) ->
+    case lists:all(fun erlang:is_number/1, V) of
+        false ->
+            {error, ~"is not a vector (a list of numbers)"};
+        true when Dim =:= undefined ->
+            {ok, [float(X) || X <- V]};
+        true ->
+            case length(V) =:= Dim of
+                true ->
+                    {ok, [float(X) || X <- V]};
+                false ->
+                    {error,
+                        <<"expected a ", (integer_to_binary(Dim))/binary, "-dimensional vector">>}
+            end
+    end.
+
+vector_to_text(V) ->
+    Inner = lists:join(~",", [vector_elem_to_binary(X) || X <- V]),
+    iolist_to_binary([~"[", Inner, ~"]"]).
+
+vector_elem_to_binary(X) when is_integer(X) -> integer_to_binary(X);
+vector_elem_to_binary(X) when is_float(X) -> float_to_binary(X, [short]).
+
+parse_vector(<<"[", Rest/binary>> = Bin) when byte_size(Rest) >= 1 ->
+    case Rest of
+        ~"]" ->
+            [];
+        _ ->
+            Last = binary:part(Rest, byte_size(Rest) - 1, 1),
+            Inner = binary:part(Rest, 0, byte_size(Rest) - 1),
+            case Last of
+                ~"]" -> [parse_vector_elem(T) || T <- binary:split(Inner, ~",", [global])];
+                _ -> erlang:error({kura_vector, {malformed, Bin}})
+            end
+    end;
+parse_vector(Bin) ->
+    erlang:error({kura_vector, {malformed, Bin}}).
+
+parse_vector_elem(Bin) ->
+    try
+        binary_to_float(Bin)
+    catch
+        error:badarg ->
+            try
+                float(binary_to_integer(Bin))
+            catch
+                error:badarg -> parse_vector_scientific(Bin)
+            end
+    end.
+
+parse_vector_scientific(Bin) ->
+    case binary:match(Bin, [~"e", ~"E"]) of
+        {Pos, 1} ->
+            <<Mant:Pos/binary, Exp/binary>> = Bin,
+            Normalized =
+                case binary:match(Mant, ~".") of
+                    nomatch -> <<Mant/binary, ".0", Exp/binary>>;
+                    _ -> Bin
+                end,
+            try
+                binary_to_float(Normalized)
+            catch
+                error:badarg -> erlang:error({kura_vector, {malformed_element, Bin}})
+            end;
+        nomatch ->
+            erlang:error({kura_vector, {malformed_element, Bin}})
+    end.
 
 %%----------------------------------------------------------------------
 %% Internal helpers

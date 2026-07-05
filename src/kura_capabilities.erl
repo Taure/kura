@@ -29,6 +29,7 @@ cares about:
 - `partial_indexes` — `CREATE INDEX ... WHERE`
 - `window_functions` — `OVER (PARTITION BY ... ORDER BY ...)`
 - `full_text_search` — the `{Field, matches, Query}` where-condition
+- `vector` — pgvector `VECTOR(N)` columns (`{vector, N}` type)
 - `transactions` — `BEGIN/COMMIT/ROLLBACK`
 - `savepoints` — `SAVEPOINT`/`RELEASE`/`ROLLBACK TO`
 - `prepared_statements` — server-side prepared statements
