@@ -30,6 +30,44 @@ to_pg_type_test_() ->
     ].
 
 %%----------------------------------------------------------------------
+%% from_pg_type
+%%----------------------------------------------------------------------
+
+from_pg_type_test_() ->
+    [
+        ?_assertEqual(id, kura_types:from_pg_type(<<"int8">>, #{serial => true})),
+        ?_assertEqual(bigint, kura_types:from_pg_type(<<"int8">>, #{})),
+        ?_assertEqual(integer, kura_types:from_pg_type(<<"int4">>, #{})),
+        ?_assertEqual(smallint, kura_types:from_pg_type(<<"int2">>, #{})),
+        ?_assertEqual(float, kura_types:from_pg_type(<<"float8">>, #{})),
+        ?_assertEqual(float, kura_types:from_pg_type(<<"float4">>, #{})),
+        ?_assertEqual(decimal, kura_types:from_pg_type(<<"numeric">>, #{})),
+        ?_assertEqual(string, kura_types:from_pg_type(<<"varchar">>, #{char_max_length => 255})),
+        ?_assertEqual(text, kura_types:from_pg_type(<<"varchar">>, #{char_max_length => 80})),
+        ?_assertEqual(text, kura_types:from_pg_type(<<"varchar">>, #{})),
+        ?_assertEqual(text, kura_types:from_pg_type(<<"bpchar">>, #{})),
+        ?_assertEqual(text, kura_types:from_pg_type(<<"text">>, #{})),
+        ?_assertEqual(binary, kura_types:from_pg_type(<<"bytea">>, #{})),
+        ?_assertEqual(boolean, kura_types:from_pg_type(<<"bool">>, #{})),
+        ?_assertEqual(date, kura_types:from_pg_type(<<"date">>, #{})),
+        ?_assertEqual(time, kura_types:from_pg_type(<<"time">>, #{})),
+        ?_assertEqual(utc_datetime, kura_types:from_pg_type(<<"timestamptz">>, #{})),
+        ?_assertEqual(naive_datetime, kura_types:from_pg_type(<<"timestamp">>, #{})),
+        ?_assertEqual(uuid, kura_types:from_pg_type(<<"uuid">>, #{})),
+        ?_assertEqual(jsonb, kura_types:from_pg_type(<<"jsonb">>, #{})),
+        ?_assertEqual(jsonb, kura_types:from_pg_type(<<"json">>, #{})),
+        ?_assertEqual({array, integer}, kura_types:from_pg_type(<<"_int4">>, #{})),
+        ?_assertEqual({array, text}, kura_types:from_pg_type(<<"_text">>, #{})),
+        ?_assertEqual(
+            {unsupported, <<"tsvector">>}, kura_types:from_pg_type(<<"tsvector">>, #{})
+        ),
+        ?_assertEqual(
+            {unsupported, <<"citext">>}, kura_types:from_pg_type(<<"_citext">>, #{})
+        ),
+        ?_assertEqual(bigint, kura_types:from_pg_type(<<"int8">>, #{serial => false}))
+    ].
+
+%%----------------------------------------------------------------------
 %% cast
 %%----------------------------------------------------------------------
 
