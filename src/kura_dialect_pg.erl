@@ -652,7 +652,17 @@ build_row_placeholders([Field | Rest], Row, N) ->
     {Placeholders, Params, N2} = build_row_placeholders(Rest, Row, N + 1),
     {[Placeholder | Placeholders], [Value | Params], N2}.
 
--spec compile_select_exprs([{atom(), {fragment, binary(), [term()]}}], pos_integer()) ->
+-spec compile_select_exprs(
+    [
+        {
+            atom(),
+            {fragment, binary(), [term()]}
+            | {over, kura_query:window_fn(), kura_query:window_spec()}
+            | atom()
+        }
+    ],
+    pos_integer()
+) ->
     {[iodata()], [term()], pos_integer()}.
 compile_select_exprs([], Counter) ->
     {[], [], Counter};
@@ -660,7 +670,66 @@ compile_select_exprs([{Alias, {fragment, SQL, Params}} | Rest], Counter) ->
     {RewrittenSQL, C2} = rewrite_fragment_placeholders(SQL, Counter),
     Part = [RewrittenSQL, ~" AS ", quote_ident(atom_to_binary(Alias, utf8))],
     {Parts, MoreParams, C3} = compile_select_exprs(Rest, C2),
-    {[Part | Parts], Params ++ MoreParams, C3}.
+    {[Part | Parts], Params ++ MoreParams, C3};
+compile_select_exprs([{Alias, {over, WindowFn, Spec}} | Rest], Counter) ->
+    Part = [
+        compile_window_fn(WindowFn),
+        ~" OVER (",
+        compile_over_clause(Spec),
+        ~")",
+        ~" AS ",
+        quote_ident(atom_to_binary(Alias, utf8))
+    ],
+    {Parts, MoreParams, C2} = compile_select_exprs(Rest, Counter),
+    {[Part | Parts], MoreParams, C2};
+compile_select_exprs([{Alias, Field} | Rest], Counter) when is_atom(Field) ->
+    Part = [
+        quote_ident(atom_to_binary(Field, utf8)),
+        ~" AS ",
+        quote_ident(atom_to_binary(Alias, utf8))
+    ],
+    {Parts, MoreParams, C2} = compile_select_exprs(Rest, Counter),
+    {[Part | Parts], MoreParams, C2}.
+
+compile_window_fn({count, '*'}) ->
+    [~"count(*)"];
+compile_window_fn({Agg, Field}) when
+    Agg =:= count; Agg =:= sum; Agg =:= avg; Agg =:= min; Agg =:= max
+->
+    [atom_to_binary(Agg, utf8), ~"(", quote_ident(atom_to_binary(Field, utf8)), ~")"];
+compile_window_fn(Fn) when Fn =:= row_number; Fn =:= rank; Fn =:= dense_rank ->
+    [atom_to_binary(Fn, utf8), ~"()"].
+
+compile_over_clause(Spec) ->
+    Partition =
+        case maps:get(partition_by, Spec, []) of
+            [] ->
+                [];
+            PFields ->
+                [
+                    ~"PARTITION BY ",
+                    join_comma([quote_ident(atom_to_binary(F, utf8)) || F <- PFields])
+                ]
+        end,
+    Order =
+        case maps:get(order_by, Spec, []) of
+            [] ->
+                [];
+            Orders ->
+                [
+                    ~"ORDER BY ",
+                    join_comma([
+                        [quote_ident(atom_to_binary(F, utf8)), ~" ", dir_to_sql(D)]
+                     || {F, D} <- Orders
+                    ])
+                ]
+        end,
+    case {Partition, Order} of
+        {[], []} -> [];
+        {[], O} -> O;
+        {P, []} -> P;
+        {P, O} -> [P, ~" ", O]
+    end.
 
 -spec compile_joins_loop(
     [{atom(), atom() | module(), {atom(), atom()}, atom() | undefined}],

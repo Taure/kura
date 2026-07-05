@@ -111,6 +111,25 @@ Q5 = kura_query:limit(Q4, 10),
 
 Supported conditions: `=`, `!=`, `<`, `>`, `<=`, `>=`, `like`, `ilike`, `in`, `not_in`, `is_nil`, `is_not_nil`, `between`, `{'and', [...]}`, `{'or', [...]}`, `{'not', ...}`, `{fragment, SQL, Params}`.
 
+#### Window functions
+
+Use `over/2` inside `select_expr/2` for `OVER (PARTITION BY ... ORDER BY ...)`
+expressions. The window function is an aggregate (`{count, '*'}`, `{sum, Field}`,
+`{avg, Field}`, `{min, Field}`, `{max, Field}`) or a ranking function
+(`row_number`, `rank`, `dense_rank`).
+
+```erlang
+Q = kura_query:select_expr(kura_query:from(sales), [
+    {category, category},
+    {row_num, kura_query:over(row_number, #{partition_by => [category], order_by => [{amount, desc}]})},
+    {running_total, kura_query:over({sum, amount}, #{partition_by => [category], order_by => [{day, asc}]})}
+]),
+
+{ok, Rows} = my_repo:all(Q).
+```
+
+Requires a backend declaring the `window_functions` capability (PostgreSQL, or SQLite 3.25+).
+
 ### Migrations
 
 ```erlang
@@ -229,8 +248,15 @@ otp_app() -> my_app.
 
 Queries through `my_repo` emit Postgres SQL; queries through
 `analytics_repo` emit SQLite SQL. The query cache is keyed per repo so
-the dialects never share entries. UUID primary keys are auto-generated
-on insert when no value is provided.
+the dialects never share entries.
+
+UUID primary keys are auto-generated on insert when no value is
+provided. The default is **UUIDv4** (random) - secure by default, since
+a v4 key discloses nothing about the row. Set `uuid_version => v7` in a
+repo's config to use time-ordered UUIDv7 for better index locality; note
+that a v7 key embeds its creation timestamp, so avoid it for keys exposed
+in URLs or public APIs. A schema's own `generate_id/0` callback still
+takes precedence over both.
 
 <details>
 <summary>Legacy v1.x config forms (still supported)</summary>
