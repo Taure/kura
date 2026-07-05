@@ -68,6 +68,95 @@ from_pg_type_test_() ->
     ].
 
 %%----------------------------------------------------------------------
+%% {encrypted, Inner}
+%%----------------------------------------------------------------------
+
+encrypted_test_() ->
+    {setup,
+        fun() ->
+            application:set_env(kura, encryption, #{
+                active => 1, keys => [{1, base64:encode(crypto:strong_rand_bytes(32))}]
+            })
+        end,
+        fun(_) -> application:unset_env(kura, encryption) end, [
+            {"encryptable_inner allow-set", fun() ->
+                ?assert(kura_types:encryptable_inner(string)),
+                ?assert(kura_types:encryptable_inner(jsonb)),
+                ?assert(kura_types:encryptable_inner(integer)),
+                ?assert(kura_types:encryptable_inner(boolean)),
+                ?assertNot(kura_types:encryptable_inner(id)),
+                ?assertNot(kura_types:encryptable_inner(date)),
+                ?assertNot(kura_types:encryptable_inner(float))
+            end},
+            {"to_pg_type is BYTEA", fun() ->
+                ?assertEqual(<<"BYTEA">>, kura_types:to_pg_type({encrypted, string}))
+            end},
+            {"round-trip string", fun() -> rt({encrypted, string}, <<"pii@example.com">>) end},
+            {"round-trip text", fun() -> rt({encrypted, text}, <<"a longer secret">>) end},
+            {"round-trip integer", fun() -> rt({encrypted, integer}, 123456789) end},
+            {"round-trip negative integer", fun() -> rt({encrypted, integer}, -42) end},
+            {"round-trip boolean", fun() ->
+                rt({encrypted, boolean}, true),
+                rt({encrypted, boolean}, false)
+            end},
+            {"round-trip jsonb", fun() ->
+                {ok, E} = kura_types:dump({encrypted, jsonb}, #{<<"a">> => 1}),
+                ?assertEqual({ok, #{<<"a">> => 1}}, kura_types:load({encrypted, jsonb}, E))
+            end},
+            {"ciphertext hides plaintext", fun() ->
+                {ok, E} = kura_types:dump({encrypted, string}, <<"secret">>),
+                ?assertNotEqual(<<"secret">>, E),
+                ?assertEqual(nomatch, binary:match(E, <<"secret">>))
+            end},
+            {"random nonce: two encryptions differ", fun() ->
+                {ok, E1} = kura_types:dump({encrypted, string}, <<"x">>),
+                {ok, E2} = kura_types:dump({encrypted, string}, <<"x">>),
+                ?assertNotEqual(E1, E2)
+            end},
+            {"cast validates plaintext via inner", fun() ->
+                ?assertEqual({ok, 42}, kura_types:cast({encrypted, integer}, <<"42">>)),
+                ?assertMatch({error, _}, kura_types:cast({encrypted, integer}, <<"notnum">>))
+            end},
+            {"NULL stays null, unencrypted", fun() ->
+                ?assertEqual({ok, null}, kura_types:dump({encrypted, string}, undefined)),
+                ?assertEqual({ok, undefined}, kura_types:load({encrypted, string}, null))
+            end},
+            {"reject unsupported inner at cast", fun() ->
+                ?assertMatch({error, _}, kura_types:cast({encrypted, date}, {2026, 1, 1})),
+                ?assertMatch({error, _}, kura_types:cast({encrypted, id}, 1))
+            end},
+            {"reject unsupported inner at dump raises (fail-closed)", fun() ->
+                ?assertError(
+                    {kura_crypto, {not_encryptable, float}},
+                    kura_types:dump({encrypted, float}, 1.5)
+                )
+            end},
+            {"decode_inner raises on corrupt integer", fun() ->
+                ?assertError(
+                    {kura_crypto, malformed_plaintext},
+                    kura_types:decode_inner(integer, <<"xx">>)
+                )
+            end},
+            {"decode_inner raises on corrupt boolean", fun() ->
+                ?assertError(
+                    {kura_crypto, malformed_plaintext},
+                    kura_types:decode_inner(boolean, <<2>>)
+                )
+            end},
+            {"tampered ciphertext raises through load, never falls open to raw", fun() ->
+                {ok, E} = kura_types:dump({encrypted, string}, <<"secret">>),
+                Bad = <<
+                    (binary:part(E, 0, byte_size(E) - 1))/binary, ((binary:last(E)) bxor 255):8
+                >>,
+                ?assertError({kura_crypto, {bad_tag, _}}, kura_types:load({encrypted, string}, Bad))
+            end}
+        ]}.
+
+rt(Type, Value) ->
+    {ok, Enc} = kura_types:dump(Type, Value),
+    ?assertEqual({ok, Value}, kura_types:load(Type, Enc)).
+
+%%----------------------------------------------------------------------
 %% cast
 %%----------------------------------------------------------------------
 

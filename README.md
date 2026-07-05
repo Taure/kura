@@ -25,6 +25,7 @@ Database layer for Erlang - Ecto-equivalent abstractions in pure Erlang. Pluggab
 - **Streaming** - server-side cursor streaming for large result sets
 - **Multitenancy** - schema prefix and attribute-based tenant isolation
 - **Optimistic Locking** - concurrent update conflict detection
+- **Encryption at rest** - `{encrypted, Type}` fields, AES-256-GCM, key rotation
 
 ## Quick Start
 
@@ -201,6 +202,51 @@ kura_migrator:status(my_repo).
 | `{array, T}` | `T[]` | unsupported | `list()` |
 
 SQLite values round-trip transparently via `kura_types:cast/2` (booleans 0/1 → `true`/`false`, ISO 8601 → datetime tuples, JSON text → maps).
+
+## Encryption at rest
+
+Wrap a field type in `{encrypted, Type}` to store it AES-256-GCM-encrypted
+in a `BYTEA` column. Values are encrypted on write and decrypted on read;
+casting and validation still run on the plaintext.
+
+```erlang
+fields() ->
+    [
+        #kura_field{name = id, type = id, primary_key = true},
+        #kura_field{name = email, type = string},
+        #kura_field{name = ssn, type = {encrypted, string}, nullable = false}
+    ].
+```
+
+Supported inner types: `string`, `text`, `binary`, `uuid`, `jsonb`,
+`integer`, `bigint`, `smallint`, `boolean`. Configure keys under the
+`kura` app env - each a base64-encoded 32-byte key, with `active`
+selecting the one used for new writes:
+
+```erlang
+[{kura, [
+    {encryption, #{
+        active => 1,
+        keys => [{1, <<"base64-encoded-32-byte-key">>}]
+    }}
+]}].
+```
+
+**Rotation:** add a new key and move `active` to it. Each ciphertext
+carries its key id, so existing rows keep decrypting under their original
+key - no backfill. A custom keyring (KMS/Vault) can replace the default by
+implementing the `kura_keyring` behaviour and setting `{kura, [{keyring, my_keyring}]}`.
+
+**Constraints:** encrypted columns are **not queryable** and cannot carry a
+unique constraint (each write has a random nonce, so equal plaintexts
+produce different ciphertexts). Primary and foreign keys cannot be
+encrypted. `NULL` stays `NULL` (unencrypted), so presence still leaks.
+Schema introspection (`rebar3 kura gen_schemas`) cannot detect that a
+`BYTEA` column was encrypted - annotate it by hand. The audit trail
+redacts encrypted fields to `[encrypted]` (it keeps the "changed" signal
+but never logs the value). Ciphertext is not yet bound to its row/column,
+so a database-level actor could copy a ciphertext between rows of the same
+column; per-column binding is planned.
 
 ## Configuration
 

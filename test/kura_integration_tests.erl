@@ -27,6 +27,7 @@
 -eqwalizer({nowarn_function, t_window_function/0}).
 -eqwalizer({nowarn_function, t_exclusion_constraint/0}).
 -eqwalizer({nowarn_function, t_full_text_search/0}).
+-eqwalizer({nowarn_function, t_field_encryption/0}).
 -eqwalizer({nowarn_function, t_window_over_api/0}).
 -eqwalizer({nowarn_function, t_insert_all_returning_true/0}).
 -eqwalizer({nowarn_function, t_insert_all_returning_fields/0}).
@@ -113,6 +114,7 @@ integration_test_() ->
             {"check_constraint maps DB error", fun t_check_constraint/0},
             {"exclusion_constraint maps DB error", fun t_exclusion_constraint/0},
             {"full-text search via matches operator", fun t_full_text_search/0},
+            {"encrypted field: ciphertext at rest, plaintext on load", fun t_field_encryption/0},
 
             %% Transactions
             {"transaction rollback", fun t_transaction_rollback/0},
@@ -192,6 +194,9 @@ integration_test_() ->
 setup() ->
     application:ensure_all_started(pgo),
     application:ensure_all_started(kura),
+    application:set_env(kura, encryption, #{
+        active => 1, keys => [{1, base64:encode(crypto:strong_rand_bytes(32))}]
+    }),
     kura_test_repo:start(),
     {ok, _} = kura_test_repo:query(
         "CREATE TABLE users ("
@@ -253,6 +258,16 @@ setup() ->
         []
     ),
     {ok, _} = kura_test_repo:query(
+        "CREATE TABLE secrets ("
+        "  id BIGSERIAL PRIMARY KEY,"
+        "  name VARCHAR(255),"
+        "  ssn BYTEA NOT NULL,"
+        "  inserted_at TIMESTAMPTZ,"
+        "  updated_at TIMESTAMPTZ"
+        ")",
+        []
+    ),
+    {ok, _} = kura_test_repo:query(
         "CREATE TABLE hook_items ("
         "  id BIGSERIAL PRIMARY KEY,"
         "  name VARCHAR(255) NOT NULL,"
@@ -290,6 +305,7 @@ setup() ->
     ok.
 
 teardown(_) ->
+    kura_test_repo:query("DROP TABLE IF EXISTS secrets CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS articles CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS bookings CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS audit_log CASCADE", []),
@@ -934,6 +950,25 @@ insert_article(Title, Body) ->
     ),
     {ok, Record} = kura_test_repo:insert(CS),
     Record.
+
+t_field_encryption() ->
+    Plain = <<"123-45-6789">>,
+    CS = kura_changeset:cast(
+        kura_test_encrypted_schema, #{}, #{name => <<"Alice">>, ssn => Plain}, [name, ssn]
+    ),
+    {ok, Inserted} = kura_test_repo:insert(CS),
+    %% load decrypts back to plaintext
+    ?assertEqual(Plain, maps:get(ssn, Inserted)),
+    Id = maps:get(id, Inserted),
+    {ok, Fetched} = kura_test_repo:get(kura_test_encrypted_schema, Id),
+    ?assertEqual(Plain, maps:get(ssn, Fetched)),
+    %% but the raw column is ciphertext, not the plaintext
+    {ok, [Row]} = kura_test_repo:query("SELECT ssn FROM secrets WHERE id = $1", [Id]),
+    Raw = maps:get(ssn, Row),
+    ?assertNotEqual(Plain, Raw),
+    ?assertEqual(nomatch, binary:match(Raw, Plain)),
+    %% frame: version=1, key_id=1 header
+    ?assertEqual(1, binary:at(Raw, 0)).
 
 t_schema_constraints() ->
     ChatId = <<"550e8400-e29b-41d4-a716-446655440000">>,
