@@ -150,7 +150,7 @@ Q = kura_query:select_expr(kura_query:from(sales), [
 {ok, Rows} = my_repo:all(Q).
 ```
 
-Requires a backend declaring the `window_functions` capability (PostgreSQL, or SQLite 3.25+).
+Requires a backend declaring the `window_functions` capability — PostgreSQL today (SQLite window rendering is planned).
 
 ### Migrations
 
