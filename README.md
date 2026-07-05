@@ -200,8 +200,18 @@ kura_migrator:status(my_repo).
 | `uuid` | `UUID` | `TEXT` | `binary()` |
 | `jsonb` | `JSONB` | `TEXT` | `map()` |
 | `{array, T}` | `T[]` | unsupported | `list()` |
+| `{encrypted, T}` | `BYTEA` | `BLOB` | `T` (encrypted at rest) |
+| `{vector, N}` | `VECTOR(N)` | unsupported | `[float()]` |
 
 SQLite values round-trip transparently via `kura_types:cast/2` (booleans 0/1 → `true`/`false`, ISO 8601 → datetime tuples, JSON text → maps).
+
+`{vector, N}` (and dimensionless `vector`) map to [pgvector](https://github.com/pgvector/pgvector)
+columns for embeddings; requires `CREATE EXTENSION vector` and a backend
+declaring the `vector` capability. A value is a list of numbers, dimension-checked
+on cast. Distance-query operators (`<->` / `<=>`) are not yet a first-class query
+form - use a `{fragment, SQL, Params}` for nearest-neighbour ordering meanwhile.
+Elements are stored as `float4`, so a value read back from a column is the
+single-precision approximation of what was written, not the exact double.
 
 ## Encryption at rest
 

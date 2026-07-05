@@ -157,6 +157,45 @@ rt(Type, Value) ->
     ?assertEqual({ok, Value}, kura_types:load(Type, Enc)).
 
 %%----------------------------------------------------------------------
+%% vector (pgvector)
+%%----------------------------------------------------------------------
+
+vector_test_() ->
+    [
+        ?_assertEqual(<<"VECTOR">>, kura_types:to_pg_type(vector)),
+        ?_assertEqual(<<"VECTOR(384)">>, kura_types:to_pg_type({vector, 384})),
+        ?_assertEqual(vector, kura_types:from_pg_type(<<"vector">>, #{})),
+        %% cast normalizes to floats and dimension-checks
+        ?_assertEqual({ok, [1.0, 2.5, 3.0]}, kura_types:cast({vector, 3}, [1, 2.5, 3])),
+        ?_assertEqual({ok, [1.0, 2.0]}, kura_types:cast(vector, [1, 2])),
+        ?_assertMatch({error, _}, kura_types:cast({vector, 3}, [1, 2])),
+        ?_assertMatch({error, _}, kura_types:cast({vector, 2}, [1, <<"x">>])),
+        %% dump/load text codec
+        ?_assertEqual({ok, <<"[1.0,2.5,3.0]">>}, kura_types:dump({vector, 3}, [1.0, 2.5, 3.0])),
+        ?_assertEqual({ok, [1.0, 2.5, 3.0]}, kura_types:load({vector, 3}, <<"[1.0,2.5,3.0]">>)),
+        %% pgvector returns integer-style elements without a decimal point
+        ?_assertEqual({ok, [1.0, 2.0, 3.0]}, kura_types:load({vector, 3}, <<"[1,2,3]">>)),
+        %% negatives + integer-style negatives
+        ?_assertEqual({ok, <<"[-1.5,0.0,2.25]">>}, kura_types:dump({vector, 3}, [-1.5, 0.0, 2.25])),
+        ?_assertEqual({ok, [-1.5, 0.0, 2.25]}, kura_types:load({vector, 3}, <<"[-1.5,0.0,2.25]">>)),
+        ?_assertEqual({ok, [-1.0, -2.0, 3.0]}, kura_types:load({vector, 3}, <<"[-1,-2,3]">>)),
+        %% pgvector's float4out emits scientific notation for small/large magnitudes
+        ?_assertEqual({ok, [1.0e-5, -3.0e10]}, kura_types:load({vector, 2}, <<"[1e-05,-3E10]">>)),
+        ?_assertEqual({ok, [1.5e-5]}, kura_types:load({vector, 1}, <<"[1.5e-05]">>)),
+        %% malformed stored data fails closed with a structured error, not a silent [] or bare badarg
+        ?_assertError({kura_vector, {malformed, _}}, kura_types:load({vector, 3}, <<"garbage">>)),
+        ?_assertError({kura_vector, {malformed, _}}, kura_types:load({vector, 3}, <<"[1,2,3">>)),
+        ?_assertError(
+            {kura_vector, {malformed_element, _}}, kura_types:load({vector, 1}, <<"[abc]">>)
+        ),
+        %% empty + NULL
+        ?_assertEqual({ok, <<"[]">>}, kura_types:dump(vector, [])),
+        ?_assertEqual({ok, []}, kura_types:load(vector, <<"[]">>)),
+        ?_assertEqual({ok, null}, kura_types:dump({vector, 3}, undefined)),
+        ?_assertEqual({ok, undefined}, kura_types:load({vector, 3}, null))
+    ].
+
+%%----------------------------------------------------------------------
 %% cast
 %%----------------------------------------------------------------------
 
