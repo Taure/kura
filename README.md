@@ -232,6 +232,33 @@ Queries through `my_repo` emit Postgres SQL; queries through
 the dialects never share entries. UUID primary keys are auto-generated
 on insert when no value is provided.
 
+### Read replicas
+
+A replica is just another repo pointed at a read replica. Mark it
+`read_only => true` so writes are refused, and list it under the
+primary's `replicas` so the primary can hand it out:
+
+```erlang
+{repos, #{
+    my_repo => #{backend => kura_backend_postgres, host => "primary", replicas => [my_repo_ro]},
+    my_repo_ro => #{backend => kura_backend_postgres, host => "replica", read_only => true}
+}}
+```
+
+`read_only => true` makes every write (insert/update/delete and the
+bulk and soft-delete variants) return `{error, read_only}`. Routing is
+explicit - pick a replica per read and own read-after-write yourself:
+
+```erlang
+Replica = kura_repo:replica(my_repo),   %% a replica repo, or my_repo if none
+{ok, Rows} = Replica:all(Q).
+```
+
+There is no automatic write/read split - reads go to whichever repo you
+call, so a read that must see a just-written row should use the primary.
+The guard covers the changeset write API; raw SQL via `query/3` is not
+guarded, so a raw write on a replica is rejected by PostgreSQL itself.
+
 <details>
 <summary>Legacy v1.x config forms (still supported)</summary>
 
