@@ -51,11 +51,13 @@ kura_repo_worker:start(MyRepo),
 -export([generate_uuid/1, uuid_version/1]).
 -endif.
 
--eqwalizer({nowarn_function, insert/2}).
--eqwalizer({nowarn_function, update/2}).
--eqwalizer({nowarn_function, delete/2}).
+-eqwalizer({nowarn_function, do_insert/2}).
+-eqwalizer({nowarn_function, do_update/2}).
+-eqwalizer({nowarn_function, do_delete/2}).
 -eqwalizer({nowarn_function, multi/2}).
 -eqwalizer({nowarn_function, persist_many_to_many/6}).
+
+-type write_error() :: {error, read_only}.
 
 %%----------------------------------------------------------------------
 %% Pool management
@@ -241,11 +243,21 @@ restore(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
             {error, not_soft_deletable}
     end.
 
+guard_write(RepoMod, Fun) ->
+    case kura_repo:read_only(RepoMod) of
+        true -> {error, read_only};
+        false -> Fun()
+    end.
+
 -doc "Insert a record from a changeset. Returns `{error, Changeset}` with errors on failure.".
--spec insert(module(), #kura_changeset{}) -> {ok, map()} | {error, #kura_changeset{}}.
-insert(_RepoMod, CS = #kura_changeset{valid = false}) ->
+-spec insert(module(), #kura_changeset{}) ->
+    {ok, map()} | {error, #kura_changeset{}} | write_error().
+insert(RepoMod, CS) ->
+    guard_write(RepoMod, fun() -> do_insert(RepoMod, CS) end).
+
+do_insert(_RepoMod, CS = #kura_changeset{valid = false}) ->
     {error, CS#kura_changeset{action = insert}};
-insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}) when
+do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}) when
     map_size(AC) > 0
 ->
     kura_db:transaction_ok(RepoMod, fun() ->
@@ -256,7 +268,7 @@ insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}) wh
                 Err
         end
     end);
-insert(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
+do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
     case needs_transaction(SchemaMod, insert) of
         true ->
             try
@@ -273,10 +285,14 @@ insert(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
             insert_record(RepoMod, CS)
     end.
 
--spec insert(module(), #kura_changeset{}, map()) -> {ok, map()} | {error, #kura_changeset{}}.
-insert(_RepoMod, CS = #kura_changeset{valid = false}, _Opts) ->
+-spec insert(module(), #kura_changeset{}, map()) ->
+    {ok, map()} | {error, #kura_changeset{}} | write_error().
+insert(RepoMod, CS, Opts) ->
+    guard_write(RepoMod, fun() -> do_insert(RepoMod, CS, Opts) end).
+
+do_insert(_RepoMod, CS = #kura_changeset{valid = false}, _Opts) ->
     {error, CS#kura_changeset{action = insert}};
-insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opts) ->
+do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opts) ->
     Changes0 = maybe_generate_pk(RepoMod, SchemaMod, Changes),
     Changes1 = maybe_add_timestamps(SchemaMod, Changes0, insert),
     DumpedChanges = dump_changes(SchemaMod, Changes1),
@@ -293,10 +309,14 @@ insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opt
     end.
 
 -doc "Update a record from a changeset. No-op if there are no changes.".
--spec update(module(), #kura_changeset{}) -> {ok, map()} | {error, #kura_changeset{}}.
-update(_RepoMod, CS = #kura_changeset{valid = false}) ->
+-spec update(module(), #kura_changeset{}) ->
+    {ok, map()} | {error, #kura_changeset{}} | write_error().
+update(RepoMod, CS) ->
+    guard_write(RepoMod, fun() -> do_update(RepoMod, CS) end).
+
+do_update(_RepoMod, CS = #kura_changeset{valid = false}) ->
     {error, CS#kura_changeset{action = update}};
-update(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}) when
+do_update(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}) when
     map_size(AC) > 0
 ->
     kura_db:transaction_ok(RepoMod, fun() ->
@@ -307,7 +327,7 @@ update(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}) wh
                 Err
         end
     end);
-update(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
+do_update(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
     case needs_transaction(SchemaMod, update) of
         true ->
             try
@@ -326,7 +346,10 @@ update(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
 
 -doc "Delete the record referenced by the changeset's data.".
 -spec delete(module(), #kura_changeset{}) -> {ok, map()} | {error, term()}.
-delete(RepoMod, #kura_changeset{schema = SchemaMod, data = Data}) ->
+delete(RepoMod, CS) ->
+    guard_write(RepoMod, fun() -> do_delete(RepoMod, CS) end).
+
+do_delete(RepoMod, #kura_changeset{schema = SchemaMod, data = Data}) ->
     case needs_transaction(SchemaMod, delete) of
         true ->
             try
@@ -346,6 +369,9 @@ delete(RepoMod, #kura_changeset{schema = SchemaMod, data = Data}) ->
 -doc "Bulk update all rows matching the query, returning the count of affected rows.".
 -spec update_all(module(), #kura_query{}, map()) -> {ok, non_neg_integer()} | {error, term()}.
 update_all(RepoMod, Query, Updates) ->
+    guard_write(RepoMod, fun() -> do_update_all(RepoMod, Query, Updates) end).
+
+do_update_all(RepoMod, Query, Updates) ->
     Q1 = maybe_apply_soft_delete(maybe_apply_tenant_query(Query)),
     {SQL, Params} = kura_query_compiler:update_all(RepoMod, Q1, Updates),
 
@@ -357,6 +383,9 @@ update_all(RepoMod, Query, Updates) ->
 -doc "Bulk delete all rows matching the query, returning the count of deleted rows.".
 -spec delete_all(module(), #kura_query{}) -> {ok, non_neg_integer()} | {error, term()}.
 delete_all(RepoMod, Query) ->
+    guard_write(RepoMod, fun() -> do_delete_all(RepoMod, Query) end).
+
+do_delete_all(RepoMod, Query) ->
     Q1 = maybe_apply_soft_delete(maybe_apply_tenant_query(Query)),
     {SQL, Params} = kura_query_compiler:delete_all(RepoMod, Q1),
 
@@ -368,6 +397,9 @@ delete_all(RepoMod, Query) ->
 -doc "Bulk insert a list of maps, returning the count of inserted rows.".
 -spec insert_all(module(), module(), [map()]) -> {ok, non_neg_integer()} | {error, term()}.
 insert_all(RepoMod, SchemaMod, Entries) ->
+    guard_write(RepoMod, fun() -> do_insert_all(RepoMod, SchemaMod, Entries) end).
+
+do_insert_all(RepoMod, SchemaMod, Entries) ->
     NonVirtual = kura_schema:non_virtual_fields(SchemaMod),
     Rows = [
         begin
@@ -390,6 +422,9 @@ insert_all(RepoMod, SchemaMod, Entries) ->
 -spec insert_all(module(), module(), [map()], map()) ->
     {ok, non_neg_integer()} | {ok, non_neg_integer(), [map()]} | {error, term()}.
 insert_all(RepoMod, SchemaMod, Entries, Opts) ->
+    guard_write(RepoMod, fun() -> do_insert_all(RepoMod, SchemaMod, Entries, Opts) end).
+
+do_insert_all(RepoMod, SchemaMod, Entries, Opts) ->
     NonVirtual = kura_schema:non_virtual_fields(SchemaMod),
     Rows = [
         begin

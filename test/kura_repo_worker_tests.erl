@@ -116,3 +116,66 @@ extract_source_quoted_test() ->
     ?assertEqual(
         <<"users">>, kura_repo_worker:extract_source(<<"SELECT * FROM \"users\" WHERE id = 1">>)
     ).
+
+%%----------------------------------------------------------------------
+%% read_only / replica routing
+%%----------------------------------------------------------------------
+
+with_repos(Map, Fun) ->
+    application:set_env(kura, repos, Map),
+    try
+        Fun()
+    after
+        application:unset_env(kura, repos)
+    end.
+
+read_only_defaults_false_test() ->
+    with_repos(#{ro_default => #{}}, fun() ->
+        ?assertEqual(false, kura_repo:read_only(ro_default))
+    end).
+
+read_only_true_test() ->
+    with_repos(#{ro_true => #{read_only => true}}, fun() ->
+        ?assertEqual(true, kura_repo:read_only(ro_true))
+    end).
+
+replica_none_returns_self_test() ->
+    with_repos(#{primary => #{}}, fun() ->
+        ?assertEqual(primary, kura_repo:replica(primary))
+    end).
+
+replica_single_test() ->
+    with_repos(#{primary => #{replicas => [primary_ro]}}, fun() ->
+        ?assertEqual(primary_ro, kura_repo:replica(primary))
+    end).
+
+replica_multi_member_test() ->
+    with_repos(#{primary => #{replicas => [r1, r2, r3]}}, fun() ->
+        ?assert(lists:member(kura_repo:replica(primary), [r1, r2, r3]))
+    end).
+
+read_only_repo_rejects_insert_test() ->
+    with_repos(#{ro_repo => #{read_only => true}}, fun() ->
+        CS = kura_changeset:cast(kura_test_schema, #{}, #{name => <<"x">>}, [name]),
+        ?assertEqual({error, read_only}, kura_repo_worker:insert(ro_repo, CS))
+    end).
+
+read_only_repo_rejects_delete_all_test() ->
+    with_repos(#{ro_repo => #{read_only => true}}, fun() ->
+        ?assertEqual(
+            {error, read_only},
+            kura_repo_worker:delete_all(ro_repo, kura_query:from(kura_test_schema))
+        )
+    end).
+
+read_only_repo_rejects_update_test() ->
+    with_repos(#{ro_repo => #{read_only => true}}, fun() ->
+        CS = kura_changeset:cast(kura_test_schema, #{}, #{name => <<"x">>}, [name]),
+        ?assertEqual({error, read_only}, kura_repo_worker:update(ro_repo, CS))
+    end).
+
+read_only_repo_rejects_soft_delete_test() ->
+    with_repos(#{ro_repo => #{read_only => true}}, fun() ->
+        CS = kura_changeset:cast(kura_test_soft_delete_schema, #{}, #{name => <<"x">>}, [name]),
+        ?assertEqual({error, read_only}, kura_repo_worker:soft_delete(ro_repo, CS))
+    end).

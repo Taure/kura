@@ -80,7 +80,7 @@ init(Config) ->
 ```
 """.
 
--export([config/1]).
+-export([config/1, read_only/1, replica/1]).
 
 -eqwalizer({nowarn_function, read_config/1}).
 
@@ -96,6 +96,33 @@ config(RepoMod) ->
     case erlang:function_exported(RepoMod, init, 1) of
         true -> RepoMod:init(Config);
         false -> Config
+    end.
+
+-doc """
+Return `true` if the repo is configured `read_only => true`.
+
+A read-only repo rejects writes (insert/update/delete and the bulk and
+soft-delete variants return `{error, read_only}`). Reads are unaffected.
+Intended for a replica repo pointed at a read replica.
+""".
+-spec read_only(module()) -> boolean().
+read_only(RepoMod) ->
+    maps:get(read_only, config(RepoMod), false) =:= true.
+
+-doc """
+Pick a replica repo for `RepoMod` from its `replicas => [Repo]` config.
+
+Returns a randomly-chosen replica, or `RepoMod` itself when none are
+configured. Routing is explicit: the caller runs reads through the
+returned repo (`(kura_repo:replica(MyRepo)):all(Q)`), so the caller owns
+read-after-write consistency. There is no automatic write/read split.
+""".
+-spec replica(module()) -> module().
+replica(RepoMod) ->
+    case maps:get(replicas, config(RepoMod), []) of
+        [] -> RepoMod;
+        [Only] -> Only;
+        Replicas when is_list(Replicas) -> lists:nth(rand:uniform(length(Replicas)), Replicas)
     end.
 
 -spec read_config(module()) -> map().
