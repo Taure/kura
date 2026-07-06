@@ -48,7 +48,7 @@ kura_repo_worker:start(MyRepo),
 ]).
 
 -ifdef(TEST).
--export([generate_uuid/1, uuid_version/1, key_clauses/2]).
+-export([generate_uuid/1, uuid_version/1, key_clauses/2, key_conds/2]).
 -endif.
 
 -eqwalizer({nowarn_function, do_insert/2}).
