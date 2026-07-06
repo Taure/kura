@@ -173,6 +173,21 @@ primary_key_field_single_test() ->
     Field = kura_schema:primary_key_field(kura_test_schema),
     ?assertEqual(id, Field#kura_field.name).
 
+assoc_fields_from_legacy_foreign_key_test() ->
+    A = #kura_assoc{name = user, type = belongs_to, schema = t, foreign_key = user_id},
+    ?assertEqual([user_id], kura_schema:assoc_fields(A)).
+
+assoc_fields_from_composite_ref_test() ->
+    A = #kura_assoc{
+        name = membership,
+        type = belongs_to,
+        ref = #kura_ref{fields = [org_id, user_id], target = t}
+    },
+    ?assertEqual([org_id, user_id], kura_schema:assoc_fields(A)).
+
+assoc_fields_none_test() ->
+    ?assertEqual([], kura_schema:assoc_fields(#kura_assoc{name = x, type = has_many, schema = t})).
+
 primary_key_field_composite_raises_named_error_test() ->
     ?assertError(
         {composite_primary_key, kura_test_composite_schema, [org_id, user_id]},

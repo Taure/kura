@@ -34,11 +34,18 @@
     optimistic_lock :: atom() | undefined
 }).
 
+-record(kura_ref, {
+    fields :: [atom()],
+    target :: module(),
+    target_key :: [atom()] | undefined
+}).
+
 -record(kura_assoc, {
     name :: atom(),
     type :: belongs_to | has_one | has_many | many_to_many,
     schema :: module(),
     foreign_key :: atom() | undefined,
+    ref :: #kura_ref{} | undefined,
     join_through :: binary() | module() | undefined,
     join_keys :: {atom(), atom()} | undefined,
     through :: [atom()] | undefined

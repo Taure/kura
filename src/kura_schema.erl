@@ -32,6 +32,7 @@ fields() ->
     non_virtual_fields/1,
     associations/1,
     association/2,
+    assoc_fields/1,
     embeds/1,
     embed/2,
     constraints/1,
@@ -200,6 +201,21 @@ association(Mod, Name) ->
         [Assoc] -> {ok, Assoc};
         [] -> {error, not_found}
     end.
+
+-doc """
+Return the foreign-key column(s) of an association as an ordered list.
+
+A `#kura_ref{}`'s `fields` win; a legacy single `foreign_key` lowers to
+a one-element list, so single-column associations are the arity-1 case
+of the same list. Returns `[]` if neither is set.
+""".
+-spec assoc_fields(#kura_assoc{}) -> [atom()].
+assoc_fields(#kura_assoc{ref = #kura_ref{fields = Fields}}) when Fields =/= undefined ->
+    Fields;
+assoc_fields(#kura_assoc{foreign_key = FK}) when FK =/= undefined ->
+    [FK];
+assoc_fields(#kura_assoc{}) ->
+    [].
 
 -doc "Return all embeds defined on a schema module.".
 -spec embeds(module()) -> [#kura_embed{}].
