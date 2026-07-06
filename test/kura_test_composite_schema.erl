@@ -3,7 +3,7 @@
 
 -include("kura.hrl").
 
--export([table/0, key/0, fields/0]).
+-export([table/0, key/0, fields/0, associations/0]).
 
 table() -> ~"memberships".
 
@@ -14,4 +14,13 @@ fields() ->
         #kura_field{name = org_id, type = uuid, nullable = false},
         #kura_field{name = user_id, type = uuid, nullable = false},
         #kura_field{name = role, type = string, default = ~"member"}
+    ].
+
+associations() ->
+    [
+        #kura_assoc{
+            name = notes,
+            type = has_many,
+            ref = #kura_ref{fields = [org_id, user_id], target = kura_test_membership_note_schema}
+        }
     ].
