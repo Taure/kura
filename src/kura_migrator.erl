@@ -561,6 +561,11 @@ compile_column_def(RepoMod, #kura_column{
     ]).
 
 -spec compile_table_constraint(kura_migration:table_constraint()) -> binary().
+compile_table_constraint({primary_key, Cols}) ->
+    ColList = iolist_to_binary(
+        join_comma_iodata([quote(atom_to_binary(C, utf8)) || C <- Cols])
+    ),
+    <<"PRIMARY KEY (", ColList/binary, ")">>;
 compile_table_constraint({unique, Cols}) ->
     ColList = iolist_to_binary(
         join_comma_iodata([quote(atom_to_binary(C, utf8)) || C <- Cols])

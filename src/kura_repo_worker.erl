@@ -882,7 +882,13 @@ maybe_add_timestamps(SchemaMod, Changes, Action) ->
 
 -spec maybe_generate_pk(module(), module(), map()) -> map().
 maybe_generate_pk(RepoMod, SchemaMod, Changes) ->
-    PK = kura_schema:primary_key(SchemaMod),
+    case kura_schema:key(SchemaMod) of
+        [PK] -> maybe_generate_single_pk(RepoMod, SchemaMod, PK, Changes);
+        _ -> Changes
+    end.
+
+-spec maybe_generate_single_pk(module(), module(), atom(), map()) -> map().
+maybe_generate_single_pk(RepoMod, SchemaMod, PK, Changes) ->
     case maps:is_key(PK, Changes) of
         true ->
             Changes;
