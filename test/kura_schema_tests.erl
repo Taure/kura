@@ -173,6 +173,61 @@ primary_key_field_single_test() ->
     Field = kura_schema:primary_key_field(kura_test_schema),
     ?assertEqual(id, Field#kura_field.name).
 
+assoc_fields_from_legacy_foreign_key_test() ->
+    A = #kura_assoc{name = user, type = belongs_to, schema = t, foreign_key = user_id},
+    ?assertEqual([user_id], kura_schema:assoc_fields(A)).
+
+assoc_fields_from_composite_ref_test() ->
+    A = #kura_assoc{
+        name = membership,
+        type = belongs_to,
+        ref = #kura_ref{fields = [org_id, user_id], target = t}
+    },
+    ?assertEqual([org_id, user_id], kura_schema:assoc_fields(A)).
+
+assoc_fields_none_test() ->
+    ?assertEqual([], kura_schema:assoc_fields(#kura_assoc{name = x, type = has_many, schema = t})).
+
+assoc_fields_ref_wins_over_foreign_key_test() ->
+    A = #kura_assoc{
+        name = membership,
+        type = belongs_to,
+        foreign_key = legacy_id,
+        ref = #kura_ref{fields = [org_id, user_id], target = t}
+    },
+    ?assertEqual([org_id, user_id], kura_schema:assoc_fields(A)).
+
+assoc_fields_ref_without_fields_falls_back_to_foreign_key_test() ->
+    A = #kura_assoc{
+        name = membership,
+        type = belongs_to,
+        foreign_key = user_id,
+        ref = #kura_ref{target = t}
+    },
+    ?assertEqual([user_id], kura_schema:assoc_fields(A)).
+
+assoc_target_from_ref_test() ->
+    A = #kura_assoc{name = m, type = belongs_to, schema = legacy_t, ref = #kura_ref{target = t}},
+    ?assertEqual(t, kura_schema:assoc_target(A)).
+
+assoc_target_from_legacy_schema_test() ->
+    ?assertEqual(
+        legacy_t,
+        kura_schema:assoc_target(#kura_assoc{name = m, type = belongs_to, schema = legacy_t})
+    ).
+
+assoc_target_key_explicit_test() ->
+    A = #kura_assoc{
+        name = m, type = belongs_to, ref = #kura_ref{fields = [a], target = t, target_key = [b]}
+    },
+    ?assertEqual([b], kura_schema:assoc_target_key(A)).
+
+assoc_target_key_defaults_undefined_test() ->
+    ?assertEqual(
+        undefined,
+        kura_schema:assoc_target_key(#kura_assoc{name = m, type = belongs_to, foreign_key = fk})
+    ).
+
 primary_key_field_composite_raises_named_error_test() ->
     ?assertError(
         {composite_primary_key, kura_test_composite_schema, [org_id, user_id]},

@@ -32,6 +32,9 @@ fields() ->
     non_virtual_fields/1,
     associations/1,
     association/2,
+    assoc_fields/1,
+    assoc_target/1,
+    assoc_target_key/1,
     embeds/1,
     embed/2,
     constraints/1,
@@ -200,6 +203,44 @@ association(Mod, Name) ->
         [Assoc] -> {ok, Assoc};
         [] -> {error, not_found}
     end.
+
+-doc """
+Return the foreign-key column(s) of an association as an ordered list.
+
+A `#kura_ref{}`'s `fields` win; a legacy single `foreign_key` lowers to
+a one-element list, so single-column associations are the arity-1 case
+of the same list. Returns `[]` if neither is set.
+""".
+-spec assoc_fields(#kura_assoc{}) -> [atom()].
+assoc_fields(#kura_assoc{ref = #kura_ref{fields = Fields}}) when Fields =/= undefined ->
+    Fields;
+assoc_fields(#kura_assoc{foreign_key = FK}) when FK =/= undefined ->
+    [FK];
+assoc_fields(#kura_assoc{}) ->
+    [].
+
+-doc """
+Return the target schema module of an association.
+
+A `#kura_ref{}`'s `target` wins; otherwise the legacy `schema` field.
+""".
+-spec assoc_target(#kura_assoc{}) -> module() | undefined.
+assoc_target(#kura_assoc{ref = #kura_ref{target = T}}) when T =/= undefined ->
+    T;
+assoc_target(#kura_assoc{schema = S}) ->
+    S.
+
+-doc """
+Return the explicit referenced key column(s) on the target side, or
+`undefined` to mean "default to the target schema's key". Only a
+`#kura_ref{}` can carry this; legacy associations always return
+`undefined`.
+""".
+-spec assoc_target_key(#kura_assoc{}) -> [atom()] | undefined.
+assoc_target_key(#kura_assoc{ref = #kura_ref{target_key = Cols}}) ->
+    Cols;
+assoc_target_key(#kura_assoc{}) ->
+    undefined.
 
 -doc "Return all embeds defined on a schema module.".
 -spec embeds(module()) -> [#kura_embed{}].
