@@ -331,4 +331,15 @@ Many-to-many associations use a join table:
 - `join_through` - the join table name
 - `join_keys` - `{FK to self, FK to related}`
 
+When either side has a composite key, give the matching side of `join_keys` a
+list of columns. A single atom is the one-element case of the same model.
+
+```erlang
+%% a membership (composite key org_id + user_id) linked to tags through
+%% a join table with (org_id, user_id, tag_id)
+#kura_assoc{name = tags, type = many_to_many, schema = tag,
+            join_through = ~"membership_tags",
+            join_keys = {[org_id, user_id], [tag_id]}}.
+```
+
 Persisting via `cast_assoc` or `put_assoc` deletes existing join rows and inserts new ones. See the [Nested Changesets](cast_assoc.md) guide for details.
