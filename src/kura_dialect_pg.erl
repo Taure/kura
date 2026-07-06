@@ -18,7 +18,7 @@ configured for the running app.
     insert/3,
     insert/4,
     update/4,
-    delete/3,
+    delete/2,
     update_all/2,
     delete_all/1,
     insert_all/3,
@@ -125,40 +125,48 @@ insert(SchemaOrTable, Fields, Data, _Opts) ->
 %% UPDATE
 %%----------------------------------------------------------------------
 
--spec update(atom() | module(), [atom()], map(), {atom(), term()}) -> {iodata(), [term()]}.
-update(SchemaOrTable, Fields, Changes, {PKField, PKValue}) ->
+-spec update(atom() | module(), [atom()], map(), [{atom(), term()}]) -> {iodata(), [term()]}.
+update(SchemaOrTable, Fields, Changes, KeyClauses) ->
     Table = resolve_table(SchemaOrTable),
     {Sets, Params, Counter} = build_set_parts(Fields, Changes, 1),
-    PKPlaceholder = [~"$", integer_to_binary(Counter)],
+    {KeyConds, KeyParams, _} = key_where(KeyClauses, Counter),
     SQL = iolist_to_binary([
         ~"UPDATE ",
         qualified_table(Table, resolve_prefix(undefined)),
         ~" SET ",
         join_comma(Sets),
         ~" WHERE ",
-        quote_ident(atom_to_binary(PKField, utf8)),
-        ~" = ",
-        PKPlaceholder,
+        lists:join(~" AND ", KeyConds),
         ~" RETURNING *"
     ]),
-    {SQL, Params ++ [PKValue]}.
+    {SQL, Params ++ KeyParams}.
+
+%% One `col = $n` condition per key column, params in key order.
+key_where(KeyClauses, Start) ->
+    key_where(KeyClauses, Start, [], []).
+
+key_where([], Counter, Conds, Params) ->
+    {lists:reverse(Conds), lists:reverse(Params), Counter};
+key_where([{Field, Value} | Rest], Counter, Conds, Params) ->
+    Cond = [quote_ident(atom_to_binary(Field, utf8)), ~" = $", integer_to_binary(Counter)],
+    key_where(Rest, Counter + 1, [Cond | Conds], [Value | Params]).
 
 %%----------------------------------------------------------------------
 %% DELETE
 %%----------------------------------------------------------------------
 
--spec delete(atom() | module(), atom(), term()) -> {iodata(), [term()]}.
-delete(SchemaOrTable, PKField, PKValue) ->
+-spec delete(atom() | module(), [{atom(), term()}]) -> {iodata(), [term()]}.
+delete(SchemaOrTable, KeyClauses) ->
     Table = resolve_table(SchemaOrTable),
+    {KeyConds, Params, _} = key_where(KeyClauses, 1),
     SQL = iolist_to_binary([
         ~"DELETE FROM ",
         qualified_table(Table, resolve_prefix(undefined)),
         ~" WHERE ",
-        quote_ident(atom_to_binary(PKField, utf8)),
-        ~" = $1",
+        lists:join(~" AND ", KeyConds),
         ~" RETURNING *"
     ]),
-    {SQL, [PKValue]}.
+    {SQL, Params}.
 
 %%----------------------------------------------------------------------
 %% UPDATE ALL (bulk)

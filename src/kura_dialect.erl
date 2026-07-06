@@ -59,11 +59,11 @@ Returns the next free counter so callers can chain sub-compilations.
 -doc "Compile a single-row INSERT with options (e.g. `on_conflict`).".
 -callback insert(atom() | module(), [atom()], map(), map()) -> {sql(), params()}.
 
--doc "Compile an UPDATE-by-primary-key.".
--callback update(atom() | module(), [atom()], map(), {atom(), term()}) -> {sql(), params()}.
+-doc "Compile an UPDATE-by-primary-key. The key is one clause per column (single-key is a one-element list).".
+-callback update(atom() | module(), [atom()], map(), [{atom(), term()}]) -> {sql(), params()}.
 
--doc "Compile a DELETE-by-primary-key.".
--callback delete(atom() | module(), atom(), term()) -> {sql(), params()}.
+-doc "Compile a DELETE-by-primary-key. The key is one clause per column (single-key is a one-element list).".
+-callback delete(atom() | module(), [{atom(), term()}]) -> {sql(), params()}.
 
 -doc "Compile a bulk UPDATE (`UPDATE ... WHERE ...`) from a query AST and a SET map.".
 -callback update_all(#kura_query{}, map()) -> {sql(), params()}.

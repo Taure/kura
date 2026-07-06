@@ -14,7 +14,7 @@
     insert/3,
     insert/4,
     update/4,
-    delete/3,
+    delete/2,
     update_all/2,
     delete_all/1,
     insert_all/3,
@@ -110,11 +110,11 @@ facade_delegates_all_callbacks_to_dialect_test_() ->
         ),
         ?_assertEqual(
             {~"FAKE_UPDATE", []},
-            kura_query_compiler:update(?REPO, my_schema, [name], #{name => <<"x">>}, {id, 1})
+            kura_query_compiler:update(?REPO, my_schema, [name], #{name => <<"x">>}, [{id, 1}])
         ),
         ?_assertEqual(
             {~"FAKE_DELETE", []},
-            kura_query_compiler:delete(?REPO, my_schema, id, 1)
+            kura_query_compiler:delete(?REPO, my_schema, [{id, 1}])
         ),
         ?_assertEqual(
             {~"FAKE_UPDATE_ALL", []},
@@ -190,8 +190,8 @@ to_sql(_Q) -> {~"FAKE_SQL", [fake_param]}.
 to_sql_from(_Q, C) -> {~"FAKE_SQL", [fake_param], C + 1}.
 insert(_S, _F, _D) -> {~"FAKE_INSERT", []}.
 insert(_S, _F, _D, _O) -> {~"FAKE_INSERT", []}.
-update(_S, _F, _C, _PK) -> {~"FAKE_UPDATE", []}.
-delete(_S, _PK, _V) -> {~"FAKE_DELETE", []}.
+update(_S, _F, _C, _KeyClauses) -> {~"FAKE_UPDATE", []}.
+delete(_S, _KeyClauses) -> {~"FAKE_DELETE", []}.
 update_all(_Q, _M) -> {~"FAKE_UPDATE_ALL", []}.
 delete_all(_Q) -> {~"FAKE_DELETE_ALL", []}.
 insert_all(_S, _F, _R) -> {~"FAKE_INSERT_ALL", []}.

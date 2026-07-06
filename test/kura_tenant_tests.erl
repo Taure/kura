@@ -103,7 +103,7 @@ update_with_prefix_test() ->
     try
         kura_tenant:put_tenant({prefix, <<"acme">>}),
         {SQL, _} = kura_query_compiler:update(
-            ?REPO, ?S, [title], #{title => <<"Updated">>}, {id, 1}
+            ?REPO, ?S, [title], #{title => <<"Updated">>}, [{id, 1}]
         ),
         SQLBin = iolist_to_binary(SQL),
         ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"acme\".\"posts\"">>))
@@ -115,7 +115,7 @@ delete_with_prefix_test() ->
     setup(),
     try
         kura_tenant:put_tenant({prefix, <<"acme">>}),
-        {SQL, _} = kura_query_compiler:delete(?REPO, ?S, id, 1),
+        {SQL, _} = kura_query_compiler:delete(?REPO, ?S, [{id, 1}]),
         SQLBin = iolist_to_binary(SQL),
         ?assertNotEqual(nomatch, binary:match(SQLBin, <<"\"acme\".\"posts\"">>))
     after

@@ -48,7 +48,7 @@ kura_repo_worker:start(MyRepo),
 ]).
 
 -ifdef(TEST).
--export([generate_uuid/1, uuid_version/1, key_clauses/2]).
+-export([generate_uuid/1, uuid_version/1, key_clauses/2, key_conds/2]).
 -endif.
 
 -eqwalizer({nowarn_function, do_insert/2}).
@@ -587,13 +587,12 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
                 0 ->
                     {ok, Data};
                 _ ->
-                    PK = kura_schema:primary_key(SchemaMod),
-                    PKValue = maps:get(PK, Data),
+                    KeyClauses = key_pairs(SchemaMod, Data),
                     Changes1 = maybe_add_timestamps(SchemaMod, Changes, update),
                     DumpedChanges = dump_changes(SchemaMod, Changes1),
                     Fields = maps:keys(DumpedChanges),
                     case
-                        do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, PK, PKValue)
+                        do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, KeyClauses)
                     of
                         {ok, Row} ->
                             kura_schema:run_after_update(SchemaMod, Row);
@@ -603,11 +602,11 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
             end
     end.
 
-do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, PK, PKValue) ->
+do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, KeyClauses) ->
     case CS#kura_changeset.optimistic_lock of
         undefined ->
             {SQL, Params} = kura_query_compiler:update(
-                RepoMod, SchemaMod, Fields, DumpedChanges, {PK, PKValue}
+                RepoMod, SchemaMod, Fields, DumpedChanges, KeyClauses
             ),
             case kura_db:query(RepoMod, SQL, Params) of
                 #{command := update, rows := [Row]} ->
@@ -629,7 +628,7 @@ do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, PK, PKValue) ->
                 SchemaMod,
                 Fields,
                 DumpedChanges,
-                {PK, PKValue},
+                KeyClauses,
                 {LockField, LockValue}
             ),
             case kura_db:query(RepoMod, SQL, Params) of
@@ -655,28 +654,40 @@ apply_prepare_funs(CS, [Fun | Rest]) ->
     apply_prepare_funs(Fun(CS), Rest).
 
 compile_update_with_lock(
-    SchemaOrTable, Fields, Changes, {PKField, PKValue}, {LockField, LockValue}
+    SchemaOrTable, Fields, Changes, KeyClauses, {LockField, LockValue}
 ) ->
     Table = resolve_table_name(SchemaOrTable),
     {Sets, Params, Counter} = build_lock_set_parts(Fields, Changes, 1),
-    PKPlaceholder = [~"$", integer_to_binary(Counter)],
-    LockPlaceholder = [~"$", integer_to_binary(Counter + 1)],
+    {KeyConds, KeyParams, NextCounter} = key_conds(KeyClauses, Counter),
+    LockPlaceholder = [~"$", integer_to_binary(NextCounter)],
     SQL = iolist_to_binary([
         ~"UPDATE ",
         quote_ident_bin(Table),
         ~" SET ",
         join_comma_bin(Sets),
         ~" WHERE ",
-        quote_ident_bin(atom_to_binary(PKField, utf8)),
-        ~" = ",
-        PKPlaceholder,
+        lists:join(~" AND ", KeyConds),
         ~" AND ",
         quote_ident_bin(atom_to_binary(LockField, utf8)),
         ~" = ",
         LockPlaceholder,
         ~" RETURNING *"
     ]),
-    {SQL, Params ++ [PKValue, LockValue]}.
+    {SQL, Params ++ KeyParams ++ [LockValue]}.
+
+%% One `col = $n` condition per key column, using the binary quoter.
+key_conds(KeyClauses, Start) ->
+    key_conds(KeyClauses, Start, [], []).
+
+key_conds([], Counter, Conds, Params) ->
+    {lists:reverse(Conds), lists:reverse(Params), Counter};
+key_conds([{Field, Value} | Rest], Counter, Conds, Params) ->
+    Cond = [quote_ident_bin(atom_to_binary(Field, utf8)), ~" = $", integer_to_binary(Counter)],
+    key_conds(Rest, Counter + 1, [Cond | Conds], [Value | Params]).
+
+%% The key column/value pairs from a record, in key order.
+key_pairs(SchemaMod, Data) ->
+    [{K, maps:get(K, Data)} || K <- kura_schema:key(SchemaMod)].
 
 resolve_table_name(Mod) when is_atom(Mod) ->
     case code:ensure_loaded(Mod) of
@@ -824,9 +835,8 @@ delete_record(RepoMod, SchemaMod, Data) ->
         {error, _} = Err ->
             Err;
         ok ->
-            PK = kura_schema:primary_key(SchemaMod),
-            PKValue = maps:get(PK, Data),
-            {SQL, Params} = kura_query_compiler:delete(RepoMod, SchemaMod, PK, PKValue),
+            KeyClauses = key_pairs(SchemaMod, Data),
+            {SQL, Params} = kura_query_compiler:delete(RepoMod, SchemaMod, KeyClauses),
             case kura_db:query(RepoMod, SQL, Params) of
                 #{command := delete, rows := [Row]} ->
                     Row1 = kura_db:load_row(SchemaMod, Row),

@@ -38,6 +38,19 @@ key_clauses_incomplete_key_rejected_test() ->
         kura_repo_worker:key_clauses(kura_test_composite_schema, #{org_id => <<"o">>})
     ).
 
+key_conds_composite_counter_test() ->
+    %% The optimistic-lock UPDATE builder must continue placeholder
+    %% numbering from the SET counter and hand the lock the next slot.
+    {Conds, Params, Next} = kura_repo_worker:key_conds(
+        [{org_id, <<"o">>}, {user_id, <<"u">>}], 2
+    ),
+    ?assertEqual(
+        [<<"\"org_id\" = $2">>, <<"\"user_id\" = $3">>],
+        [iolist_to_binary(C) || C <- Conds]
+    ),
+    ?assertEqual([<<"o">>, <<"u">>], Params),
+    ?assertEqual(4, Next).
+
 reload_composite_missing_key_col_rejected_test() ->
     %% user_id absent from the record: the key-completeness guard must
     %% reject before any repo round-trip, so the repo arg is never used.

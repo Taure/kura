@@ -19,7 +19,7 @@ This module is internal. Use `kura_repo_worker` for executing queries.
     insert/4,
     insert/5,
     update/5,
-    delete/4,
+    delete/3,
     update_all/3,
     delete_all/2,
     insert_all/4,
@@ -82,14 +82,14 @@ insert(RepoMod, SchemaOrTable, Fields, Data) ->
 insert(RepoMod, SchemaOrTable, Fields, Data, Opts) ->
     (dialect(RepoMod)):insert(SchemaOrTable, Fields, Data, Opts).
 
--spec update(module(), atom() | module(), [atom()], map(), {atom(), term()}) ->
+-spec update(module(), atom() | module(), [atom()], map(), [{atom(), term()}]) ->
     {iodata(), [term()]}.
-update(RepoMod, SchemaOrTable, Fields, Changes, PK) ->
-    (dialect(RepoMod)):update(SchemaOrTable, Fields, Changes, PK).
+update(RepoMod, SchemaOrTable, Fields, Changes, KeyClauses) ->
+    (dialect(RepoMod)):update(SchemaOrTable, Fields, Changes, KeyClauses).
 
--spec delete(module(), atom() | module(), atom(), term()) -> {iodata(), [term()]}.
-delete(RepoMod, SchemaOrTable, PKField, PKValue) ->
-    (dialect(RepoMod)):delete(SchemaOrTable, PKField, PKValue).
+-spec delete(module(), atom() | module(), [{atom(), term()}]) -> {iodata(), [term()]}.
+delete(RepoMod, SchemaOrTable, KeyClauses) ->
+    (dialect(RepoMod)):delete(SchemaOrTable, KeyClauses).
 
 -spec update_all(module(), #kura_query{}, map()) -> {iodata(), [term()]}.
 update_all(RepoMod, Query, SetMap) ->
