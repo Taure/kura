@@ -748,20 +748,32 @@ persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AssocChanges) ->
 persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) when
     is_list(ChildCSs)
 ->
-    FK = Assoc#kura_assoc.foreign_key,
-    PK = kura_schema:primary_key(SchemaMod),
-    PKValue = maps:get(PK, AccRow),
+    Binding = owned_fk_binding(Assoc, SchemaMod, AccRow),
     Children = [
-        persist_child(RepoMod, kura_changeset:put_change(ChildCS, FK, PKValue))
+        persist_child(RepoMod, set_owned_fk(ChildCS, Binding))
      || ChildCS <- ChildCSs
     ],
     {ok, AccRow#{AssocName => Children}};
 persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCS) ->
-    FK = Assoc#kura_assoc.foreign_key,
-    PK = kura_schema:primary_key(SchemaMod),
-    PKValue = maps:get(PK, AccRow),
-    Child = persist_child(RepoMod, kura_changeset:put_change(ChildCS, FK, PKValue)),
+    Binding = owned_fk_binding(Assoc, SchemaMod, AccRow),
+    Child = persist_child(RepoMod, set_owned_fk(ChildCS, Binding)),
     {ok, AccRow#{AssocName => Child}}.
+
+%% The child foreign-key columns paired with the parent key values they
+%% reference. Single-column FKs are the one-element case.
+owned_fk_binding(Assoc, SchemaMod, AccRow) ->
+    FKCols = kura_schema:assoc_fields(Assoc),
+    ParentKey =
+        case kura_schema:assoc_target_key(Assoc) of
+            undefined -> kura_schema:key(SchemaMod);
+            Cols -> Cols
+        end,
+    lists:zip(FKCols, [maps:get(K, AccRow) || K <- ParentKey]).
+
+set_owned_fk(CS, []) ->
+    CS;
+set_owned_fk(CS, [{Col, Value} | Rest]) ->
+    set_owned_fk(kura_changeset:put_change(CS, Col, Value), Rest).
 
 persist_child(RepoMod, CS = #kura_changeset{action = insert}) ->
     {ok, Child} = insert_record(RepoMod, CS),

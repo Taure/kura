@@ -26,6 +26,7 @@ assoc_test_() ->
                 fun t_preload_belongs_to_composite_missing/0},
             {"preload has_many via composite FK", fun t_preload_has_many_composite/0},
             {"preload has_one via composite FK", fun t_preload_has_one_composite/0},
+            {"persist owned children with composite FK", fun t_persist_owned_composite/0},
             {"preload has_many", fun t_preload_has_many/0},
             {"preload has_one", fun t_preload_has_one/0},
             {"preload many_to_many", fun t_preload_many_to_many/0},
@@ -320,6 +321,23 @@ t_preload_has_one_composite() ->
     ),
     [Loaded] = kura_test_repo:preload(kura_test_composite_schema, [Membership], [latest_note]),
     ?assertEqual(~"only", maps:get(body, maps:get(latest_note, Loaded))).
+
+t_persist_owned_composite() ->
+    Org = ~"77777777-7777-7777-7777-777777777777",
+    User = ~"88888888-8888-8888-8888-888888888888",
+    CS0 = kura_changeset:cast(
+        kura_test_composite_schema,
+        #{},
+        #{org_id => Org, user_id => User, role => ~"admin", notes => [#{body => ~"n1"}]},
+        [org_id, user_id, role]
+    ),
+    CS = kura_changeset:cast_assoc(CS0, notes),
+    {ok, Membership} = kura_test_repo:insert(CS),
+    [Note] = maps:get(notes, Membership),
+    %% the child's composite FK is set from the parent's key
+    ?assertEqual(Org, maps:get(org_id, Note)),
+    ?assertEqual(User, maps:get(user_id, Note)),
+    ?assertEqual(~"n1", maps:get(body, Note)).
 
 t_preload_has_many() ->
     {ok, User} = insert_user(<<"HM_Author">>, <<"hm_author@test.com">>),
