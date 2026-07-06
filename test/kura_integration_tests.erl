@@ -348,6 +348,19 @@ t_composite_crud() ->
     ?assertEqual(~"admin", maps:get(role, Fetched)),
     {ok, Reloaded} = kura_test_repo:reload(kura_test_composite_schema, Inserted),
     ?assertEqual(~"admin", maps:get(role, Reloaded)),
+    UCS = kura_changeset:cast(kura_test_composite_schema, Inserted, #{role => ~"owner"}, [role]),
+    {ok, Updated} = kura_test_repo:update(UCS),
+    ?assertEqual(~"owner", maps:get(role, Updated)),
+    {ok, Refetched} = kura_test_repo:get(kura_test_composite_schema, #{
+        org_id => Org, user_id => User
+    }),
+    ?assertEqual(~"owner", maps:get(role, Refetched)),
+    DCS = kura_changeset:cast(kura_test_composite_schema, Updated, #{}, []),
+    {ok, _} = kura_test_repo:delete(DCS),
+    ?assertEqual(
+        {error, not_found},
+        kura_test_repo:get(kura_test_composite_schema, #{org_id => Org, user_id => User})
+    ),
     ?assertError(
         {incomplete_key, kura_test_composite_schema, user_id},
         kura_test_repo:get(kura_test_composite_schema, #{org_id => Org})

@@ -403,19 +403,44 @@ insert_test() ->
 
 update_test() ->
     {SQL, Params} = kura_dialect_pg:update(
-        kura_test_schema, [name], #{name => <<"Bob">>}, {id, 1}
+        kura_test_schema, [name], #{name => <<"Bob">>}, [{id, 1}]
     ),
     ?assertEqual(<<"UPDATE \"users\" SET \"name\" = $1 WHERE \"id\" = $2 RETURNING *">>, SQL),
     ?assertEqual([<<"Bob">>, 1], Params).
+
+update_composite_key_test() ->
+    {SQL, Params} = kura_dialect_pg:update(
+        kura_test_composite_schema, [role], #{role => <<"admin">>}, [
+            {org_id, <<"o">>}, {user_id, <<"u">>}
+        ]
+    ),
+    ?assertEqual(
+        <<
+            "UPDATE \"memberships\" SET \"role\" = $1 "
+            "WHERE \"org_id\" = $2 AND \"user_id\" = $3 RETURNING *"
+        >>,
+        SQL
+    ),
+    ?assertEqual([<<"admin">>, <<"o">>, <<"u">>], Params).
 
 %%----------------------------------------------------------------------
 %% DELETE
 %%----------------------------------------------------------------------
 
 delete_test() ->
-    {SQL, Params} = kura_dialect_pg:delete(kura_test_schema, id, 1),
+    {SQL, Params} = kura_dialect_pg:delete(kura_test_schema, [{id, 1}]),
     ?assertEqual(<<"DELETE FROM \"users\" WHERE \"id\" = $1 RETURNING *">>, SQL),
     ?assertEqual([1], Params).
+
+delete_composite_key_test() ->
+    {SQL, Params} = kura_dialect_pg:delete(kura_test_composite_schema, [
+        {org_id, <<"o">>}, {user_id, <<"u">>}
+    ]),
+    ?assertEqual(
+        <<"DELETE FROM \"memberships\" WHERE \"org_id\" = $1 AND \"user_id\" = $2 RETURNING *">>,
+        SQL
+    ),
+    ?assertEqual([<<"o">>, <<"u">>], Params).
 
 %%----------------------------------------------------------------------
 %% INSERT with ON CONFLICT (upsert)
