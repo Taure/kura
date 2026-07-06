@@ -18,8 +18,6 @@ associations() ->
         #kura_assoc{
             name = members,
             type = has_many,
-            ref = #kura_ref{
-                fields = [org_id], target = kura_test_composite_schema, target_key = [id]
-            }
+            ref = #kura_ref{fields = [org_id], target = kura_test_composite_schema}
         }
     ].

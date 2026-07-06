@@ -117,16 +117,25 @@ cast_embed_params(CS, EmbedName, #kura_embed{type = embeds_many}, _Params, _With
 
 default_cast_fun(Assoc = #kura_assoc{type = many_to_many}) ->
     ChildSchema = kura_schema:assoc_target(Assoc),
-    Allowed = castable_fields(ChildSchema, kura_schema:key(ChildSchema)),
+    Allowed = castable_fields(ChildSchema, key_exclude(ChildSchema)),
     fun(Data, ChildParams) ->
         kura_changeset:cast(ChildSchema, Data, ChildParams, Allowed)
     end;
 default_cast_fun(Assoc = #kura_assoc{}) ->
     ChildSchema = kura_schema:assoc_target(Assoc),
-    Exclude = kura_schema:key(ChildSchema) ++ kura_schema:assoc_fields(Assoc),
+    Exclude = key_exclude(ChildSchema) ++ kura_schema:assoc_fields(Assoc),
     Allowed = castable_fields(ChildSchema, Exclude),
     fun(Data, ChildParams) ->
         kura_changeset:cast(ChildSchema, Data, ChildParams, Allowed)
+    end.
+
+%% Key columns the framework owns and the caller may not cast: only the
+%% single auto-generated surrogate PK. A composite (natural) key is
+%% caller-supplied, so nothing is excluded on that account.
+key_exclude(Schema) ->
+    case kura_schema:key(Schema) of
+        [PK] -> [PK];
+        _ -> []
     end.
 
 cast_assoc_params(CS, AssocName, Assoc, NestedParams, Existing, WithFun) ->
@@ -184,7 +193,7 @@ coerce_assoc_value(_Assoc, Value) ->
 coerce_single(Assoc = #kura_assoc{type = many_to_many}, Map) when is_map(Map) ->
     ChildSchema = kura_schema:assoc_target(Assoc),
     Key = kura_schema:key(ChildSchema),
-    Allowed = castable_fields(ChildSchema, Key),
+    Allowed = castable_fields(ChildSchema, key_exclude(ChildSchema)),
     NormMap = kura_changeset:normalize_params(Map),
     case key_data(Key, NormMap) of
         {ok, KeyData} ->
@@ -196,20 +205,23 @@ coerce_single(Assoc = #kura_assoc{type = many_to_many}, Map) when is_map(Map) ->
     end;
 coerce_single(Assoc = #kura_assoc{}, Map) when is_map(Map) ->
     ChildSchema = kura_schema:assoc_target(Assoc),
-    Exclude = kura_schema:key(ChildSchema) ++ kura_schema:assoc_fields(Assoc),
+    Exclude = key_exclude(ChildSchema) ++ kura_schema:assoc_fields(Assoc),
     Allowed = castable_fields(ChildSchema, Exclude),
     CS = kura_changeset:cast(ChildSchema, #{}, Map, Allowed),
     CS#kura_changeset{action = insert};
 coerce_single(_Assoc, #kura_changeset{} = CS) ->
     CS.
 
-%% All key columns present and non-undefined -> {ok, key sub-map} (an
-%% existing record); otherwise error (a new one to insert).
+%% {ok, key sub-map} distinguishes an existing record from a new insert.
+-spec key_data([atom()], map()) -> {ok, map()} | error.
 key_data(Key, Map) ->
-    case lists:all(fun(K) -> maps:get(K, Map, undefined) =/= undefined end, Key) of
+    case has_all_keys(Key, Map) of
         true -> {ok, maps:with(Key, Map)};
         false -> error
     end.
+
+has_all_keys(Key, Map) ->
+    lists:all(fun(K) -> maps:get(K, Map, undefined) =/= undefined end, Key).
 
 castable_fields(Schema, Exclude) ->
     AllFields = kura_schema:field_names(Schema),
@@ -262,23 +274,27 @@ cast_has_many_children([], _Key, _Lookup, _WithFun, Acc) ->
     reverse_changesets(Acc, []);
 cast_has_many_children([ChildParams | Rest], Key, Lookup, WithFun, Acc) ->
     NormParams = kura_changeset:normalize_params(ChildParams),
-    ChildCS =
-        case key_tuple(Key, NormParams) of
-            undefined ->
-                CS = WithFun(#{}, NormParams),
-                CS#kura_changeset{action = insert};
-            Tuple ->
-                ExistingData = maps:get(Tuple, Lookup, #{}),
-                CS = WithFun(ExistingData, NormParams),
-                CS#kura_changeset{action = update}
-        end,
+    ChildCS = classify_child(Key, key_tuple(Key, NormParams), Lookup, WithFun, NormParams),
     cast_has_many_children(Rest, Key, Lookup, WithFun, [ChildCS | Acc]).
 
-%% The key value-tuple if every key column is present and non-undefined,
-%% else undefined (a new record to insert).
+%% A missing key is always a new insert. A single surrogate key that is
+%% present means an update (an auto-generated id is only supplied to
+%% reference an existing record). A composite/natural key is always
+%% supplied, so it is an update only when it matches a loaded existing row.
+classify_child(_Key, undefined, _Lookup, WithFun, NormParams) ->
+    (WithFun(#{}, NormParams))#kura_changeset{action = insert};
+classify_child([_Single], Tuple, Lookup, WithFun, NormParams) ->
+    (WithFun(maps:get(Tuple, Lookup, #{}), NormParams))#kura_changeset{action = update};
+classify_child(_Composite, Tuple, Lookup, WithFun, NormParams) ->
+    case maps:find(Tuple, Lookup) of
+        {ok, ExistingData} -> (WithFun(ExistingData, NormParams))#kura_changeset{action = update};
+        error -> (WithFun(#{}, NormParams))#kura_changeset{action = insert}
+    end.
+
+%% The key value-tuple for an existing record, else undefined (a new insert).
 -spec key_tuple([atom()], map()) -> tuple() | undefined.
 key_tuple(Key, Map) ->
-    case lists:all(fun(K) -> maps:get(K, Map, undefined) =/= undefined end, Key) of
+    case has_all_keys(Key, Map) of
         true -> list_to_tuple([maps:get(K, Map) || K <- Key]);
         false -> undefined
     end.

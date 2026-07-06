@@ -179,12 +179,16 @@ cast_assoc_has_many_bad_type_test() ->
 %% on kura_schema:primary_key/1)
 %%----------------------------------------------------------------------
 
+-define(ORG1, ~"11111111-1111-1111-1111-111111111111").
+-define(USER1, ~"22222222-2222-2222-2222-222222222222").
+-define(USER2, ~"33333333-3333-3333-3333-333333333333").
+
 cast_assoc_composite_child_test() ->
     Params = #{
         name => ~"acme",
         members => [
-            #{org_id => ~"o1", user_id => ~"u1", role => ~"admin"},
-            #{org_id => ~"o1", user_id => ~"u2", role => ~"member"}
+            #{org_id => ?ORG1, user_id => ?USER1, role => ~"admin"},
+            #{org_id => ?ORG1, user_id => ?USER2, role => ~"member"}
         ]
     },
     CS = kura_changeset:cast(kura_test_org_schema, #{}, Params, [name]),
@@ -193,4 +197,26 @@ cast_assoc_composite_child_test() ->
     #{members := ChildCSs} = CS1#kura_changeset.assoc_changes,
     ?assertEqual(2, length(ChildCSs)),
     [C1 | _] = ChildCSs,
+    ?assertEqual(~"admin", kura_changeset:get_change(C1, role)),
+    %% the caller-supplied natural key column survives; only the FK org_id
+    %% and the auto-gen surrogate PK are framework-owned
+    ?assertEqual(?USER1, kura_changeset:get_change(C1, user_id)),
+    ?assertEqual(insert, C1#kura_changeset.action).
+
+cast_assoc_composite_child_update_test() ->
+    Existing = [#{org_id => ?ORG1, user_id => ?USER1, role => ~"member"}],
+    Params = #{members => [#{org_id => ?ORG1, user_id => ?USER1, role => ~"admin"}]},
+    CS = kura_changeset:cast(kura_test_org_schema, #{members => Existing}, Params, [name]),
+    CS1 = kura_changeset:cast_assoc(CS, members),
+    #{members := [C1]} = CS1#kura_changeset.assoc_changes,
+    ?assertEqual(update, C1#kura_changeset.action),
     ?assertEqual(~"admin", kura_changeset:get_change(C1, role)).
+
+cast_assoc_composite_child_partial_key_inserts_test() ->
+    %% one key column missing -> new insert, not a partial match
+    Existing = [#{org_id => ?ORG1, user_id => ?USER1, role => ~"member"}],
+    Params = #{members => [#{org_id => ?ORG1, role => ~"admin"}]},
+    CS = kura_changeset:cast(kura_test_org_schema, #{members => Existing}, Params, [name]),
+    CS1 = kura_changeset:cast_assoc(CS, members),
+    #{members := [C1]} = CS1#kura_changeset.assoc_changes,
+    ?assertEqual(insert, C1#kura_changeset.action).
