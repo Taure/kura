@@ -50,7 +50,8 @@ down() ->
 -type index_def() :: {[atom()], index_opts_map()}.
 
 -type table_constraint() ::
-    {unique, [atom()]}
+    {primary_key, [atom()]}
+    | {unique, [atom()]}
     | {check, binary()}.
 
 -type operation() ::

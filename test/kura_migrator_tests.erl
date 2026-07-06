@@ -31,6 +31,21 @@ create_table_test() ->
     ?assert(binary:match(SQL, <<"\"age\" INTEGER">>) =/= nomatch),
     ?assert(binary:match(SQL, <<"\"active\" BOOLEAN DEFAULT TRUE">>) =/= nomatch).
 
+composite_primary_key_constraint_test() ->
+    SQL = kura_migrator:compile_operation(
+        ?REPO,
+        {create_table, ~"memberships",
+            [
+                #kura_column{name = org_id, type = uuid, nullable = false},
+                #kura_column{name = user_id, type = uuid, nullable = false},
+                #kura_column{name = role, type = string}
+            ],
+            [{primary_key, [org_id, user_id]}]}
+    ),
+    ?assert(binary:match(SQL, ~"\"org_id\" UUID NOT NULL") =/= nomatch),
+    ?assert(binary:match(SQL, ~"PRIMARY KEY (\"org_id\", \"user_id\")") =/= nomatch),
+    ?assertEqual(nomatch, binary:match(SQL, ~"PRIMARY KEY NOT NULL")).
+
 drop_table_test() ->
     SQL = kura_migrator:compile_operation(?REPO, {drop_table, <<"users">>}),
     ?assertEqual(<<"DROP TABLE \"users\"">>, SQL).
