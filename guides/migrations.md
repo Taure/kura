@@ -161,6 +161,28 @@ Status = kura_migrator:status(my_repo).
 %% Returns: [{Version, Module, up | pending}, ...]
 ```
 
+## Baselining an Existing Database
+
+When you adopt Kura on a database that already has tables - typically after
+`rebar3 kura gen_schemas` introspects it into schema modules - the first
+`compile` generates `create_table` migrations for tables that already exist,
+and running them would fail. `fake/1` records every pending migration as
+applied **without executing any DDL**, so you can baseline and then migrate
+for real from there.
+
+```erlang
+%% Stamp the introspected baseline as applied (runs no DDL)
+{ok, Faked} = kura_migrator:fake(my_repo).
+
+%% Real migrations added later run normally
+{ok, Applied} = kura_migrator:migrate(my_repo).
+```
+
+`fake/1` stamps *every* pending migration, so only run it when each pending
+migration corresponds to schema that already exists - check `status/1` first.
+The versions it stamps are logged at warning level. It runs under the same
+advisory-locked transaction as `migrate/1`.
+
 ## Schema-Level Indexes
 
 Instead of manually writing index operations in migrations, you can declare indexes on your schema module. This is the recommended approach - it keeps index definitions alongside your schema and allows [rebar3_kura](https://github.com/Taure/rebar3_kura) to auto-generate the migration operations for you.
