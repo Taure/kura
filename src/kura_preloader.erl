@@ -12,7 +12,7 @@
     get_field/2,
     get_field_default/3,
     set_field/3,
-    group_by_key/3,
+    group_by_tuple/3,
     reverse_maps/2,
     join_bins/2,
     group_m2m_join/5
@@ -113,11 +113,12 @@ preload_belongs_to(RepoMod, Records, Assoc = #kura_assoc{name = Name}) ->
             [set_field(Name, lookup_by_fk(FKCols, R, Lookup), R) || R <- Records]
     end.
 
-%% The referenced key column(s) on the target: an explicit ref target_key,
-%% else the target schema's own key.
-assoc_target_key(Assoc, RelSchema) ->
+%% The referenced key column(s): an explicit ref target_key, else the
+%% given schema's key. belongs_to passes the target schema, has_*/has_one
+%% pass the owner schema, matching which side the FK references.
+assoc_target_key(Assoc, DefaultSchema) ->
     case kura_schema:assoc_target_key(Assoc) of
-        undefined -> kura_schema:key(RelSchema);
+        undefined -> kura_schema:key(DefaultSchema);
         Cols -> Cols
     end.
 
@@ -138,59 +139,47 @@ lookup_by_fk(FKCols, Record, Lookup) ->
         true -> get_field_default(fk_tuple(FKCols, Record), Lookup, nil)
     end.
 
-preload_has_many(RepoMod, Records, Schema, #kura_assoc{
-    name = Name, schema = RelSchema, foreign_key = FK
-}) ->
-    PK = kura_schema:primary_key(Schema),
-    PKValues = lists:usort([get_field(PK, R) || R <- Records]),
-    Q = kura_query:where(kura_query:from(RelSchema), {FK, in, PKValues}),
+preload_has_many(RepoMod, Records, Schema, Assoc = #kura_assoc{name = Name}) ->
+    RelSchema = kura_schema:assoc_target(Assoc),
+    FKCols = kura_schema:assoc_fields(Assoc),
+    OwnerKey = assoc_target_key(Assoc, Schema),
+    OwnerTuples = lists:usort([fk_tuple(OwnerKey, R) || R <- Records]),
+    Q = kura_query:where(kura_query:from(RelSchema), {FKCols, in, OwnerTuples}),
     {ok, Related} = kura_repo_worker:all(RepoMod, Q),
-    Grouped = group_by_key(Related, FK, #{}),
-    [set_field(Name, get_field_default(get_field(PK, R), Grouped, []), R) || R <- Records].
+    Grouped = group_by_tuple(Related, FKCols, #{}),
+    [set_field(Name, get_field_default(fk_tuple(OwnerKey, R), Grouped, []), R) || R <- Records].
 
-preload_has_one(RepoMod, Records, Schema, #kura_assoc{
-    name = Name, schema = RelSchema, foreign_key = FK
-}) ->
-    PK = kura_schema:primary_key(Schema),
-    PKValues = lists:usort([get_field(PK, R) || R <- Records]),
-    Q = kura_query:where(kura_query:from(RelSchema), {FK, in, PKValues}),
+preload_has_one(RepoMod, Records, Schema, Assoc = #kura_assoc{name = Name}) ->
+    RelSchema = kura_schema:assoc_target(Assoc),
+    FKCols = kura_schema:assoc_fields(Assoc),
+    OwnerKey = assoc_target_key(Assoc, Schema),
+    OwnerTuples = lists:usort([fk_tuple(OwnerKey, R) || R <- Records]),
+    Q = kura_query:where(kura_query:from(RelSchema), {FKCols, in, OwnerTuples}),
     {ok, Related} = kura_repo_worker:all(RepoMod, Q),
-    Lookup = to_lookup(Related, FK, #{}),
-    [set_field(Name, get_field_default(get_field(PK, R), Lookup, nil), R) || R <- Records].
+    Lookup = tuple_lookup(Related, FKCols, #{}),
+    [set_field(Name, get_field_default(fk_tuple(OwnerKey, R), Lookup, nil), R) || R <- Records].
 
-preload_has_many_cond(
-    RepoMod,
-    Records,
-    Schema,
-    #kura_assoc{
-        name = Name, schema = RelSchema, foreign_key = FK
-    },
-    Opts
-) ->
-    PK = kura_schema:primary_key(Schema),
-    PKValues = lists:usort([get_field(PK, R) || R <- Records]),
-    Q0 = kura_query:where(kura_query:from(RelSchema), {FK, in, PKValues}),
+preload_has_many_cond(RepoMod, Records, Schema, Assoc = #kura_assoc{name = Name}, Opts) ->
+    RelSchema = kura_schema:assoc_target(Assoc),
+    FKCols = kura_schema:assoc_fields(Assoc),
+    OwnerKey = assoc_target_key(Assoc, Schema),
+    OwnerTuples = lists:usort([fk_tuple(OwnerKey, R) || R <- Records]),
+    Q0 = kura_query:where(kura_query:from(RelSchema), {FKCols, in, OwnerTuples}),
     Q = apply_preload_opts(Q0, Opts),
     {ok, Related} = kura_repo_worker:all(RepoMod, Q),
-    Grouped = group_by_key(Related, FK, #{}),
-    [set_field(Name, get_field_default(get_field(PK, R), Grouped, []), R) || R <- Records].
+    Grouped = group_by_tuple(Related, FKCols, #{}),
+    [set_field(Name, get_field_default(fk_tuple(OwnerKey, R), Grouped, []), R) || R <- Records].
 
-preload_has_one_cond(
-    RepoMod,
-    Records,
-    Schema,
-    #kura_assoc{
-        name = Name, schema = RelSchema, foreign_key = FK
-    },
-    Opts
-) ->
-    PK = kura_schema:primary_key(Schema),
-    PKValues = lists:usort([get_field(PK, R) || R <- Records]),
-    Q0 = kura_query:where(kura_query:from(RelSchema), {FK, in, PKValues}),
+preload_has_one_cond(RepoMod, Records, Schema, Assoc = #kura_assoc{name = Name}, Opts) ->
+    RelSchema = kura_schema:assoc_target(Assoc),
+    FKCols = kura_schema:assoc_fields(Assoc),
+    OwnerKey = assoc_target_key(Assoc, Schema),
+    OwnerTuples = lists:usort([fk_tuple(OwnerKey, R) || R <- Records]),
+    Q0 = kura_query:where(kura_query:from(RelSchema), {FKCols, in, OwnerTuples}),
     Q = apply_preload_opts(Q0, Opts),
     {ok, Related} = kura_repo_worker:all(RepoMod, Q),
-    Lookup = to_lookup(Related, FK, #{}),
-    [set_field(Name, get_field_default(get_field(PK, R), Lookup, nil), R) || R <- Records].
+    Lookup = tuple_lookup(Related, FKCols, #{}),
+    [set_field(Name, get_field_default(fk_tuple(OwnerKey, R), Lookup, nil), R) || R <- Records].
 
 preload_many_to_many(RepoMod, Records, Schema, #kura_assoc{
     name = Name, schema = RelSchema, join_through = JoinThrough, join_keys = {OwnerKey, RelatedKey}
@@ -352,13 +341,13 @@ get_field_default(Key, Map, Default) -> maps:get(Key, Map, Default).
 -spec set_field(atom(), term(), map()) -> map().
 set_field(Key, Value, Map) -> Map#{Key => Value}.
 
--spec group_by_key([map()], atom(), map()) -> map().
-group_by_key([], _FK, Acc) ->
+-spec group_by_tuple([map()], [atom()], map()) -> map().
+group_by_tuple([], _Cols, Acc) ->
     maps:map(fun(_, V) -> lists:reverse(V) end, Acc);
-group_by_key([Rel | Rest], FK, Acc) ->
-    Key = get_field(FK, Rel),
+group_by_tuple([Rel | Rest], Cols, Acc) ->
+    Key = fk_tuple(Cols, Rel),
     NewAcc = maps:update_with(Key, fun(L) -> [Rel | L] end, [Rel], Acc),
-    group_by_key(Rest, FK, NewAcc).
+    group_by_tuple(Rest, Cols, NewAcc).
 
 -spec group_m2m_join([map()], atom(), atom(), map(), map()) -> map().
 group_m2m_join([], _OwnerKey, _RelatedKey, _RelLookup, Acc) ->
