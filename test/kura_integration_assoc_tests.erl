@@ -21,6 +21,7 @@ assoc_test_() ->
         [
             %% Preloading
             {"preload belongs_to", fun t_preload_belongs_to/0},
+            {"preload belongs_to via composite FK", fun t_preload_belongs_to_composite/0},
             {"preload has_many", fun t_preload_has_many/0},
             {"preload has_one", fun t_preload_has_one/0},
             {"preload many_to_many", fun t_preload_many_to_many/0},
@@ -130,9 +131,29 @@ create_tables() ->
         ")",
         []
     ),
+    {ok, _} = kura_test_repo:query(
+        "CREATE TABLE IF NOT EXISTS memberships ("
+        "  org_id UUID NOT NULL,"
+        "  user_id UUID NOT NULL,"
+        "  role VARCHAR(255) DEFAULT 'member',"
+        "  PRIMARY KEY (org_id, user_id)"
+        ")",
+        []
+    ),
+    {ok, _} = kura_test_repo:query(
+        "CREATE TABLE IF NOT EXISTS membership_notes ("
+        "  id BIGSERIAL PRIMARY KEY,"
+        "  org_id UUID NOT NULL,"
+        "  user_id UUID NOT NULL,"
+        "  body VARCHAR(255)"
+        ")",
+        []
+    ),
     ok.
 
 drop_tables() ->
+    kura_test_repo:query("DROP TABLE IF EXISTS membership_notes CASCADE", []),
+    kura_test_repo:query("DROP TABLE IF EXISTS memberships CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS posts_tags CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS comments CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS tags CASCADE", []),
@@ -199,6 +220,29 @@ t_preload_belongs_to() ->
     Author = maps:get(author, Loaded),
     ?assertMatch(#{name := <<"BT_Author">>}, Author),
     ?assertEqual(UserId, maps:get(id, Author)).
+
+t_preload_belongs_to_composite() ->
+    Org = ~"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    User = ~"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    MCS = kura_changeset:cast(
+        kura_test_composite_schema,
+        #{},
+        #{org_id => Org, user_id => User, role => ~"admin"},
+        [org_id, user_id, role]
+    ),
+    {ok, _} = kura_test_repo:insert(MCS),
+    NCS = kura_changeset:cast(
+        kura_test_membership_note_schema,
+        #{},
+        #{org_id => Org, user_id => User, body => ~"note"},
+        [org_id, user_id, body]
+    ),
+    {ok, Note} = kura_test_repo:insert(NCS),
+    [Loaded] = kura_test_repo:preload(kura_test_membership_note_schema, [Note], [membership]),
+    Membership = maps:get(membership, Loaded),
+    ?assertMatch(#{role := ~"admin"}, Membership),
+    ?assertEqual(Org, maps:get(org_id, Membership)),
+    ?assertEqual(User, maps:get(user_id, Membership)).
 
 t_preload_has_many() ->
     {ok, User} = insert_user(<<"HM_Author">>, <<"hm_author@test.com">>),

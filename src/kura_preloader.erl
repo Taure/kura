@@ -98,27 +98,44 @@ preload_assoc_direct(RepoMod, Records, Schema, Assoc = #kura_assoc{type = has_on
 preload_assoc_direct(RepoMod, Records, Schema, Assoc = #kura_assoc{type = many_to_many}) ->
     preload_many_to_many(RepoMod, Records, Schema, Assoc).
 
-preload_belongs_to(RepoMod, Records, #kura_assoc{
-    name = Name, schema = RelSchema, foreign_key = FK
-}) ->
-    FKValues = lists:usort([
-        get_field(FK, R)
-     || R <- Records, get_field_default(FK, R, undefined) =/= undefined
-    ]),
-    case FKValues of
+preload_belongs_to(RepoMod, Records, Assoc = #kura_assoc{name = Name}) ->
+    RelSchema = kura_schema:assoc_target(Assoc),
+    FKCols = kura_schema:assoc_fields(Assoc),
+    TargetKey = assoc_target_key(Assoc, RelSchema),
+    FKTuples = lists:usort([fk_tuple(FKCols, R) || R <- Records, fk_complete(FKCols, R)]),
+    case FKTuples of
         [] ->
             [set_field(Name, nil, R) || R <- Records];
         _ ->
-            RelPK = kura_schema:primary_key(RelSchema),
-            Q = kura_query:where(kura_query:from(RelSchema), {RelPK, in, FKValues}),
+            Q = kura_query:where(kura_query:from(RelSchema), {TargetKey, in, FKTuples}),
             {ok, Related} = kura_repo_worker:all(RepoMod, Q),
-            Lookup = to_lookup(Related, RelPK, #{}),
-            [
-                set_field(
-                    Name, get_field_default(get_field_default(FK, R, undefined), Lookup, nil), R
-                )
-             || R <- Records
-            ]
+            Lookup = tuple_lookup(Related, TargetKey, #{}),
+            [set_field(Name, lookup_by_fk(FKCols, R, Lookup), R) || R <- Records]
+    end.
+
+%% The referenced key column(s) on the target: an explicit ref target_key,
+%% else the target schema's own key.
+assoc_target_key(Assoc, RelSchema) ->
+    case kura_schema:assoc_target_key(Assoc) of
+        undefined -> kura_schema:key(RelSchema);
+        Cols -> Cols
+    end.
+
+fk_tuple(Cols, Record) ->
+    list_to_tuple([get_field(C, Record) || C <- Cols]).
+
+fk_complete(Cols, Record) ->
+    lists:all(fun(C) -> get_field_default(C, Record, undefined) =/= undefined end, Cols).
+
+tuple_lookup([], _KeyCols, Acc) ->
+    Acc;
+tuple_lookup([Rec | Rest], KeyCols, Acc) ->
+    tuple_lookup(Rest, KeyCols, Acc#{fk_tuple(KeyCols, Rec) => Rec}).
+
+lookup_by_fk(FKCols, Record, Lookup) ->
+    case fk_complete(FKCols, Record) of
+        false -> nil;
+        true -> get_field_default(fk_tuple(FKCols, Record), Lookup, nil)
     end.
 
 preload_has_many(RepoMod, Records, Schema, #kura_assoc{

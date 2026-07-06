@@ -151,6 +151,20 @@ key_where([{Field, Value} | Rest], Counter, Conds, Params) ->
     Cond = [quote_ident(atom_to_binary(Field, utf8)), ~" = $", integer_to_binary(Counter)],
     key_where(Rest, Counter + 1, [Cond | Conds], [Value | Params]).
 
+%% Render one `($n, ...)` group per value-tuple for a row-value IN, params
+%% flattened in row-then-column order.
+compile_row_tuples([], _Arity, Counter, SQLs, Params) ->
+    {lists:reverse(SQLs), Params, Counter};
+compile_row_tuples([Tuple | Rest], Arity, Counter, SQLs, Params) ->
+    {Placeholders, NextCounter} = row_placeholders(Arity, Counter, []),
+    RowSQL = [~"(", join_comma(Placeholders), ~")"],
+    compile_row_tuples(Rest, Arity, NextCounter, [RowSQL | SQLs], Params ++ tuple_to_list(Tuple)).
+
+row_placeholders(0, Counter, Acc) ->
+    {lists:reverse(Acc), Counter};
+row_placeholders(N, Counter, Acc) ->
+    row_placeholders(N - 1, Counter + 1, [[~"$", integer_to_binary(Counter)] | Acc]).
+
 %%----------------------------------------------------------------------
 %% DELETE
 %%----------------------------------------------------------------------
@@ -362,6 +376,16 @@ compile_condition({exists, {subquery, SubQ}}, Counter) ->
 compile_condition({not_exists, {subquery, SubQ}}, Counter) ->
     {SubSQL, SubParams, Counter2} = to_sql_from(SubQ, Counter),
     {[~"NOT EXISTS (", SubSQL, ~")"], SubParams, Counter2};
+compile_condition({[Col], in, Tuples}, Counter) when is_atom(Col), is_list(Tuples) ->
+    compile_condition({Col, in, [element(1, T) || T <- Tuples]}, Counter);
+compile_condition({Cols, in, Tuples}, Counter) when is_list(Cols), is_list(Tuples) ->
+    ColSQL = [
+        ~"(",
+        join_comma([quote_ident(atom_to_binary(C, utf8)) || C <- Cols]),
+        ~")"
+    ],
+    {RowSQLs, Params, NewCounter} = compile_row_tuples(Tuples, length(Cols), Counter, [], []),
+    {[ColSQL, ~" IN (", join_comma(RowSQLs), ~")"], Params, NewCounter};
 compile_condition({Field, in, Values}, Counter) when is_atom(Field), is_list(Values) ->
     {Placeholders, NewCounter} = lists:foldl(
         fun(_, {Acc, N}) ->
