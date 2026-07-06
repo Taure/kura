@@ -52,6 +52,7 @@ integration_test_() ->
             {"update bumps updated_at timestamp", fun t_update_timestamps/0},
             {"delete removes record", fun t_delete/0},
             {"composite-key insert/get/reload round-trip", fun t_composite_crud/0},
+            {"composite key is never auto-generated", fun t_composite_no_pk_autogen/0},
             {"invalid changeset returns error without hitting DB", fun t_validation/0},
 
             %% one/1
@@ -343,17 +344,26 @@ t_composite_crud() ->
     {ok, Inserted} = kura_test_repo:insert(CS),
     ?assertEqual(Org, maps:get(org_id, Inserted)),
     ?assertEqual(User, maps:get(user_id, Inserted)),
-    %% get by composite key spec
     {ok, Fetched} = kura_test_repo:get(kura_test_composite_schema, #{org_id => Org, user_id => User}),
     ?assertEqual(~"admin", maps:get(role, Fetched)),
-    %% reload extracts the full key from the record
     {ok, Reloaded} = kura_test_repo:reload(kura_test_composite_schema, Inserted),
     ?assertEqual(~"admin", maps:get(role, Reloaded)),
-    %% a partial key is rejected before any query
     ?assertError(
         {incomplete_key, kura_test_composite_schema, user_id},
         kura_test_repo:get(kura_test_composite_schema, #{org_id => Org})
     ).
+
+t_composite_no_pk_autogen() ->
+    %% A composite schema must never fabricate a key column: omitting one
+    %% must fail on the DB NOT NULL, not silently succeed with a made-up uuid.
+    Org = ~"33333333-3333-3333-3333-333333333333",
+    CS = kura_changeset:cast(
+        kura_test_composite_schema,
+        #{},
+        #{org_id => Org, role => ~"member"},
+        [org_id, role]
+    ),
+    ?assertMatch({error, _}, kura_test_repo:insert(CS)).
 
 %%----------------------------------------------------------------------
 %% Helpers
