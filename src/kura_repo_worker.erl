@@ -106,7 +106,9 @@ all(RepoMod, Query) ->
 Fetch a single record by primary key.
 
 For a single-key schema pass the bare key value; for a composite-key
-schema pass a `#{field => value}` map covering every key column.
+schema pass a `#{field => value}` map covering every key column. A
+map-valued single key must be wrapped as `#{KeyField => Map}`, since a
+bare map is read as a composite key spec.
 """.
 -spec get(module(), module(), term()) -> {ok, map()} | {error, not_found} | {error, term()}.
 get(RepoMod, SchemaMod, Spec) ->

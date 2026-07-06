@@ -172,3 +172,9 @@ primary_key_composite_raises_named_error_test() ->
 primary_key_field_single_test() ->
     Field = kura_schema:primary_key_field(kura_test_schema),
     ?assertEqual(id, Field#kura_field.name).
+
+primary_key_field_composite_raises_named_error_test() ->
+    ?assertError(
+        {composite_primary_key, kura_test_composite_schema, [org_id, user_id]},
+        kura_schema:primary_key_field(kura_test_composite_schema)
+    ).

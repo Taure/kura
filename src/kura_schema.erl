@@ -124,24 +124,33 @@ implemented, the key is derived from the fields marked
 -spec key(module()) -> [atom()].
 key(Mod) ->
     cache({kura_schema, key, Mod}, fun() ->
-        _ = code:ensure_loaded(Mod),
-        Key =
-            case erlang:function_exported(Mod, key, 0) of
-                true -> Mod:key();
-                false -> [F#kura_field.name || F <- Mod:fields(), F#kura_field.primary_key =:= true]
-            end,
-        case Key of
-            [_ | _] -> Key;
+        case key_names(Mod) of
+            [_ | _] = Key -> Key;
             [] -> error({no_primary_key, Mod})
         end
     end).
+
+%% Ordered key column names, possibly empty (no primary key). key/0
+%% wins; otherwise the primary_key = true fields (the compat shim).
+key_names(Mod) ->
+    _ = code:ensure_loaded(Mod),
+    case erlang:function_exported(Mod, key, 0) of
+        true -> Mod:key();
+        false -> [F#kura_field.name || F <- Mod:fields(), F#kura_field.primary_key =:= true]
+    end.
 
 -doc "Return the ordered primary-key field records for a schema module.".
 -spec key_fields(module()) -> [#kura_field{}].
 key_fields(Mod) ->
     cache({kura_schema, key_fields, Mod}, fun() ->
         FieldMap = maps:from_list([{F#kura_field.name, F} || F <- Mod:fields()]),
-        [maps:get(N, FieldMap) || N <- key(Mod)]
+        [
+            case FieldMap of
+                #{N := F} -> F;
+                #{} -> error({key_field_not_found, Mod, N})
+            end
+         || N <- key(Mod)
+        ]
     end).
 
 -doc """
@@ -163,10 +172,14 @@ schema has no primary key. Raises on a composite key.
 """.
 -spec primary_key_field(module()) -> #kura_field{} | undefined.
 primary_key_field(Mod) ->
-    case [F || F <- Mod:fields(), F#kura_field.primary_key =:= true] of
-        [Field] -> Field;
-        [] -> undefined;
-        Fields -> error({composite_primary_key, Mod, [F#kura_field.name || F <- Fields]})
+    case key_names(Mod) of
+        [] ->
+            undefined;
+        [PK] ->
+            [Field] = [F || F <- Mod:fields(), F#kura_field.name =:= PK],
+            Field;
+        Keys ->
+            error({composite_primary_key, Mod, Keys})
     end.
 
 -doc "Return all associations defined on a schema module.".

@@ -38,6 +38,14 @@ key_clauses_incomplete_key_rejected_test() ->
         kura_repo_worker:key_clauses(kura_test_composite_schema, #{org_id => <<"o">>})
     ).
 
+reload_composite_missing_key_col_rejected_test() ->
+    %% user_id absent from the record: the key-completeness guard must
+    %% reject before any repo round-trip, so the repo arg is never used.
+    ?assertEqual(
+        {error, no_primary_key},
+        kura_repo_worker:reload(undefined, kura_test_composite_schema, #{org_id => <<"o">>})
+    ).
+
 %%----------------------------------------------------------------------
 %% narrow_ok_error
 %%----------------------------------------------------------------------
