@@ -66,6 +66,22 @@ window_row_number_test() ->
     ),
     ?assertEqual([], Params).
 
+composite_in_where_test() ->
+    Q = kura_query:where(
+        kura_query:from(kura_test_composite_schema),
+        {[org_id, user_id], in, [{<<"o1">>, <<"u1">>}, {<<"o2">>, <<"u2">>}]}
+    ),
+    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    ?assertNotEqual(nomatch, binary:match(SQL, ~"(\"org_id\", \"user_id\") IN ((")),
+    ?assertNotEqual(nomatch, binary:match(SQL, ~"$1, $2), ($3, $4)")),
+    ?assertEqual([<<"o1">>, <<"u1">>, <<"o2">>, <<"u2">>], Params).
+
+single_col_composite_in_unwraps_test() ->
+    Q = kura_query:where(kura_query:from(kura_test_schema), {[id], in, [{1}, {2}]}),
+    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    ?assertNotEqual(nomatch, binary:match(SQL, ~"\"id\" IN ($1, $2)")),
+    ?assertEqual([1, 2], Params).
+
 window_agg_running_total_test() ->
     Q = kura_query:select_expr(kura_query:from(sales), [
         {category, category},
