@@ -91,6 +91,7 @@ associations() ->
 | Indexes                | (in migrations only)          | `indexes() -> [...].`                |
 | Constraints            | (in migrations only)          | `constraints() -> [...].`            |
 | Custom PK generator    | `@primary_key {:id, :binary_id, autogenerate: true}` | `generate_id() -> ... .` |
+| Composite primary key  | `@primary_key false` + `field :a, ..., primary_key: true` (x2) | `key() -> [a, b].` |
 | Lifecycle hooks        | (none - use changesets)       | `before_insert/1`, `after_insert/1`, etc. |
 
 ## Changesets

@@ -325,7 +325,7 @@ up() ->
                      references = {~"posts", id}, on_delete = cascade},
         #kura_column{name = tag_id, type = uuid, nullable = false,
                      references = {~"tags", id}, on_delete = cascade}
-    ], [{unique, [post_id, tag_id]}]}].
+    ], [{primary_key, [post_id, tag_id]}]}].
 
 down() ->
     [{drop_table, ~"posts_tags"},
@@ -337,7 +337,7 @@ Note:
 
 - `references = {~"users", id}` generates `REFERENCES "users"("id")`
 - `on_delete = cascade` generates `ON DELETE CASCADE`
-- The join table uses table-level `{unique, [post_id, tag_id]}` for the composite primary key constraint
+- The join table declares a real composite `PRIMARY KEY ("post_id", "tag_id")` via the `{primary_key, [post_id, tag_id]}` table constraint. The matching schema declares `key() -> [post_id, tag_id]`.
 - Non-unique indexes use an empty map `#{}` for options
 
 ## Upserts (ON CONFLICT)
