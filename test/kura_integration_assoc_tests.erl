@@ -22,6 +22,8 @@ assoc_test_() ->
             %% Preloading
             {"preload belongs_to", fun t_preload_belongs_to/0},
             {"preload belongs_to via composite FK", fun t_preload_belongs_to_composite/0},
+            {"preload belongs_to via composite FK (no match)",
+                fun t_preload_belongs_to_composite_missing/0},
             {"preload has_many", fun t_preload_has_many/0},
             {"preload has_one", fun t_preload_has_one/0},
             {"preload many_to_many", fun t_preload_many_to_many/0},
@@ -243,6 +245,19 @@ t_preload_belongs_to_composite() ->
     ?assertMatch(#{role := ~"admin"}, Membership),
     ?assertEqual(Org, maps:get(org_id, Membership)),
     ?assertEqual(User, maps:get(user_id, Membership)).
+
+t_preload_belongs_to_composite_missing() ->
+    Org = ~"cccccccc-cccc-cccc-cccc-cccccccccccc",
+    User = ~"dddddddd-dddd-dddd-dddd-dddddddddddd",
+    NCS = kura_changeset:cast(
+        kura_test_membership_note_schema,
+        #{},
+        #{org_id => Org, user_id => User, body => ~"orphan"},
+        [org_id, user_id, body]
+    ),
+    {ok, Note} = kura_test_repo:insert(NCS),
+    [Loaded] = kura_test_repo:preload(kura_test_membership_note_schema, [Note], [membership]),
+    ?assertEqual(nil, maps:get(membership, Loaded)).
 
 t_preload_has_many() ->
     {ok, User} = insert_user(<<"HM_Author">>, <<"hm_author@test.com">>),
