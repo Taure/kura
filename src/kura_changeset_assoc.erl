@@ -115,15 +115,16 @@ cast_embed_params(CS, EmbedName, #kura_embed{type = embeds_many}, _Params, _With
 %% Internal: association helpers
 %%----------------------------------------------------------------------
 
-default_cast_fun(#kura_assoc{type = many_to_many, schema = ChildSchema}) ->
-    PK = kura_schema:primary_key(ChildSchema),
-    Allowed = castable_fields(ChildSchema, [PK]),
+default_cast_fun(Assoc = #kura_assoc{type = many_to_many}) ->
+    ChildSchema = kura_schema:assoc_target(Assoc),
+    Allowed = castable_fields(ChildSchema, kura_schema:key(ChildSchema)),
     fun(Data, ChildParams) ->
         kura_changeset:cast(ChildSchema, Data, ChildParams, Allowed)
     end;
-default_cast_fun(#kura_assoc{schema = ChildSchema, foreign_key = FK}) ->
-    PK = kura_schema:primary_key(ChildSchema),
-    Allowed = castable_fields(ChildSchema, [PK, FK]),
+default_cast_fun(Assoc = #kura_assoc{}) ->
+    ChildSchema = kura_schema:assoc_target(Assoc),
+    Exclude = kura_schema:key(ChildSchema) ++ kura_schema:assoc_fields(Assoc),
+    Allowed = castable_fields(ChildSchema, Exclude),
     fun(Data, ChildParams) ->
         kura_changeset:cast(ChildSchema, Data, ChildParams, Allowed)
     end.
@@ -139,16 +140,16 @@ cast_assoc_params(CS, AssocName, Assoc, NestedParams, Existing, WithFun) ->
     end.
 
 cast_has_many(CS, AssocName, Assoc, ParamsList, Existing, WithFun) when is_list(ParamsList) ->
-    ChildSchema = Assoc#kura_assoc.schema,
-    PK = kura_schema:primary_key(ChildSchema),
+    ChildSchema = kura_schema:assoc_target(Assoc),
+    Key = kura_schema:key(ChildSchema),
     ExistingLookup =
         case is_list(Existing) of
             true ->
-                build_existing_lookup(Existing, PK, #{});
+                build_existing_lookup(Existing, Key, #{});
             false ->
                 #{}
         end,
-    ChildCSs = cast_has_many_children(ParamsList, PK, ExistingLookup, WithFun, []),
+    ChildCSs = cast_has_many_children(ParamsList, Key, ExistingLookup, WithFun, []),
     AC = CS#kura_changeset.assoc_changes,
     CS1 = CS#kura_changeset{assoc_changes = AC#{AssocName => ChildCSs}},
     case all_valid(ChildCSs) of
@@ -180,25 +181,35 @@ coerce_assoc_value(_Assoc, #kura_changeset{} = CS) ->
 coerce_assoc_value(_Assoc, Value) ->
     Value.
 
-coerce_single(#kura_assoc{type = many_to_many, schema = ChildSchema}, Map) when is_map(Map) ->
-    PK = kura_schema:primary_key(ChildSchema),
-    Allowed = castable_fields(ChildSchema, [PK]),
+coerce_single(Assoc = #kura_assoc{type = many_to_many}, Map) when is_map(Map) ->
+    ChildSchema = kura_schema:assoc_target(Assoc),
+    Key = kura_schema:key(ChildSchema),
+    Allowed = castable_fields(ChildSchema, Key),
     NormMap = kura_changeset:normalize_params(Map),
-    case NormMap of
-        #{PK := PKVal} when PKVal =/= undefined ->
-            CS = kura_changeset:cast(ChildSchema, #{PK => PKVal}, NormMap, Allowed),
+    case key_data(Key, NormMap) of
+        {ok, KeyData} ->
+            CS = kura_changeset:cast(ChildSchema, KeyData, NormMap, Allowed),
             CS#kura_changeset{action = undefined};
-        #{} ->
+        error ->
             CS = kura_changeset:cast(ChildSchema, #{}, NormMap, Allowed),
             CS#kura_changeset{action = insert}
     end;
-coerce_single(#kura_assoc{schema = ChildSchema, foreign_key = FK}, Map) when is_map(Map) ->
-    PK = kura_schema:primary_key(ChildSchema),
-    Allowed = castable_fields(ChildSchema, [PK, FK]),
+coerce_single(Assoc = #kura_assoc{}, Map) when is_map(Map) ->
+    ChildSchema = kura_schema:assoc_target(Assoc),
+    Exclude = kura_schema:key(ChildSchema) ++ kura_schema:assoc_fields(Assoc),
+    Allowed = castable_fields(ChildSchema, Exclude),
     CS = kura_changeset:cast(ChildSchema, #{}, Map, Allowed),
     CS#kura_changeset{action = insert};
 coerce_single(_Assoc, #kura_changeset{} = CS) ->
     CS.
+
+%% All key columns present and non-undefined -> {ok, key sub-map} (an
+%% existing record); otherwise error (a new one to insert).
+key_data(Key, Map) ->
+    case lists:all(fun(K) -> maps:get(K, Map, undefined) =/= undefined end, Key) of
+        true -> {ok, maps:with(Key, Map)};
+        false -> error
+    end.
 
 castable_fields(Schema, Exclude) ->
     AllFields = kura_schema:field_names(Schema),
@@ -231,37 +242,46 @@ collect_errors([#kura_changeset{valid = false, errors = E} | Rest], Acc) ->
 collect_errors([_ | Rest], Acc) ->
     collect_errors(Rest, Acc).
 
--spec build_existing_lookup([map()], atom(), map()) -> map().
-build_existing_lookup([], _PK, Acc) ->
+-spec build_existing_lookup([map()], [atom()], map()) -> map().
+build_existing_lookup([], _Key, Acc) ->
     Acc;
-build_existing_lookup([E | Rest], PK, Acc) ->
-    case maps:get(PK, E, undefined) of
-        undefined -> build_existing_lookup(Rest, PK, Acc);
-        Key -> build_existing_lookup(Rest, PK, Acc#{Key => E})
+build_existing_lookup([E | Rest], Key, Acc) ->
+    case key_tuple(Key, E) of
+        undefined -> build_existing_lookup(Rest, Key, Acc);
+        Tuple -> build_existing_lookup(Rest, Key, Acc#{Tuple => E})
     end.
 
 -spec cast_has_many_children(
     [map()],
-    atom(),
+    [atom()],
     map(),
     fun((map(), map()) -> #kura_changeset{}),
     [#kura_changeset{}]
 ) -> [#kura_changeset{}].
-cast_has_many_children([], _PK, _Lookup, _WithFun, Acc) ->
+cast_has_many_children([], _Key, _Lookup, _WithFun, Acc) ->
     reverse_changesets(Acc, []);
-cast_has_many_children([ChildParams | Rest], PK, Lookup, WithFun, Acc) ->
+cast_has_many_children([ChildParams | Rest], Key, Lookup, WithFun, Acc) ->
     NormParams = kura_changeset:normalize_params(ChildParams),
     ChildCS =
-        case NormParams of
-            #{PK := PKVal} when PKVal =/= undefined ->
-                ExistingData = maps:get(PKVal, Lookup, #{}),
-                CS = WithFun(ExistingData, NormParams),
-                CS#kura_changeset{action = update};
-            #{} ->
+        case key_tuple(Key, NormParams) of
+            undefined ->
                 CS = WithFun(#{}, NormParams),
-                CS#kura_changeset{action = insert}
+                CS#kura_changeset{action = insert};
+            Tuple ->
+                ExistingData = maps:get(Tuple, Lookup, #{}),
+                CS = WithFun(ExistingData, NormParams),
+                CS#kura_changeset{action = update}
         end,
-    cast_has_many_children(Rest, PK, Lookup, WithFun, [ChildCS | Acc]).
+    cast_has_many_children(Rest, Key, Lookup, WithFun, [ChildCS | Acc]).
+
+%% The key value-tuple if every key column is present and non-undefined,
+%% else undefined (a new record to insert).
+-spec key_tuple([atom()], map()) -> tuple() | undefined.
+key_tuple(Key, Map) ->
+    case lists:all(fun(K) -> maps:get(K, Map, undefined) =/= undefined end, Key) of
+        true -> list_to_tuple([maps:get(K, Map) || K <- Key]);
+        false -> undefined
+    end.
 
 -spec reverse_changesets([#kura_changeset{}], [#kura_changeset{}]) -> [#kura_changeset{}].
 reverse_changesets([], Acc) -> Acc;

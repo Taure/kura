@@ -172,3 +172,25 @@ cast_assoc_has_many_bad_type_test() ->
     CS = kura_changeset:cast(kura_test_post, #{}, Params, [title, body, author_id]),
     CS1 = kura_changeset:cast_assoc(CS, comments),
     ?assertNot(CS1#kura_changeset.valid).
+
+%%----------------------------------------------------------------------
+%% cast_assoc where the child schema has a composite primary key:
+%% exercises the composite-safe default_cast_fun (would previously crash
+%% on kura_schema:primary_key/1)
+%%----------------------------------------------------------------------
+
+cast_assoc_composite_child_test() ->
+    Params = #{
+        name => ~"acme",
+        members => [
+            #{org_id => ~"o1", user_id => ~"u1", role => ~"admin"},
+            #{org_id => ~"o1", user_id => ~"u2", role => ~"member"}
+        ]
+    },
+    CS = kura_changeset:cast(kura_test_org_schema, #{}, Params, [name]),
+    CS1 = kura_changeset:cast_assoc(CS, members),
+    ?assert(CS1#kura_changeset.valid),
+    #{members := ChildCSs} = CS1#kura_changeset.assoc_changes,
+    ?assertEqual(2, length(ChildCSs)),
+    [C1 | _] = ChildCSs,
+    ?assertEqual(~"admin", kura_changeset:get_change(C1, role)).
