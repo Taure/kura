@@ -32,6 +32,10 @@ assoc_test_() ->
             {"preload has_many", fun t_preload_has_many/0},
             {"preload has_one", fun t_preload_has_one/0},
             {"preload many_to_many", fun t_preload_many_to_many/0},
+            {"preload many_to_many via composite join keys",
+                fun t_preload_many_to_many_composite/0},
+            {"preload many_to_many composite on both sides",
+                fun t_preload_many_to_many_composite_both/0},
             {"nested preload", fun t_nested_preload/0},
             {"preload on empty list", fun t_preload_empty_list/0},
             {"preload on single record (map)", fun t_preload_single_record/0},
@@ -46,6 +50,7 @@ assoc_test_() ->
             {"cast_assoc has_many inserts children", fun t_cast_assoc_has_many/0},
             {"cast_assoc single child via has_many", fun t_cast_assoc_single_child/0},
             {"put_assoc many_to_many", fun t_put_assoc_many_to_many/0},
+            {"put_assoc many_to_many via composite keys", fun t_put_assoc_many_to_many_composite/0},
             {"update with assoc changes via cast_assoc", fun t_update_with_cast_assoc/0},
 
             %% Inline preload via query
@@ -156,9 +161,30 @@ create_tables() ->
         ")",
         []
     ),
+    {ok, _} = kura_test_repo:query(
+        "CREATE TABLE IF NOT EXISTS membership_tags ("
+        "  org_id UUID NOT NULL,"
+        "  user_id UUID NOT NULL,"
+        "  tag_id BIGINT NOT NULL,"
+        "  PRIMARY KEY (org_id, user_id, tag_id)"
+        ")",
+        []
+    ),
+    {ok, _} = kura_test_repo:query(
+        "CREATE TABLE IF NOT EXISTS membership_links ("
+        "  org_id UUID NOT NULL,"
+        "  user_id UUID NOT NULL,"
+        "  related_org_id UUID NOT NULL,"
+        "  related_user_id UUID NOT NULL,"
+        "  PRIMARY KEY (org_id, user_id, related_org_id, related_user_id)"
+        ")",
+        []
+    ),
     ok.
 
 drop_tables() ->
+    kura_test_repo:query("DROP TABLE IF EXISTS membership_links CASCADE", []),
+    kura_test_repo:query("DROP TABLE IF EXISTS membership_tags CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS membership_notes CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS memberships CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS posts_tags CASCADE", []),
@@ -212,6 +238,28 @@ insert_profile(Bio, UserId) ->
 link_post_tag(PostId, TagId) ->
     kura_test_repo:query(
         "INSERT INTO posts_tags (post_id, tag_id) VALUES ($1, $2)", [PostId, TagId]
+    ).
+
+link_membership_tag(Org, User, TagId) ->
+    kura_test_repo:query(
+        "INSERT INTO membership_tags (org_id, user_id, tag_id) VALUES ($1, $2, $3)",
+        [Org, User, TagId]
+    ).
+
+insert_membership(Org, User, Role) ->
+    CS = kura_changeset:cast(
+        kura_test_composite_schema,
+        #{},
+        #{org_id => Org, user_id => User, role => Role},
+        [org_id, user_id, role]
+    ),
+    kura_test_repo:insert(CS).
+
+link_membership(Org, User, RelOrg, RelUser) ->
+    kura_test_repo:query(
+        "INSERT INTO membership_links "
+        "(org_id, user_id, related_org_id, related_user_id) VALUES ($1, $2, $3, $4)",
+        [Org, User, RelOrg, RelUser]
     ).
 
 %%----------------------------------------------------------------------
@@ -399,6 +447,47 @@ t_preload_many_to_many() ->
     TagNames = lists:sort([maps:get(name, T) || T <- Tags]),
     ?assertEqual([<<"erlang">>, <<"otp">>], TagNames).
 
+t_preload_many_to_many_composite() ->
+    Org = ~"cccccccc-cccc-cccc-cccc-cccccccccccc",
+    User = ~"dddddddd-dddd-dddd-dddd-dddddddddddd",
+    MCS = kura_changeset:cast(
+        kura_test_composite_schema,
+        #{},
+        #{org_id => Org, user_id => User, role => ~"admin"},
+        [org_id, user_id, role]
+    ),
+    {ok, Membership} = kura_test_repo:insert(MCS),
+
+    {ok, Tag1} = insert_tag(~"m2m_erlang"),
+    {ok, Tag2} = insert_tag(~"m2m_otp"),
+    {ok, _} = link_membership_tag(Org, User, maps:get(id, Tag1)),
+    {ok, _} = link_membership_tag(Org, User, maps:get(id, Tag2)),
+
+    [Loaded] = kura_test_repo:preload(kura_test_composite_schema, [Membership], [tags]),
+    Tags = maps:get(tags, Loaded),
+    ?assertEqual(2, length(Tags)),
+    TagNames = lists:sort([maps:get(name, T) || T <- Tags]),
+    ?assertEqual([~"m2m_erlang", ~"m2m_otp"], TagNames).
+
+t_preload_many_to_many_composite_both() ->
+    OrgA = ~"11111111-1111-1111-1111-111111111111",
+    UserA = ~"22222222-2222-2222-2222-222222222222",
+    OrgB = ~"33333333-3333-3333-3333-333333333333",
+    UserB = ~"44444444-4444-4444-4444-444444444444",
+    OrgC = ~"55555555-5555-5555-5555-555555555555",
+    UserC = ~"66666666-6666-6666-6666-666666666666",
+    {ok, Owner} = insert_membership(OrgA, UserA, ~"admin"),
+    {ok, _} = insert_membership(OrgB, UserB, ~"member"),
+    {ok, _} = insert_membership(OrgC, UserC, ~"member"),
+    {ok, _} = link_membership(OrgA, UserA, OrgB, UserB),
+    {ok, _} = link_membership(OrgA, UserA, OrgC, UserC),
+
+    [Loaded] = kura_test_repo:preload(kura_test_composite_schema, [Owner], [linked]),
+    Linked = maps:get(linked, Loaded),
+    ?assertEqual(2, length(Linked)),
+    LinkedOrgs = lists:sort([maps:get(org_id, M) || M <- Linked]),
+    ?assertEqual([OrgB, OrgC], LinkedOrgs).
+
 t_nested_preload() ->
     {ok, User} = insert_user(<<"Nested_Author">>, <<"nested_author@test.com">>),
     UserId = maps:get(id, User),
@@ -585,6 +674,42 @@ t_put_assoc_many_to_many() ->
     ?assertEqual(2, length(LoadedTags)),
     TagNames = lists:sort([maps:get(name, T) || T <- LoadedTags]),
     ?assertEqual([<<"put_tag1">>, <<"put_tag2">>], TagNames).
+
+t_put_assoc_many_to_many_composite() ->
+    Org = ~"b7000000-0000-0000-0000-0000000000b7",
+    User = ~"c8000000-0000-0000-0000-0000000000c8",
+    OtherOrg = ~"d9000000-0000-0000-0000-0000000000d9",
+    OtherUser = ~"ea000000-0000-0000-0000-0000000000ea",
+    {ok, Tag1} = insert_tag(~"pa_m2m_erlang"),
+    {ok, Tag2} = insert_tag(~"pa_m2m_otp"),
+    {ok, Stale} = insert_tag(~"pa_m2m_stale"),
+
+    %% Pre-seed a stale join row for this owner and one for a different owner.
+    %% The composite DELETE in persist_many_to_many must remove only this
+    %% owner's rows, then INSERT the put_assoc set.
+    {ok, _} = link_membership_tag(Org, User, maps:get(id, Stale)),
+    {ok, _} = link_membership_tag(OtherOrg, OtherUser, maps:get(id, Stale)),
+
+    CS = kura_changeset:cast(
+        kura_test_composite_schema,
+        #{},
+        #{org_id => Org, user_id => User, role => ~"admin"},
+        [org_id, user_id, role]
+    ),
+    CS1 = kura_changeset:put_assoc(CS, tags, [Tag1, Tag2]),
+    {ok, Membership} = kura_test_repo:insert(CS1),
+    ?assertEqual(2, length(maps:get(tags, Membership))),
+
+    [Loaded] = kura_test_repo:preload(kura_test_composite_schema, [Membership], [tags]),
+    Names = lists:sort([maps:get(name, T) || T <- maps:get(tags, Loaded)]),
+    ?assertEqual([~"pa_m2m_erlang", ~"pa_m2m_otp"], Names),
+
+    %% The other owner's stale row must survive the DELETE.
+    {ok, OtherRows} = kura_test_repo:query(
+        "SELECT tag_id FROM membership_tags WHERE org_id = $1 AND user_id = $2",
+        [OtherOrg, OtherUser]
+    ),
+    ?assertEqual(1, length(OtherRows)).
 
 t_update_with_cast_assoc() ->
     {ok, User} = insert_user(<<"UpdAssoc_Author">>, <<"updassoc@test.com">>),

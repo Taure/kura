@@ -799,47 +799,43 @@ persist_m2m_child(_RepoMod, CS = #kura_changeset{action = undefined}) ->
     [#kura_changeset{}]
 ) -> {ok, map()}.
 persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
-    #kura_assoc{
-        schema = RelSchema,
-        join_through = JoinThrough,
-        join_keys = {OwnerKey, RelatedKey}
-    } = Assoc,
-    PK = kura_schema:primary_key(SchemaMod),
-    PKValue = maps:get(PK, AccRow),
-    RelPK = kura_schema:primary_key(RelSchema),
+    #kura_assoc{schema = RelSchema, join_through = JoinThrough} = Assoc,
+    {OwnerCols, RelatedCols} = kura_schema:assoc_join_keys(Assoc),
+    OwnerValues = [maps:get(K, AccRow) || K <- kura_schema:key(SchemaMod)],
+    RelKey = kura_schema:key(RelSchema),
     JoinTable =
         case JoinThrough of
             B when is_binary(B) -> B;
             M when is_atom(M) -> M:table()
         end,
-    OwnerCol = atom_to_binary(OwnerKey, utf8),
-    RelatedCol = atom_to_binary(RelatedKey, utf8),
     Children = [persist_m2m_child(RepoMod, ChildCS) || ChildCS <- ChildCSs],
+    {OwnerConds, OwnerParams, _} = key_conds(lists:zip(OwnerCols, OwnerValues), 1),
     DeleteSQL = iolist_to_binary([
-        ~"DELETE FROM ",
-        JoinTable,
-        ~" WHERE ",
-        OwnerCol,
-        ~" = $1"
+        ~"DELETE FROM ", JoinTable, ~" WHERE ", lists:join(~" AND ", OwnerConds)
     ]),
-    _ = kura_db:query(RepoMod, DeleteSQL, [PKValue]),
+    _ = kura_db:query(RepoMod, DeleteSQL, OwnerParams),
     lists:foreach(
         fun(Child) ->
-            RelPKValue = maps:get(RelPK, Child),
-            InsertSQL = iolist_to_binary([
-                ~"INSERT INTO ",
-                JoinTable,
-                ~" (",
-                OwnerCol,
-                ~", ",
-                RelatedCol,
-                ~") VALUES ($1, $2)"
-            ]),
-            kura_db:query(RepoMod, InsertSQL, [PKValue, RelPKValue])
+            RelValues = [maps:get(K, Child) || K <- RelKey],
+            {InsertSQL, InsertParams} = m2m_insert_sql(
+                JoinTable, OwnerCols ++ RelatedCols, OwnerValues ++ RelValues
+            ),
+            kura_db:query(RepoMod, InsertSQL, InsertParams)
         end,
         Children
     ),
     {ok, AccRow#{AssocName => Children}}.
+
+m2m_insert_sql(JoinTable, Cols, Values) ->
+    ColSQL = lists:join(~", ", [quote_ident_bin(atom_to_binary(C, utf8)) || C <- Cols]),
+    Placeholders = lists:join(~", ", [
+        [~"$", integer_to_binary(N)]
+     || N <- lists:seq(1, length(Cols))
+    ]),
+    SQL = iolist_to_binary([
+        ~"INSERT INTO ", JoinTable, ~" (", ColSQL, ~") VALUES (", Placeholders, ~")"
+    ]),
+    {SQL, Values}.
 
 delete_record(RepoMod, SchemaMod, Data) ->
     case kura_schema:run_before_delete(SchemaMod, Data) of
