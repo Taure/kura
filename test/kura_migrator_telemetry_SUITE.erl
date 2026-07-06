@@ -38,7 +38,10 @@ boot-time pageable event.
     migrate_idempotent_run_emits_zero_pending/1,
     migrate_pool_unavailable_does_not_emit_events/1,
     rollback_emits_start_and_stop_with_direction_down/1,
-    migrate_handler_exception_does_not_break_migrator/1
+    migrate_handler_exception_does_not_break_migrator/1,
+    fake_stamps_pending_without_running_ddl/1,
+    fake_emits_events_with_direction_fake/1,
+    fake_on_empty_pending_is_noop/1
 ]).
 
 -define(LIVE_POOL, kura_migrator_telemetry_suite_live).
@@ -58,7 +61,10 @@ all() ->
         migrate_idempotent_run_emits_zero_pending,
         migrate_pool_unavailable_does_not_emit_events,
         rollback_emits_start_and_stop_with_direction_down,
-        migrate_handler_exception_does_not_break_migrator
+        migrate_handler_exception_does_not_break_migrator,
+        fake_stamps_pending_without_running_ddl,
+        fake_emits_events_with_direction_fake,
+        fake_on_empty_pending_is_noop
     ].
 
 init_per_suite(Config) ->
@@ -228,6 +234,72 @@ rollback_emits_start_and_stop_with_direction_down(_Config) ->
     ?assertEqual(ok, maps:get(result, StopMd)),
     ?assertEqual(1, maps:get(applied_count, StopMd)).
 
+fake_stamps_pending_without_running_ddl(_Config) ->
+    %% The brownfield baseline: fake/1 records every pending migration
+    %% in schema_migrations WITHOUT executing its DDL. On a fresh DB the
+    %% two coverage migrations get stamped, but coverage_items must NOT
+    %% be created - proving no DDL ran. A subsequent migrate is then a
+    %% no-op because everything is already applied.
+    {ok, Faked} = kura_migrator:fake(?REPO),
+    ?assertEqual(2, length(Faked)),
+
+    ?assertEqual(0, table_count(~"coverage_items")),
+
+    Status = kura_migrator:status(?REPO),
+    ?assertEqual(2, length(Status)),
+    ?assert(lists:all(fun({_V, _M, S}) -> S =:= up end, Status)),
+
+    ?assertEqual({ok, []}, kura_migrator:migrate(?REPO)).
+
+fake_emits_events_with_direction_fake(_Config) ->
+    %% fake/1 emits the same event shape as migrate but with
+    %% direction=fake and op_count=0, so dashboards can tell a baseline
+    %% stamp apart from a real forward migration.
+    Ref = telemetry_test:attach_event_handlers(self(), ?EVENTS),
+    {ok, _} = kura_migrator:fake(?REPO),
+    Events = drain_events(?EVENTS),
+    telemetry:detach(Ref),
+
+    {_, _, StartMd} = find_event([kura, migrator, migrate, start], Events),
+    {_, StopMs, StopMd} = find_event([kura, migrator, migrate, stop], Events),
+    ?assertEqual(fake, maps:get(direction, StartMd)),
+    ?assertEqual(2, maps:get(pending_count, StartMd)),
+    ?assertEqual(fake, maps:get(direction, StopMd)),
+    ?assertEqual(ok, maps:get(result, StopMd)),
+    ?assertEqual(2, maps:get(applied_count, StopMd)),
+    ?assert(is_integer(maps:get(duration, StopMs))),
+
+    ApplyEvents = [E || {[kura, migrator, migration, apply], _, _} = E <- Events],
+    ?assertEqual(2, length(ApplyEvents)),
+    lists:foreach(
+        fun({_, _, Md}) ->
+            ?assertEqual(fake, maps:get(direction, Md)),
+            ?assertEqual(0, maps:get(op_count, Md))
+        end,
+        ApplyEvents
+    ).
+
+fake_on_empty_pending_is_noop(_Config) ->
+    %% A second fake/1 has nothing left to stamp: no apply events and
+    %% pending_count=0. Guards against the safety warning firing (or
+    %% any stamping happening) on an already-baselined repo.
+    {ok, [_, _]} = kura_migrator:fake(?REPO),
+
+    Ref = telemetry_test:attach_event_handlers(self(), ?EVENTS),
+    ?assertEqual({ok, []}, kura_migrator:fake(?REPO)),
+    Events = drain_events(?EVENTS),
+    telemetry:detach(Ref),
+
+    {_, _, StartMd} = find_event([kura, migrator, migrate, start], Events),
+    ?assertEqual(0, maps:get(pending_count, StartMd)),
+    ?assertEqual(fake, maps:get(direction, StartMd)),
+    {_, _, StopMd} = find_event([kura, migrator, migrate, stop], Events),
+    ?assertEqual(0, maps:get(applied_count, StopMd)),
+    ?assertEqual(
+        [],
+        [E || {[kura, migrator, migration, apply], _, _} = E <- Events]
+    ).
+
 migrate_handler_exception_does_not_break_migrator(_Config) ->
     %% Telemetry handlers run inline on the emitter's process. A
     %% buggy handler (e.g. one that crashes on a missing key) must
@@ -297,6 +369,14 @@ find_event(Name, Events) ->
         [E | _] -> E;
         [] -> undefined
     end.
+
+table_count(Name) ->
+    #{rows := [#{count := N}]} = pgo:query(
+        ~"SELECT count(*)::int AS count FROM information_schema.tables WHERE table_name = $1",
+        [Name],
+        #{pool => ?LIVE_POOL, decode_opts => [return_rows_as_maps, column_name_as_atom]}
+    ),
+    N.
 
 cleanup_db() ->
     _ = pgo:query(

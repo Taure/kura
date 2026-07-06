@@ -26,6 +26,7 @@ across multiple nodes.
 
 -export([
     migrate/1,
+    fake/1,
     rollback/1, rollback/2,
     status/1,
     ensure_database/1,
@@ -87,6 +88,57 @@ migrate(RepoMod) ->
             Err
     end.
 
+-doc """
+Stamp all pending migrations as applied WITHOUT running their DDL.
+
+Baseline for brownfield adoption: after `rebar3 kura gen_schemas`
+bootstraps schema modules from an existing database, the first
+`compile` emits `create_table` migrations for tables that already
+exist. `fake/1` records those in `schema_migrations` so real
+migrations proceed from there. It never executes migration DDL.
+
+Precondition: `fake/1` stamps EVERY pending migration. Only run it
+when every pending migration corresponds to schema that already
+exists - a genuinely-new migration in the pending set would be
+stamped without its table ever being created, and a later
+`migrate/1` would then treat it as done. Check `status/1` first; the
+versions about to be stamped are also logged at warning level. For
+the mixed new/existing case use a version-scoped baseline (kura#156).
+""".
+-spec fake(module()) -> {ok, [integer()]} | {error, term()}.
+fake(RepoMod) ->
+    case wait_for_pool(RepoMod) of
+        ok ->
+            ensure_schema_migrations(RepoMod),
+            T0 = erlang:monotonic_time(),
+            Applied = get_applied_versions(RepoMod),
+            Migrations = discover_migrations(RepoMod),
+            Pending = [{V, M} || {V, M} <- Migrations, not lists:member(V, Applied)],
+            Sorted = sort_migrations(Pending),
+            case Sorted of
+                [] ->
+                    ok;
+                _ ->
+                    logger:warning(#{
+                        msg => ~"kura: fake-stamping migrations as applied without running DDL",
+                        repo => RepoMod,
+                        versions => [V || {V, _M} <- Sorted]
+                    })
+            end,
+            telemetry_event(
+                [kura, migrator, migrate, start],
+                #{system_time => erlang:system_time()},
+                #{repo => RepoMod, pending_count => length(Sorted), direction => fake}
+            ),
+            Result = with_migration_lock(RepoMod, fun() ->
+                stamp_migrations(Sorted, RepoMod, [])
+            end),
+            emit_migrate_stop(RepoMod, T0, fake, Result),
+            Result;
+        {error, _} = Err ->
+            Err
+    end.
+
 -doc "Roll back the last migration.".
 -spec rollback(module()) -> {ok, [integer()]} | {error, term()}.
 rollback(RepoMod) ->
@@ -118,7 +170,7 @@ rollback(RepoMod, Steps) ->
             Err
     end.
 
--spec emit_migrate_stop(module(), integer(), up | down, term()) -> ok.
+-spec emit_migrate_stop(module(), integer(), up | down | fake, term()) -> ok.
 emit_migrate_stop(RepoMod, T0, Direction, Result) ->
     DurationNative = erlang:monotonic_time() - T0,
     {ResultStatus, AppliedCount, ErrorReason} =
@@ -405,6 +457,32 @@ run_migrations([{Version, Module} | Rest], Dir, RepoMod, Acc) ->
         }
     ),
     run_migrations(Rest, Dir, RepoMod, [Version | Acc]).
+
+%% Stamp migrations as applied without running any DDL (baseline / fake apply).
+%% Physically separate from run_migrations so the "never executes DDL"
+%% invariant is local and auditable: this path only ever INSERTs the version.
+-spec stamp_migrations([{integer(), module()}], module(), [integer()]) -> [integer()].
+stamp_migrations([], _RepoMod, Acc) ->
+    reverse_integers(Acc, []);
+stamp_migrations([{Version, Module} | Rest], RepoMod, Acc) ->
+    exec(
+        ~"INSERT INTO schema_migrations (version) VALUES ($1)",
+        [Version],
+        Version,
+        RepoMod
+    ),
+    logger:info("Kura: fake migration ~p (~p)", [Version, Module]),
+    telemetry_event(
+        [kura, migrator, migration, apply],
+        #{duration => 0},
+        #{
+            version => Version,
+            module => Module,
+            direction => fake,
+            op_count => 0
+        }
+    ),
+    stamp_migrations(Rest, RepoMod, [Version | Acc]).
 
 -spec exec_operations([kura_migration:operation()], integer(), module()) -> ok.
 exec_operations(Ops, Version, RepoMod) ->
