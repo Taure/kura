@@ -35,8 +35,8 @@
 }).
 
 -record(kura_ref, {
-    fields :: [atom()],
-    target :: module(),
+    fields :: [atom()] | undefined,
+    target :: module() | undefined,
     target_key :: [atom()] | undefined
 }).
 
