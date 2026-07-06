@@ -17,6 +17,24 @@ fields() ->
      #kura_field{name = name, type = string},
      #kura_field{name = email, type = string}].
 ```
+
+For a composite primary key, implement the optional `key/0` callback
+returning the ordered key columns; `primary_key = true` markers are then
+unnecessary. When `key/0` is absent the key is derived from the
+`primary_key = true` fields, so existing single-key schemas are unchanged.
+
+```erlang
+-module(membership).
+-behaviour(kura_schema).
+-include_lib("kura/include/kura.hrl").
+
+table() -> <<"memberships">>.
+key() -> [org_id, user_id].
+fields() ->
+    [#kura_field{name = org_id, type = uuid, nullable = false},
+     #kura_field{name = user_id, type = uuid, nullable = false},
+     #kura_field{name = role, type = string}].
+```
 """.
 
 -include("kura.hrl").

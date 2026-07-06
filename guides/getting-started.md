@@ -165,6 +165,9 @@ CS1 = kura_changeset:validate_required(CS, [name, email]),
 %% By primary key
 {ok, User} = kura_repo_worker:get(my_repo, my_user, 1),
 
+%% By a composite primary key: pass a #{field => value} map
+{ok, M} = kura_repo_worker:get(my_repo, membership, #{org_id => Org, user_id => User}),
+
 %% All rows
 {ok, Users} = kura_repo_worker:all(my_repo, kura_query:from(my_user)),
 

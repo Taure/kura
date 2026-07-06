@@ -51,6 +51,21 @@ Column options:
 - `nullable` - `true | false` (default: `true`)
 - `default` - literal value (integer, float, binary, boolean) or `undefined` for none
 
+A four-element `create_table` takes a list of table-level constraints as
+its last argument. Use `{primary_key, Cols}` for a composite primary key
+(rather than an inline `primary_key = true` column):
+
+```erlang
+{create_table, ~"memberships", [
+    #kura_column{name = org_id, type = uuid, nullable = false},
+    #kura_column{name = user_id, type = uuid, nullable = false},
+    #kura_column{name = role, type = string}
+], [{primary_key, [org_id, user_id]}]}.
+```
+
+emits `PRIMARY KEY ("org_id", "user_id")`. The other table constraints are
+`{unique, Cols}` and `{check, SqlBinary}`.
+
 ### Drop Table
 
 ```erlang

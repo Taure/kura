@@ -14,6 +14,7 @@ Database layer for Erlang - Ecto-equivalent abstractions in pure Erlang. Pluggab
 - **SQL Compiler** - parameterized SQL generation (no string interpolation)
 - **Repo** - CRUD operations with automatic type conversion and PG error mapping
 - **Associations** - `belongs_to`, `has_one`, `has_many`, `many_to_many` with preloading
+- **Composite keys** - N-column primary keys (`key/0`) and composite foreign keys (`#kura_ref{}`)
 - **Embedded Schemas** - `embeds_one`, `embeds_many` stored as JSONB
 - **Multi** - atomic transaction pipelines
 - **Migrations** - DDL operations with automatic module-based discovery

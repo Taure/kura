@@ -212,6 +212,28 @@ Like `has_many` but returns a single record (or `nil`):
 #kura_assoc{name = profile, type = has_one, schema = my_profile, foreign_key = user_id}.
 ```
 
+### Composite foreign keys
+
+When the association's foreign key spans more than one column, use the
+`ref` field with a `#kura_ref{}` instead of the single-column
+`schema` + `foreign_key`. `belongs_to`, `has_many`, and `has_one` all
+support it, and preloading works the same way.
+
+```erlang
+%% a note whose (org_id, user_id) references a membership's composite key
+#kura_assoc{name = membership, type = belongs_to,
+            ref = #kura_ref{fields = [org_id, user_id], target = membership}}.
+
+%% the reverse: a membership has_many notes keyed on the same pair
+#kura_assoc{name = notes, type = has_many,
+            ref = #kura_ref{fields = [org_id, user_id], target = membership_note}}.
+```
+
+`ref.fields` are the foreign-key columns; `ref.target_key` defaults to the
+target schema's `key/0` and only needs to be given when the referenced
+columns differ from the target's key. A single-column `foreign_key` is the
+one-element case of the same model.
+
 ## Preloading
 
 ### In Queries
