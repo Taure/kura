@@ -181,53 +181,69 @@ preload_has_one_cond(RepoMod, Records, Schema, Assoc = #kura_assoc{name = Name},
     Lookup = tuple_lookup(Related, FKCols, #{}),
     [set_field(Name, get_field_default(fk_tuple(OwnerKey, R), Lookup, nil), R) || R <- Records].
 
-preload_many_to_many(RepoMod, Records, Schema, #kura_assoc{
-    name = Name, schema = RelSchema, join_through = JoinThrough, join_keys = {OwnerKey, RelatedKey}
-}) ->
-    PK = kura_schema:primary_key(Schema),
-    PKValues = lists:usort([get_field(PK, R) || R <- Records]),
-    case PKValues of
+preload_many_to_many(
+    RepoMod, Records, Schema, Assoc = #kura_assoc{name = Name, join_through = JoinThrough}
+) ->
+    RelSchema = kura_schema:assoc_target(Assoc),
+    {OwnerCols, RelatedCols} = kura_schema:assoc_join_keys(Assoc),
+    OwnerKey = kura_schema:key(Schema),
+    OwnerTuples = lists:usort([fk_tuple(OwnerKey, R) || R <- Records]),
+    case OwnerTuples of
         [] ->
             [set_field(Name, [], R) || R <- Records];
         _ ->
             JoinTableBin = resolve_join_table(JoinThrough),
-            OwnerCol = atom_to_binary(OwnerKey, utf8),
-            RelatedCol = atom_to_binary(RelatedKey, utf8),
-            PlaceholderBins = [
-                iolist_to_binary(io_lib:format("$~B", [I]))
-             || I <- lists:seq(1, length(PKValues))
-            ],
-            Placeholders = join_bins(PlaceholderBins, ~", "),
+            {InSQL, InParams} = composite_in_sql(OwnerCols, OwnerTuples),
+            SelectCols = join_bins(
+                [quote_ident_bin(atom_to_binary(C, utf8)) || C <- OwnerCols ++ RelatedCols], ~", "
+            ),
             JoinSQL = iolist_to_binary([
-                ~"SELECT ",
-                OwnerCol,
-                ~", ",
-                RelatedCol,
-                ~" FROM ",
-                JoinTableBin,
-                ~" WHERE ",
-                OwnerCol,
-                ~" IN (",
-                Placeholders,
-                ~")"
+                ~"SELECT ", SelectCols, ~" FROM ", JoinTableBin, ~" WHERE ", InSQL
             ]),
-            #{rows := JoinRows} = kura_repo_worker:pgo_query(RepoMod, JoinSQL, PKValues),
-            RelatedIds = lists:usort([get_field(RelatedKey, JR) || JR <- JoinRows]),
-            case RelatedIds of
+            #{rows := JoinRows} = kura_repo_worker:pgo_query(RepoMod, JoinSQL, InParams),
+            RelTuples = lists:usort([fk_tuple(RelatedCols, JR) || JR <- JoinRows]),
+            case RelTuples of
                 [] ->
                     [set_field(Name, [], R) || R <- Records];
                 _ ->
-                    RelPK = kura_schema:primary_key(RelSchema),
-                    Q = kura_query:where(kura_query:from(RelSchema), {RelPK, in, RelatedIds}),
+                    RelKey = kura_schema:key(RelSchema),
+                    Q = kura_query:where(kura_query:from(RelSchema), {RelKey, in, RelTuples}),
                     {ok, Related} = kura_repo_worker:all(RepoMod, Q),
-                    RelLookup = to_lookup(Related, RelPK, #{}),
-                    Grouped = group_m2m_join(JoinRows, OwnerKey, RelatedKey, RelLookup, #{}),
+                    RelLookup = tuple_lookup(Related, RelKey, #{}),
+                    Grouped = group_m2m_join(JoinRows, OwnerCols, RelatedCols, RelLookup, #{}),
                     [
-                        set_field(Name, get_field_default(get_field(PK, R), Grouped, []), R)
+                        set_field(Name, get_field_default(fk_tuple(OwnerKey, R), Grouped, []), R)
                      || R <- Records
                     ]
             end
     end.
+
+-spec composite_in_sql([atom()], [tuple()]) -> {iolist(), [term()]}.
+composite_in_sql(Cols, Tuples) ->
+    ColList = join_bins([quote_ident_bin(atom_to_binary(C, utf8)) || C <- Cols], ~", "),
+    {Groups, Params, _} = m2m_row_groups(Tuples, length(Cols), 1, [], []),
+    {[~"(", ColList, ~") IN (", join_bins(Groups, ~", "), ~")"], Params}.
+
+-spec m2m_row_groups([tuple()], non_neg_integer(), pos_integer(), [iolist()], [term()]) ->
+    {[iolist()], [term()], pos_integer()}.
+m2m_row_groups([], _Arity, Counter, SQLs, Params) ->
+    {lists:reverse(SQLs), Params, Counter};
+m2m_row_groups([Tuple | Rest], Arity, Counter, SQLs, Params) ->
+    {Phs, Next} = m2m_placeholders(Arity, Counter, []),
+    Group = [~"(", join_bins(Phs, ~", "), ~")"],
+    m2m_row_groups(Rest, Arity, Next, [Group | SQLs], Params ++ tuple_to_list(Tuple)).
+
+-spec m2m_placeholders(non_neg_integer(), pos_integer(), [binary()]) ->
+    {[binary()], pos_integer()}.
+m2m_placeholders(0, Counter, Acc) ->
+    {lists:reverse(Acc), Counter};
+m2m_placeholders(N, Counter, Acc) ->
+    m2m_placeholders(N - 1, Counter + 1, [
+        iolist_to_binary([~"$", integer_to_binary(Counter)]) | Acc
+    ]).
+
+quote_ident_bin(Name) when is_binary(Name) ->
+    <<$", Name/binary, $">>.
 
 %%----------------------------------------------------------------------
 %% Has many through
@@ -349,12 +365,12 @@ group_by_tuple([Rel | Rest], Cols, Acc) ->
     NewAcc = maps:update_with(Key, fun(L) -> [Rel | L] end, [Rel], Acc),
     group_by_tuple(Rest, Cols, NewAcc).
 
--spec group_m2m_join([map()], atom(), atom(), map(), map()) -> map().
-group_m2m_join([], _OwnerKey, _RelatedKey, _RelLookup, Acc) ->
+-spec group_m2m_join([map()], [atom()], [atom()], map(), map()) -> map().
+group_m2m_join([], _OwnerCols, _RelatedCols, _RelLookup, Acc) ->
     maps:map(fun(_, V) -> lists:reverse(V) end, Acc);
-group_m2m_join([JR | Rest], OwnerKey, RelatedKey, RelLookup, Acc) ->
-    OKey = get_field(OwnerKey, JR),
-    RKey = get_field(RelatedKey, JR),
+group_m2m_join([JR | Rest], OwnerCols, RelatedCols, RelLookup, Acc) ->
+    OKey = fk_tuple(OwnerCols, JR),
+    RKey = fk_tuple(RelatedCols, JR),
     NewAcc =
         case RelLookup of
             #{RKey := RelRec} ->
@@ -362,7 +378,7 @@ group_m2m_join([JR | Rest], OwnerKey, RelatedKey, RelLookup, Acc) ->
             #{} ->
                 Acc
         end,
-    group_m2m_join(Rest, OwnerKey, RelatedKey, RelLookup, NewAcc).
+    group_m2m_join(Rest, OwnerCols, RelatedCols, RelLookup, NewAcc).
 
 -spec nest_preload(module(), [map()], atom(), module(), [atom() | {atom(), list()}], [map()]) ->
     [map()].

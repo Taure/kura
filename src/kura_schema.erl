@@ -53,6 +53,7 @@ fields() ->
     assoc_fields/1,
     assoc_target/1,
     assoc_target_key/1,
+    assoc_join_keys/1,
     embeds/1,
     embed/2,
     constraints/1,
@@ -259,6 +260,18 @@ assoc_target_key(#kura_assoc{ref = #kura_ref{target_key = Cols}}) ->
     Cols;
 assoc_target_key(#kura_assoc{}) ->
     undefined.
+
+-doc """
+Return a many_to_many association's join-table columns as
+`{OwnerCols, RelatedCols}`, each an ordered list. A single-column
+`join_keys = {owner, related}` is the one-element-list case.
+""".
+-spec assoc_join_keys(#kura_assoc{}) -> {[atom()], [atom()]}.
+assoc_join_keys(#kura_assoc{join_keys = {Owner, Related}}) ->
+    {as_col_list(Owner), as_col_list(Related)}.
+
+as_col_list(C) when is_atom(C) -> [C];
+as_col_list(C) when is_list(C) -> C.
 
 -doc "Return all embeds defined on a schema module.".
 -spec embeds(module()) -> [#kura_embed{}].

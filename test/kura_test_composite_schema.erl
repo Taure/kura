@@ -27,5 +27,19 @@ associations() ->
             name = latest_note,
             type = has_one,
             ref = #kura_ref{fields = [org_id, user_id], target = kura_test_membership_note_schema}
+        },
+        #kura_assoc{
+            name = tags,
+            type = many_to_many,
+            schema = kura_test_tag_schema,
+            join_through = <<"membership_tags">>,
+            join_keys = {[org_id, user_id], [tag_id]}
+        },
+        #kura_assoc{
+            name = linked,
+            type = many_to_many,
+            schema = kura_test_composite_schema,
+            join_through = <<"membership_links">>,
+            join_keys = {[org_id, user_id], [related_org_id, related_user_id]}
         }
     ].

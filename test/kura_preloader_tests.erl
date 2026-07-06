@@ -69,7 +69,7 @@ group_by_tuple_composite_key_test() ->
 %%----------------------------------------------------------------------
 
 group_m2m_join_empty_test() ->
-    ?assertEqual(#{}, kura_preloader:group_m2m_join([], owner_id, related_id, #{}, #{})).
+    ?assertEqual(#{}, kura_preloader:group_m2m_join([], [owner_id], [related_id], #{}, #{})).
 
 group_m2m_join_with_lookup_test() ->
     JoinRows = [
@@ -78,17 +78,17 @@ group_m2m_join_with_lookup_test() ->
         #{owner_id => 2, related_id => 10}
     ],
     RelLookup = #{
-        10 => #{id => 10, name => <<"tag1">>},
-        20 => #{id => 20, name => <<"tag2">>}
+        {10} => #{id => 10, name => <<"tag1">>},
+        {20} => #{id => 20, name => <<"tag2">>}
     },
-    Result = kura_preloader:group_m2m_join(JoinRows, owner_id, related_id, RelLookup, #{}),
-    ?assertEqual(2, length(maps:get(1, Result))),
-    ?assertEqual(1, length(maps:get(2, Result))).
+    Result = kura_preloader:group_m2m_join(JoinRows, [owner_id], [related_id], RelLookup, #{}),
+    ?assertEqual(2, length(maps:get({1}, Result))),
+    ?assertEqual(1, length(maps:get({2}, Result))).
 
 group_m2m_join_missing_in_lookup_test() ->
     JoinRows = [#{owner_id => 1, related_id => 99}],
-    RelLookup = #{10 => #{id => 10, name => <<"tag1">>}},
-    Result = kura_preloader:group_m2m_join(JoinRows, owner_id, related_id, RelLookup, #{}),
+    RelLookup = #{{10} => #{id => 10, name => <<"tag1">>}},
+    Result = kura_preloader:group_m2m_join(JoinRows, [owner_id], [related_id], RelLookup, #{}),
     ?assertEqual(#{}, Result).
 
 %%----------------------------------------------------------------------
