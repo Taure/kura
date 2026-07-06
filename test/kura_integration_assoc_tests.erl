@@ -25,6 +25,7 @@ assoc_test_() ->
             {"preload belongs_to via composite FK (no match)",
                 fun t_preload_belongs_to_composite_missing/0},
             {"preload has_many via composite FK", fun t_preload_has_many_composite/0},
+            {"preload has_one via composite FK", fun t_preload_has_one_composite/0},
             {"preload has_many", fun t_preload_has_many/0},
             {"preload has_one", fun t_preload_has_one/0},
             {"preload many_to_many", fun t_preload_many_to_many/0},
@@ -281,10 +282,44 @@ t_preload_has_many_composite() ->
         )
      || Body <- [~"n1", ~"n2"]
     ],
-    [Loaded] = kura_test_repo:preload(kura_test_composite_schema, [Membership], [notes]),
-    Notes = maps:get(notes, Loaded),
-    ?assertEqual(2, length(Notes)),
-    ?assertEqual([~"n1", ~"n2"], lists:sort([maps:get(body, N) || N <- Notes])).
+    %% a second membership with no notes must preload []
+    Org2 = ~"11111111-2222-3333-4444-555555555555",
+    {ok, Childless} = kura_test_repo:insert(
+        kura_changeset:cast(
+            kura_test_composite_schema,
+            #{},
+            #{org_id => Org2, user_id => User, role => ~"member"},
+            [org_id, user_id, role]
+        )
+    ),
+    [Loaded, LoadedChildless] = kura_test_repo:preload(
+        kura_test_composite_schema, [Membership, Childless], [notes]
+    ),
+    ?assertEqual(2, length(maps:get(notes, Loaded))),
+    ?assertEqual([~"n1", ~"n2"], lists:sort([maps:get(body, N) || N <- maps:get(notes, Loaded)])),
+    ?assertEqual([], maps:get(notes, LoadedChildless)).
+
+t_preload_has_one_composite() ->
+    Org = ~"a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1",
+    User = ~"b2b2b2b2-b2b2-b2b2-b2b2-b2b2b2b2b2b2",
+    {ok, Membership} = kura_test_repo:insert(
+        kura_changeset:cast(
+            kura_test_composite_schema,
+            #{},
+            #{org_id => Org, user_id => User, role => ~"admin"},
+            [org_id, user_id, role]
+        )
+    ),
+    {ok, _} = kura_test_repo:insert(
+        kura_changeset:cast(
+            kura_test_membership_note_schema,
+            #{},
+            #{org_id => Org, user_id => User, body => ~"only"},
+            [org_id, user_id, body]
+        )
+    ),
+    [Loaded] = kura_test_repo:preload(kura_test_composite_schema, [Membership], [latest_note]),
+    ?assertEqual(~"only", maps:get(body, maps:get(latest_note, Loaded))).
 
 t_preload_has_many() ->
     {ok, User} = insert_user(<<"HM_Author">>, <<"hm_author@test.com">>),

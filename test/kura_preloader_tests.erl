@@ -33,7 +33,7 @@ set_field_overwrite_test() ->
     ?assertEqual(#{a => 2}, kura_preloader:set_field(a, 2, #{a => 1})).
 
 %%----------------------------------------------------------------------
-%% group_by_key
+%% group_by_tuple
 %%----------------------------------------------------------------------
 
 group_by_tuple_empty_test() ->
@@ -56,9 +56,9 @@ group_by_tuple_multiple_same_key_test() ->
 
 group_by_tuple_composite_key_test() ->
     Records = [
-        #{a => 1, b => 2, n => <<"x">>},
-        #{a => 1, b => 2, n => <<"y">>},
-        #{a => 1, b => 3, n => <<"z">>}
+        #{a => 1, b => 2, n => ~"x"},
+        #{a => 1, b => 2, n => ~"y"},
+        #{a => 1, b => 3, n => ~"z"}
     ],
     Result = kura_preloader:group_by_tuple(Records, [a, b], #{}),
     ?assertEqual(2, length(maps:get({1, 2}, Result))),

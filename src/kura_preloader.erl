@@ -113,11 +113,12 @@ preload_belongs_to(RepoMod, Records, Assoc = #kura_assoc{name = Name}) ->
             [set_field(Name, lookup_by_fk(FKCols, R, Lookup), R) || R <- Records]
     end.
 
-%% The referenced key column(s) on the target: an explicit ref target_key,
-%% else the target schema's own key.
-assoc_target_key(Assoc, RelSchema) ->
+%% The referenced key column(s): an explicit ref target_key, else the
+%% given schema's key. belongs_to passes the target schema, has_*/has_one
+%% pass the owner schema, matching which side the FK references.
+assoc_target_key(Assoc, DefaultSchema) ->
     case kura_schema:assoc_target_key(Assoc) of
-        undefined -> kura_schema:key(RelSchema);
+        undefined -> kura_schema:key(DefaultSchema);
         Cols -> Cols
     end.
 
