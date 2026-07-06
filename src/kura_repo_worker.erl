@@ -759,8 +759,7 @@ persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCS) ->
     Child = persist_child(RepoMod, set_owned_fk(ChildCS, Binding)),
     {ok, AccRow#{AssocName => Child}}.
 
-%% The child foreign-key columns paired with the parent key values they
-%% reference. Single-column FKs are the one-element case.
+%% Single-column FKs are the one-element case of the same binding.
 owned_fk_binding(Assoc, SchemaMod, AccRow) ->
     FKCols = kura_schema:assoc_fields(Assoc),
     ParentKey =
