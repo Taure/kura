@@ -141,3 +141,34 @@ has_after_hook_update_false_test() ->
 
 has_after_hook_delete_false_test() ->
     ?assertNot(kura_schema:has_after_hook(kura_test_schema, delete)).
+
+%%----------------------------------------------------------------------
+%% key / key_fields (uniform identity)
+%%----------------------------------------------------------------------
+
+key_derived_from_primary_key_field_test() ->
+    ?assertEqual([id], kura_schema:key(kura_test_schema)).
+
+key_from_callback_composite_test() ->
+    ?assertEqual([org_id, user_id], kura_schema:key(kura_test_composite_schema)).
+
+key_fields_single_test() ->
+    [Field] = kura_schema:key_fields(kura_test_schema),
+    ?assertEqual(id, Field#kura_field.name).
+
+key_fields_composite_preserves_order_test() ->
+    Fields = kura_schema:key_fields(kura_test_composite_schema),
+    ?assertEqual([org_id, user_id], [F#kura_field.name || F <- Fields]).
+
+primary_key_single_test() ->
+    ?assertEqual(id, kura_schema:primary_key(kura_test_schema)).
+
+primary_key_composite_raises_named_error_test() ->
+    ?assertError(
+        {composite_primary_key, kura_test_composite_schema, [org_id, user_id]},
+        kura_schema:primary_key(kura_test_composite_schema)
+    ).
+
+primary_key_field_single_test() ->
+    Field = kura_schema:primary_key_field(kura_test_schema),
+    ?assertEqual(id, Field#kura_field.name).
