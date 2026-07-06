@@ -593,7 +593,7 @@ on_conflict_constraint_replace(_Config) ->
 
 %% Covers kura_schema line 105: no primary key defined
 schema_no_primary_key(_Config) ->
-    persistent_term:erase({kura_schema, primary_key, kura_cov2_nopk_schema}),
+    persistent_term:erase({kura_schema, key, kura_cov2_nopk_schema}),
     ?assertError(
         {no_primary_key, kura_cov2_nopk_schema},
         kura_schema:primary_key(kura_cov2_nopk_schema)

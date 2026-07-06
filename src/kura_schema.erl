@@ -25,6 +25,8 @@ fields() ->
     field_names/1,
     field_types/1,
     column_map/1,
+    key/1,
+    key_fields/1,
     primary_key/1,
     primary_key_field/1,
     non_virtual_fields/1,
@@ -48,6 +50,7 @@ fields() ->
 -callback fields() -> [#kura_field{}].
 
 -optional_callbacks([
+    key/0,
     timestamps/0,
     associations/0,
     embeds/0,
@@ -62,6 +65,7 @@ fields() ->
     after_delete/1
 ]).
 
+-callback key() -> [atom()].
 -callback timestamps() -> [{atom(), kura_types:kura_type()}].
 -callback associations() -> [#kura_assoc{}].
 -callback embeds() -> [#kura_embed{}].
@@ -109,22 +113,73 @@ non_virtual_fields(Mod) ->
         Fields ++ EmbedNames
     end).
 
--doc "Return the primary key field name for a schema module.".
--spec primary_key(module()) -> atom().
-primary_key(Mod) ->
-    cache({kura_schema, primary_key, Mod}, fun() ->
-        case [F#kura_field.name || F <- Mod:fields(), F#kura_field.primary_key =:= true] of
-            [PK] -> PK;
+-doc """
+Return the ordered primary-key column names for a schema module.
+
+A schema declares its key with the optional `key/0` callback (an ordered
+list, arity 1 or more for composite keys). When `key/0` is not
+implemented, the key is derived from the fields marked
+`primary_key = true`, so existing single-key schemas need no change.
+""".
+-spec key(module()) -> [atom()].
+key(Mod) ->
+    cache({kura_schema, key, Mod}, fun() ->
+        case key_names(Mod) of
+            [_ | _] = Key -> Key;
             [] -> error({no_primary_key, Mod})
         end
     end).
 
--doc "Return the primary key field record, or `undefined` if not found.".
+%% Ordered key column names, possibly empty (no primary key). key/0
+%% wins; otherwise the primary_key = true fields (the compat shim).
+key_names(Mod) ->
+    _ = code:ensure_loaded(Mod),
+    case erlang:function_exported(Mod, key, 0) of
+        true -> Mod:key();
+        false -> [F#kura_field.name || F <- Mod:fields(), F#kura_field.primary_key =:= true]
+    end.
+
+-doc "Return the ordered primary-key field records for a schema module.".
+-spec key_fields(module()) -> [#kura_field{}].
+key_fields(Mod) ->
+    cache({kura_schema, key_fields, Mod}, fun() ->
+        FieldMap = maps:from_list([{F#kura_field.name, F} || F <- Mod:fields()]),
+        [
+            case FieldMap of
+                #{N := F} -> F;
+                #{} -> error({key_field_not_found, Mod, N})
+            end
+         || N <- key(Mod)
+        ]
+    end).
+
+-doc """
+Return the single primary-key field name for a schema module.
+
+Convenience over `key/1` for the common single-key case; raises
+`{composite_primary_key, Mod, Keys}` on a composite key.
+""".
+-spec primary_key(module()) -> atom().
+primary_key(Mod) ->
+    case key(Mod) of
+        [PK] -> PK;
+        Keys -> error({composite_primary_key, Mod, Keys})
+    end.
+
+-doc """
+Return the single primary-key field record, or `undefined` if the
+schema has no primary key. Raises on a composite key.
+""".
 -spec primary_key_field(module()) -> #kura_field{} | undefined.
 primary_key_field(Mod) ->
-    case [F || F <- Mod:fields(), F#kura_field.primary_key =:= true] of
-        [Field] -> Field;
-        [] -> undefined
+    case key_names(Mod) of
+        [] ->
+            undefined;
+        [PK] ->
+            [Field] = [F || F <- Mod:fields(), F#kura_field.name =:= PK],
+            Field;
+        Keys ->
+            error({composite_primary_key, Mod, Keys})
     end.
 
 -doc "Return all associations defined on a schema module.".

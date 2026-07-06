@@ -48,7 +48,7 @@ kura_repo_worker:start(MyRepo),
 ]).
 
 -ifdef(TEST).
--export([generate_uuid/1, uuid_version/1]).
+-export([generate_uuid/1, uuid_version/1, key_clauses/2]).
 -endif.
 
 -eqwalizer({nowarn_function, do_insert/2}).
@@ -102,15 +102,37 @@ all(RepoMod, Query) ->
             Err
     end.
 
--doc "Fetch a single record by primary key.".
+-doc """
+Fetch a single record by primary key.
+
+For a single-key schema pass the bare key value; for a composite-key
+schema pass a `#{field => value}` map covering every key column. A
+map-valued single key must be wrapped as `#{KeyField => Map}`, since a
+bare map is read as a composite key spec.
+""".
 -spec get(module(), module(), term()) -> {ok, map()} | {error, not_found} | {error, term()}.
-get(RepoMod, SchemaMod, Id) ->
-    PK = kura_schema:primary_key(SchemaMod),
-    Q = kura_query:where(kura_query:from(SchemaMod), {PK, Id}),
+get(RepoMod, SchemaMod, Spec) ->
+    Q = apply_clauses(kura_query:from(SchemaMod), key_clauses(SchemaMod, Spec)),
     case all(RepoMod, Q) of
         {ok, [Row]} -> {ok, Row};
         {ok, []} -> {error, not_found};
         {error, _} = Err -> Err
+    end.
+
+%% Build the primary-key WHERE clauses from a key spec: a bare value is
+%% sugar for a single-key schema; a map addresses each key column.
+key_clauses(SchemaMod, Spec) when is_map(Spec) ->
+    [{F, fetch_key_field(F, Spec, SchemaMod)} || F <- kura_schema:key(SchemaMod)];
+key_clauses(SchemaMod, Value) ->
+    case kura_schema:key(SchemaMod) of
+        [F] -> [{F, Value}];
+        Key -> error({key_spec_required, SchemaMod, Key})
+    end.
+
+fetch_key_field(F, Spec, SchemaMod) ->
+    case Spec of
+        #{F := V} -> V;
+        #{} -> error({incomplete_key, SchemaMod, F})
     end.
 
 -doc "Fetch a single record matching all key-value clauses.".
@@ -148,10 +170,10 @@ exists(RepoMod, Query) ->
 -doc "Re-fetch a record from the database by its primary key.".
 -spec reload(module(), module(), map()) -> {ok, map()} | {error, term()}.
 reload(RepoMod, SchemaMod, Record) ->
-    PK = kura_schema:primary_key(SchemaMod),
-    case Record of
-        #{PK := Id} -> get(RepoMod, SchemaMod, Id);
-        #{} -> {error, no_primary_key}
+    Key = kura_schema:key(SchemaMod),
+    case maps:with(Key, Record) of
+        Spec when map_size(Spec) =:= length(Key) -> get(RepoMod, SchemaMod, Spec);
+        _ -> {error, no_primary_key}
     end.
 
 -doc """

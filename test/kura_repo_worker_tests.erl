@@ -3,6 +3,50 @@
 -include("kura.hrl").
 
 %%----------------------------------------------------------------------
+%% key_clauses (uniform key-spec addressing)
+%%----------------------------------------------------------------------
+
+key_clauses_single_bare_value_test() ->
+    ?assertEqual(
+        [{id, 42}],
+        kura_repo_worker:key_clauses(kura_test_schema, 42)
+    ).
+
+key_clauses_single_map_test() ->
+    ?assertEqual(
+        [{id, 42}],
+        kura_repo_worker:key_clauses(kura_test_schema, #{id => 42})
+    ).
+
+key_clauses_composite_map_ordered_test() ->
+    ?assertEqual(
+        [{org_id, <<"o">>}, {user_id, <<"u">>}],
+        kura_repo_worker:key_clauses(kura_test_composite_schema, #{
+            user_id => <<"u">>, org_id => <<"o">>
+        })
+    ).
+
+key_clauses_composite_bare_value_rejected_test() ->
+    ?assertError(
+        {key_spec_required, kura_test_composite_schema, [org_id, user_id]},
+        kura_repo_worker:key_clauses(kura_test_composite_schema, <<"x">>)
+    ).
+
+key_clauses_incomplete_key_rejected_test() ->
+    ?assertError(
+        {incomplete_key, kura_test_composite_schema, user_id},
+        kura_repo_worker:key_clauses(kura_test_composite_schema, #{org_id => <<"o">>})
+    ).
+
+reload_composite_missing_key_col_rejected_test() ->
+    %% user_id absent from the record: the key-completeness guard must
+    %% reject before any repo round-trip, so the repo arg is never used.
+    ?assertEqual(
+        {error, no_primary_key},
+        kura_repo_worker:reload(undefined, kura_test_composite_schema, #{org_id => <<"o">>})
+    ).
+
+%%----------------------------------------------------------------------
 %% narrow_ok_error
 %%----------------------------------------------------------------------
 
