@@ -62,10 +62,21 @@ returns only 27 bits, so a long-lived cache accumulates collisions, and a
 collision here does not degrade a lookup - it returns another query's SQL
 *and* its bound parameters, so the caller silently reads rows from a
 different table.
+
+The key also carries the ambient tenant. `kura_repo_worker` normalises the
+tenant into the top-level query record before compiling, but a nested CTE
+or combination query keeps `prefix = undefined` and resolves it from
+`kura_tenant` at emit time, so the compiled SQL is a function of ambient
+state the query term does not describe. Without the tenant in the key, one
+tenant's cached entry is served to the next - a cross-tenant read.
+
+The dialect is deliberately *not* in the key: it is resolved from boot-time
+repo config. Swapping a repo's dialect at runtime requires an explicit
+`kura_query_cache:flush/0`.
 """.
 -spec to_sql_cached(module(), #kura_query{}) -> {iodata(), [term()]}.
 to_sql_cached(RepoMod, Query) ->
-    Key = {RepoMod, Query},
+    Key = {RepoMod, kura_tenant:get_tenant(), Query},
     case kura_query_cache:get(Key) of
         {ok, Result} ->
             Result;

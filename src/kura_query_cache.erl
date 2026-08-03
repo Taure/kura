@@ -12,11 +12,21 @@ hand a caller another query's rows rather than merely a slower path. ETS
 hashes the term itself, so hashing the key by hand only reintroduces a
 collision class the table had already eliminated.
 
-Bound parameters are part of both key and value, so a parameterised
-query interns a fresh entry per distinct value set and the table only
-ever grows. `query_cache_max_size` caps that: once the table exceeds it
-the whole cache is dropped and refills. See kura#163 for the shape-only
-cache that removes the need for a cap.
+Bound parameters are part of both key and value, so a parameterised query
+interns a fresh entry per distinct value set and the table only ever
+grows. Two limits bound it, both counted in words and both configurable:
+
+- `query_cache_max_memory` (default 8000000 words, ~64 MB on 64-bit) -
+  once the table exceeds it the whole cache is dropped and refills.
+- `query_cache_max_entry_size` (default 4096 words) - a single result
+  bigger than this is never interned.
+
+The per-entry ceiling is the load-bearing one. A `where {id, in, List}`
+built from a caller-supplied array stores that list in both key and
+value, so capping entry *count* alone would still let a few thousand
+oversized entries exhaust the node.
+
+See kura#163 for the shape-only cache that removes the need for either.
 
 The ETS table is owned by `kura_query_cache_owner` (a gen_server under
 `kura_sup`), so the table survives any caller exiting.
@@ -27,7 +37,8 @@ The ETS table is owned by `kura_query_cache_owner` (a gen_server under
 -export([start_link/0, init/1, handle_call/3, handle_cast/2]).
 
 -define(TABLE, kura_query_cache).
--define(DEFAULT_MAX_SIZE, 10000).
+-define(DEFAULT_MAX_MEMORY_WORDS, 8000000).
+-define(DEFAULT_MAX_ENTRY_WORDS, 4096).
 
 -doc """
 Initialize the query cache ETS table. No-op when the cache owner is
@@ -61,9 +72,14 @@ get(Key) ->
     end.
 
 -doc """
-Store a compiled query result for a key. Drops the whole cache first
-when it has grown past `query_cache_max_size`, so a workload of
-parameterised queries cannot grow the table without bound.
+Store a compiled query result for a key. Skips entries larger than
+`query_cache_max_entry_size`, and drops the whole cache first when it has
+grown past `query_cache_max_memory`, so a workload of parameterised
+queries cannot grow the table without bound.
+
+Dropping is not atomic with the insert, so concurrent putters can
+transiently overshoot the limit or wipe each other's entry. Both cost a
+recompile on the next lookup; neither can serve a wrong entry.
 """.
 -spec put(term(), {iodata(), [term()]}) -> ok.
 put(Key, Result) ->
@@ -71,8 +87,17 @@ put(Key, Result) ->
         undefined ->
             ok;
         _ ->
+            maybe_insert(Key, Result)
+    end.
+
+maybe_insert(Key, Result) ->
+    Words = erts_debug:flat_size(Key) + erts_debug:flat_size(Result),
+    case Words > max_entry_words() of
+        true ->
+            ok;
+        false ->
             _ =
-                case ets:info(?TABLE, size) >= max_size() of
+                case ets:info(?TABLE, memory) >= max_memory_words() of
                     true -> ets:delete_all_objects(?TABLE);
                     false -> ok
                 end,
@@ -80,7 +105,11 @@ put(Key, Result) ->
             ok
     end.
 
--doc "Drop every cached entry. Used on config reload and by tests.".
+-doc """
+Drop every cached entry. Required after swapping a repo's dialect at
+runtime, since the dialect is not part of the cache key. Also used by
+tests.
+""".
 -spec flush() -> ok.
 flush() ->
     case ets:whereis(?TABLE) of
@@ -91,11 +120,19 @@ flush() ->
             ok
     end.
 
--spec max_size() -> pos_integer().
-max_size() ->
-    case application:get_env(kura, query_cache_max_size) of
+-spec max_memory_words() -> pos_integer().
+max_memory_words() ->
+    env_pos_integer(query_cache_max_memory, ?DEFAULT_MAX_MEMORY_WORDS).
+
+-spec max_entry_words() -> pos_integer().
+max_entry_words() ->
+    env_pos_integer(query_cache_max_entry_size, ?DEFAULT_MAX_ENTRY_WORDS).
+
+-spec env_pos_integer(atom(), pos_integer()) -> pos_integer().
+env_pos_integer(Key, Default) ->
+    case application:get_env(kura, Key) of
         {ok, N} when is_integer(N), N > 0 -> N;
-        _ -> ?DEFAULT_MAX_SIZE
+        _ -> Default
     end.
 
 %%======================================================================
