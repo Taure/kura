@@ -153,8 +153,11 @@ the configured pool declaring the `advisory_locks` capability.
   routes calls accordingly.
 - **`kura_type`** - behaviour for user-defined custom field types
   (`cast/1`, `dump/1`, `load/1`, `pg_type/0`).
-- **`kura_query_cache`** - ETS-backed cache for compiled SQL strings,
-  keyed by query shape.
+- **`kura_query_cache`** - ETS-backed cache for compiled `{SQL, Params}`
+  results, keyed by `{RepoMod, Query}`. Because bound parameters are part
+  of both key and value, a parameterised query interns one entry per
+  distinct value set; `query_cache_max_size` (default 10000) bounds the
+  table by dropping it wholesale on overflow.
 - **`kura_paginator`** - offset and cursor pagination on top of
   `kura_query`.
 - **`kura_stream`** - server-side cursor streaming for very large

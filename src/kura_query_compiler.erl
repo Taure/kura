@@ -56,10 +56,16 @@ to_sql(RepoMod, Query) ->
 -doc """
 Cached `to_sql/2`. The cache key includes `RepoMod` so two repos with
 different dialects don't share an entry.
+
+The key holds the whole query term, never a hash of it. `erlang:phash2/1`
+returns only 27 bits, so a long-lived cache accumulates collisions, and a
+collision here does not degrade a lookup - it returns another query's SQL
+*and* its bound parameters, so the caller silently reads rows from a
+different table.
 """.
 -spec to_sql_cached(module(), #kura_query{}) -> {iodata(), [term()]}.
 to_sql_cached(RepoMod, Query) ->
-    Key = {RepoMod, erlang:phash2(Query)},
+    Key = {RepoMod, Query},
     case kura_query_cache:get(Key) of
         {ok, Result} ->
             Result;
