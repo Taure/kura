@@ -78,6 +78,24 @@ init(Config) ->
         password => list_to_binary(os:getenv("DB_PASSWORD", "postgres"))
     }.
 ```
+
+Optionally implement `migration_apps/0` to run migrations shipped by other
+applications against the same repo - an extension that owns part of the
+schema, for instance. The application owning the repo module is always
+included, so this lists only the extras:
+
+```erlang
+-module(my_repo).
+-behaviour(kura_repo).
+-export([otp_app/0, migration_apps/0]).
+
+otp_app() -> my_app.
+
+migration_apps() -> [my_gdpr_extension].
+```
+
+`kura_migrator` orders them by their OTP `applications` lists, so a
+dependency's migrations run first. See `kura_migrator:migration_apps/1`.
 """.
 
 -export([config/1, read_only/1, replica/1]).
@@ -87,7 +105,10 @@ init(Config) ->
 -callback otp_app() -> atom().
 
 -callback init(Config :: map()) -> map().
--optional_callbacks([init/1]).
+
+-callback migration_apps() -> [atom()].
+
+-optional_callbacks([init/1, migration_apps/0]).
 
 -doc "Read the repo configuration from application environment.".
 -spec config(module()) -> map().
