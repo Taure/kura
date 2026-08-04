@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- **Multi-application migration discovery.** A repo names further
+  applications shipping migrations through the optional `kura_repo`
+  callback `migration_apps/0`; the owning application is always
+  included. Applications are ordered by their OTP `applications` lists,
+  so a dependency's migrations run before its dependents'. No `app`
+  column and no schema change - existing repos are unaffected.
+- `kura_migrator:migration_apps/1` returns the resolved, dependency
+  ordered application list for a repo.
+
+### Fixed
+
+- A migration version claimed by two modules is now
+  `{error, {duplicate_migration_version, [{Version, [{App, Module}]}]}}`
+  instead of a partially-applied batch failing on the
+  `schema_migrations` primary key.
+- The applied-version set is read inside the migration advisory lock.
+  Two nodes booting together could both see the same migration as
+  pending; the loser then failed its whole batch on a duplicate key.
+- `rollback/2` no longer skips applied versions that no migration
+  module claims. It used to roll back fewer migrations than asked while
+  reporting success, and ran the surviving `down/0`s across the gap.
+  Those versions are now named in
+  `{error, {unknown_applied_versions, Versions}}` and nothing runs.
+  Versions outside the rollback window are unaffected.
+- Rollback runs in reverse apply order rather than descending version
+  order, so a dependency's `down/0` never runs before its dependents'.
+  Unchanged for a single-application repo, where the two coincide.
+
+### Changed
+
+- `kura_migrator:status/1` may now return `{error, Reason}` when
+  discovery fails, and lists migrations in apply order. Unchanged for a
+  single-application repo.
+
 ## [2.0.0] - 2026-05-10
 
 The 2.0 line introduces pluggable backends and multi-repo support. The

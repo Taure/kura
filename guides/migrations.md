@@ -144,6 +144,46 @@ By default, `migrate/1` also calls `ensure_database/1` first, creating the
 configured database if it does not yet exist. To disable, set
 `{kura, [{ensure_database, false}]}` in your sys.config.
 
+## Migrations From More Than One Application
+
+An application that extends another - shipping its own tables alongside the
+host's - keeps its migrations in its own `src/`. Tell the repo about it with
+the optional `kura_repo` callback `migration_apps/0`:
+
+```erlang
+-module(my_repo).
+-behaviour(kura_repo).
+-export([otp_app/0, migration_apps/0]).
+
+otp_app() -> my_app.
+
+migration_apps() -> [my_gdpr_extension].
+```
+
+The application owning the repo module is always included, so the callback
+lists only the extras. Discovery then scans every listed application.
+
+The order comes from the OTP `applications` list in each `.app` file - the
+dependency graph the release already declares. A dependency's migrations all
+run before its dependents', regardless of version numbers, so an extension
+can safely add a foreign key to a table the host application creates. An
+application in between that ships no migrations of its own still orders the
+two that do. Ties break alphabetically, so the order is stable across boots.
+
+Two rules follow from `schema_migrations` recording versions and nothing
+else:
+
+- **Versions are global.** Two applications shipping the same
+  `<YYYYMMDDHHMMSS>` is an error - `{error, {duplicate_migration_version,
+  [{Version, [{App, Module}]}]}}` - naming every claimant. Nothing runs.
+- **Every listed application must be loaded.** One that is not gives
+  `{error, {migration_apps_not_loaded, Apps}}` rather than quietly
+  contributing no migrations.
+
+There is no `app` column and no per-application version counter. Adding
+`migration_apps/0` to an existing repo needs no schema change and no
+backfill.
+
 ## Rolling Back
 
 ```erlang
@@ -153,6 +193,18 @@ configured database if it does not yet exist. To disable, set
 %% Roll back the last N migrations
 {ok, RolledBack} = kura_migrator:rollback(my_repo, 3).
 ```
+
+The window is the N highest applied versions - version is the only ordering
+`schema_migrations` can offer. Within that window, migrations run in reverse
+apply order, so a dependency's `down/0` never runs before its dependents'.
+
+Every version in the window must resolve to a migration module. One that
+does not aborts the rollback with
+`{error, {unknown_applied_versions, Versions}}` and changes nothing. The
+usual causes are an application missing from `migration_apps/0` and a
+migration module deleted from source while its `schema_migrations` row
+remains. Versions outside the window are not affected, so an old deleted
+migration does not block unrelated rollbacks.
 
 ## Checking Status
 

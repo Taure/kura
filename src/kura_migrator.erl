@@ -7,9 +7,22 @@ repo module. Any module named `m<YYYYMMDDHHMMSS>_<name>` in the application's
 module list is treated as a migration. Tracks applied versions in a
 `schema_migrations` table.
 
+A repo may pull in migrations from further applications - an extension
+shipping its own schema, for instance - by exporting the optional
+`kura_repo` callback `migration_apps/0`. The applications are ordered by
+the OTP `applications` dependency graph, so a dependency's migrations
+always run before its dependents'. See `migration_apps/1`.
+
+`schema_migrations` records versions only. A version is therefore global
+across every application feeding a repo: two applications shipping the
+same version is a hard error (`duplicate_migration_version`) rather than
+a silent last-one-wins.
+
 All migrations run within a single transaction protected by a PostgreSQL
 advisory lock (`pg_advisory_xact_lock`) to prevent concurrent execution
-across multiple nodes.
+across multiple nodes. The applied-version set is read inside that lock,
+so two nodes booting together cannot both decide the same migration is
+pending.
 """.
 
 -include("kura.hrl").
@@ -29,6 +42,7 @@ across multiple nodes.
     fake/1,
     rollback/1, rollback/2,
     status/1,
+    migration_apps/1,
     ensure_database/1,
     ensure_schema_migrations/1,
     wait_for_pool/1, wait_for_pool/2,
@@ -51,7 +65,11 @@ across multiple nodes.
     parse_version/1,
     exec_operations/3,
     check_alter_ops/3,
-    topo_sort_ops/1
+    topo_sort_ops/1,
+    discover_migrations/1,
+    collect_migrations/1,
+    topo_sort_apps/1,
+    pending_migrations/2
 ]).
 -endif.
 
@@ -69,21 +87,21 @@ migrate(RepoMod) ->
     case wait_for_pool(RepoMod) of
         ok ->
             ensure_schema_migrations(RepoMod),
-            T0 = erlang:monotonic_time(),
-            Applied = get_applied_versions(RepoMod),
-            Migrations = discover_migrations(RepoMod),
-            Pending = [{V, M} || {V, M} <- Migrations, not lists:member(V, Applied)],
-            Sorted = sort_migrations(Pending),
-            telemetry_event(
-                [kura, migrator, migrate, start],
-                #{system_time => erlang:system_time()},
-                #{repo => RepoMod, pending_count => length(Sorted), direction => up}
-            ),
-            Result = with_migration_lock(RepoMod, fun() ->
-                run_migrations(Sorted, up, RepoMod, [])
-            end),
-            emit_migrate_stop(RepoMod, T0, up, Result),
-            Result;
+            case discover_migrations(RepoMod) of
+                {ok, Ordered} ->
+                    T0 = erlang:monotonic_time(),
+                    Result = with_migration_lock(RepoMod, fun() ->
+                        Pending = pending_migrations(
+                            Ordered, get_applied_versions(RepoMod)
+                        ),
+                        emit_migrate_start(RepoMod, up, length(Pending)),
+                        run_migrations(Pending, up, RepoMod, [])
+                    end),
+                    emit_migrate_stop(RepoMod, T0, up, Result),
+                    Result;
+                {error, _} = DiscoveryErr ->
+                    DiscoveryErr
+            end;
         {error, _} = Err ->
             Err
     end.
@@ -110,65 +128,103 @@ fake(RepoMod) ->
     case wait_for_pool(RepoMod) of
         ok ->
             ensure_schema_migrations(RepoMod),
-            T0 = erlang:monotonic_time(),
-            Applied = get_applied_versions(RepoMod),
-            Migrations = discover_migrations(RepoMod),
-            Pending = [{V, M} || {V, M} <- Migrations, not lists:member(V, Applied)],
-            Sorted = sort_migrations(Pending),
-            case Sorted of
-                [] ->
-                    ok;
-                _ ->
-                    logger:warning(#{
-                        msg => ~"kura: fake-stamping migrations as applied without running DDL",
-                        repo => RepoMod,
-                        versions => [V || {V, _M} <- Sorted]
-                    })
-            end,
-            telemetry_event(
-                [kura, migrator, migrate, start],
-                #{system_time => erlang:system_time()},
-                #{repo => RepoMod, pending_count => length(Sorted), direction => fake}
-            ),
-            Result = with_migration_lock(RepoMod, fun() ->
-                stamp_migrations(Sorted, RepoMod, [])
-            end),
-            emit_migrate_stop(RepoMod, T0, fake, Result),
-            Result;
+            case discover_migrations(RepoMod) of
+                {ok, Ordered} ->
+                    T0 = erlang:monotonic_time(),
+                    Result = with_migration_lock(RepoMod, fun() ->
+                        Pending = pending_migrations(
+                            Ordered, get_applied_versions(RepoMod)
+                        ),
+                        log_fake_stamp(RepoMod, Pending),
+                        emit_migrate_start(RepoMod, fake, length(Pending)),
+                        stamp_migrations(Pending, RepoMod, [])
+                    end),
+                    emit_migrate_stop(RepoMod, T0, fake, Result),
+                    Result;
+                {error, _} = DiscoveryErr ->
+                    DiscoveryErr
+            end;
         {error, _} = Err ->
             Err
     end.
+
+-spec log_fake_stamp(module(), [{integer(), module()}]) -> ok.
+log_fake_stamp(_RepoMod, []) ->
+    ok;
+log_fake_stamp(RepoMod, Pending) ->
+    logger:warning(#{
+        msg => ~"kura: fake-stamping migrations as applied without running DDL",
+        repo => RepoMod,
+        versions => [V || {V, _M} <- Pending]
+    }).
 
 -doc "Roll back the last migration.".
 -spec rollback(module()) -> {ok, [integer()]} | {error, term()}.
 rollback(RepoMod) ->
     rollback(RepoMod, 1).
 
--doc "Roll back the last `Steps` migrations.".
+-doc """
+Roll back the last `Steps` migrations.
+
+The window is the `Steps` highest applied versions. Every version in it
+must resolve to a discovered migration module: if one does not, the
+rollback aborts with `{error, {unknown_applied_versions, Versions}}`
+rather than quietly rolling back fewer migrations than asked for. The
+usual cause is an application that ships those migrations missing from
+the repo's `migration_apps/0`, or a migration module deleted from source
+while its `schema_migrations` row remains.
+
+Within the window, migrations run in reverse apply order, so a
+dependency's `down/0` never runs before its dependents'.
+""".
 -spec rollback(module(), non_neg_integer()) -> {ok, [integer()]} | {error, term()}.
 rollback(RepoMod, Steps) ->
     case wait_for_pool(RepoMod) of
         ok ->
             ensure_schema_migrations(RepoMod),
-            T0 = erlang:monotonic_time(),
-            Applied = get_applied_versions(RepoMod),
-            Migrations = discover_migrations(RepoMod),
-            SortedApplied = sort_integers(Applied),
-            ToRollback = take_integers(reverse_integers(SortedApplied, []), Steps),
-            Pairs = build_rollback_pairs(ToRollback, maps:from_list(Migrations)),
-            telemetry_event(
-                [kura, migrator, migrate, start],
-                #{system_time => erlang:system_time()},
-                #{repo => RepoMod, pending_count => length(Pairs), direction => down}
-            ),
-            Result = with_migration_lock(RepoMod, fun() ->
-                run_migrations(Pairs, down, RepoMod, [])
-            end),
-            emit_migrate_stop(RepoMod, T0, down, Result),
-            Result;
+            case discover_migrations(RepoMod) of
+                {ok, Ordered} ->
+                    T0 = erlang:monotonic_time(),
+                    Result = with_migration_lock(RepoMod, fun() ->
+                        run_rollback(RepoMod, Ordered, Steps)
+                    end),
+                    emit_migrate_stop(RepoMod, T0, down, Result),
+                    Result;
+                {error, _} = DiscoveryErr ->
+                    DiscoveryErr
+            end;
         {error, _} = Err ->
             Err
     end.
+
+-spec run_rollback(module(), [{integer(), module()}], non_neg_integer()) -> [integer()].
+run_rollback(RepoMod, Ordered, Steps) ->
+    Applied = get_applied_versions(RepoMod),
+    Selected = take_integers(reverse_integers(sort_integers(Applied), []), Steps),
+    emit_migrate_start(RepoMod, down, length(Selected)),
+    case build_rollback_pairs(Selected, Ordered) of
+        {ok, Pairs} ->
+            run_migrations(Pairs, down, RepoMod, []);
+        {error, {unknown_applied_versions, Missing} = Reason} ->
+            logger:error(#{
+                msg => ~"kura: refusing to roll back past migrations with no module",
+                repo => RepoMod,
+                versions => Missing,
+                hint =>
+                    ~"missing from migration_apps/0, or the modules were deleted"
+            }),
+            error({migration_aborted, Reason})
+    end.
+
+%% Emitted inside the advisory lock: the pending count is only true once
+%% no other node can still be applying migrations.
+-spec emit_migrate_start(module(), up | down | fake, non_neg_integer()) -> ok.
+emit_migrate_start(RepoMod, Direction, PendingCount) ->
+    telemetry_event(
+        [kura, migrator, migrate, start],
+        #{system_time => erlang:system_time()},
+        #{repo => RepoMod, pending_count => PendingCount, direction => Direction}
+    ).
 
 -spec emit_migrate_stop(module(), integer(), up | down | fake, term()) -> ok.
 emit_migrate_stop(RepoMod, T0, Direction, Result) ->
@@ -204,16 +260,26 @@ telemetry_event(EventName, Measurements, Metadata) ->
         _:_ -> ok
     end.
 
--doc "Return the status of all discovered migrations (`:up` or `:pending`).".
--spec status(module()) -> [{integer(), module(), up | pending}].
+-doc """
+Return the status of all discovered migrations (`up` or `pending`).
+
+Listed in apply order: applications in dependency order, versions
+ascending within each. Returns `[]` when the pool is unavailable, and
+`{error, Reason}` when discovery itself fails (a duplicate version
+across applications, for instance).
+""".
+-spec status(module()) -> [{integer(), module(), up | pending}] | {error, term()}.
 status(RepoMod) ->
     case wait_for_pool(RepoMod) of
         ok ->
             ensure_schema_migrations(RepoMod),
-            Applied = get_applied_versions(RepoMod),
-            Migrations = discover_migrations(RepoMod),
-            Sorted = sort_migrations(Migrations),
-            [tag_status(V, M, Applied) || {V, M} <- Sorted];
+            case discover_migrations(RepoMod) of
+                {ok, Ordered} ->
+                    Applied = get_applied_versions(RepoMod),
+                    [tag_status(V, M, Applied) || {V, M} <- Ordered];
+                {error, _} = Err ->
+                    Err
+            end;
         {error, _} ->
             []
     end.
@@ -356,14 +422,180 @@ probe_pool(Driver, Pool) ->
 %% Migration discovery
 %%----------------------------------------------------------------------
 
--spec discover_migrations(module()) -> [{integer(), module()}].
-discover_migrations(RepoMod) ->
+-doc """
+The applications whose migrations run for `RepoMod`, in dependency order.
+
+The application owning the repo module is always included. A repo pulls
+in further applications by exporting the optional `kura_repo` callback
+`migration_apps/0`:
+
+```erlang
+-module(my_repo).
+-behaviour(kura_repo).
+-export([otp_app/0, migration_apps/0]).
+
+otp_app() -> my_app.
+
+migration_apps() -> [my_gdpr_extension].
+```
+
+The result is a topological sort of the applications' OTP `applications`
+lists, so a dependency's migrations always run before its dependents'.
+There is no separate ordering configuration - the dependency graph OTP
+already declares is the one that is used. Applications are compared by
+their transitively reachable dependencies, so an intermediate
+application that ships no migrations still orders the two that do.
+
+Every declared application must be loaded; one that is not yields
+`{error, {migration_apps_not_loaded, Apps}}` rather than contributing
+zero migrations silently.
+""".
+-spec migration_apps(module()) -> {ok, [atom()]} | {error, term()}.
+migration_apps(RepoMod) ->
     case application:get_application(RepoMod) of
-        {ok, App} ->
-            discover_app_migrations(App);
-        undefined ->
-            []
+        {ok, App} -> resolve_migration_apps(RepoMod, App);
+        undefined -> {ok, []}
     end.
+
+-spec resolve_migration_apps(module(), atom()) -> {ok, [atom()]} | {error, term()}.
+resolve_migration_apps(RepoMod, OwnerApp) ->
+    case declared_migration_apps(RepoMod) of
+        {ok, Declared} ->
+            Apps = lists:usort([OwnerApp | Declared]),
+            case [A || A <- Apps, not app_loaded(A)] of
+                [] -> topo_sort_apps(Apps);
+                Missing -> {error, {migration_apps_not_loaded, Missing}}
+            end;
+        {error, _} = Err ->
+            Err
+    end.
+
+-spec declared_migration_apps(module()) -> {ok, [atom()]} | {error, term()}.
+declared_migration_apps(RepoMod) ->
+    _ = code:ensure_loaded(RepoMod),
+    case erlang:function_exported(RepoMod, migration_apps, 0) of
+        false ->
+            {ok, []};
+        true ->
+            case RepoMod:migration_apps() of
+                Apps when is_list(Apps) -> narrow_app_list(RepoMod, Apps);
+                Other -> {error, {invalid_migration_apps, RepoMod, Other}}
+            end
+    end.
+
+-spec narrow_app_list(module(), [term()]) -> {ok, [atom()]} | {error, term()}.
+narrow_app_list(RepoMod, Apps) ->
+    case [A || A <- Apps, not is_atom(A)] of
+        [] -> {ok, [A || A <- Apps, is_atom(A)]};
+        Bad -> {error, {invalid_migration_apps, RepoMod, Bad}}
+    end.
+
+-spec app_loaded(atom()) -> boolean().
+app_loaded(App) ->
+    application:get_key(App, modules) =/= undefined.
+
+-spec topo_sort_apps([atom()]) -> {ok, [atom()]} | {error, term()}.
+topo_sort_apps([Single]) ->
+    {ok, [Single]};
+topo_sort_apps(Apps) ->
+    DepMap = #{A => restricted_deps(A, Apps) || A <- Apps},
+    topo_apps(Apps, DepMap, []).
+
+-spec restricted_deps(atom(), [atom()]) -> [atom()].
+restricted_deps(App, Apps) ->
+    Reachable = reachable_apps([App], #{}),
+    [A || A <- Apps, A =/= App, maps:is_key(A, Reachable)].
+
+-spec reachable_apps([atom()], #{atom() => true}) -> #{atom() => true}.
+reachable_apps([], Seen) ->
+    Seen;
+reachable_apps([App | Rest], Seen) ->
+    case Seen of
+        #{App := true} -> reachable_apps(Rest, Seen);
+        #{} -> reachable_apps(app_dependencies(App) ++ Rest, Seen#{App => true})
+    end.
+
+-spec app_dependencies(atom()) -> [atom()].
+app_dependencies(App) ->
+    case application:get_key(App, applications) of
+        {ok, Deps} when is_list(Deps) -> [D || D <- Deps, is_atom(D)];
+        _ -> []
+    end.
+
+%% `Pending` arrives sorted and `lists:delete/2` preserves order, so ties
+%% break alphabetically and the resulting order is stable across boots.
+-spec topo_apps([atom()], #{atom() => [atom()]}, [atom()]) -> {ok, [atom()]} | {error, term()}.
+topo_apps([], _DepMap, Acc) ->
+    {ok, reverse_atoms(Acc, [])};
+topo_apps(Pending, DepMap, Acc) ->
+    case [A || A <- Pending, deps_placed(maps:get(A, DepMap, []), Acc)] of
+        [] -> {error, {migration_app_cycle, Pending}};
+        [Next | _] -> topo_apps(lists:delete(Next, Pending), DepMap, [Next | Acc])
+    end.
+
+-spec deps_placed([atom()], [atom()]) -> boolean().
+deps_placed([], _Placed) ->
+    true;
+deps_placed([Dep | Rest], Placed) ->
+    lists:member(Dep, Placed) andalso deps_placed(Rest, Placed).
+
+-spec discover_migrations(module()) -> {ok, [{integer(), module()}]} | {error, term()}.
+discover_migrations(RepoMod) ->
+    case migration_apps(RepoMod) of
+        {ok, Apps} -> collect_migrations(Apps);
+        {error, _} = Err -> Err
+    end.
+
+-spec collect_migrations([atom()]) -> {ok, [{integer(), module()}]} | {error, term()}.
+collect_migrations(Apps) ->
+    Groups = [{A, sort_migrations(discover_app_migrations(A))} || A <- Apps],
+    case duplicate_versions(Groups) of
+        [] ->
+            {ok, lists:append([Ms || {_App, Ms} <- Groups])};
+        Duplicates ->
+            logger:error(#{
+                msg => ~"kura: migration version claimed by more than one module",
+                duplicates => Duplicates
+            }),
+            {error, {duplicate_migration_version, Duplicates}}
+    end.
+
+%% A version is the whole primary key of `schema_migrations`, so it has
+%% to be unique across every application feeding the repo. Reporting
+%% every claimant is the point: the operator has to know which two to
+%% renumber.
+-spec duplicate_versions([{atom(), [{integer(), module()}]}]) ->
+    [{integer(), [{atom(), module()}]}].
+duplicate_versions(Groups) ->
+    Owners = version_owners(Groups, #{}),
+    lists:keysort(1, [
+        {V, reverse_owners(Os, [])}
+     || {V, Os} <- maps:to_list(Owners), length(Os) > 1
+    ]).
+
+-spec version_owners(
+    [{atom(), [{integer(), module()}]}],
+    #{integer() => [{atom(), module()}]}
+) -> #{integer() => [{atom(), module()}]}.
+version_owners([], Acc) ->
+    Acc;
+version_owners([{App, Migrations} | Rest], Acc) ->
+    version_owners(Rest, add_owners(App, Migrations, Acc)).
+
+-spec add_owners(atom(), [{integer(), module()}], #{integer() => [{atom(), module()}]}) ->
+    #{integer() => [{atom(), module()}]}.
+add_owners(_App, [], Acc) ->
+    Acc;
+add_owners(App, [{V, M} | Rest], Acc) ->
+    add_owners(App, Rest, Acc#{V => [{App, M} | maps:get(V, Acc, [])]}).
+
+-spec reverse_owners([{atom(), module()}], [{atom(), module()}]) -> [{atom(), module()}].
+reverse_owners([], Acc) -> Acc;
+reverse_owners([H | T], Acc) -> reverse_owners(T, [H | Acc]).
+
+-spec pending_migrations([{integer(), module()}], [integer()]) -> [{integer(), module()}].
+pending_migrations(Ordered, Applied) ->
+    [{V, M} || {V, M} <- Ordered, not lists:member(V, Applied)].
 
 -spec discover_app_migrations(atom()) -> [{integer(), module()}].
 discover_app_migrations(App) ->
@@ -397,6 +629,10 @@ with_migration_lock(RepoMod, Fun) ->
             end)
         )
     catch
+        %% Raised, not returned, so the surrounding transaction aborts.
+        %% The reason is already logged at the point of abort.
+        error:{migration_aborted, AbortReason} ->
+            {error, AbortReason};
         error:{migration_failed, Version, MigReason}:Stack ->
             logger:error(#{
                 msg => ~"migration_failed",
@@ -992,14 +1228,31 @@ partition_migrations(Pivot, [{V, M} | Rest], Less, Greater) ->
         false -> partition_migrations(Pivot, Rest, Less, [{V, M} | Greater])
     end.
 
--spec build_rollback_pairs([integer()], #{integer() => module()}) -> [{integer(), module()}].
-build_rollback_pairs([], _MigMap) ->
-    [];
-build_rollback_pairs([V | Rest], MigMap) ->
-    case MigMap of
-        #{V := M} -> [{V, M} | build_rollback_pairs(Rest, MigMap)];
-        #{} -> build_rollback_pairs(Rest, MigMap)
+%% `Selected` is the rollback window taken from `schema_migrations`.
+%% Versions in it that no discovered module claims used to be dropped
+%% here, so `rollback(Repo, 3)` could roll back two - or none - and still
+%% report success, leaving the rows behind and undoing migrations out of
+%% order around the gap. They are now named and the rollback refuses.
+-spec build_rollback_pairs([integer()], [{integer(), module()}]) ->
+    {ok, [{integer(), module()}]} | {error, {unknown_applied_versions, [integer()]}}.
+build_rollback_pairs(Selected, Ordered) ->
+    Known = #{V => M || {V, M} <- Ordered},
+    case [V || V <- Selected, not maps:is_key(V, Known)] of
+        [] ->
+            Reversed = reverse_migrations(Ordered, []),
+            {ok, [{V, M} || {V, M} <- Reversed, lists:member(V, Selected)]};
+        Missing ->
+            {error, {unknown_applied_versions, sort_integers(Missing)}}
     end.
+
+-spec reverse_migrations([{integer(), module()}], [{integer(), module()}]) ->
+    [{integer(), module()}].
+reverse_migrations([], Acc) -> Acc;
+reverse_migrations([H | T], Acc) -> reverse_migrations(T, [H | Acc]).
+
+-spec reverse_atoms([atom()], [atom()]) -> [atom()].
+reverse_atoms([], Acc) -> Acc;
+reverse_atoms([H | T], Acc) -> reverse_atoms(T, [H | Acc]).
 
 -spec check_alter_ops([kura_migration:alter_op()], binary(), [kura_migration:safe_entry()]) ->
     [map()].

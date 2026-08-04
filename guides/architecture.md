@@ -143,7 +143,15 @@ pending migrations in order. All migrations run inside a single
 transaction. On Postgres, the transaction is guarded by an advisory
 lock so concurrent nodes do not race; on SQLite the single-writer
 transaction handles serialisation. The advisory-lock SQL is gated on
-the configured pool declaring the `advisory_locks` capability.
+the configured pool declaring the `advisory_locks` capability. The
+applied-version set is read inside the lock, so two nodes booting
+together cannot both decide the same migration is pending.
+
+Discovery spans every application the repo names through the optional
+`kura_repo` callback `migration_apps/0`, ordered by the applications'
+OTP `applications` lists. `schema_migrations` still records versions
+alone; a version claimed by two applications is refused before any DDL
+runs.
 
 ## Other Modules
 
