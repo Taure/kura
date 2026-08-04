@@ -47,3 +47,63 @@ query_preload_stacks_test() ->
     Q1 = kura_query:preload(Q0, [author]),
     Q2 = kura_query:preload(Q1, [comments]),
     ?assertEqual([author, comments], Q2#kura_query.preloads).
+
+%%----------------------------------------------------------------------
+%% assoc_on_delete/1
+%%----------------------------------------------------------------------
+
+belongs_to() ->
+    #kura_assoc{
+        name = author, type = belongs_to, schema = kura_test_schema, foreign_key = author_id
+    }.
+
+on_delete_defaults_to_no_action_test() ->
+    ?assertEqual(no_action, kura_schema:assoc_on_delete(belongs_to())).
+
+on_delete_cascade_test() ->
+    ?assertEqual(
+        cascade, kura_schema:assoc_on_delete((belongs_to())#kura_assoc{on_delete = cascade})
+    ).
+
+on_delete_restrict_test() ->
+    ?assertEqual(
+        restrict, kura_schema:assoc_on_delete((belongs_to())#kura_assoc{on_delete = restrict})
+    ).
+
+on_delete_set_null_test() ->
+    ?assertEqual(
+        set_null, kura_schema:assoc_on_delete((belongs_to())#kura_assoc{on_delete = set_null})
+    ).
+
+on_delete_no_action_test() ->
+    ?assertEqual(
+        no_action, kura_schema:assoc_on_delete((belongs_to())#kura_assoc{on_delete = no_action})
+    ).
+
+on_delete_rejects_set_default_test() ->
+    ?assertError(
+        {invalid_on_delete, author, set_default},
+        kura_schema:assoc_on_delete((belongs_to())#kura_assoc{on_delete = set_default})
+    ).
+
+on_delete_rejects_typo_test() ->
+    ?assertError(
+        {invalid_on_delete, author, cascde},
+        kura_schema:assoc_on_delete((belongs_to())#kura_assoc{on_delete = cascde})
+    ).
+
+on_delete_undefined_on_has_many_test() ->
+    Assoc = #kura_assoc{name = comments, type = has_many, schema = kura_test_comment},
+    ?assertEqual(undefined, kura_schema:assoc_on_delete(Assoc)).
+
+on_delete_rejected_on_has_many_test() ->
+    Assoc = #kura_assoc{
+        name = comments, type = has_many, schema = kura_test_comment, on_delete = cascade
+    },
+    ?assertError({on_delete_not_owned, comments, has_many}, kura_schema:assoc_on_delete(Assoc)).
+
+on_delete_rejected_on_many_to_many_test() ->
+    Assoc = #kura_assoc{
+        name = tags, type = many_to_many, schema = kura_test_tag, on_delete = cascade
+    },
+    ?assertError({on_delete_not_owned, tags, many_to_many}, kura_schema:assoc_on_delete(Assoc)).

@@ -194,6 +194,29 @@ The current schema holds the foreign key:
 #kura_assoc{name = author, type = belongs_to, schema = my_user, foreign_key = user_id}.
 ```
 
+`on_delete` declares the referential action for the foreign key this
+association owns, so the cascade rule lives next to the association rather
+than only in a hand-written migration:
+
+```erlang
+#kura_assoc{name = author, type = belongs_to, schema = my_user,
+            foreign_key = user_id, on_delete = cascade}.
+```
+
+Accepted values are `cascade`, `restrict`, `set_null` and `no_action` - the
+four actions every dialect Kura ships renders identically. `set_default` is
+rejected on purpose: PostgreSQL fails the delete when the column default is
+not itself a valid parent key, SQLite only enforces it while `foreign_keys`
+is on, and MySQL's InnoDB rejects it at DDL time.
+
+Omitting `on_delete` means `no_action`, which is what a generated foreign
+key has always emitted. Only `belongs_to` owns a foreign-key column, so
+declaring `on_delete` on a `has_one`, `has_many` or `many_to_many` raises
+`{on_delete_not_owned, Name, Type}` instead of being silently ignored.
+
+`rebar3 kura compile` reads this field, so the generated migration carries
+the `ON DELETE` clause without anyone hand-writing DDL.
+
 ### has_many
 
 The related schema holds the foreign key:
@@ -287,7 +310,7 @@ This avoids N+1 queries and produces clean, predictable results.
 
 ## Cascading Deletes
 
-Cascade behavior is handled at the **database level** via `on_delete` on `#kura_column{}` in your migration. When you delete a parent record, PostgreSQL automatically handles the children:
+Cascade behaviour is handled at the **database level** via `on_delete`. Declare it on the `#kura_assoc{}` and let `rebar3 kura compile` generate the migration, or set it directly on `#kura_column{}` in a hand-written one. When you delete a parent record, PostgreSQL automatically handles the children:
 
 ```erlang
 %% Deleting a user cascades to their posts (on_delete = cascade)
