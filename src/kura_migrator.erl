@@ -657,8 +657,7 @@ join_comma_iodata([]) -> [];
 join_comma_iodata([H]) -> [H];
 join_comma_iodata([H | T]) -> [H, ~", " | join_comma_iodata(T)].
 
--spec compile_fk_action(binary(), cascade | restrict | set_null | no_action | undefined) ->
-    binary().
+-spec compile_fk_action(binary(), kura_schema:on_delete() | undefined) -> binary().
 compile_fk_action(_Prefix, undefined) ->
     <<>>;
 compile_fk_action(Prefix, cascade) ->
