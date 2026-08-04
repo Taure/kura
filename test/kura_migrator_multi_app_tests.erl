@@ -2,12 +2,12 @@
 -moduledoc """
 Discovery, ordering and duplicate-guard tests for multi-application migrations.
 
-An asobi extension is a separate OTP application shipping its own
-migrations. Before `migration_apps/0` the migrator only ever looked at
-the application owning the repo module, so those migrations never ran -
-silently. These tests pin the discovery contract without touching a
-database: fake applications are `application:load/1`-ed with the module
-and dependency lists a real release would have.
+An extension - `my_gdpr_extension`, say - is a separate OTP application
+shipping its own migrations. Before `migration_apps/0` the migrator only
+ever looked at the application owning the repo module, so those
+migrations never ran - silently. These tests pin the discovery contract
+without touching a database: fake applications are `application:load/1`-ed
+with the module and dependency lists a real release would have.
 
 The applications are named so that the alphabetical order and the
 dependency order disagree (`kura_ma_zbase` is a dependency of

@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   column and no schema change - existing repos are unaffected.
 - `kura_migrator:migration_apps/1` returns the resolved, dependency
   ordered application list for a repo.
+- `kura_migrator:rollback/3` and `kura_migrator:fake/2` take the
+  application to operate on, for repos drawing migrations from more than
+  one. `rollback/3`'s window is confined to the named application's
+  applied versions; `fake/2` leaves every other application's migrations
+  pending.
 
 ### Fixed
 
@@ -36,12 +41,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rollback runs in reverse apply order rather than descending version
   order, so a dependency's `down/0` never runs before its dependents'.
   Unchanged for a single-application repo, where the two coincide.
+- `schema_migrations` is created under the migration advisory lock, in a
+  transaction of its own. `CREATE TABLE IF NOT EXISTS` is not atomic
+  against a concurrent creator, so two nodes booting together could both
+  pass the existence check and the loser fail on `pg_type`'s unique
+  index.
+- The `CREATE TABLE` result is no longer discarded. A database that
+  refuses the statement now gives
+  `{error, {schema_migrations_failed, Reason}}` rather than `ok`
+  followed by every later query failing on a missing table.
 
 ### Changed
 
 - `kura_migrator:status/1` may now return `{error, Reason}` when
   discovery fails, and lists migrations in apply order. Unchanged for a
   single-application repo.
+- `kura_migrator:rollback/1,2` and `kura_migrator:fake/1` refuse a repo
+  drawing migrations from more than one application, with
+  `{error, {ambiguous_rollback, Apps}}` and
+  `{error, {ambiguous_fake, Apps}}`. Both choose a set of versions with
+  no regard for which application shipped them, which across
+  applications half-migrates several unrelated ones - or, for `fake/1`,
+  stamps a freshly installed extension's tables as created when they do
+  not exist, after which `migrate/1` never creates them. Use
+  `rollback/3` and `fake/2`. A repo without `migration_apps/0` is not a
+  multi-application set and is unaffected.
+- `kura_migrator:ensure_schema_migrations/1` returns
+  `ok | {error, term()}` rather than always `ok`.
 
 ## [2.0.0] - 2026-05-10
 

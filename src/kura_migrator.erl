@@ -22,7 +22,14 @@ All migrations run within a single transaction protected by a PostgreSQL
 advisory lock (`pg_advisory_xact_lock`) to prevent concurrent execution
 across multiple nodes. The applied-version set is read inside that lock,
 so two nodes booting together cannot both decide the same migration is
-pending.
+pending, and `schema_migrations` is created under the same lock in its
+own transaction, so they cannot race to create it either.
+
+`migrate/1` and `status/1` span every application. The two operations
+that record versions without running the DDL they stand for -
+`rollback/1,2` and `fake/1` - refuse a multi-application set rather than
+guess which application an operator meant; `rollback/3` and `fake/2` name
+one.
 """.
 
 -include("kura.hrl").
@@ -39,8 +46,8 @@ pending.
 
 -export([
     migrate/1,
-    fake/1,
-    rollback/1, rollback/2,
+    fake/1, fake/2,
+    rollback/1, rollback/2, rollback/3,
     status/1,
     migration_apps/1,
     ensure_database/1,
@@ -68,10 +75,13 @@ pending.
     topo_sort_ops/1,
     discover_migrations/1,
     collect_migrations/1,
+    collect_migration_groups/1,
     topo_sort_apps/1,
     pending_migrations/2
 ]).
 -endif.
+
+-type migration_group() :: {atom(), [{integer(), module()}]}.
 
 %% eqWAlizer: operation() union has >7 variants - exceeds clause narrowing limit
 -eqwalizer({nowarn_function, compile_operation/2}).
@@ -84,23 +94,34 @@ migrate(RepoMod) ->
         true -> ensure_database(RepoMod);
         false -> ok
     end,
+    case prepare(RepoMod) of
+        {ok, Groups} ->
+            Ordered = flatten_groups(Groups),
+            T0 = erlang:monotonic_time(),
+            Result = with_migration_lock(RepoMod, fun() ->
+                Pending = pending_migrations(
+                    Ordered, get_applied_versions(RepoMod)
+                ),
+                emit_migrate_start(RepoMod, up, length(Pending)),
+                run_migrations(Pending, up, RepoMod, [])
+            end),
+            emit_migrate_stop(RepoMod, T0, up, Result),
+            Result;
+        {error, _} = Err ->
+            Err
+    end.
+
+%% Every entry point needs the pool up, `schema_migrations` present and
+%% the discovered set grouped by application - grouped rather than flat
+%% because the single-application refusals and the per-application forms
+%% both key off the application the migrations came from.
+-spec prepare(module()) -> {ok, [migration_group()]} | {error, term()}.
+prepare(RepoMod) ->
     case wait_for_pool(RepoMod) of
         ok ->
-            ensure_schema_migrations(RepoMod),
-            case discover_migrations(RepoMod) of
-                {ok, Ordered} ->
-                    T0 = erlang:monotonic_time(),
-                    Result = with_migration_lock(RepoMod, fun() ->
-                        Pending = pending_migrations(
-                            Ordered, get_applied_versions(RepoMod)
-                        ),
-                        emit_migrate_start(RepoMod, up, length(Pending)),
-                        run_migrations(Pending, up, RepoMod, [])
-                    end),
-                    emit_migrate_stop(RepoMod, T0, up, Result),
-                    Result;
-                {error, _} = DiscoveryErr ->
-                    DiscoveryErr
+            case ensure_schema_migrations(RepoMod) of
+                ok -> discover_migration_groups(RepoMod);
+                {error, _} = Err -> Err
             end;
         {error, _} = Err ->
             Err
@@ -115,38 +136,73 @@ bootstraps schema modules from an existing database, the first
 exist. `fake/1` records those in `schema_migrations` so real
 migrations proceed from there. It never executes migration DDL.
 
-Precondition: `fake/1` stamps EVERY pending migration. Only run it
-when every pending migration corresponds to schema that already
-exists - a genuinely-new migration in the pending set would be
-stamped without its table ever being created, and a later
-`migrate/1` would then treat it as done. Check `status/1` first; the
-versions about to be stamped are also logged at warning level. For
-the mixed new/existing case use a version-scoped baseline (kura#156).
+Refuses a repo drawing migrations from more than one application with
+`{error, {ambiguous_fake, Apps}}`, and does not stamp anything. An
+operator baselining a brownfield database has the host's tables in
+front of them; an extension added at the same time has none, and
+stamping its migrations too means its tables are never created and
+`migrate/1` thereafter believes there is nothing to do. Name the one
+application being baselined with `fake/2`.
+
+Precondition: `fake/1` stamps EVERY pending migration of the single
+application it covers. Only run it when every pending migration
+corresponds to schema that already exists - a genuinely-new migration
+in the pending set would be stamped without its table ever being
+created, and a later `migrate/1` would then treat it as done. Check
+`status/1` first; the versions about to be stamped are also logged at
+warning level. For the mixed new/existing case use a version-scoped
+baseline (kura#156).
 """.
 -spec fake(module()) -> {ok, [integer()]} | {error, term()}.
 fake(RepoMod) ->
-    case wait_for_pool(RepoMod) of
-        ok ->
-            ensure_schema_migrations(RepoMod),
-            case discover_migrations(RepoMod) of
-                {ok, Ordered} ->
-                    T0 = erlang:monotonic_time(),
-                    Result = with_migration_lock(RepoMod, fun() ->
-                        Pending = pending_migrations(
-                            Ordered, get_applied_versions(RepoMod)
-                        ),
-                        log_fake_stamp(RepoMod, Pending),
-                        emit_migrate_start(RepoMod, fake, length(Pending)),
-                        stamp_migrations(Pending, RepoMod, [])
-                    end),
-                    emit_migrate_stop(RepoMod, T0, fake, Result),
-                    Result;
-                {error, _} = DiscoveryErr ->
-                    DiscoveryErr
+    case prepare(RepoMod) of
+        {ok, [_, _ | _] = Groups} ->
+            refuse_multi_app(ambiguous_fake, RepoMod, group_apps(Groups));
+        {ok, Groups} ->
+            run_fake(RepoMod, flatten_groups(Groups));
+        {error, _} = Err ->
+            Err
+    end.
+
+-doc """
+Stamp `App`'s pending migrations as applied WITHOUT running their DDL.
+
+The per-application form of `fake/1`, for a repo drawing migrations
+from more than one application. Only `App`'s pending migrations are
+stamped; every other application's stay pending, so a host can be
+baselined while a freshly installed extension still gets its tables
+created by `migrate/1`.
+
+`App` must be one of `migration_apps/1`, otherwise
+`{error, {unknown_migration_app, App, Apps}}` and nothing is stamped.
+
+`fake/1`'s precondition applies unchanged, scoped to `App`: every one
+of its pending migrations must correspond to schema that already
+exists.
+""".
+-spec fake(module(), atom()) -> {ok, [integer()]} | {error, term()}.
+fake(RepoMod, App) ->
+    case prepare(RepoMod) of
+        {ok, Groups} ->
+            case lists:keyfind(App, 1, Groups) of
+                {App, Ordered} -> run_fake(RepoMod, Ordered);
+                false -> refuse_unknown_app(RepoMod, App, group_apps(Groups))
             end;
         {error, _} = Err ->
             Err
     end.
+
+-spec run_fake(module(), [{integer(), module()}]) -> {ok, [integer()]} | {error, term()}.
+run_fake(RepoMod, Ordered) ->
+    T0 = erlang:monotonic_time(),
+    Result = with_migration_lock(RepoMod, fun() ->
+        Pending = pending_migrations(Ordered, get_applied_versions(RepoMod)),
+        log_fake_stamp(RepoMod, Pending),
+        emit_migrate_start(RepoMod, fake, length(Pending)),
+        stamp_migrations(Pending, RepoMod, [])
+    end),
+    emit_migrate_stop(RepoMod, T0, fake, Result),
+    Result.
 
 -spec log_fake_stamp(module(), [{integer(), module()}]) -> ok.
 log_fake_stamp(_RepoMod, []) ->
@@ -170,36 +226,90 @@ The window is the `Steps` highest applied versions. Every version in it
 must resolve to a discovered migration module: if one does not, the
 rollback aborts with `{error, {unknown_applied_versions, Versions}}`
 rather than quietly rolling back fewer migrations than asked for. The
-usual cause is an application that ships those migrations missing from
-the repo's `migration_apps/0`, or a migration module deleted from source
-while its `schema_migrations` row remains.
+usual cause is a migration module deleted from source while its
+`schema_migrations` row remains.
 
 Within the window, migrations run in reverse apply order, so a
 dependency's `down/0` never runs before its dependents'.
+
+Refuses a repo drawing migrations from more than one application with
+`{error, {ambiguous_rollback, Apps}}`, and rolls nothing back.
+`schema_migrations` records versions and nothing else, so the only
+window this function can compute is one ordered by version - and
+"the last three" across unrelated applications can take one migration
+each from three of them and leave every one half-migrated, in an order
+their dependency graph never sanctioned. Name the application with
+`rollback/3`.
 """.
 -spec rollback(module(), non_neg_integer()) -> {ok, [integer()]} | {error, term()}.
 rollback(RepoMod, Steps) ->
-    case wait_for_pool(RepoMod) of
-        ok ->
-            ensure_schema_migrations(RepoMod),
-            case discover_migrations(RepoMod) of
-                {ok, Ordered} ->
-                    T0 = erlang:monotonic_time(),
-                    Result = with_migration_lock(RepoMod, fun() ->
-                        run_rollback(RepoMod, Ordered, Steps)
-                    end),
-                    emit_migrate_stop(RepoMod, T0, down, Result),
-                    Result;
-                {error, _} = DiscoveryErr ->
-                    DiscoveryErr
+    case prepare(RepoMod) of
+        {ok, [_, _ | _] = Groups} ->
+            refuse_multi_app(ambiguous_rollback, RepoMod, group_apps(Groups));
+        {ok, Groups} ->
+            Ordered = flatten_groups(Groups),
+            run_rollback_locked(RepoMod, fun() ->
+                run_rollback(RepoMod, Ordered, Steps, get_applied_versions(RepoMod))
+            end);
+        {error, _} = Err ->
+            Err
+    end.
+
+-doc """
+Roll back the last `Steps` migrations of `App`.
+
+The per-application form of `rollback/2`, for a repo drawing migrations
+from more than one application. The window is the `Steps` highest
+applied versions **among those `App`'s discovered migrations claim**, so
+no other application's migrations can enter it whatever their versions
+are. Within the window, execution reverses `App`'s apply order.
+
+`App` must be one of `migration_apps/1`, otherwise
+`{error, {unknown_migration_app, App, Apps}}` and nothing is rolled back.
+
+Rolling an application back below a version a *dependent* application
+builds on is not detected: `schema_migrations` has no record of which
+application applied a version, so kura cannot tell an orphan row of
+`App`'s from any other application's. Roll dependents back first.
+""".
+-spec rollback(module(), atom(), non_neg_integer()) -> {ok, [integer()]} | {error, term()}.
+rollback(RepoMod, App, Steps) ->
+    case prepare(RepoMod) of
+        {ok, Groups} ->
+            case lists:keyfind(App, 1, Groups) of
+                {App, Ordered} ->
+                    run_rollback_locked(RepoMod, fun() ->
+                        run_rollback(RepoMod, Ordered, Steps, app_applied(RepoMod, Ordered))
+                    end);
+                false ->
+                    refuse_unknown_app(RepoMod, App, group_apps(Groups))
             end;
         {error, _} = Err ->
             Err
     end.
 
--spec run_rollback(module(), [{integer(), module()}], non_neg_integer()) -> [integer()].
-run_rollback(RepoMod, Ordered, Steps) ->
-    Applied = get_applied_versions(RepoMod),
+-spec run_rollback_locked(module(), fun(() -> [integer()])) ->
+    {ok, [integer()]} | {error, term()}.
+run_rollback_locked(RepoMod, Fun) ->
+    T0 = erlang:monotonic_time(),
+    Result = with_migration_lock(RepoMod, Fun),
+    emit_migrate_stop(RepoMod, T0, down, Result),
+    Result.
+
+%% Restricting the applied set to versions this application's own
+%% migrations claim is what confines the window to one application. It
+%% also makes the `unknown_applied_versions` guard below unreachable on
+%% this path, which is correct rather than lax: an applied version no
+%% module claims cannot be attributed to any application, so it is not
+%% `App`'s to refuse over.
+-spec app_applied(module(), [{integer(), module()}]) -> [integer()].
+app_applied(RepoMod, Ordered) ->
+    Known = #{V => [] || {V, _M} <- Ordered},
+    [V || V <- get_applied_versions(RepoMod), is_map_key(V, Known)].
+
+-spec run_rollback(module(), [{integer(), module()}], non_neg_integer(), [integer()]) ->
+    [integer()].
+run_rollback(RepoMod, Ordered, Steps, Applied) ->
     Selected = take_integers(reverse_integers(sort_integers(Applied), []), Steps),
     emit_migrate_start(RepoMod, down, length(Selected)),
     case build_rollback_pairs(Selected, Ordered) of
@@ -215,6 +325,33 @@ run_rollback(RepoMod, Ordered, Steps) ->
             }),
             error({migration_aborted, Reason})
     end.
+
+%% `migrate/1` runs every discovered migration and `status/1` reports on
+%% every one, so neither has anything to disambiguate. `rollback/1,2` and
+%% `fake/1` each pick a subset by version alone, which stops meaning
+%% anything the moment versions come from unrelated applications.
+-spec refuse_multi_app(ambiguous_fake | ambiguous_rollback, module(), [atom()]) ->
+    {error, {ambiguous_fake | ambiguous_rollback, [atom()]}}.
+refuse_multi_app(Reason, RepoMod, Apps) ->
+    logger:error(#{
+        msg => ~"kura: refusing a version-chosen operation across applications",
+        repo => RepoMod,
+        reason => Reason,
+        apps => Apps,
+        hint => ~"name one application: rollback/3 or fake/2"
+    }),
+    {error, {Reason, Apps}}.
+
+-spec refuse_unknown_app(module(), atom(), [atom()]) ->
+    {error, {unknown_migration_app, atom(), [atom()]}}.
+refuse_unknown_app(RepoMod, App, Apps) ->
+    logger:error(#{
+        msg => ~"kura: application does not feed this repo's migrations",
+        repo => RepoMod,
+        app => App,
+        apps => Apps
+    }),
+    {error, {unknown_migration_app, App, Apps}}.
 
 %% Emitted inside the advisory lock: the pending count is only true once
 %% no other node can still be applying migrations.
@@ -264,24 +401,23 @@ telemetry_event(EventName, Measurements, Metadata) ->
 Return the status of all discovered migrations (`up` or `pending`).
 
 Listed in apply order: applications in dependency order, versions
-ascending within each. Returns `[]` when the pool is unavailable, and
-`{error, Reason}` when discovery itself fails (a duplicate version
-across applications, for instance).
+ascending within each. Spans every application, so it is the thing to
+check before `fake/2` or `rollback/3`.
+
+Returns `[]` when the pool is unavailable, and `{error, Reason}` when
+`schema_migrations` cannot be created or discovery itself fails (a
+duplicate version across applications, for instance).
 """.
 -spec status(module()) -> [{integer(), module(), up | pending}] | {error, term()}.
 status(RepoMod) ->
-    case wait_for_pool(RepoMod) of
-        ok ->
-            ensure_schema_migrations(RepoMod),
-            case discover_migrations(RepoMod) of
-                {ok, Ordered} ->
-                    Applied = get_applied_versions(RepoMod),
-                    [tag_status(V, M, Applied) || {V, M} <- Ordered];
-                {error, _} = Err ->
-                    Err
-            end;
-        {error, _} ->
-            []
+    case prepare(RepoMod) of
+        {ok, Groups} ->
+            Applied = get_applied_versions(RepoMod),
+            [tag_status(V, M, Applied) || {V, M} <- flatten_groups(Groups)];
+        {error, pool_unavailable} ->
+            [];
+        {error, _} = Err ->
+            Err
     end.
 
 tag_status(V, M, Applied) ->
@@ -311,7 +447,22 @@ ensure_database(RepoMod) ->
 %% Schema migrations table
 %%----------------------------------------------------------------------
 
--spec ensure_schema_migrations(module()) -> ok.
+-doc """
+Create `schema_migrations` if it is not already there.
+
+Runs under the migration advisory lock in a transaction of its own.
+`CREATE TABLE IF NOT EXISTS` is not atomic against a concurrent
+creator: both sessions can pass the existence check and the loser
+fails on `pg_type`'s unique index. Taking the lock first is what makes
+two nodes booting together safe, and the transaction is separate from
+the migration one so the lock is released before `migrate/1` re-takes
+it - no lock is held across the two.
+
+Returns `{error, {schema_migrations_failed, Reason}}` when the
+statement does not succeed, rather than leaving every later query to
+fail on a table that was never created.
+""".
+-spec ensure_schema_migrations(module()) -> ok | {error, term()}.
 ensure_schema_migrations(RepoMod) ->
     %% Portable SQL: TIMESTAMP + CURRENT_TIMESTAMP work in both Postgres
     %% and SQLite. Postgres treats TIMESTAMP as WITHOUT TIME ZONE which
@@ -322,8 +473,33 @@ ensure_schema_migrations(RepoMod) ->
         "inserted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"
         ")"
     >>,
-    _ = kura_db:query(RepoMod, SQL, []),
-    ok.
+    PoolMod = kura_db:get_pool_module(RepoMod),
+    try
+        kura_db:transaction(RepoMod, fun() ->
+            maybe_acquire_advisory_lock(RepoMod, PoolMod),
+            create_schema_migrations(RepoMod, SQL)
+        end)
+    catch
+        Class:Reason:Stack ->
+            logger:error(#{
+                msg => ~"kura: schema_migrations bootstrap failed",
+                repo => RepoMod,
+                class => Class,
+                reason => Reason,
+                stacktrace => Stack
+            }),
+            {error, {schema_migrations_failed, Reason}}
+    end.
+
+%% Drivers differ on the success shape, so anything that is not an
+%% explicit error counts as created. The point is that an error is no
+%% longer thrown away.
+-spec create_schema_migrations(module(), binary()) -> ok | {error, term()}.
+create_schema_migrations(RepoMod, SQL) ->
+    case kura_db:query(RepoMod, SQL, []) of
+        {error, Reason} -> {error, {schema_migrations_failed, Reason}};
+        _ -> ok
+    end.
 
 %%----------------------------------------------------------------------
 %% Pool readiness
@@ -539,19 +715,43 @@ deps_placed([], _Placed) ->
 deps_placed([Dep | Rest], Placed) ->
     lists:member(Dep, Placed) andalso deps_placed(Rest, Placed).
 
+-spec discover_migration_groups(module()) -> {ok, [migration_group()]} | {error, term()}.
+discover_migration_groups(RepoMod) ->
+    case migration_apps(RepoMod) of
+        {ok, Apps} -> collect_migration_groups(Apps);
+        {error, _} = Err -> Err
+    end.
+
+-ifdef(TEST).
+%% Flattened views of the grouped forms. Production code needs the
+%% grouping to decide the multi-application refusals, but the discovery
+%% assertions read better against one ordered list.
 -spec discover_migrations(module()) -> {ok, [{integer(), module()}]} | {error, term()}.
 discover_migrations(RepoMod) ->
-    case migration_apps(RepoMod) of
-        {ok, Apps} -> collect_migrations(Apps);
+    case discover_migration_groups(RepoMod) of
+        {ok, Groups} -> {ok, flatten_groups(Groups)};
         {error, _} = Err -> Err
     end.
 
 -spec collect_migrations([atom()]) -> {ok, [{integer(), module()}]} | {error, term()}.
 collect_migrations(Apps) ->
+    case collect_migration_groups(Apps) of
+        {ok, Groups} -> {ok, flatten_groups(Groups)};
+        {error, _} = Err -> Err
+    end.
+-endif.
+
+%% Every application in `Apps` gets a group, including one contributing
+%% no migrations: the multi-application refusals are about the set the
+%% repo declares, not about which members happen to ship migrations
+%% right now, so adding a migration to a so-far-empty extension must not
+%% change which operations are allowed.
+-spec collect_migration_groups([atom()]) -> {ok, [migration_group()]} | {error, term()}.
+collect_migration_groups(Apps) ->
     Groups = [{A, sort_migrations(discover_app_migrations(A))} || A <- Apps],
     case duplicate_versions(Groups) of
         [] ->
-            {ok, lists:append([Ms || {_App, Ms} <- Groups])};
+            {ok, Groups};
         Duplicates ->
             logger:error(#{
                 msg => ~"kura: migration version claimed by more than one module",
@@ -559,6 +759,14 @@ collect_migrations(Apps) ->
             }),
             {error, {duplicate_migration_version, Duplicates}}
     end.
+
+-spec flatten_groups([migration_group()]) -> [{integer(), module()}].
+flatten_groups([]) -> [];
+flatten_groups([{_App, Ms} | Rest]) -> Ms ++ flatten_groups(Rest).
+
+-spec group_apps([migration_group()]) -> [atom()].
+group_apps(Groups) ->
+    [App || {App, _Ms} <- Groups].
 
 %% A version is the whole primary key of `schema_migrations`, so it has
 %% to be unique across every application feeding the repo. Reporting
