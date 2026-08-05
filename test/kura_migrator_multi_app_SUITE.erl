@@ -101,7 +101,7 @@ all() ->
     ].
 
 init_per_suite(Config) ->
-    application:ensure_all_started(pgo),
+    application:ensure_all_started(minato),
     application:set_env(kura, dialect, kura_dialect_pg),
     application:ensure_all_started(kura),
     load_app(
@@ -132,7 +132,7 @@ end_per_suite(_Config) ->
     ok.
 
 init_per_testcase(_TC, Config) ->
-    case pgo_sup:start_child(?LIVE_POOL, pool_config()) of
+    case kura_pool_minato:start_pool(?LIVE_POOL, pool_config()) of
         {ok, _} -> ok;
         {error, {already_started, _}} -> ok
     end,
@@ -444,7 +444,7 @@ ensure_denied_role() ->
     ok.
 
 ensure_denied_pool() ->
-    case pgo_sup:start_child(?DENIED_POOL, denied_pool_config()) of
+    case kura_pool_minato:start_pool(?DENIED_POOL, denied_pool_config()) of
         {ok, _} -> ok;
         {error, {already_started, _}} -> ok
     end,
@@ -453,7 +453,9 @@ ensure_denied_pool() ->
 spawn_lock_holder(Version, HoldMs) ->
     Parent = self(),
     spawn_link(fun() ->
-        pgo:transaction(?LIVE_POOL, fun() -> hold(Parent, Version, HoldMs) end, #{}),
+        kura_driver_minato:transaction(
+            kura_pool_minato, ?LIVE_POOL, fun() -> hold(Parent, Version, HoldMs) end, #{}
+        ),
         Parent ! {self(), committed}
     end).
 
@@ -462,7 +464,9 @@ spawn_lock_holder(Version, HoldMs) ->
 spawn_lock_only_holder(HoldMs) ->
     Parent = self(),
     spawn_link(fun() ->
-        pgo:transaction(?LIVE_POOL, fun() -> hold(Parent, undefined, HoldMs) end, #{}),
+        kura_driver_minato:transaction(
+            kura_pool_minato, ?LIVE_POOL, fun() -> hold(Parent, undefined, HoldMs) end, #{}
+        ),
         Parent ! {self(), committed}
     end).
 
@@ -482,7 +486,7 @@ hold(Parent, Version, HoldMs) ->
     timer:sleep(HoldMs).
 
 tx_query(SQL, Params) ->
-    pgo:query(SQL, Params, #{pool => ?LIVE_POOL}).
+    kura_driver_minato:query(kura_pool_minato, ?LIVE_POOL, SQL, Params, #{}).
 
 declare(Apps) ->
     application:set_env(kura, kura_ma_declared_apps, Apps).
@@ -504,8 +508,8 @@ load_app(Name, Modules, Deps) ->
 repo_config() ->
     #{
         pool => ?LIVE_POOL,
-        pool_module => kura_pool_pgo,
-        driver_module => kura_driver_pgo,
+        pool_module => kura_pool_minato,
+        driver_module => kura_driver_minato,
         database => <<"kura_test">>,
         hostname => <<"localhost">>,
         port => 5555,
@@ -547,16 +551,18 @@ table_exists(Name) ->
     N > 0.
 
 query(SQL, Params) ->
-    pgo:query(SQL, Params, #{
-        pool => ?LIVE_POOL, decode_opts => [return_rows_as_maps, column_name_as_atom]
-    }).
+    kura_driver_minato:query(kura_pool_minato, ?LIVE_POOL, SQL, Params, #{}).
 
 cleanup_db() ->
     [
-        pgo:query(<<"DROP TABLE IF EXISTS ", T/binary, " CASCADE">>, [], #{pool => ?LIVE_POOL})
+        kura_driver_minato:query(
+            kura_pool_minato, ?LIVE_POOL, <<"DROP TABLE IF EXISTS ", T/binary, " CASCADE">>, [], #{}
+        )
      || T <- ?TABLES
     ],
-    _ = pgo:query(~"DROP TABLE IF EXISTS schema_migrations CASCADE", [], #{pool => ?LIVE_POOL}),
+    _ = kura_driver_minato:query(
+        kura_pool_minato, ?LIVE_POOL, ~"DROP TABLE IF EXISTS schema_migrations CASCADE", [], #{}
+    ),
     ok.
 
 poll_pool_ready(Pool, Timeout) ->
@@ -564,7 +570,7 @@ poll_pool_ready(Pool, Timeout) ->
     poll_pool_loop(Pool, Deadline).
 
 poll_pool_loop(Pool, Deadline) ->
-    case pgo:query(~"SELECT 1", [], #{pool => Pool}) of
+    case kura_driver_minato:query(kura_pool_minato, Pool, ~"SELECT 1", [], #{}) of
         #{rows := _} ->
             ok;
         {error, _} ->

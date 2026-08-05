@@ -6,3 +6,4 @@ rebar.lock
 *.beam
 *.plt
 doc/
+_checkouts/

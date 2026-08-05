@@ -28,7 +28,7 @@ stress_test_() ->
     end}.
 
 setup() ->
-    application:ensure_all_started(pgo),
+    application:ensure_all_started(minato),
     application:ensure_all_started(kura),
     kura_stress_repo:start(),
     {ok, _} = kura_stress_repo:query(
@@ -165,12 +165,16 @@ t_long_transaction_doesnt_block_others() ->
     Pool = maps:get(pool, kura_repo:config(kura_stress_repo)),
     %% Spawn a process that holds a transaction open for 2 seconds
     spawn_link(fun() ->
-        pgo:transaction(
+        kura_driver_minato:transaction(
+            kura_pool_minato,
+            Pool,
             fun() ->
-                pgo:query(<<"SELECT 1 FROM pg_sleep(2)">>, [], #{pool => Pool}),
+                kura_driver_minato:query(
+                    kura_pool_minato, Pool, <<"SELECT 1 FROM pg_sleep(2)">>, [], #{}
+                ),
                 ok
             end,
-            #{pool => Pool}
+            #{}
         ),
         Self ! long_txn_done
     end),

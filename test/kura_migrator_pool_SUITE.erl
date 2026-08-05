@@ -4,7 +4,7 @@ Regression coverage for `kura_migrator` pool-readiness handling.
 
 These tests pin two production hazards:
 
-1. `pgo` workers connect asynchronously, so when an application starts
+1. Connections are opened asynchronously, so when an application starts
    and immediately calls `kura_migrator:migrate/1` the pool may exist
    but reject queries with `none_available` until handshake completes.
    Before the `wait_for_pool/1` gate, the migrator's catch-all
@@ -23,7 +23,7 @@ pool (returns `{error, pool_unavailable}`), and a race scenario
 (pool started immediately before `migrate/1`, must succeed without
 a manual sleep).
 
-`pgo_sup` is `simple_one_for_one`, which means we can't reliably
+A pool cannot be reliably
 remove a started pool by name — `delete_child/2` is disallowed and
 `terminate_child/2` needs a pid we don't track. To stay
 order-independent the suite never tears the live pool down; for
@@ -66,7 +66,7 @@ all() ->
     ].
 
 init_per_suite(Config) ->
-    application:ensure_all_started(pgo),
+    application:ensure_all_started(minato),
     application:set_env(kura, dialect, kura_dialect_pg),
     application:ensure_all_started(kura),
     %% Register a fake application that owns the migration modules so
@@ -154,17 +154,17 @@ migrate_returns_error_when_pool_missing(_Config) ->
     ?assertEqual({error, pool_unavailable}, kura_migrator:migrate(?REPO)).
 
 migrate_succeeds_immediately_after_pool_start(_Config) ->
-    %% This is the pgo race that motivated wait_for_pool/1. Use a fresh
+    %% This is the race that motivated wait_for_pool/1. Use a fresh
     %% pool name (not the suite-wide ?LIVE_POOL) so this test starts
     %% from genuine cold-start: pool started, then migrate/1 called in
-    %% the same scheduling slice. pgo workers haven't finished their
-    %% handshake yet, so the very first `pgo:query` would fail with
+    %% the same scheduling slice. Connections haven't finished their
+    %% handshake yet, so the very first query would fail with
     %% `none_available`. With wait_for_pool the migrator retries until
     %% at least one worker is ready.
     ColdPool = make_unique_pool_name(),
     set_repo_pool(ColdPool),
     application:set_env(kura, migration_pool_ready_timeout, 5000),
-    {ok, _} = pgo_sup:start_child(ColdPool, pool_config()),
+    {ok, _} = kura_pool_minato:start_pool(ColdPool, pool_config()),
     %% Deliberately do NOT sleep — the regression we're pinning is that
     %% migrate/1 must tolerate this exact zero-warmup window.
     Result = kura_migrator:migrate(?REPO),
@@ -184,16 +184,18 @@ migrate_actually_records_versions_in_schema_migrations(_Config) ->
     {ok, Versions} = kura_migrator:migrate(?REPO),
     ?assertEqual(2, length(Versions)),
     %% schema_migrations contains exactly those versions
-    #{rows := Rows} = pgo:query(
+    #{rows := Rows} = kura_driver_minato:query(
+        kura_pool_minato,
+        ?LIVE_POOL,
         ~"SELECT version FROM schema_migrations ORDER BY version",
         [],
-        #{pool => ?LIVE_POOL}
+        #{}
     ),
     Recorded = [V || #{version := V} <- Rows],
     ?assertEqual(lists:sort(Versions), Recorded),
     %% The table the create-table migration declares actually exists
-    #{rows := _} = pgo:query(
-        ~"SELECT 1 FROM coverage_items LIMIT 0", [], #{pool => ?LIVE_POOL}
+    #{rows := _} = kura_driver_minato:query(
+        kura_pool_minato, ?LIVE_POOL, ~"SELECT 1 FROM coverage_items LIMIT 0", [], #{}
     ).
 
 rollback_returns_error_when_pool_missing(_Config) ->
@@ -217,8 +219,8 @@ set_repo_pool(PoolName) ->
 repo_config(PoolName) ->
     #{
         pool => PoolName,
-        pool_module => kura_pool_pgo,
-        driver_module => kura_driver_pgo,
+        pool_module => kura_pool_minato,
+        driver_module => kura_driver_minato,
         database => <<"kura_test">>,
         hostname => <<"localhost">>,
         port => 5555,
@@ -230,9 +232,9 @@ repo_config(PoolName) ->
 ensure_live_pool_ready() ->
     %% Idempotent: start the pool once, then wait until it can answer
     %% queries. Reused across tests via the suite-wide ?LIVE_POOL atom
-    %% (pgo_sup is simple_one_for_one so we can't easily kill pools
+    %% (a pool cannot easily be kill pools
     %% between tests).
-    case pgo_sup:start_child(?LIVE_POOL, pool_config()) of
+    case kura_pool_minato:start_pool(?LIVE_POOL, pool_config()) of
         {ok, _} -> ok;
         {error, {already_started, _}} -> ok
     end,
@@ -260,16 +262,16 @@ cleanup_db_tables() ->
     %% live pool (started lazily) to do the cleanup, since we need
     %% *some* pool to issue SQL. After this runs, ?LIVE_POOL exists
     %% and is warm; tests that want "no pool" point at ?MISSING_POOL.
-    case pgo_sup:start_child(?LIVE_POOL, pool_config()) of
+    case kura_pool_minato:start_pool(?LIVE_POOL, pool_config()) of
         {ok, _} -> ok;
         {error, {already_started, _}} -> ok
     end,
     ok = poll_pool_ready(?LIVE_POOL, 5000),
-    _ = pgo:query(
-        ~"DROP TABLE IF EXISTS coverage_items CASCADE", [], #{pool => ?LIVE_POOL}
+    _ = kura_driver_minato:query(
+        kura_pool_minato, ?LIVE_POOL, ~"DROP TABLE IF EXISTS coverage_items CASCADE", [], #{}
     ),
-    _ = pgo:query(
-        ~"DROP TABLE IF EXISTS schema_migrations CASCADE", [], #{pool => ?LIVE_POOL}
+    _ = kura_driver_minato:query(
+        kura_pool_minato, ?LIVE_POOL, ~"DROP TABLE IF EXISTS schema_migrations CASCADE", [], #{}
     ),
     ok.
 
@@ -278,7 +280,7 @@ poll_pool_ready(Pool, Timeout) ->
     poll_pool_loop(Pool, Deadline).
 
 poll_pool_loop(Pool, Deadline) ->
-    case pgo:query(~"SELECT 1", [], #{pool => Pool}) of
+    case kura_driver_minato:query(kura_pool_minato, Pool, ~"SELECT 1", [], #{}) of
         #{rows := _} ->
             ok;
         {error, _} ->

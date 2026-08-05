@@ -36,7 +36,7 @@ docker_resilience_test_() ->
     end.
 
 setup() ->
-    application:ensure_all_started(pgo),
+    application:ensure_all_started(minato),
     application:ensure_all_started(kura),
     ensure_pg_running(),
     kura_stress_repo:start(),
@@ -193,10 +193,12 @@ t_cursor_cleanup_on_process_crash() ->
     timer:sleep(500),
     %% Check for leaked cursors
     Pool = maps:get(pool, kura_repo:config(kura_stress_repo)),
-    #{rows := Cursors} = pgo:query(
+    #{rows := Cursors} = kura_driver_minato:query(
+        kura_pool_minato,
+        Pool,
         <<"SELECT name FROM pg_cursors WHERE name LIKE 'kura_cursor_%'">>,
         [],
-        #{pool => Pool}
+        #{}
     ),
     ?assertEqual(0, length(Cursors)).
 
@@ -223,7 +225,7 @@ t_query_during_pg_downtime() ->
     wait_for_pg(60).
 
 t_recovery_after_restart() ->
-    %% Ensure PG is up and pool is good - wait for pgo to reconnect from previous test
+    %% Ensure PG is up and the pool is good - wait for it to reconnect from the previous test
     ensure_pg_running(),
     wait_for_pg(60),
     try
@@ -231,7 +233,7 @@ t_recovery_after_restart() ->
     catch
         _:_ -> ok
     end,
-    %% Wait for pgo connection backoff to reconnect (max backoff is 10s)
+    %% Wait for the connection backoff to reconnect (max backoff is 10s)
     timer:sleep(12000),
     %% Create tables if they don't exist
     {ok, _} = retry(
