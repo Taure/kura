@@ -27,7 +27,7 @@ bench_test_() ->
     end}.
 
 setup() ->
-    application:ensure_all_started(pgo),
+    application:ensure_all_started(minato),
     application:ensure_all_started(kura),
     kura_stress_repo:start(),
     {ok, _} = kura_stress_repo:query(

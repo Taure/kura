@@ -87,7 +87,7 @@ groups() ->
 %%----------------------------------------------------------------------
 
 init_per_suite(Config) ->
-    application:ensure_all_started(pgo),
+    application:ensure_all_started(minato),
     application:ensure_all_started(kura),
     kura_test_repo:start(),
     kura_sandbox:start(),
@@ -129,7 +129,7 @@ init_per_group(migrator, Config) ->
     kura_test_repo:query("DROP TABLE IF EXISTS schema_migrations CASCADE", []),
     Config;
 init_per_group(stream, Config) ->
-    %% Streams use pgo:transaction internally, incompatible with sandbox.
+    %% Streams open their own transaction, incompatible with sandbox.
     %% Insert test data outside sandbox, clean up in end_per_group.
     Config;
 init_per_group(_, Config) ->
@@ -645,7 +645,7 @@ default_logger_fn(_Config) ->
 %%----------------------------------------------------------------------
 
 stream_3_arity(_Config) ->
-    %% Insert data outside sandbox (streams use their own pgo:transaction)
+    %% Insert data outside sandbox (streams open their own transaction)
     {ok, _} = insert_user(<<"Stream3_1">>, <<"stream3_1@test.com">>),
     {ok, _} = insert_user(<<"Stream3_2">>, <<"stream3_2@test.com">>),
 

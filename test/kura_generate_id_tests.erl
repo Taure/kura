@@ -18,7 +18,7 @@ generate_id_test_() ->
     end}.
 
 setup() ->
-    application:ensure_all_started(pgo),
+    application:ensure_all_started(minato),
     application:ensure_all_started(kura),
     kura_test_repo:start(),
     {ok, _} = kura_test_repo:query(

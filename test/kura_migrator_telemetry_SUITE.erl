@@ -68,7 +68,7 @@ all() ->
     ].
 
 init_per_suite(Config) ->
-    application:ensure_all_started(pgo),
+    application:ensure_all_started(minato),
     application:set_env(kura, dialect, kura_dialect_pg),
     application:ensure_all_started(kura),
     MigMods = [
@@ -104,7 +104,7 @@ end_per_suite(_Config) ->
     ok.
 
 init_per_testcase(_TC, Config) ->
-    case pgo_sup:start_child(?LIVE_POOL, pool_config()) of
+    case kura_pool_minato:start_pool(?LIVE_POOL, pool_config()) of
         {ok, _} -> ok;
         {error, {already_started, _}} -> ok
     end,
@@ -371,19 +371,21 @@ find_event(Name, Events) ->
     end.
 
 table_count(Name) ->
-    #{rows := [#{count := N}]} = pgo:query(
+    #{rows := [#{count := N}]} = kura_driver_minato:query(
+        kura_pool_minato,
+        ?LIVE_POOL,
         ~"SELECT count(*)::int AS count FROM information_schema.tables WHERE table_name = $1",
         [Name],
-        #{pool => ?LIVE_POOL, decode_opts => [return_rows_as_maps, column_name_as_atom]}
+        #{}
     ),
     N.
 
 cleanup_db() ->
-    _ = pgo:query(
-        ~"DROP TABLE IF EXISTS coverage_items CASCADE", [], #{pool => ?LIVE_POOL}
+    _ = kura_driver_minato:query(
+        kura_pool_minato, ?LIVE_POOL, ~"DROP TABLE IF EXISTS coverage_items CASCADE", [], #{}
     ),
-    _ = pgo:query(
-        ~"DROP TABLE IF EXISTS schema_migrations CASCADE", [], #{pool => ?LIVE_POOL}
+    _ = kura_driver_minato:query(
+        kura_pool_minato, ?LIVE_POOL, ~"DROP TABLE IF EXISTS schema_migrations CASCADE", [], #{}
     ),
     ok.
 
@@ -392,7 +394,7 @@ poll_pool_ready(Pool, Timeout) ->
     poll_pool_loop(Pool, Deadline).
 
 poll_pool_loop(Pool, Deadline) ->
-    case pgo:query(~"SELECT 1", [], #{pool => Pool}) of
+    case kura_driver_minato:query(kura_pool_minato, Pool, ~"SELECT 1", [], #{}) of
         #{rows := _} ->
             ok;
         {error, _} ->
