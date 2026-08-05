@@ -10,7 +10,7 @@ Different drivers want different pool shapes:
 
 - Network-protocol drivers like Postgres benefit from caller-side I/O on
   the socket, so the pool just hands out a connection record and stays
-  out of the way (`kura_pool_pgo`, the canonical PG impl).
+  out of the way (`kura_pool_minato`, the canonical PG impl).
 - gen_server-style drivers like MySQL or HTTP clients want a worker
   process the caller calls into; a gen_server-call-style pool fits.
 
@@ -20,8 +20,9 @@ matches their backend.
 ## Token vs connection
 
 `checkout/2` returns both a `conn()` and a `token()`. The `conn()` is
-what callers actually use to run work (e.g. a `pgo_pool:conn()` record
-that `pgo_handler:extended_query/4` accepts). The `token()` is the
+what callers actually use to run work: `kura_pool_minato` hands back a
+process that owns the connection and answers queries, and the pgo impl
+hands back pgo's own conn record. The `token()` is the
 opaque value the caller hands back to `checkin/2`. Implementations are
 free to make them the same value if they like.
 
@@ -34,7 +35,7 @@ teardown checks it back in.
 ## Example
 
 ```erlang
-{ok, _Pid} = kura_pool_pgo:start_pool(my_pool, #{
+{ok, _Pid} = kura_pool_minato:start_pool(my_pool, #{
     host => "localhost",
     database => "my_app",
     user => "postgres",
@@ -42,8 +43,8 @@ teardown checks it back in.
     pool_size => 10
 }),
 
-kura_pool:with_conn(kura_pool_pgo, my_pool, fun(Conn) ->
-    pgo_handler:extended_query(Conn, ~"SELECT 1", [])
+kura_pool:with_conn(kura_pool_minato, my_pool, fun(Conn) ->
+    kura_driver_minato:query_on(Conn, ~"SELECT 1", [], #{})
 end).
 ```
 """.
