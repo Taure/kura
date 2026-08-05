@@ -76,7 +76,7 @@ to_sql_cached_miss_compiles_and_stores_test() ->
         Q = #kura_query{from = cache_miss_schema},
         Result = kura_query_compiler:to_sql_cached(?REPO, Q),
         ?assertEqual(kura_query_compiler:to_sql(?REPO, Q), Result),
-        Key = {?REPO, erlang:phash2(Q)},
+        Key = {?REPO, kura_tenant:get_tenant(), Q},
         ?assertEqual({ok, Result}, kura_query_cache:get(Key))
     after
         unset_repo()
@@ -88,10 +88,174 @@ to_sql_cached_hit_returns_stored_result_test() ->
     try
         Q = #kura_query{from = cache_hit_schema},
         Stored = {~"PRE_BAKED_SQL", [pre_baked_param]},
-        Key = {?REPO, erlang:phash2(Q)},
+        Key = {?REPO, kura_tenant:get_tenant(), Q},
         kura_query_cache:put(Key, Stored),
         ?assertEqual(Stored, kura_query_compiler:to_sql_cached(?REPO, Q))
     after
+        unset_repo()
+    end.
+
+%%----------------------------------------------------------------------
+%% Regression: two distinct queries that share an `erlang:phash2/1' value
+%% must not share a cache entry. A cached entry carries bound parameters
+%% as well as SQL, so keying on that hash returned another query's rows -
+%% in the wild, rows of a different table entirely.
+%%
+%% The colliding pairs are searched for at run time rather than hardcoded:
+%% the test then stays meaningful if a future OTP changes phash2/1, and it
+%% documents how dense collisions are in a 27-bit keyspace.
+%%----------------------------------------------------------------------
+
+colliding_queries_across_schemas_do_not_share_cache_entries_test() ->
+    Build = fun(N) ->
+        [
+            #kura_query{from = schema_a, wheres = [{id, N}]},
+            #kura_query{from = schema_b, wheres = [{id, N}]}
+        ]
+    end,
+    DifferentTable = fun(A, B) -> A#kura_query.from =/= B#kura_query.from end,
+    {QA, QB} = find_collision(Build, DifferentTable),
+    assert_cached_independently(QA, QB).
+
+colliding_params_within_a_schema_do_not_share_cache_entries_test() ->
+    Build = fun(N) -> [#kura_query{from = schema_a, wheres = [{id, N}]}] end,
+    {QA, QB} = find_collision(Build, fun(_, _) -> true end),
+    assert_cached_independently(QA, QB).
+
+%% The severity driver: a collision between two tenants' queries is a
+%% cross-tenant read, not merely a wrong table.
+colliding_tenants_do_not_share_cache_entries_test() ->
+    Build = fun(N) ->
+        [
+            #kura_query{
+                from = players,
+                prefix = <<"t_", (integer_to_binary(N))/binary>>,
+                wheres = [{id, 1}]
+            }
+        ]
+    end,
+    {QA, QB} = find_collision(Build, fun(_, _) -> true end),
+    ?assertNotEqual(QA#kura_query.prefix, QB#kura_query.prefix),
+    assert_cached_independently(QA, QB).
+
+%% A nested CTE keeps prefix = undefined and resolves the tenant from
+%% kura_tenant at emit time, so the ambient tenant has to be part of the
+%% cache key or one tenant is served the other's compiled SQL.
+ambient_tenant_is_part_of_the_cache_key_test() ->
+    set_repo_dialect(kura_dialect_pg),
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    Q = kura_query:with_cte(
+        kura_query:from(outer_schema),
+        ~"scoped",
+        kura_query:from(inner_schema)
+    ),
+    try
+        kura_tenant:put_tenant({prefix, ~"tenant_a"}),
+        SqlA = kura_query_compiler:to_sql_cached(?REPO, Q),
+        kura_tenant:put_tenant({prefix, ~"tenant_b"}),
+        SqlB = kura_query_compiler:to_sql_cached(?REPO, Q),
+        ?assertNotEqual(SqlA, SqlB),
+        ?assertEqual(kura_query_compiler:to_sql(?REPO, Q), SqlB)
+    after
+        kura_tenant:clear_tenant(),
+        kura_query_cache:flush(),
+        unset_repo()
+    end.
+
+%% Walk N upwards building candidate queries until two that Accept approves
+%% hash alike. A rejected collision keeps the incumbent and scanning goes on.
+find_collision(Build, Accept) ->
+    find_collision(Build, Accept, #{}, 0).
+
+find_collision(_Build, _Accept, _Seen, N) when N > 200000 ->
+    erlang:error(no_phash2_collision_found);
+find_collision(Build, Accept, Seen, N) ->
+    case scan_candidates(Build(N), Accept, Seen) of
+        {collision, Pair} -> Pair;
+        {ok, Seen1} -> find_collision(Build, Accept, Seen1, N + 1)
+    end.
+
+scan_candidates([], _Accept, Seen) ->
+    {ok, Seen};
+scan_candidates([Q | Rest], Accept, Seen) ->
+    Hash = erlang:phash2(Q),
+    case maps:find(Hash, Seen) of
+        {ok, Other} ->
+            case Accept(Other, Q) of
+                true -> {collision, {Other, Q}};
+                false -> scan_candidates(Rest, Accept, Seen)
+            end;
+        error ->
+            scan_candidates(Rest, Accept, Seen#{Hash => Q})
+    end.
+
+assert_cached_independently(QA, QB) ->
+    set_repo_dialect(kura_dialect_pg),
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        ?assertEqual(erlang:phash2(QA), erlang:phash2(QB)),
+        ExpectedA = kura_query_compiler:to_sql(?REPO, QA),
+        ExpectedB = kura_query_compiler:to_sql(?REPO, QB),
+        ?assertNotEqual(ExpectedA, ExpectedB),
+        %% Prime the cache with A, then B must still compile to its own SQL
+        %% and its own parameters, not A's.
+        ?assertEqual(ExpectedA, kura_query_compiler:to_sql_cached(?REPO, QA)),
+        ?assertEqual(ExpectedB, kura_query_compiler:to_sql_cached(?REPO, QB)),
+        ?assertEqual(ExpectedA, kura_query_compiler:to_sql_cached(?REPO, QA))
+    after
+        kura_query_cache:flush(),
+        unset_repo()
+    end.
+
+%%----------------------------------------------------------------------
+%% The cache is bounded: parameterised queries intern one entry per
+%% distinct value set, so an unbounded table is a memory leak. Both limits
+%% are in words, because entry *size* is caller-influenced - one `in' list
+%% is stored in the key and again in the value.
+%%----------------------------------------------------------------------
+
+cache_is_bounded_by_max_memory_test() ->
+    set_repo_dialect(kura_dialect_pg),
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    application:set_env(kura, query_cache_max_memory, 2000),
+    try
+        Q = fun(N) -> #kura_query{from = bounded_schema, wheres = [{id, N}]} end,
+        _ = [kura_query_compiler:to_sql_cached(?REPO, Q(N)) || N <- lists:seq(1, 500)],
+        ?assert(ets:info(kura_query_cache, memory) < 2000 * 2),
+        %% Eviction must never change what a query compiles to. This is what
+        %% stops a future LRU from evicting by anything other than whole key.
+        Evicted = Q(1),
+        ?assertEqual(
+            kura_query_compiler:to_sql(?REPO, Evicted),
+            kura_query_compiler:to_sql_cached(?REPO, Evicted)
+        )
+    after
+        application:unset_env(kura, query_cache_max_memory),
+        kura_query_cache:flush(),
+        unset_repo()
+    end.
+
+oversized_entries_are_never_interned_test() ->
+    set_repo_dialect(kura_dialect_pg),
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    application:set_env(kura, query_cache_max_entry_size, 64),
+    try
+        Big = #kura_query{
+            from = bounded_schema,
+            wheres = [{id, in, lists:seq(1, 5000)}]
+        },
+        Expected = kura_query_compiler:to_sql(?REPO, Big),
+        ?assertEqual(Expected, kura_query_compiler:to_sql_cached(?REPO, Big)),
+        ?assertEqual(0, ets:info(kura_query_cache, size)),
+        %% Still correct on every subsequent call, just uncached.
+        ?assertEqual(Expected, kura_query_compiler:to_sql_cached(?REPO, Big))
+    after
+        application:unset_env(kura, query_cache_max_entry_size),
+        kura_query_cache:flush(),
         unset_repo()
     end.
 
