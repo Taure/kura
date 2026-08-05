@@ -4,7 +4,7 @@ Pluggable database driver behaviour.
 
 A `kura_driver` implementation is the seam between kura's portable
 query layer and a specific database client library. Each impl wraps
-one client (`pgo`, `esqlite`, `mysql_otp`, ...) behind a uniform
+one client (`minato`, `pgo`, `esqlite`, `mysql_otp`, ...) behind a uniform
 query/transaction surface.
 
 The pool layer (`kura_pool`) hands out a connection. The driver layer
@@ -30,8 +30,9 @@ the transaction context.
 
 ## Today
 
-The canonical impl is `kura_driver_pgo`. It uses pgo's process-dict
-based transaction context (`pgo_transaction_connection`) so existing
+The canonical impl is `kura_driver_minato`, and `kura_driver_pgo` is
+still shipped. Both keep the in-flight transaction in the process
+dictionary so that queries written inside a transaction function
 code that does `kura_db:transaction(Repo, fun() -> kura_repo:insert(...) end)`
 continues to work transparently.
 """.
@@ -45,14 +46,17 @@ continues to work transparently.
 -type params() :: [term()].
 
 -doc """
-Driver-specific options. The pgo driver honors `decode_opts`. Other
-drivers may ignore unknown keys or define their own.
+Driver-specific options. The PostgreSQL drivers honor `decode_opts`,
+and the minato driver also passes `timeout`, which is a deadline after
+which the statement is cancelled on the server. Other drivers may
+ignore unknown keys or define their own.
 """.
 -type opts() :: map().
 
 -doc """
 Driver-specific result shape. Today this is whatever the underlying
-client returns (`#{rows := [...], num_rows := N, ...}` for pgo). A
+client returns (`#{rows := [...], num_rows := N, ...}` for both
+PostgreSQL drivers). A
 future kura layer may normalize this; the driver behaviour does not
 prescribe a shape.
 """.
@@ -84,11 +88,13 @@ its lifetime.
 -doc """
 Wrap `Fun` in a database transaction over a pool. Queries inside
 `Fun` route to the transaction's connection by whatever convention
-the driver uses (pgo: process dict).
+the driver uses (both PostgreSQL drivers: the process dictionary).
 
 `Opts` carries driver-specific options. The pgo driver honors
 `pool_options => [{timeout, infinity | non_neg_integer()}]` for
-long-running streams. Other drivers may ignore unknown keys.
+long-running streams; the minato driver takes no options here, because
+a statement's deadline is set per query rather than per transaction.
+Other drivers may ignore unknown keys.
 """.
 -callback transaction(PoolMod, Pool, Fun, Opts) -> term() when
     PoolMod :: module(),
