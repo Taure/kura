@@ -24,7 +24,7 @@ migration_stress_test_() ->
     end}.
 
 setup() ->
-    application:ensure_all_started(pgo),
+    application:ensure_all_started(minato),
     application:ensure_all_started(kura),
     kura_stress_repo:start(),
     kura_migrator:ensure_schema_migrations(kura_stress_repo),
@@ -33,12 +33,16 @@ setup() ->
 teardown(_) ->
     Pool = pool(),
     %% Clean up any test migration entries and tables
-    pgo:query(
+    kura_driver_minato:query(
+        kura_pool_minato,
+        Pool,
         <<"DELETE FROM schema_migrations WHERE version >= 99990000000000">>,
         [],
-        #{pool => Pool}
+        #{}
     ),
-    pgo:query(<<"DROP TABLE IF EXISTS mig_stress_test CASCADE">>, [], #{pool => Pool}),
+    kura_driver_minato:query(
+        kura_pool_minato, Pool, <<"DROP TABLE IF EXISTS mig_stress_test CASCADE">>, [], #{}
+    ),
     ok.
 
 %%----------------------------------------------------------------------
@@ -57,19 +61,23 @@ t_advisory_lock_serializes() ->
     N = 5,
     _Pids = [
         spawn_link(fun() ->
-            pgo:transaction(
+            kura_driver_minato:transaction(
+                kura_pool_minato,
+                pool(),
                 fun() ->
-                    pgo:query(
+                    kura_driver_minato:query(
+                        kura_pool_minato,
+                        pool(),
                         <<"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock">>,
                         [?LOCK_KEY],
-                        #{pool => pool()}
+                        #{}
                     ),
                     T1 = erlang:monotonic_time(microsecond),
                     timer:sleep(100),
                     T2 = erlang:monotonic_time(microsecond),
                     Self ! {lock_held, I, T1, T2}
                 end,
-                #{pool => pool()}
+                #{}
             )
         end)
      || I <- lists:seq(1, N)
@@ -99,52 +107,66 @@ t_concurrent_migrate_one_wins() ->
     Pool = pool(),
     Version = 99990000000001,
     %% Clean up from any previous run
-    pgo:query(
+    kura_driver_minato:query(
+        kura_pool_minato,
+        Pool,
         <<"DELETE FROM schema_migrations WHERE version = $1">>,
         [Version],
-        #{pool => Pool}
+        #{}
     ),
-    pgo:query(<<"DROP TABLE IF EXISTS mig_stress_test CASCADE">>, [], #{pool => Pool}),
+    kura_driver_minato:query(
+        kura_pool_minato, Pool, <<"DROP TABLE IF EXISTS mig_stress_test CASCADE">>, [], #{}
+    ),
     Self = self(),
     N = 5,
     %% Each process tries to "migrate" by acquiring the advisory lock and creating the table
     _Pids = [
         spawn_link(fun() ->
-            Result = pgo:transaction(
+            Result = kura_driver_minato:transaction(
+                kura_pool_minato,
+                Pool,
                 fun() ->
-                    pgo:query(
+                    kura_driver_minato:query(
+                        kura_pool_minato,
+                        Pool,
                         <<"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock">>,
                         [?LOCK_KEY],
-                        #{pool => Pool}
+                        #{}
                     ),
                     %% Check if already applied
                     case
-                        pgo:query(
+                        kura_driver_minato:query(
+                            kura_pool_minato,
+                            Pool,
                             <<"SELECT 1 FROM schema_migrations WHERE version = $1">>,
                             [Version],
-                            #{pool => Pool}
+                            #{}
                         )
                     of
                         #{rows := [_ | _]} ->
                             already_applied;
                         #{rows := []} ->
-                            pgo:query(
+                            kura_driver_minato:query(
+                                kura_pool_minato,
+                                Pool,
                                 <<
                                     "CREATE TABLE IF NOT EXISTS mig_stress_test ("
                                     "id BIGSERIAL PRIMARY KEY, val TEXT)"
                                 >>,
                                 [],
-                                #{pool => Pool}
+                                #{}
                             ),
-                            pgo:query(
+                            kura_driver_minato:query(
+                                kura_pool_minato,
+                                Pool,
                                 <<"INSERT INTO schema_migrations (version) VALUES ($1)">>,
                                 [Version],
-                                #{pool => Pool}
+                                #{}
                             ),
                             applied
                     end
                 end,
-                #{pool => Pool}
+                #{}
             ),
             Self ! {migrate_result, I, Result}
         end)
@@ -162,10 +184,12 @@ t_concurrent_migrate_one_wins() ->
     ?assertEqual(1, length(Applied)),
     ?assertEqual(N - 1, length(AlreadyApplied)),
     %% Verify single entry in schema_migrations
-    #{rows := Rows} = pgo:query(
+    #{rows := Rows} = kura_driver_minato:query(
+        kura_pool_minato,
+        Pool,
         <<"SELECT version FROM schema_migrations WHERE version = $1">>,
         [Version],
-        #{pool => Pool}
+        #{}
     ),
     ?assertEqual(1, length(Rows)).
 
@@ -173,32 +197,40 @@ t_migration_failure_releases_lock() ->
     Pool = pool(),
     %% A transaction that fails should release the advisory lock
     try
-        pgo:transaction(
+        kura_driver_minato:transaction(
+            kura_pool_minato,
+            Pool,
             fun() ->
-                pgo:query(
+                kura_driver_minato:query(
+                    kura_pool_minato,
+                    Pool,
                     <<"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock">>,
                     [?LOCK_KEY],
-                    #{pool => Pool}
+                    #{}
                 ),
                 error(simulated_migration_failure)
             end,
-            #{pool => Pool}
+            #{}
         )
     catch
         _:_ -> ok
     end,
     %% Another process should be able to acquire the lock immediately
     Start = erlang:monotonic_time(millisecond),
-    pgo:transaction(
+    kura_driver_minato:transaction(
+        kura_pool_minato,
+        Pool,
         fun() ->
-            pgo:query(
+            kura_driver_minato:query(
+                kura_pool_minato,
+                Pool,
                 <<"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock">>,
                 [?LOCK_KEY],
-                #{pool => Pool}
+                #{}
             ),
             ok
         end,
-        #{pool => Pool}
+        #{}
     ),
     Elapsed = erlang:monotonic_time(millisecond) - Start,
     ?assert(Elapsed < 1000).
@@ -207,81 +239,119 @@ t_rollback_correctness() ->
     Pool = pool(),
     Version = 99990000000002,
     %% Clean slate
-    pgo:query(<<"DELETE FROM schema_migrations WHERE version = $1">>, [Version], #{pool => Pool}),
-    pgo:query(<<"DROP TABLE IF EXISTS mig_stress_test CASCADE">>, [], #{pool => Pool}),
+    kura_driver_minato:query(
+        kura_pool_minato,
+        Pool,
+        <<"DELETE FROM schema_migrations WHERE version = $1">>,
+        [Version],
+        #{}
+    ),
+    kura_driver_minato:query(
+        kura_pool_minato, Pool, <<"DROP TABLE IF EXISTS mig_stress_test CASCADE">>, [], #{}
+    ),
     %% Migrate up: create table + record version
-    pgo:transaction(
+    kura_driver_minato:transaction(
+        kura_pool_minato,
+        Pool,
         fun() ->
-            pgo:query(
+            kura_driver_minato:query(
+                kura_pool_minato,
+                Pool,
                 <<"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock">>,
                 [?LOCK_KEY],
-                #{pool => Pool}
+                #{}
             ),
-            pgo:query(
+            kura_driver_minato:query(
+                kura_pool_minato,
+                Pool,
                 <<"CREATE TABLE mig_stress_test (id BIGSERIAL PRIMARY KEY, val TEXT)">>,
                 [],
-                #{pool => Pool}
+                #{}
             ),
-            pgo:query(
+            kura_driver_minato:query(
+                kura_pool_minato,
+                Pool,
                 <<"INSERT INTO schema_migrations (version) VALUES ($1)">>,
                 [Version],
-                #{pool => Pool}
+                #{}
             ),
             ok
         end,
-        #{pool => Pool}
+        #{}
     ),
     %% Insert data
-    pgo:query(<<"INSERT INTO mig_stress_test (val) VALUES ('hello')">>, [], #{pool => Pool}),
-    #{rows := [#{val := <<"hello">>}]} = pgo:query(
-        <<"SELECT val FROM mig_stress_test">>, [], #{pool => Pool}
+    kura_driver_minato:query(
+        kura_pool_minato, Pool, <<"INSERT INTO mig_stress_test (val) VALUES ('hello')">>, [], #{}
+    ),
+    #{rows := [#{val := <<"hello">>}]} = kura_driver_minato:query(
+        kura_pool_minato, Pool, <<"SELECT val FROM mig_stress_test">>, [], #{}
     ),
     %% Rollback: drop table + remove version
-    pgo:transaction(
+    kura_driver_minato:transaction(
+        kura_pool_minato,
+        Pool,
         fun() ->
-            pgo:query(
+            kura_driver_minato:query(
+                kura_pool_minato,
+                Pool,
                 <<"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock">>,
                 [?LOCK_KEY],
-                #{pool => Pool}
+                #{}
             ),
-            pgo:query(<<"DROP TABLE mig_stress_test">>, [], #{pool => Pool}),
-            pgo:query(
+            kura_driver_minato:query(
+                kura_pool_minato, Pool, <<"DROP TABLE mig_stress_test">>, [], #{}
+            ),
+            kura_driver_minato:query(
+                kura_pool_minato,
+                Pool,
                 <<"DELETE FROM schema_migrations WHERE version = $1">>,
                 [Version],
-                #{pool => Pool}
+                #{}
             ),
             ok
         end,
-        #{pool => Pool}
+        #{}
     ),
     %% Verify table is gone
-    case pgo:query(<<"SELECT 1 FROM mig_stress_test LIMIT 1">>, [], #{pool => Pool}) of
+    case
+        kura_driver_minato:query(
+            kura_pool_minato, Pool, <<"SELECT 1 FROM mig_stress_test LIMIT 1">>, [], #{}
+        )
+    of
         {error, _} -> ok
     end,
     %% Migrate up again - should succeed cleanly
-    pgo:transaction(
+    kura_driver_minato:transaction(
+        kura_pool_minato,
+        Pool,
         fun() ->
-            pgo:query(
+            kura_driver_minato:query(
+                kura_pool_minato,
+                Pool,
                 <<"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock">>,
                 [?LOCK_KEY],
-                #{pool => Pool}
+                #{}
             ),
-            pgo:query(
+            kura_driver_minato:query(
+                kura_pool_minato,
+                Pool,
                 <<"CREATE TABLE mig_stress_test (id BIGSERIAL PRIMARY KEY, val TEXT)">>,
                 [],
-                #{pool => Pool}
+                #{}
             ),
-            pgo:query(
+            kura_driver_minato:query(
+                kura_pool_minato,
+                Pool,
                 <<"INSERT INTO schema_migrations (version) VALUES ($1)">>,
                 [Version],
-                #{pool => Pool}
+                #{}
             ),
             ok
         end,
-        #{pool => Pool}
+        #{}
     ),
     %% Verify clean state (empty table)
-    #{rows := EmptyRows} = pgo:query(
-        <<"SELECT * FROM mig_stress_test">>, [], #{pool => Pool}
+    #{rows := EmptyRows} = kura_driver_minato:query(
+        kura_pool_minato, Pool, <<"SELECT * FROM mig_stress_test">>, [], #{}
     ),
     ?assertEqual(0, length(EmptyRows)).

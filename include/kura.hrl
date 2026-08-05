@@ -48,7 +48,8 @@
     ref :: #kura_ref{} | undefined,
     join_through :: binary() | module() | undefined,
     join_keys :: {atom() | [atom()], atom() | [atom()]} | undefined,
-    through :: [atom()] | undefined
+    through :: [atom()] | undefined,
+    on_delete :: kura_schema:on_delete() | undefined
 }).
 
 -record(kura_embed, {
@@ -83,8 +84,8 @@
     default :: term(),
     primary_key = false :: boolean(),
     references :: {binary(), atom()} | undefined,
-    on_delete :: cascade | restrict | set_null | no_action | undefined,
-    on_update :: cascade | restrict | set_null | no_action | undefined
+    on_delete :: kura_schema:on_delete() | undefined,
+    on_update :: kura_schema:on_delete() | undefined
 }).
 
 -endif.

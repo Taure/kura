@@ -97,7 +97,7 @@ checkin_double_is_idempotent_test() ->
     end.
 
 checkin_on_missing_pool_is_ok_test() ->
-    %% Mirrors kura_pool_pgo's permissive checkin so with_conn-style
+    %% Mirrors a real pool's permissive checkin so with_conn-style
     %% finalizers do not crash when a pool was already torn down.
     ?assertEqual(ok, kura_pool_ets:checkin(pool_gone, erlang:make_ref())).
 

@@ -54,6 +54,7 @@ fields() ->
     assoc_target/1,
     assoc_target_key/1,
     assoc_join_keys/1,
+    assoc_on_delete/1,
     embeds/1,
     embed/2,
     constraints/1,
@@ -67,6 +68,20 @@ fields() ->
     run_after_delete/2,
     has_after_hook/2
 ]).
+
+-export_type([on_delete/0]).
+
+-doc """
+Referential action for a foreign key when the referenced row is deleted.
+
+These four are the actions every dialect kura ships renders identically,
+so a schema that declares one is portable. `set_default` is deliberately
+absent: PostgreSQL fails the delete when the column default is not itself
+a valid parent key, SQLite only enforces it while `foreign_keys` is on,
+and MySQL's InnoDB rejects it at DDL time. A dialect-specific action must
+be introduced dialect-aware rather than added to this union.
+""".
+-type on_delete() :: cascade | restrict | set_null | no_action.
 
 -callback table() -> binary().
 -callback fields() -> [#kura_field{}].
@@ -272,6 +287,36 @@ assoc_join_keys(#kura_assoc{join_keys = {Owner, Related}}) ->
 
 as_col_list(C) when is_atom(C) -> [C];
 as_col_list(C) when is_list(C) -> C.
+
+-doc """
+Return the referential action a `belongs_to` asks for when its parent row
+is deleted, ready to be placed on the `#kura_column{}` that owns the key.
+
+`belongs_to` is the only association that owns a foreign-key column, so it
+is the only one that can carry the constraint. Declaring `on_delete` on any
+other association type raises `{on_delete_not_owned, Name, Type}` rather
+than being ignored - the clause would never reach the DDL, and a cascade
+rule that silently does not exist is worse than a build failure.
+
+An undeclared `on_delete` on a `belongs_to` lowers to `no_action`, which is
+what generated foreign keys have always emitted. Any other type returns
+`undefined`: it owns no column, so it contributes no clause.
+""".
+-spec assoc_on_delete(#kura_assoc{}) -> on_delete() | undefined.
+assoc_on_delete(#kura_assoc{type = belongs_to, on_delete = undefined}) ->
+    no_action;
+assoc_on_delete(#kura_assoc{type = belongs_to, on_delete = Action, name = Name}) ->
+    case Action of
+        cascade -> Action;
+        restrict -> Action;
+        set_null -> Action;
+        no_action -> Action;
+        _ -> error({invalid_on_delete, Name, Action})
+    end;
+assoc_on_delete(#kura_assoc{on_delete = undefined}) ->
+    undefined;
+assoc_on_delete(#kura_assoc{name = Name, type = Type}) ->
+    error({on_delete_not_owned, Name, Type}).
 
 -doc "Return all embeds defined on a schema module.".
 -spec embeds(module()) -> [#kura_embed{}].

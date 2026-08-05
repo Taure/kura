@@ -194,12 +194,13 @@ integration_test_() ->
     end}.
 
 setup() ->
-    application:ensure_all_started(pgo),
+    application:ensure_all_started(minato),
     application:ensure_all_started(kura),
     application:set_env(kura, encryption, #{
         active => 1, keys => [{1, base64:encode(crypto:strong_rand_bytes(32))}]
     }),
     kura_test_repo:start(),
+    ok = drop_tables(),
     {ok, _} = kura_test_repo:query(
         "CREATE TABLE users ("
         "  id BIGSERIAL PRIMARY KEY,"
@@ -318,6 +319,28 @@ setup() ->
     ),
     {ok, _} = kura_test_repo:query(MembershipsSQL, []),
     ok.
+
+drop_tables() ->
+    %% A run that is interrupted leaves its tables behind, and a setup that only
+    %% creates then fails on every run after it. Dropping first makes the setup
+    %% idempotent, which is what a fixture should be.
+    Tables = [
+        ~"audit_log",
+        ~"audited_items",
+        ~"secrets",
+        ~"hook_items",
+        ~"bookings",
+        ~"articles",
+        ~"participants",
+        ~"posts_simple",
+        ~"users"
+    ],
+    lists:foreach(
+        fun(Table) ->
+            kura_test_repo:query(<<"DROP TABLE IF EXISTS ", Table/binary, " CASCADE">>, [])
+        end,
+        Tables
+    ).
 
 teardown(_) ->
     kura_test_repo:query("DROP TABLE IF EXISTS memberships CASCADE", []),

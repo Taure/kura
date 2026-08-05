@@ -681,18 +681,41 @@ partition_migrations_split_test() ->
 %%----------------------------------------------------------------------
 
 build_rollback_pairs_empty_test() ->
-    ?assertEqual([], kura_migrator:build_rollback_pairs([], #{})).
+    ?assertEqual({ok, []}, kura_migrator:build_rollback_pairs([], [])).
 
 build_rollback_pairs_found_test() ->
-    Map = #{1 => m1, 2 => m2, 3 => m3},
-    ?assertEqual([{2, m2}, {1, m1}], kura_migrator:build_rollback_pairs([2, 1], Map)).
+    Ordered = [{1, m1}, {2, m2}, {3, m3}],
+    ?assertEqual(
+        {ok, [{2, m2}, {1, m1}]},
+        kura_migrator:build_rollback_pairs([2, 1], Ordered)
+    ).
 
-build_rollback_pairs_missing_skipped_test() ->
-    Map = #{1 => m1, 3 => m3},
-    ?assertEqual([{3, m3}, {1, m1}], kura_migrator:build_rollback_pairs([3, 2, 1], Map)).
+build_rollback_pairs_runs_in_reverse_apply_order_test() ->
+    %% Apply order is the discovered order, not the version order: with
+    %% multiple applications a dependency's migrations come first even
+    %% when their versions are higher. Rolling back must reverse that
+    %% order, not sort by version.
+    Ordered = [{1, m1}, {3, m3}, {2, m2}],
+    ?assertEqual(
+        {ok, [{2, m2}, {3, m3}]},
+        kura_migrator:build_rollback_pairs([3, 2], Ordered)
+    ).
+
+build_rollback_pairs_missing_is_an_error_test() ->
+    %% Version 2 is applied but no module claims it. Skipping it made
+    %% `rollback(Repo, 3)` roll back two migrations and report success,
+    %% leaving the row behind and running m1's down/0 across the gap.
+    Ordered = [{1, m1}, {3, m3}],
+    ?assertEqual(
+        {error, {unknown_applied_versions, [2]}},
+        kura_migrator:build_rollback_pairs([3, 2, 1], Ordered)
+    ).
 
 build_rollback_pairs_all_missing_test() ->
-    ?assertEqual([], kura_migrator:build_rollback_pairs([10, 20], #{1 => m1})).
+    ?assertEqual(
+        {error, {unknown_applied_versions, [10, 20]}},
+        kura_migrator:build_rollback_pairs([20, 10], [{1, m1}])
+    ).
 
 %%----------------------------------------------------------------------
 %% narrow_migration_result
