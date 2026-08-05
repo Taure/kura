@@ -504,8 +504,8 @@ load_app(Name, Modules, Deps) ->
 repo_config() ->
     #{
         pool => ?LIVE_POOL,
-        pool_module => kura_pool_pgo,
-        driver_module => kura_driver_pgo,
+        pool_module => kura_pool_minato,
+        driver_module => kura_driver_minato,
         database => <<"kura_test">>,
         hostname => <<"localhost">>,
         port => 5555,
