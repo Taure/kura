@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:16
+    command: ["postgres", "-c", "max_connections=400"]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: root
