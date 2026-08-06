@@ -72,6 +72,17 @@ teardown(_) ->
 docker_teardown(_) ->
     ensure_pg_running(),
     wait_for_pg(60),
+    ok = discard_stale_pools(),
+    ok.
+
+%% Stopping the server killed every connection in the node, not only this
+%% module's. A pool left holding them hands each one out once before it
+%% replaces it, so a module whose setup runs a single query draws a dead
+%% connection and aborts - which is why the failure landed on a different
+%% module each run. Dropping the pools here makes the next start build them.
+discard_stale_pools() ->
+    _ = kura_pool_minato:stop_pool(kura_test_repo),
+    _ = kura_pool_minato:stop_pool(kura_stress_repo),
     ok.
 
 %%----------------------------------------------------------------------
