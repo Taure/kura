@@ -510,14 +510,18 @@ stream_with_batch_size_1(_Config) ->
         end,
         #{batch_size => 1}
     ),
-    BatchSizes = collect_batches([]),
+    BatchSizes = collect_batches([], 200),
     ?assert(length(BatchSizes) >= 2),
     ?assertEqual(2, lists:sum(BatchSizes)).
 
-collect_batches(Acc) ->
+% Arity 2, not 1: a `name/1` in a CT suite that is not in all/0 is an
+% unreachable test case as far as ELP can tell (W0008), and this is a
+% helper. Taking the drain window explicitly says so and puts the number
+% at the call site where it can be read.
+collect_batches(Acc, DrainMs) ->
     receive
-        {c2_batch, N} -> collect_batches([N | Acc])
-    after 200 ->
+        {c2_batch, N} -> collect_batches([N | Acc], DrainMs)
+    after DrainMs ->
         lists:reverse(Acc)
     end.
 
