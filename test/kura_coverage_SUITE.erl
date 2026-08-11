@@ -493,10 +493,6 @@ insert_with_opts_on_conflict_columns(_Config) ->
     {ok, _} = kura_test_repo:insert(CS4, #{on_conflict => {{columns, [name, email]}, nothing}}),
     kura_test_repo:query("DROP INDEX IF EXISTS users_name_email_unique", []).
 
-insert_with_opts_returning_rows(_Config) ->
-    %% Insert with on_conflict returning empty rows (noop branch, line 175-176)
-    ok.
-
 insert_all_with_returning(_Config) ->
     Entries = [
         #{name => <<"IAR_1">>, email => <<"iar1@test.com">>},
@@ -682,15 +678,19 @@ stream_custom_batch_size(_Config) ->
         #{batch_size => 2}
     ),
 
-    BatchSizes = collect_batches([]),
+    BatchSizes = collect_batches([], 100),
     TotalRows = lists:sum(BatchSizes),
     ?assertEqual(5, TotalRows),
     ?assert(length(BatchSizes) >= 3).
 
-collect_batches(Acc) ->
+% Arity 2, not 1: a `name/1` in a CT suite that is not in all/0 is an
+% unreachable test case as far as ELP can tell (W0008), and this is a
+% helper. Taking the drain window explicitly says so and puts the number
+% at the call site where it can be read.
+collect_batches(Acc, DrainMs) ->
     receive
-        {batch, N} -> collect_batches([N | Acc])
-    after 100 ->
+        {batch, N} -> collect_batches([N | Acc], DrainMs)
+    after DrainMs ->
         lists:reverse(Acc)
     end.
 
