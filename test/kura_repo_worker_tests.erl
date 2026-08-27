@@ -236,3 +236,12 @@ read_only_repo_rejects_soft_delete_test() ->
         CS = kura_changeset:cast(kura_test_soft_delete_schema, #{}, #{name => <<"x">>}, [name]),
         ?assertEqual({error, read_only}, kura_repo_worker:soft_delete(ro_repo, CS))
     end).
+
+quote_ident_bin_doubles_embedded_quotes_test() ->
+    ?assertEqual(
+        <<"\"users\"\" -- \"">>,
+        kura_repo_worker:quote_ident_bin(<<"users\" -- ">>)
+    ).
+
+quote_ident_bin_wraps_plain_name_test() ->
+    ?assertEqual(<<"\"users\"">>, kura_repo_worker:quote_ident_bin(<<"users">>)).

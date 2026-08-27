@@ -15,7 +15,8 @@
     group_by_tuple/3,
     reverse_maps/2,
     join_bins/2,
-    group_m2m_join/5
+    group_m2m_join/5,
+    quote_ident_bin/1
 ]).
 -endif.
 
