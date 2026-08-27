@@ -405,6 +405,15 @@ dump_jsonb_scalar_roots_test() ->
 dump_enum_test() ->
     ?assertEqual({ok, <<"active">>}, kura_types:dump({enum, [active, inactive]}, active)).
 
+dump_enum_binary_test() ->
+    ?assertEqual({ok, <<"active">>}, kura_types:dump({enum, [active, inactive]}, <<"active">>)).
+
+dump_enum_unknown_binary_test() ->
+    ?assertEqual(
+        {error, <<"is not a valid enum value">>},
+        kura_types:dump({enum, [active, inactive]}, <<"banned">>)
+    ).
+
 dump_enum_undefined_test() ->
     ?assertEqual({ok, null}, kura_types:dump({enum, [active, inactive]}, undefined)).
 

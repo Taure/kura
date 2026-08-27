@@ -345,6 +345,11 @@ dump(jsonb, V) when is_number(V); is_boolean(V); is_binary(V) ->
     json_encode(V);
 dump({enum, _}, V) when is_atom(V) ->
     {ok, atom_to_binary(V, utf8)};
+dump({enum, Values}, V) when is_binary(V) ->
+    case lists:any(fun(A) -> atom_to_binary(A, utf8) =:= V end, Values) of
+        true -> {ok, V};
+        false -> {error, ~"is not a valid enum value"}
+    end;
 dump({array, Inner}, V) when is_list(V) ->
     dump_array(Inner, V, []);
 dump({embed, embeds_one, Mod}, V) when is_map(V) ->
@@ -352,8 +357,8 @@ dump({embed, embeds_one, Mod}, V) when is_map(V) ->
 dump({embed, embeds_many, Mod}, V) when is_list(V) ->
     json_encode([dump_embed_to_term(Mod, Item) || Item <- V]);
 dump({encrypted, Inner}, V) ->
-    %% Raise (never return {error}) so the fail-open dump seam can't
-    %% substitute plaintext for an encrypted field.
+    %% Raise (never return {error}) so no caller can substitute plaintext
+    %% for an encrypted field by treating a dump failure as recoverable.
     encryptable_inner(Inner) orelse erlang:error({kura_crypto, {not_encryptable, Inner}}),
     {ok, Wire} = dump(Inner, V),
     {ok, kura_crypto:encrypt(encode_inner(Inner, Wire))};

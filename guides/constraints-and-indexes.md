@@ -360,6 +360,10 @@ my_repo:insert(CS, #{on_conflict => {{constraint, ~"users_email_index"}, nothing
 %% Multi-column conflict target (matches a multi-column unique INDEX)
 my_repo:insert(CS, #{on_conflict =>
     {{columns, [world_id, zone_x, zone_y]}, {replace, [updated_at, payload]}}}).
+
+%% Partial unique index: pass the index predicate so PostgreSQL can infer it
+my_repo:insert(CS, #{on_conflict =>
+    {{columns, [name], #{where => ~"scope IS NULL"}}, {replace, [value]}}}).
 ```
 
 Use `{columns, [...]}` when your unique index spans multiple columns. `kura_migration`'s
@@ -367,6 +371,14 @@ Use `{columns, [...]}` when your unique index spans multiple columns. `kura_migr
 `ON CONFLICT (cols)` is the form PostgreSQL accepts — `{constraint, Name}` only
 works for indexes promoted to constraints (e.g. via `ADD CONSTRAINT ... UNIQUE USING INDEX`).
 Column order in the target must match the index definition.
+
+A table that uses *partial* unique indexes (e.g. one index for globally scoped rows
+and another for per-owner rows) cannot be targeted by `{constraint, Name}` - PostgreSQL
+will not accept a partial index there. Use the three-element `{columns, Cols, Opts}`
+target and give `where` the same predicate as the index; the emitted
+`ON CONFLICT (cols) WHERE pred` lets PostgreSQL infer the partial index, which makes a
+real single-statement upsert expressible instead of a fetch-then-branch with a TOCTOU
+window.
 
 ## Quick Reference
 

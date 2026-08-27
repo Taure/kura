@@ -155,3 +155,30 @@ case kura_repo_worker:insert(my_repo, CS) of
         Errors
 end.
 ```
+
+### Dump Failures
+
+`put_change/3` writes a value into the changeset without casting it, so a value the
+field's type cannot serialise only surfaces on the way to the driver. Writes fail
+closed there: the field's dump error is added to the changeset and the statement is
+never sent.
+
+```erlang
+CS1 = kura_changeset:put_change(CS, metadata, {not, json}),
+{error, #kura_changeset{errors = [{metadata, ~"cannot dump jsonb"}]}} =
+    my_repo:insert(CS1).
+```
+
+The bulk paths have no changeset to carry the error, so they return it directly:
+
+```erlang
+{error, {dump_failed, metadata, ~"cannot dump jsonb"}} =
+    my_repo:insert_all(my_schema, Entries).
+
+{error, {dump_failed, metadata, ~"cannot dump jsonb"}} =
+    my_repo:update_all(Query, #{metadata => {not, json}}).
+```
+
+`update_all/2` dumps its SET map through the schema's field types whenever the query's
+source is a schema module, so a `jsonb` map or any other non-primitive reaches the
+driver already serialised.

@@ -557,6 +557,10 @@ compile_on_conflict({{columns, Columns}, nothing}, _Fields, _Data, _Counter) whe
     is_list(Columns)
 ->
     {[~" ON CONFLICT (", columns_target(Columns), ~") DO NOTHING"], []};
+compile_on_conflict({{columns, Columns, Opts}, nothing}, _Fields, _Data, _Counter) when
+    is_list(Columns), is_map(Opts)
+->
+    {[~" ON CONFLICT (", columns_target(Columns), ~")", index_predicate(Opts), ~" DO NOTHING"], []};
 compile_on_conflict({{constraint, Name}, nothing}, _Fields, _Data, _Counter) ->
     {[~" ON CONFLICT ON CONSTRAINT ", quote_ident(Name), ~" DO NOTHING"], []};
 compile_on_conflict({Field, replace_all}, Fields, Data, Counter) when is_atom(Field) ->
@@ -567,6 +571,11 @@ compile_on_conflict({{columns, Columns}, replace_all}, Fields, Data, Counter) wh
 ->
     UpdateFields = [F || F <- Fields, not lists:member(F, Columns)],
     compile_on_conflict({{columns, Columns}, {replace, UpdateFields}}, Fields, Data, Counter);
+compile_on_conflict({{columns, Columns, Opts}, replace_all}, Fields, Data, Counter) when
+    is_list(Columns), is_map(Opts)
+->
+    UpdateFields = [F || F <- Fields, not lists:member(F, Columns)],
+    compile_on_conflict({{columns, Columns, Opts}, {replace, UpdateFields}}, Fields, Data, Counter);
 compile_on_conflict({{constraint, Name}, replace_all}, Fields, Data, Counter) ->
     compile_on_conflict_update(
         [~" ON CONFLICT ON CONSTRAINT ", quote_ident(Name)], Fields, Data, Counter
@@ -587,6 +596,17 @@ compile_on_conflict({{columns, Columns}, {replace, UpdateFields}}, _Fields, Data
         Data,
         Counter
     );
+compile_on_conflict(
+    {{columns, Columns, Opts}, {replace, UpdateFields}}, _Fields, Data, Counter
+) when
+    is_list(Columns), is_map(Opts)
+->
+    compile_on_conflict_update(
+        [~" ON CONFLICT (", columns_target(Columns), ~")", index_predicate(Opts)],
+        UpdateFields,
+        Data,
+        Counter
+    );
 compile_on_conflict({{constraint, Name}, {replace, UpdateFields}}, _Fields, Data, Counter) ->
     compile_on_conflict_update(
         [~" ON CONFLICT ON CONSTRAINT ", quote_ident(Name)],
@@ -597,6 +617,11 @@ compile_on_conflict({{constraint, Name}, {replace, UpdateFields}}, _Fields, Data
 
 columns_target(Columns) ->
     join_comma([quote_ident(atom_to_binary(C, utf8)) || C <- Columns]).
+
+index_predicate(#{where := Expr}) when is_binary(Expr) ->
+    [~" WHERE ", Expr];
+index_predicate(#{}) ->
+    [].
 
 compile_on_conflict_update(ConflictTarget, UpdateFields, Data, Counter) ->
     {Sets, Params, _} = build_set_parts(UpdateFields, Data, Counter),
@@ -615,7 +640,8 @@ resolve_table(Mod) when is_atom(Mod) ->
     end.
 
 quote_ident(Name) when is_binary(Name) ->
-    <<$", Name/binary, $">>.
+    Escaped = binary:replace(Name, ~"\"", ~"\"\"", [global]),
+    <<$", Escaped/binary, $">>.
 
 join_comma(Parts) ->
     lists:join(~", ", Parts).
@@ -823,7 +849,7 @@ compile_ctes_loop([], Counter) ->
     {[], [], Counter};
 compile_ctes_loop([{Name, CteQuery} | Rest], Counter) ->
     {CteSQL, CteParams, C2} = to_sql_from(CteQuery, Counter),
-    Part = [Name, ~" AS (", CteSQL, ~")"],
+    Part = [quote_ident(Name), ~" AS (", CteSQL, ~")"],
     {Parts, MoreParams, C3} = compile_ctes_loop(Rest, C2),
     {[Part | Parts], CteParams ++ MoreParams, C3}.
 

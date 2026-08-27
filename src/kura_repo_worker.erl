@@ -317,17 +317,22 @@ do_insert(_RepoMod, CS = #kura_changeset{valid = false}, _Opts) ->
 do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opts) ->
     Changes0 = maybe_generate_pk(RepoMod, SchemaMod, Changes),
     Changes1 = maybe_add_timestamps(SchemaMod, Changes0, insert),
-    DumpedChanges = dump_changes(SchemaMod, Changes1),
-    Fields = maps:keys(DumpedChanges),
-    {SQL, Params} = kura_query_compiler:insert(RepoMod, SchemaMod, Fields, DumpedChanges, Opts),
-
-    case kura_db:query(RepoMod, SQL, Params) of
-        #{command := insert, rows := [Row]} ->
-            {ok, kura_db:load_row(SchemaMod, Row)};
-        #{command := insert, rows := []} ->
-            {ok, kura_changeset:apply_changes(CS)};
-        {error, PgError} ->
-            {error, handle_pg_error(CS#kura_changeset{action = insert}, PgError)}
+    case dump_changes(SchemaMod, Changes1) of
+        {error, DumpErr} ->
+            dump_error_changeset(CS, insert, DumpErr);
+        {ok, DumpedChanges} ->
+            Fields = maps:keys(DumpedChanges),
+            {SQL, Params} = kura_query_compiler:insert(
+                RepoMod, SchemaMod, Fields, DumpedChanges, Opts
+            ),
+            case kura_db:query(RepoMod, SQL, Params) of
+                #{command := insert, rows := [Row]} ->
+                    {ok, kura_db:load_row(SchemaMod, Row)};
+                #{command := insert, rows := []} ->
+                    {ok, kura_changeset:apply_changes(CS)};
+                {error, PgError} ->
+                    {error, handle_pg_error(CS#kura_changeset{action = insert}, PgError)}
+            end
     end.
 
 -doc "Update a record from a changeset. No-op if there are no changes.".
@@ -395,11 +400,16 @@ update_all(RepoMod, Query, Updates) ->
 
 do_update_all(RepoMod, Query, Updates) ->
     Q1 = maybe_apply_soft_delete(maybe_apply_tenant_query(Query)),
-    {SQL, Params} = kura_query_compiler:update_all(RepoMod, Q1, Updates),
+    case dump_set_map(Q1#kura_query.from, Updates) of
+        {error, _} = DumpErr ->
+            DumpErr;
+        {ok, Dumped} ->
+            {SQL, Params} = kura_query_compiler:update_all(RepoMod, Q1, Dumped),
 
-    case kura_db:query(RepoMod, SQL, Params) of
-        #{command := update, num_rows := Count} -> {ok, Count};
-        {error, _} = Err -> Err
+            case kura_db:query(RepoMod, SQL, Params) of
+                #{command := update, num_rows := Count} -> {ok, Count};
+                {error, _} = Err -> Err
+            end
     end.
 
 -doc "Bulk delete all rows matching the query, returning the count of deleted rows.".
@@ -422,22 +432,18 @@ insert_all(RepoMod, SchemaMod, Entries) ->
     guard_write(RepoMod, fun() -> do_insert_all(RepoMod, SchemaMod, Entries) end).
 
 do_insert_all(RepoMod, SchemaMod, Entries) ->
-    NonVirtual = kura_schema:non_virtual_fields(SchemaMod),
-    Rows = [
-        begin
-            WithTS = maybe_add_timestamps(SchemaMod, Entry, insert),
-            Filtered = maps:with(NonVirtual, WithTS),
-            dump_changes(SchemaMod, Filtered)
-        end
-     || Entry <- Entries
-    ],
-    [First | _] = Rows,
-    Fields = maps:keys(First),
-    {SQL, Params} = kura_query_compiler:insert_all(RepoMod, SchemaMod, Fields, Rows),
+    case dump_entries(SchemaMod, Entries) of
+        {error, _} = Err ->
+            Err;
+        {ok, Rows} ->
+            [First | _] = Rows,
+            Fields = maps:keys(First),
+            {SQL, Params} = kura_query_compiler:insert_all(RepoMod, SchemaMod, Fields, Rows),
 
-    case kura_db:query(RepoMod, SQL, Params) of
-        #{command := insert, num_rows := Count} -> {ok, Count};
-        {error, _} = Err -> Err
+            case kura_db:query(RepoMod, SQL, Params) of
+                #{command := insert, num_rows := Count} -> {ok, Count};
+                {error, _} = Err -> Err
+            end
     end.
 
 -doc "Bulk insert with options. `#{returning => true | [atom()]}` returns inserted rows.".
@@ -447,15 +453,12 @@ insert_all(RepoMod, SchemaMod, Entries, Opts) ->
     guard_write(RepoMod, fun() -> do_insert_all(RepoMod, SchemaMod, Entries, Opts) end).
 
 do_insert_all(RepoMod, SchemaMod, Entries, Opts) ->
-    NonVirtual = kura_schema:non_virtual_fields(SchemaMod),
-    Rows = [
-        begin
-            WithTS = maybe_add_timestamps(SchemaMod, Entry, insert),
-            Filtered = maps:with(NonVirtual, WithTS),
-            dump_changes(SchemaMod, Filtered)
-        end
-     || Entry <- Entries
-    ],
+    case dump_entries(SchemaMod, Entries) of
+        {error, _} = DumpErr -> DumpErr;
+        {ok, Rows} -> do_insert_all_rows(RepoMod, SchemaMod, Rows, Opts)
+    end.
+
+do_insert_all_rows(RepoMod, SchemaMod, Rows, Opts) ->
     [First | _] = Rows,
     Fields = maps:keys(First),
     {SQL, Params} = kura_query_compiler:insert_all(RepoMod, SchemaMod, Fields, Rows, Opts),
@@ -564,15 +567,21 @@ insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}) ->
             Changes = maybe_apply_tenant_changes(CS#kura_changeset.changes),
             Changes0 = maybe_generate_pk(RepoMod, SchemaMod, Changes),
             Changes1 = maybe_add_timestamps(SchemaMod, Changes0, insert),
-            DumpedChanges = dump_changes(SchemaMod, Changes1),
-            Fields = maps:keys(DumpedChanges),
-            {SQL, Params} = kura_query_compiler:insert(RepoMod, SchemaMod, Fields, DumpedChanges),
-            case kura_db:query(RepoMod, SQL, Params) of
-                #{command := insert, rows := [Row]} ->
-                    Row1 = kura_db:load_row(SchemaMod, Row),
-                    kura_schema:run_after_insert(SchemaMod, Row1);
-                {error, PgError} ->
-                    {error, handle_pg_error(CS#kura_changeset{action = insert}, PgError)}
+            case dump_changes(SchemaMod, Changes1) of
+                {error, DumpErr} ->
+                    dump_error_changeset(CS, insert, DumpErr);
+                {ok, DumpedChanges} ->
+                    Fields = maps:keys(DumpedChanges),
+                    {SQL, Params} = kura_query_compiler:insert(
+                        RepoMod, SchemaMod, Fields, DumpedChanges
+                    ),
+                    case kura_db:query(RepoMod, SQL, Params) of
+                        #{command := insert, rows := [Row]} ->
+                            Row1 = kura_db:load_row(SchemaMod, Row),
+                            kura_schema:run_after_insert(SchemaMod, Row1);
+                        {error, PgError} ->
+                            {error, handle_pg_error(CS#kura_changeset{action = insert}, PgError)}
+                    end
             end
     end.
 
@@ -589,15 +598,21 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
                 _ ->
                     KeyClauses = key_pairs(SchemaMod, Data),
                     Changes1 = maybe_add_timestamps(SchemaMod, Changes, update),
-                    DumpedChanges = dump_changes(SchemaMod, Changes1),
-                    Fields = maps:keys(DumpedChanges),
-                    case
-                        do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, KeyClauses)
-                    of
-                        {ok, Row} ->
-                            kura_schema:run_after_update(SchemaMod, Row);
-                        {error, _} = Err ->
-                            Err
+                    case dump_changes(SchemaMod, Changes1) of
+                        {error, DumpErr} ->
+                            dump_error_changeset(CS, update, DumpErr);
+                        {ok, DumpedChanges} ->
+                            Fields = maps:keys(DumpedChanges),
+                            case
+                                do_update_query(
+                                    RepoMod, CS, SchemaMod, Fields, DumpedChanges, KeyClauses
+                                )
+                            of
+                                {ok, Row} ->
+                                    kura_schema:run_after_update(SchemaMod, Row);
+                                {error, _} = Err ->
+                                    Err
+                            end
                     end
             end
     end.
@@ -701,7 +716,8 @@ resolve_table_name(Mod) when is_atom(Mod) ->
     end.
 
 quote_ident_bin(Name) when is_binary(Name) ->
-    <<$", Name/binary, $">>.
+    Escaped = binary:replace(Name, ~"\"", ~"\"\"", [global]),
+    <<$", Escaped/binary, $">>.
 
 -spec apply_clauses(#kura_query{}, [{atom(), term()}]) -> #kura_query{}.
 apply_clauses(Q, []) ->
@@ -858,26 +874,73 @@ delete_record(RepoMod, SchemaMod, Data) ->
             end
     end.
 
+-spec dump_set_map(atom() | module() | undefined, map()) ->
+    {ok, map()} | {error, {dump_failed, atom(), binary()}}.
+dump_set_map(From, Updates) when is_atom(From), From =/= undefined ->
+    case is_schema_module(From) of
+        true -> dump_set_fields(maps:to_list(Updates), kura_schema:field_types(From), #{});
+        false -> {ok, Updates}
+    end;
+dump_set_map(_From, Updates) ->
+    {ok, Updates}.
+
+dump_set_fields([], _Types, Acc) ->
+    {ok, Acc};
+dump_set_fields([{K, V} | Rest], Types, Acc) ->
+    case Types of
+        #{K := Type} ->
+            case kura_types:dump(Type, V) of
+                {ok, Dumped} -> dump_set_fields(Rest, Types, Acc#{K => Dumped});
+                {error, Msg} -> {error, {dump_failed, K, Msg}}
+            end;
+        #{} ->
+            dump_set_fields(Rest, Types, Acc#{K => V})
+    end.
+
+is_schema_module(Mod) ->
+    case code:ensure_loaded(Mod) of
+        {module, Mod} -> erlang:function_exported(Mod, table, 0);
+        _ -> false
+    end.
+
+-spec dump_entries(module(), [map()]) -> {ok, [map()]} | {error, {dump_failed, atom(), binary()}}.
+dump_entries(SchemaMod, Entries) ->
+    NonVirtual = kura_schema:non_virtual_fields(SchemaMod),
+    dump_entries(SchemaMod, NonVirtual, Entries, []).
+
+dump_entries(_SchemaMod, _NonVirtual, [], Acc) ->
+    {ok, lists:reverse(Acc)};
+dump_entries(SchemaMod, NonVirtual, [Entry | Rest], Acc) ->
+    WithTS = maybe_add_timestamps(SchemaMod, Entry, insert),
+    Filtered = maps:with(NonVirtual, WithTS),
+    case dump_changes(SchemaMod, Filtered) of
+        {ok, Row} -> dump_entries(SchemaMod, NonVirtual, Rest, [Row | Acc]);
+        {error, {Field, Msg}} -> {error, {dump_failed, Field, Msg}}
+    end.
+
+-spec dump_changes(module(), map()) -> {ok, map()} | {error, {atom(), binary()}}.
 dump_changes(SchemaMod, Changes) ->
     Types = kura_schema:field_types(SchemaMod),
     NonVirtual = kura_schema:non_virtual_fields(SchemaMod),
-    dump_change_fields(maps:to_list(Changes), Types, NonVirtual).
+    dump_change_fields(maps:to_list(Changes), Types, NonVirtual, #{}).
 
-dump_change_fields([], _Types, _NonVirtual) ->
-    #{};
-dump_change_fields([{K, V} | Rest], Types, NonVirtual) ->
-    Acc = dump_change_fields(Rest, Types, NonVirtual),
+dump_change_fields([], _Types, _NonVirtual, Acc) ->
+    {ok, Acc};
+dump_change_fields([{K, V} | Rest], Types, NonVirtual, Acc) ->
     case {lists:member(K, NonVirtual), Types} of
         {false, _} ->
-            Acc;
+            dump_change_fields(Rest, Types, NonVirtual, Acc);
         {true, #{K := Type}} ->
             case kura_types:dump(Type, V) of
-                {ok, Dumped} -> Acc#{K => Dumped};
-                {error, _} -> Acc#{K => V}
+                {ok, Dumped} -> dump_change_fields(Rest, Types, NonVirtual, Acc#{K => Dumped});
+                {error, Msg} -> {error, {K, Msg}}
             end;
         {true, #{}} ->
-            Acc#{K => V}
+            dump_change_fields(Rest, Types, NonVirtual, Acc#{K => V})
     end.
+
+dump_error_changeset(CS, Action, {Field, Msg}) ->
+    {error, kura_changeset:add_error(CS#kura_changeset{action = Action}, Field, Msg)}.
 
 maybe_add_timestamps(SchemaMod, Changes, Action) ->
     Types = kura_schema:field_types(SchemaMod),
