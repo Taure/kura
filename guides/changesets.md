@@ -188,10 +188,15 @@ the form `cast/2` accepts: `~"admin"` for an `{enum, _}` field, `~"2026-01-01"` 
 date. A dump is attempted first and the cast only runs if it fails, so the happy path
 costs nothing.
 
-A binary written to a `jsonb` field is treated as an already-serialised document when it
-parses as JSON, and as a JSON string scalar when it does not. That mirrors `cast/2`,
-which decodes a jsonb binary, so both write paths agree on what a binary means. It also
-means `~"true"`, `~"123"` and `~"null"` are stored as a JSON boolean, number and null
-rather than as strings - pass `~"\"123\""` to store the string. One divergence worth
-knowing: the atom `null` writes SQL NULL, while the binary `~"null"` writes a jsonb
-null, and `col IS NULL` and `jsonb_typeof(col) = 'null'` tell those apart.
+A binary written to a `jsonb` field is treated as an already-serialised document only
+when it parses as a JSON **object or array**; anything else is stored as a JSON string.
+That keeps both directions honest: a pre-encoded document survives the bulk paths, and a
+value that came back from `load/2` - which decodes a stored JSON string into a bare
+binary - re-encodes to the string it was, rather than turning `"123"` into the number
+`123` on the next read-modify-write. To store a scalar, pass the Erlang term: `123`, or
+`true`, not their text.
+
+One asymmetry to know about: a `jsonb` column holding JSON `null` loads as the atom
+`null`, and writing that back stores SQL NULL rather than JSON null. `col IS NULL` and
+`jsonb_typeof(col) = 'null'` distinguish the two, so read a nullable jsonb column with
+that in mind.

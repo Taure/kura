@@ -50,10 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `kura_types:dump/2` encoded every binary as a JSON string scalar, so an
   already-serialised document was stored as a quoted string: `->`, `->>`
   and `@>` against it all returned NULL, and a predicate shaped
-  `WHERE NOT (policy @> '...')` failed open. A binary that parses as JSON
-  is now stored as the document it is; one that does not is still encoded
-  as a string scalar, which keeps the `cast/2` round trip. This affected
-  `insert` and `update` as well, not only the bulk paths.
+  `WHERE NOT (policy @> '...')` failed open. A binary that parses as a JSON
+  object or array is now stored as the document it is; anything else is
+  still encoded as a string, which keeps the `load/2` round trip intact for
+  stored JSON string scalars. This affected `insert` and `update` as well,
+  not only the bulk paths.
 - The atom `null` dumps to SQL NULL for every type, matching `undefined`.
   It previously reached the driver raw through the fall-open seam, which
   also meant `{enum, _}` stored the literal string `"null"`.
@@ -102,7 +103,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The cast only runs after a dump attempt fails, so the happy path is
   unchanged. `{encrypted, _}` fields are the exception: they raise on a bad
   value rather than casting, so that a crypto failure can never be treated
-  as recoverable.
+  as recoverable. A type module that does not load raises too - the
+  fail-closed contract covers invalid data, not a broken deployment.
 - `on_conflict` accepts `{{columns, Cols, #{where => Predicate}}, Action}`,
   emitting `ON CONFLICT (cols) WHERE predicate`. Tables using partial
   unique indexes can now express a single-statement upsert;

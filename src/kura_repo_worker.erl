@@ -48,7 +48,14 @@ kura_repo_worker:start(MyRepo),
 ]).
 
 -ifdef(TEST).
--export([generate_uuid/1, uuid_version/1, key_clauses/2, key_conds/2, quote_ident_bin/1]).
+-export([
+    generate_uuid/1,
+    uuid_version/1,
+    key_clauses/2,
+    key_conds/2,
+    quote_ident_bin/1,
+    dump_field/2
+]).
 -endif.
 
 -eqwalizer({nowarn_function, do_insert/2}).
@@ -432,19 +439,7 @@ insert_all(RepoMod, SchemaMod, Entries) ->
     guard_write(RepoMod, fun() -> do_insert_all(RepoMod, SchemaMod, Entries) end).
 
 do_insert_all(RepoMod, SchemaMod, Entries) ->
-    case dump_entries(SchemaMod, Entries) of
-        {error, _} = Err ->
-            Err;
-        {ok, Rows} ->
-            [First | _] = Rows,
-            Fields = maps:keys(First),
-            {SQL, Params} = kura_query_compiler:insert_all(RepoMod, SchemaMod, Fields, Rows),
-
-            case kura_db:query(RepoMod, SQL, Params) of
-                #{command := insert, num_rows := Count} -> {ok, Count};
-                {error, _} = Err -> Err
-            end
-    end.
+    do_insert_all(RepoMod, SchemaMod, Entries, #{}).
 
 -doc "Bulk insert with options. `#{returning => true | [atom()]}` returns inserted rows.".
 -spec insert_all(module(), module(), [map()], map()) ->
@@ -917,16 +912,20 @@ dump_field(Type, V) ->
         {ok, Dumped} ->
             {ok, Dumped};
         {error, Msg} ->
-            %% cast/2 is not total - it reaches list_to_binary/1 and the
-            %% datetime parsers unguarded, so a value dump/2 rejects cleanly
-            %% can make cast/2 raise. Catching badarg keeps the write fail
-            %% closed. The catch is deliberately narrow: an {encrypted, _}
-            %% failure raises and must stay unmasked.
+            %% cast/2 is not total: it reaches list_to_binary/1 and the
+            %% datetime parsers unguarded, and `{custom, Mod}` calls arbitrary
+            %% consumer code that can raise anything. Catching keeps the write
+            %% fail closed. An {encrypted, _} value never reaches here - its
+            %% dump raises rather than returning {error, _} - so the crypto
+            %% fail-loud guarantee does not depend on this catch being narrow.
+            %% The `of` body is unprotected, so a raise from the re-dump in
+            %% dump_cast/3 still propagates.
             try kura_types:cast(Type, V) of
                 {ok, Cast} -> dump_cast(Type, Cast, Msg);
                 {error, CastMsg} -> {error, CastMsg}
             catch
-                error:badarg -> {error, Msg}
+                error:_ -> {error, Msg};
+                throw:_ -> {error, Msg}
             end
     end.
 

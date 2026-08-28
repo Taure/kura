@@ -42,7 +42,6 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
 %% eqWAlizer: cast/2, dump/2, load/2 each have >7 clauses narrowing on the
 %% kura_type() union - exceeds eqWAlizer's clause-narrowing limit.
 -eqwalizer({nowarn_function, cast/2}).
--eqwalizer({nowarn_function, load/2}).
 
 -ifdef(TEST).
 -export([encryptable_inner/1, encode_inner/2, decode_inner/2]).
@@ -341,13 +340,15 @@ dump(jsonb, V) when is_map(V); is_list(V) ->
 dump(jsonb, V) when is_number(V); is_boolean(V) ->
     json_encode(V);
 %% A binary is ambiguous: an already-serialised document from a bulk-write
-%% caller, or a JSON string scalar that `cast/2` decoded out of one. Encoding
-%% the first turns a document into a quoted string, so resolve it the way
-%% `cast/2` does - if it parses as JSON it is already a document.
+%% caller, or a JSON string scalar that `load/2` or `cast/2` decoded out of
+%% one. Encoding the first turns a document into a quoted string; passing the
+%% second through turns the stored string "123" into the number 123 on the
+%% next read-modify-write. Only an object or an array is unambiguously a
+%% document - every scalar has an unambiguous non-binary spelling.
 dump(jsonb, V) when is_binary(V) ->
     case json_decode(V) of
-        {ok, _} -> {ok, V};
-        {error, _} -> json_encode(V)
+        {ok, Doc} when is_map(Doc); is_list(Doc) -> {ok, V};
+        _ -> json_encode(V)
     end;
 dump({enum, _}, V) when is_atom(V) ->
     {ok, atom_to_binary(V, utf8)};

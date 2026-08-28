@@ -103,6 +103,7 @@ integration_test_() ->
             {"update_all dumps through the schema", fun t_update_all_dumps/0},
             {"update_all keeps a pre-encoded jsonb document a document",
                 fun t_update_all_jsonb_binary_document/0},
+            {"a jsonb string scalar survives read-modify-write", fun t_jsonb_scalar_round_trip/0},
             {"update_all writes SQL NULL for a null value", fun t_update_all_null/0},
             {"bulk paths accept cast-shaped values", fun t_bulk_accepts_cast_shapes/0},
             {"update_all fails closed on an undumpable field",
@@ -969,6 +970,25 @@ t_update_all_jsonb_binary_document() ->
     ),
     ?assertEqual(<<"object">>, maps:get(kind, Row)),
     ?assertEqual(<<"true">>, maps:get(admin, Row)).
+
+t_jsonb_scalar_round_trip() ->
+    {ok, _} = insert_user(<<"JsonScalar">>, <<"jsonscalar@example.com">>),
+    {ok, _} = kura_test_repo:query(
+        "UPDATE users SET metadata = '\"123\"'::jsonb WHERE email = $1",
+        [<<"jsonscalar@example.com">>]
+    ),
+    {ok, Found} = kura_test_repo:get_by(kura_test_schema, [
+        {email, <<"jsonscalar@example.com">>}
+    ]),
+    Q = kura_query:where(
+        kura_query:from(kura_test_schema), {email, <<"jsonscalar@example.com">>}
+    ),
+    {ok, 1} = kura_test_repo:update_all(Q, #{metadata => maps:get(metadata, Found)}),
+    {ok, [Row]} = kura_test_repo:query(
+        "SELECT jsonb_typeof(metadata) AS kind FROM users WHERE email = $1",
+        [<<"jsonscalar@example.com">>]
+    ),
+    ?assertEqual(<<"string">>, maps:get(kind, Row)).
 
 t_update_all_null() ->
     {ok, _} = insert_user(<<"NullAll">>, <<"nullall@example.com">>, #{
