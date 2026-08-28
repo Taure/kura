@@ -65,6 +65,7 @@ kura_repo_worker:start(MyRepo),
 -eqwalizer({nowarn_function, persist_many_to_many/6}).
 
 -type write_error() :: {error, read_only}.
+-export_type([write_error/0]).
 
 %%----------------------------------------------------------------------
 %% Pool management

@@ -42,6 +42,8 @@ fields() ->
 -export([
     field_names/1,
     field_types/1,
+    is_schema/1,
+    encrypted_fields/1,
     column_map/1,
     key/1,
     key_fields/1,
@@ -131,6 +133,34 @@ field_types(Mod) ->
     cache({kura_schema, field_types, Mod}, fun() ->
         Base = field_types_map(Mod:fields(), #{}),
         embed_types_map(embeds(Mod), Base)
+    end).
+
+-doc """
+Return `true` if `Mod` is a loaded module exporting `table/0`, i.e. a schema
+rather than a bare table name. Memoised, because the negative answer costs a
+`code_server` round trip on every call.
+""".
+-spec is_schema(atom()) -> boolean().
+is_schema(Mod) when is_atom(Mod) ->
+    cache({kura_schema, is_schema, Mod}, fun() ->
+        case code:ensure_loaded(Mod) of
+            {module, Mod} -> erlang:function_exported(Mod, table, 0);
+            _ -> false
+        end
+    end).
+
+-doc """
+Return the names of `Mod`'s `{encrypted, _}` fields, or `[]` if it has none
+or is not a schema. Encryption uses a random nonce, so a stored value never
+equals a freshly encrypted one - these fields cannot be filtered on.
+""".
+-spec encrypted_fields(atom()) -> [atom()].
+encrypted_fields(Mod) when is_atom(Mod) ->
+    cache({kura_schema, encrypted_fields, Mod}, fun() ->
+        case is_schema(Mod) of
+            false -> [];
+            true -> [N || N := {encrypted, _} <- field_types(Mod)]
+        end
     end).
 
 -doc "Return map of field name to column name (binary), excluding virtual fields.".

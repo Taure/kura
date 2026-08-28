@@ -238,15 +238,38 @@ insert_all(SchemaOrTable, Fields, Rows) ->
     {SQL, AllParams}.
 
 -spec insert_all(atom() | module(), [atom()], [map()], map()) -> {iodata(), [term()]}.
-insert_all(SchemaOrTable, Fields, Rows, #{returning := true}) ->
+insert_all(SchemaOrTable, Fields, Rows, Opts) ->
     {BaseSQL, Params} = insert_all(SchemaOrTable, Fields, Rows),
-    {iolist_to_binary([BaseSQL, ~" RETURNING *"]), Params};
-insert_all(SchemaOrTable, Fields, Rows, #{returning := RetFields}) when is_list(RetFields) ->
-    {BaseSQL, Params} = insert_all(SchemaOrTable, Fields, Rows),
-    Cols = join_comma([quote_ident(atom_to_binary(F, utf8)) || F <- RetFields]),
-    {iolist_to_binary([BaseSQL, ~" RETURNING ", Cols]), Params};
-insert_all(SchemaOrTable, Fields, Rows, _Opts) ->
-    insert_all(SchemaOrTable, Fields, Rows).
+    SQL = [BaseSQL, bulk_on_conflict(Opts, Fields), bulk_returning(Opts)],
+    {iolist_to_binary(SQL), Params}.
+
+%% A bulk upsert applies one DO UPDATE clause to every row, so the SET values
+%% cannot come from any single row's parameters the way the single-row form
+%% builds them. EXCLUDED names the row that failed to insert, which is what
+%% makes one clause correct for all of them - and it binds no parameters.
+bulk_on_conflict(#{on_conflict := {Target, nothing}}, _Fields) ->
+    [conflict_target(Target), ~" DO NOTHING"];
+bulk_on_conflict(#{on_conflict := {Target, replace_all}}, Fields) ->
+    bulk_on_conflict(#{on_conflict => {Target, {replace, replaceable(Target, Fields)}}}, Fields);
+bulk_on_conflict(#{on_conflict := {Target, {replace, UpdateFields}}}, _Fields) ->
+    [
+        conflict_target(Target),
+        ~" DO UPDATE SET ",
+        join_comma([excluded_set(F) || F <- UpdateFields])
+    ];
+bulk_on_conflict(#{}, _Fields) ->
+    [].
+
+excluded_set(Field) ->
+    Col = quote_ident(atom_to_binary(Field, utf8)),
+    [Col, ~" = EXCLUDED.", Col].
+
+bulk_returning(#{returning := true}) ->
+    ~" RETURNING *";
+bulk_returning(#{returning := RetFields}) when is_list(RetFields) ->
+    [~" RETURNING ", join_comma([quote_ident(atom_to_binary(F, utf8)) || F <- RetFields])];
+bulk_returning(#{}) ->
+    [].
 
 %%----------------------------------------------------------------------
 %% Internal: SELECT clause
@@ -551,69 +574,31 @@ combination_type(except) -> ~"EXCEPT".
 %% Internal: ON CONFLICT
 %%----------------------------------------------------------------------
 
-compile_on_conflict({Field, nothing}, _Fields, _Data, _Counter) when is_atom(Field) ->
-    {[~" ON CONFLICT (", quote_ident(atom_to_binary(Field, utf8)), ~") DO NOTHING"], []};
-compile_on_conflict({{columns, Columns}, nothing}, _Fields, _Data, _Counter) when
-    is_list(Columns)
-->
-    {[~" ON CONFLICT (", columns_target(Columns), ~") DO NOTHING"], []};
-compile_on_conflict({{columns, Columns, Opts}, nothing}, _Fields, _Data, _Counter) when
-    is_list(Columns), is_map(Opts)
-->
-    {[~" ON CONFLICT (", columns_target(Columns), ~")", index_predicate(Opts), ~" DO NOTHING"], []};
-compile_on_conflict({{constraint, Name}, nothing}, _Fields, _Data, _Counter) ->
-    {[~" ON CONFLICT ON CONSTRAINT ", quote_ident(Name), ~" DO NOTHING"], []};
-compile_on_conflict({Field, replace_all}, Fields, Data, Counter) when is_atom(Field) ->
-    UpdateFields = [F || F <- Fields, F =/= Field],
-    compile_on_conflict({Field, {replace, UpdateFields}}, Fields, Data, Counter);
-compile_on_conflict({{columns, Columns}, replace_all}, Fields, Data, Counter) when
-    is_list(Columns)
-->
-    UpdateFields = [F || F <- Fields, not lists:member(F, Columns)],
-    compile_on_conflict({{columns, Columns}, {replace, UpdateFields}}, Fields, Data, Counter);
-compile_on_conflict({{columns, Columns, Opts}, replace_all}, Fields, Data, Counter) when
-    is_list(Columns), is_map(Opts)
-->
-    UpdateFields = [F || F <- Fields, not lists:member(F, Columns)],
-    compile_on_conflict({{columns, Columns, Opts}, {replace, UpdateFields}}, Fields, Data, Counter);
-compile_on_conflict({{constraint, Name}, replace_all}, Fields, Data, Counter) ->
-    compile_on_conflict_update(
-        [~" ON CONFLICT ON CONSTRAINT ", quote_ident(Name)], Fields, Data, Counter
-    );
-compile_on_conflict({Field, {replace, UpdateFields}}, _Fields, Data, Counter) when is_atom(Field) ->
-    compile_on_conflict_update(
-        [~" ON CONFLICT (", quote_ident(atom_to_binary(Field, utf8)), ~")"],
-        UpdateFields,
-        Data,
-        Counter
-    );
-compile_on_conflict({{columns, Columns}, {replace, UpdateFields}}, _Fields, Data, Counter) when
-    is_list(Columns)
-->
-    compile_on_conflict_update(
-        [~" ON CONFLICT (", columns_target(Columns), ~")"],
-        UpdateFields,
-        Data,
-        Counter
-    );
-compile_on_conflict(
-    {{columns, Columns, Opts}, {replace, UpdateFields}}, _Fields, Data, Counter
-) when
-    is_list(Columns), is_map(Opts)
-->
-    compile_on_conflict_update(
-        [~" ON CONFLICT (", columns_target(Columns), ~")", index_predicate(Opts)],
-        UpdateFields,
-        Data,
-        Counter
-    );
-compile_on_conflict({{constraint, Name}, {replace, UpdateFields}}, _Fields, Data, Counter) ->
-    compile_on_conflict_update(
-        [~" ON CONFLICT ON CONSTRAINT ", quote_ident(Name)],
-        UpdateFields,
-        Data,
-        Counter
-    ).
+compile_on_conflict({Target, nothing}, _Fields, _Data, _Counter) ->
+    {[conflict_target(Target), ~" DO NOTHING"], []};
+compile_on_conflict({Target, replace_all}, Fields, Data, Counter) ->
+    compile_on_conflict({Target, {replace, replaceable(Target, Fields)}}, Fields, Data, Counter);
+compile_on_conflict({Target, {replace, UpdateFields}}, _Fields, Data, Counter) ->
+    compile_on_conflict_update(conflict_target(Target), UpdateFields, Data, Counter).
+
+conflict_target(Field) when is_atom(Field) ->
+    [~" ON CONFLICT (", quote_ident(atom_to_binary(Field, utf8)), ~")"];
+conflict_target({columns, Columns}) when is_list(Columns) ->
+    [~" ON CONFLICT (", columns_target(Columns), ~")"];
+conflict_target({columns, Columns, Opts}) when is_list(Columns), is_map(Opts) ->
+    [~" ON CONFLICT (", columns_target(Columns), ~")", index_predicate(Opts)];
+conflict_target({constraint, Name}) when is_binary(Name) ->
+    [~" ON CONFLICT ON CONSTRAINT ", quote_ident(Name)].
+
+%% The columns the conflict target already pins cannot be in the SET list.
+replaceable(Field, Fields) when is_atom(Field) ->
+    [F || F <- Fields, F =/= Field];
+replaceable({columns, Columns}, Fields) when is_list(Columns) ->
+    [F || F <- Fields, not lists:member(F, Columns)];
+replaceable({columns, Columns, _Opts}, Fields) when is_list(Columns) ->
+    [F || F <- Fields, not lists:member(F, Columns)];
+replaceable({constraint, _Name}, Fields) ->
+    Fields.
 
 columns_target(Columns) ->
     join_comma([quote_ident(atom_to_binary(C, utf8)) || C <- Columns]).
@@ -882,16 +867,20 @@ format_default(Val) when is_integer(Val) ->
 format_default(Val) when is_float(Val) ->
     float_to_binary(Val);
 format_default(Val) when is_binary(Val) ->
-    <<"'", Val/binary, "'">>;
+    quote_literal(Val);
 format_default(true) ->
     ~"TRUE";
 format_default(false) ->
     ~"FALSE";
 format_default(Val) when is_atom(Val) ->
-    <<"'", (atom_to_binary(Val))/binary, "'">>;
+    quote_literal(atom_to_binary(Val));
 format_default(Val) when is_map(Val) ->
-    Json = iolist_to_binary(json:encode(Val)),
-    <<"'", Json/binary, "'::jsonb">>;
+    <<(quote_literal(iolist_to_binary(json:encode(Val))))/binary, "::jsonb">>;
 format_default(Val) when is_list(Val) ->
-    Json = iolist_to_binary(json:encode(Val)),
-    <<"'", Json/binary, "'::jsonb">>.
+    <<(quote_literal(iolist_to_binary(json:encode(Val))))/binary, "::jsonb">>.
+
+%% A default is DDL text, not a bind parameter, so an embedded quote has to
+%% be doubled or it closes the literal early.
+quote_literal(Val) ->
+    Escaped = binary:replace(Val, ~"'", ~"''", [global]),
+    <<$', Escaped/binary, $'>>.

@@ -84,3 +84,40 @@ composable_pipeline_test() ->
     ?assertEqual(1, length(Q6#kura_query.joins)),
     ?assertEqual([{name, asc}], Q6#kura_query.order_bys),
     ?assertEqual(10, Q6#kura_query.limit).
+
+%%----------------------------------------------------------------------
+%% Encrypted fields cannot be filtered on
+%%----------------------------------------------------------------------
+
+where_rejects_an_encrypted_field_test() ->
+    Q = kura_query:from(kura_test_encrypted_schema),
+    ?assertError(
+        {kura, {encrypted_field_in_where, ssn}},
+        kura_query:where(Q, {ssn, <<"123-45-6789">>})
+    ).
+
+where_rejects_an_encrypted_field_with_an_operator_test() ->
+    Q = kura_query:from(kura_test_encrypted_schema),
+    ?assertError(
+        {kura, {encrypted_field_in_where, ssn}},
+        kura_query:where(Q, {ssn, like, <<"123%">>})
+    ).
+
+where_rejects_an_encrypted_field_nested_in_a_boolean_test() ->
+    Q = kura_query:from(kura_test_encrypted_schema),
+    ?assertError(
+        {kura, {encrypted_field_in_where, ssn}},
+        kura_query:where(Q, {'and', [{id, 1}, {'or', [{ssn, <<"x">>}]}]})
+    ).
+
+where_allows_a_plain_field_on_an_encrypted_schema_test() ->
+    Q = kura_query:from(kura_test_encrypted_schema),
+    ?assertMatch(#kura_query{}, kura_query:where(Q, {id, 1})).
+
+where_allows_anything_on_a_schema_without_encrypted_fields_test() ->
+    Q = kura_query:from(kura_test_schema),
+    ?assertMatch(#kura_query{}, kura_query:where(Q, {email, <<"a@b.com">>})).
+
+where_allows_a_bare_table_source_test() ->
+    Q = kura_query:from(some_raw_table),
+    ?assertMatch(#kura_query{}, kura_query:where(Q, {anything, 1})).

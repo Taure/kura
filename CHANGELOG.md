@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Security
+
+- `kura_migrator`'s DDL identifier quoting now doubles an embedded double
+  quote, matching the fix `kura_dialect_pg`, `kura_preloader` and
+  `kura_repo_worker` already carry. It was the last unhardened copy of
+  that helper.
+- Column defaults are escaped before being spliced into DDL. A default
+  containing a single quote previously closed the literal early and
+  produced broken or attacker-shaped SQL. Both emitters are fixed -
+  `kura_dialect_pg:format_default/1`, which runs whenever a dialect is
+  configured, and `kura_migrator`'s fallback.
+- `kura_query:where/2` raises on an `{encrypted, _}` field. Encryption
+  uses a random nonce, so a freshly encrypted value never equals the
+  stored ciphertext: the condition could never match, and it shipped the
+  plaintext to the server as a bind parameter, into `pg_stat_statements`
+  and the query log.
+
+### Fixed
+
+- `insert_all/3,4` honour `on_conflict`. The option was silently dropped
+  and a plain INSERT emitted, so a bulk upsert failed on the unique
+  constraint instead of upserting, and the partial-index conflict target
+  was unreachable from the bulk path. The `DO UPDATE` SET list is built
+  from `EXCLUDED`, because one clause applies to every row.
+
+### Added
+
+- `kura_schema:is_schema/1` and `kura_schema:encrypted_fields/1`, both
+  memoised. `is_schema/1` replaces three hand-rolled copies of the same
+  `code:ensure_loaded/1` + `function_exported/3` check, whose negative
+  answer cost a `code_server` round trip on every call.
+
+
 ### Added
 
 - **Multi-application migration discovery.** A repo names further

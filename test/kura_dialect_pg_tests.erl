@@ -605,6 +605,60 @@ insert_on_conflict_malformed_opts_raises_test() ->
     ?assertError({kura, {invalid_on_conflict_opts, _}}, Insert(#{where => "scope IS NULL"})),
     ?assertError({kura, {invalid_on_conflict_opts, _}}, Insert(#{wehre => <<"scope IS NULL">>})).
 
+insert_all_on_conflict_nothing_test() ->
+    {SQL, Params} = kura_dialect_pg:insert_all(
+        kura_test_schema,
+        [name, email],
+        [#{name => <<"A">>, email => <<"a@b.com">>}, #{name => <<"B">>, email => <<"b@b.com">>}],
+        #{on_conflict => {email, nothing}}
+    ),
+    ?assertEqual(
+        <<
+            "INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2), ($3, $4) "
+            "ON CONFLICT (\"email\") DO NOTHING"
+        >>,
+        SQL
+    ),
+    ?assertEqual([<<"A">>, <<"a@b.com">>, <<"B">>, <<"b@b.com">>], Params).
+
+insert_all_on_conflict_replaces_from_excluded_test() ->
+    %% One DO UPDATE clause covers every row, so the SET values must come from
+    %% EXCLUDED rather than from any single row's parameters.
+    {SQL, Params} = kura_dialect_pg:insert_all(
+        kura_test_schema,
+        [name, email],
+        [#{name => <<"A">>, email => <<"a@b.com">>}, #{name => <<"B">>, email => <<"b@b.com">>}],
+        #{on_conflict => {email, replace_all}}
+    ),
+    ?assertEqual(
+        <<
+            "INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2), ($3, $4) "
+            "ON CONFLICT (\"email\") DO UPDATE SET \"name\" = EXCLUDED.\"name\""
+        >>,
+        SQL
+    ),
+    ?assertEqual([<<"A">>, <<"a@b.com">>, <<"B">>, <<"b@b.com">>], Params).
+
+insert_all_on_conflict_partial_index_with_returning_test() ->
+    {SQL, _} = kura_dialect_pg:insert_all(
+        kura_test_schema,
+        [name, email],
+        [#{name => <<"A">>, email => <<"a@b.com">>}],
+        #{
+            on_conflict =>
+                {{columns, [email], #{where => <<"deleted_at IS NULL">>}}, {replace, [name]}},
+            returning => true
+        }
+    ),
+    ?assertEqual(
+        <<
+            "INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) "
+            "ON CONFLICT (\"email\") WHERE deleted_at IS NULL "
+            "DO UPDATE SET \"name\" = EXCLUDED.\"name\" RETURNING *"
+        >>,
+        SQL
+    ).
+
 insert_on_conflict_columns_nothing_test() ->
     {SQL, Params} = kura_dialect_pg:insert(
         kura_test_schema,

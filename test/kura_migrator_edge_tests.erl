@@ -182,3 +182,20 @@ compile_alter_table_multiple_ops_test() ->
     ),
     ?assert(binary:match(SQL, <<"ADD COLUMN">>) =/= nomatch),
     ?assert(binary:match(SQL, <<"DROP COLUMN">>) =/= nomatch).
+
+%%----------------------------------------------------------------------
+%% DDL identifier and literal escaping
+%%----------------------------------------------------------------------
+
+quote_doubles_embedded_quotes_test() ->
+    SQL = kura_migrator:compile_operation(undefined, {drop_table, <<"ev\"il">>}),
+    ?assertEqual(<<"DROP TABLE \"ev\"\"il\"">>, SQL).
+
+default_escapes_embedded_single_quotes_test() ->
+    SQL = kura_migrator:compile_operation(
+        undefined,
+        {create_table, <<"t">>, [
+            #kura_column{name = note, type = string, default = <<"O'Brien">>}
+        ]}
+    ),
+    ?assertNotEqual(nomatch, binary:match(SQL, <<"'O''Brien'">>)).

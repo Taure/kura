@@ -13,6 +13,7 @@ Kura repo operations.
 ]).
 
 -type strategy() :: {prefix, binary()} | {attribute, {atom(), term()}}.
+-export_type([strategy/0]).
 
 -doc "Set the current tenant strategy in the process dictionary.".
 -spec put_tenant(strategy()) -> undefined | strategy().
