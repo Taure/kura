@@ -95,10 +95,47 @@ capability (PostgreSQL, or SQLite 3.25+).
 over(WindowFn, Spec) when is_map(Spec) ->
     {over, WindowFn, Spec}.
 
--doc "Add a WHERE condition. Conditions: `{field, value}`, `{field, op, value}`, `{'and', [...]}`, etc.".
+-doc """
+Add a WHERE condition. Conditions: `{field, value}`, `{field, op, value}`,
+`{'and', [...]}`, etc.
+
+Filtering on an `{encrypted, _}` field raises. Encryption uses a random
+nonce, so a freshly encrypted value never equals the stored ciphertext: the
+condition cannot match, and it would ship the plaintext to the server as a
+bind parameter, into `pg_stat_statements` and the query log.
+""".
 -spec where(#kura_query{}, term()) -> #kura_query{}.
-where(Q = #kura_query{wheres = W}, Condition) ->
+where(Q = #kura_query{from = From, wheres = W}, Condition) ->
+    reject_encrypted(From, Condition),
     Q#kura_query{wheres = W ++ [Condition]}.
+
+reject_encrypted(From, Condition) when is_atom(From), From =/= undefined ->
+    case kura_schema:encrypted_fields(From) of
+        [] -> ok;
+        Encrypted -> reject_encrypted_cond(Condition, Encrypted)
+    end;
+reject_encrypted(_From, _Condition) ->
+    ok.
+
+reject_encrypted_cond({Op, Conds}, Encrypted) when
+    Op =:= 'and', is_list(Conds);
+    Op =:= 'or', is_list(Conds)
+->
+    lists:foreach(fun(C) -> reject_encrypted_cond(C, Encrypted) end, Conds);
+reject_encrypted_cond({fragment, _SQL, _Params}, _Encrypted) ->
+    ok;
+reject_encrypted_cond(Cond, Encrypted) when is_tuple(Cond), tuple_size(Cond) >= 2 ->
+    case element(1, Cond) of
+        Field when is_atom(Field) ->
+            case lists:member(Field, Encrypted) of
+                true -> erlang:error({kura, {encrypted_field_in_where, Field}});
+                false -> ok
+            end;
+        _ ->
+            ok
+    end;
+reject_encrypted_cond(_Cond, _Encrypted) ->
+    ok.
 
 -doc """
 Add a JOIN clause. `Table` can be a schema module or raw table atom.

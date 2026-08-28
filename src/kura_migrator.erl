@@ -82,6 +82,7 @@ one.
 -endif.
 
 -type migration_group() :: {atom(), [{integer(), module()}]}.
+-export_type([migration_group/0]).
 
 %% eqWAlizer: operation() union has >7 variants - exceeds clause narrowing limit
 -eqwalizer({nowarn_function, compile_operation/2}).
@@ -778,7 +779,7 @@ duplicate_versions(Groups) ->
     Owners = version_owners(Groups, #{}),
     lists:keysort(1, [
         {V, reverse_owners(Os, [])}
-     || {V, Os} <- maps:to_list(Owners), length(Os) > 1
+     || {V, Os = [_, _ | _]} <- maps:to_list(Owners)
     ]).
 
 -spec version_owners(
@@ -1284,7 +1285,8 @@ get_applied_versions(RepoMod) ->
 
 -spec quote(binary() | atom()) -> binary().
 quote(Name) when is_binary(Name) ->
-    <<$", Name/binary, $">>;
+    Escaped = binary:replace(Name, ~"\"", ~"\"\"", [global]),
+    <<$", Escaped/binary, $">>;
 quote(Name) when is_atom(Name) ->
     quote(atom_to_binary(Name, utf8)).
 
@@ -1336,19 +1338,22 @@ default_default(Val) when is_integer(Val) ->
 default_default(Val) when is_float(Val) ->
     float_to_binary(Val);
 default_default(Val) when is_binary(Val) ->
-    <<"'", Val/binary, "'">>;
+    quote_literal(Val);
 default_default(true) ->
     ~"TRUE";
 default_default(false) ->
     ~"FALSE";
 default_default(Val) when is_atom(Val) ->
-    <<"'", (atom_to_binary(Val))/binary, "'">>;
+    quote_literal(atom_to_binary(Val));
 default_default(Val) when is_map(Val) ->
-    Json = iolist_to_binary(json:encode(Val)),
-    <<"'", Json/binary, "'::jsonb">>;
+    <<(quote_literal(iolist_to_binary(json:encode(Val))))/binary, "::jsonb">>;
 default_default(Val) when is_list(Val) ->
-    Json = iolist_to_binary(json:encode(Val)),
-    <<"'", Json/binary, "'::jsonb">>.
+    <<(quote_literal(iolist_to_binary(json:encode(Val))))/binary, "::jsonb">>.
+
+-spec quote_literal(binary()) -> binary().
+quote_literal(Val) ->
+    Escaped = binary:replace(Val, ~"'", ~"''", [global]),
+    <<$', Escaped/binary, $'>>.
 
 %%----------------------------------------------------------------------
 %% Internal: type narrowing helpers for eqWAlizer

@@ -35,9 +35,9 @@ resolve_backends() ->
         _ ->
             case application:get_env(kura, backend) of
                 {ok, Backend} when is_atom(Backend) ->
-                    ensure_set_env(dialect, fun() -> Backend:dialect() end),
-                    ensure_set_env(pool_module, fun() -> Backend:pool_module() end),
-                    ensure_set_env(driver_module, fun() -> Backend:driver_module() end),
+                    ensure_set_env(dialect, fun Backend:dialect/0),
+                    ensure_set_env(pool_module, fun Backend:pool_module/0),
+                    ensure_set_env(driver_module, fun Backend:driver_module/0),
                     ok;
                 _ ->
                     ok
