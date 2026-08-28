@@ -107,6 +107,8 @@ integration_test_() ->
             {"bulk paths accept cast-shaped values", fun t_bulk_accepts_cast_shapes/0},
             {"update_all fails closed on an undumpable field",
                 fun t_update_all_dump_fails_closed/0},
+            {"a value that makes cast/2 raise still fails closed",
+                fun t_dump_fails_closed_when_cast_raises/0},
 
             %% on_conflict
             {"insert on_conflict nothing", fun t_insert_on_conflict_nothing/0},
@@ -1000,6 +1002,25 @@ t_update_all_dump_fails_closed() ->
     ?assertMatch(
         {error, {dump_failed, metadata, _}},
         kura_test_repo:update_all(Q, #{metadata => {not_json, encodable}})
+    ).
+
+t_dump_fails_closed_when_cast_raises() ->
+    %% cast/2 raises badarg on these where dump/2 returns a clean error, so
+    %% the dump-first fallback must not turn a typed error into a crash.
+    Q = kura_query:where(kura_query:from(kura_test_schema), {email, <<"none@example.com">>}),
+    ?assertMatch(
+        {error, {dump_failed, updated_at, _}},
+        kura_test_repo:update_all(Q, #{updated_at => <<"2026-01-01T">>})
+    ),
+    ?assertMatch(
+        {error, {dump_failed, name, _}},
+        kura_test_repo:update_all(Q, #{name => [999999]})
+    ),
+    ?assertMatch(
+        {error, {dump_failed, name, _}},
+        kura_test_repo:insert_all(kura_test_schema, [
+            #{name => [999999], email => <<"castraise@example.com">>}
+        ])
     ).
 
 t_delete_all() ->

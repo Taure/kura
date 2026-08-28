@@ -42,7 +42,6 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
 %% eqWAlizer: cast/2, dump/2, load/2 each have >7 clauses narrowing on the
 %% kura_type() union - exceeds eqWAlizer's clause-narrowing limit.
 -eqwalizer({nowarn_function, cast/2}).
--eqwalizer({nowarn_function, dump/2}).
 -eqwalizer({nowarn_function, load/2}).
 
 -ifdef(TEST).

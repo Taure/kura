@@ -917,9 +917,16 @@ dump_field(Type, V) ->
         {ok, Dumped} ->
             {ok, Dumped};
         {error, Msg} ->
-            case kura_types:cast(Type, V) of
+            %% cast/2 is not total - it reaches list_to_binary/1 and the
+            %% datetime parsers unguarded, so a value dump/2 rejects cleanly
+            %% can make cast/2 raise. Catching badarg keeps the write fail
+            %% closed. The catch is deliberately narrow: an {encrypted, _}
+            %% failure raises and must stay unmasked.
+            try kura_types:cast(Type, V) of
                 {ok, Cast} -> dump_cast(Type, Cast, Msg);
                 {error, CastMsg} -> {error, CastMsg}
+            catch
+                error:badarg -> {error, Msg}
             end
     end.
 

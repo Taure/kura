@@ -387,8 +387,10 @@ parameter, so any value in the predicate has to be an inlined literal. Never bui
 string from request data, a tenant identifier, or any other runtime value. It must be a
 compile-time constant matching the predicate you gave `create_index` character for
 character; anything looser can make PostgreSQL infer a different unique index and update
-a row you did not intend. The options map takes `where` and nothing else, and a map
-carrying anything other than a binary `where` raises.
+a row you did not intend. `where` is the only key read. An empty map means no
+predicate, the same as the two-element `{columns, Cols}` target; a map carrying
+anything other than a binary `where` raises rather than silently dropping a predicate
+you believed you had written.
 
 ## Quick Reference
 
