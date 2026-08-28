@@ -96,10 +96,26 @@ integration_test_() ->
             {"insert_all bulk inserts", fun t_insert_all/0},
             {"update_all bulk updates", fun t_update_all/0},
             {"delete_all bulk deletes", fun t_delete_all/0},
+            {"insert fails closed on an undumpable field", fun t_insert_dump_fails_closed/0},
+            {"update fails closed on an undumpable field", fun t_update_dump_fails_closed/0},
+            {"insert_all fails closed on an undumpable field",
+                fun t_insert_all_dump_fails_closed/0},
+            {"update_all dumps through the schema", fun t_update_all_dumps/0},
+            {"update_all keeps a pre-encoded jsonb document a document",
+                fun t_update_all_jsonb_binary_document/0},
+            {"a jsonb string scalar survives read-modify-write", fun t_jsonb_scalar_round_trip/0},
+            {"update_all writes SQL NULL for a null value", fun t_update_all_null/0},
+            {"bulk paths accept cast-shaped values", fun t_bulk_accepts_cast_shapes/0},
+            {"update_all fails closed on an undumpable field",
+                fun t_update_all_dump_fails_closed/0},
+            {"a value that makes cast/2 raise still fails closed",
+                fun t_dump_fails_closed_when_cast_raises/0},
 
             %% on_conflict
             {"insert on_conflict nothing", fun t_insert_on_conflict_nothing/0},
             {"insert on_conflict replace_all", fun t_insert_on_conflict_replace/0},
+            {"insert on_conflict targets a partial unique index",
+                fun t_insert_on_conflict_partial_index/0},
 
             %% Multi
             {"multi success pipeline", fun t_multi_success/0},
@@ -239,6 +255,25 @@ setup() ->
         ")",
         []
     ),
+    {ok, _} = kura_test_repo:query(
+        "CREATE TABLE partial_upserts ("
+        "  id BIGSERIAL PRIMARY KEY,"
+        "  scope VARCHAR(255),"
+        "  name VARCHAR(255) NOT NULL,"
+        "  value JSONB NOT NULL"
+        ")",
+        []
+    ),
+    {ok, _} = kura_test_repo:query(
+        "CREATE UNIQUE INDEX partial_upserts_global_idx"
+        "  ON partial_upserts (name) WHERE scope IS NULL",
+        []
+    ),
+    {ok, _} = kura_test_repo:query(
+        "CREATE UNIQUE INDEX partial_upserts_scoped_idx"
+        "  ON partial_upserts (scope, name) WHERE scope IS NOT NULL",
+        []
+    ),
     {ok, _} = kura_test_repo:query("CREATE EXTENSION IF NOT EXISTS btree_gist", []),
     {ok, _} = kura_test_repo:query(
         "CREATE TABLE bookings ("
@@ -329,6 +364,7 @@ drop_tables() ->
         ~"audited_items",
         ~"secrets",
         ~"hook_items",
+        ~"partial_upserts",
         ~"bookings",
         ~"articles",
         ~"participants",
@@ -867,6 +903,146 @@ t_update_all() ->
     {ok, U1} = kura_test_repo:get_by(kura_test_schema, [{email, <<"updall1@example.com">>}]),
     ?assertEqual(<<"admin">>, maps:get(role, U1)).
 
+t_insert_dump_fails_closed() ->
+    CS = kura_changeset:cast(
+        kura_test_schema,
+        #{},
+        #{<<"name">> => <<"DumpFail">>, <<"email">> => <<"dumpfail@example.com">>},
+        [name, email]
+    ),
+    CS1 = kura_changeset:put_change(CS, metadata, {not_json, encodable}),
+    {error, Failed} = kura_test_repo:insert(CS1),
+    ?assertMatch(#kura_changeset{action = insert}, Failed),
+    ?assertMatch([{metadata, _}], Failed#kura_changeset.errors),
+    ?assertEqual(
+        {error, not_found},
+        kura_test_repo:get_by(kura_test_schema, [{email, <<"dumpfail@example.com">>}])
+    ).
+
+t_update_dump_fails_closed() ->
+    {ok, User} = insert_user(<<"UpdDumpFail">>, <<"upddumpfail@example.com">>),
+    CS = kura_changeset:put_change(
+        kura_changeset:cast(kura_test_schema, User, #{}, [name]),
+        metadata,
+        {not_json, encodable}
+    ),
+    {error, Failed} = kura_test_repo:update(CS),
+    ?assertMatch(#kura_changeset{action = update}, Failed),
+    ?assertMatch([{metadata, _}], Failed#kura_changeset.errors).
+
+t_insert_all_dump_fails_closed() ->
+    Entries = [
+        #{name => <<"BulkOk">>, email => <<"bulkok@example.com">>},
+        #{
+            name => <<"BulkBad">>,
+            email => <<"bulkbad@example.com">>,
+            metadata => {not_json, encodable}
+        }
+    ],
+    ?assertMatch(
+        {error, {dump_failed, metadata, _}},
+        kura_test_repo:insert_all(kura_test_schema, Entries)
+    ),
+    ?assertEqual(
+        {error, not_found},
+        kura_test_repo:get_by(kura_test_schema, [{email, <<"bulkok@example.com">>}])
+    ).
+
+t_update_all_dumps() ->
+    {ok, _} = insert_user(<<"UpdAllDump">>, <<"updalldump@example.com">>),
+    Q = kura_query:where(
+        kura_query:from(kura_test_schema), {email, <<"updalldump@example.com">>}
+    ),
+    {ok, 1} = kura_test_repo:update_all(Q, #{metadata => #{<<"tier">> => <<"gold">>}}),
+    {ok, Found} = kura_test_repo:get_by(kura_test_schema, [
+        {email, <<"updalldump@example.com">>}
+    ]),
+    ?assertEqual(#{<<"tier">> => <<"gold">>}, maps:get(metadata, Found)).
+
+t_update_all_jsonb_binary_document() ->
+    {ok, _} = insert_user(<<"JsonBin">>, <<"jsonbin@example.com">>),
+    Q = kura_query:where(kura_query:from(kura_test_schema), {email, <<"jsonbin@example.com">>}),
+    {ok, 1} = kura_test_repo:update_all(Q, #{metadata => <<"{\"admin\":true}">>}),
+    {ok, [Row]} = kura_test_repo:query(
+        "SELECT jsonb_typeof(metadata) AS kind, metadata->>'admin' AS admin "
+        "FROM users WHERE email = $1",
+        [<<"jsonbin@example.com">>]
+    ),
+    ?assertEqual(<<"object">>, maps:get(kind, Row)),
+    ?assertEqual(<<"true">>, maps:get(admin, Row)).
+
+t_jsonb_scalar_round_trip() ->
+    {ok, _} = insert_user(<<"JsonScalar">>, <<"jsonscalar@example.com">>),
+    {ok, _} = kura_test_repo:query(
+        "UPDATE users SET metadata = '\"123\"'::jsonb WHERE email = $1",
+        [<<"jsonscalar@example.com">>]
+    ),
+    {ok, Found} = kura_test_repo:get_by(kura_test_schema, [
+        {email, <<"jsonscalar@example.com">>}
+    ]),
+    Q = kura_query:where(
+        kura_query:from(kura_test_schema), {email, <<"jsonscalar@example.com">>}
+    ),
+    {ok, 1} = kura_test_repo:update_all(Q, #{metadata => maps:get(metadata, Found)}),
+    {ok, [Row]} = kura_test_repo:query(
+        "SELECT jsonb_typeof(metadata) AS kind FROM users WHERE email = $1",
+        [<<"jsonscalar@example.com">>]
+    ),
+    ?assertEqual(<<"string">>, maps:get(kind, Row)).
+
+t_update_all_null() ->
+    {ok, _} = insert_user(<<"NullAll">>, <<"nullall@example.com">>, #{
+        <<"age">> => 41, <<"metadata">> => #{<<"a">> => 1}
+    }),
+    Q = kura_query:where(kura_query:from(kura_test_schema), {email, <<"nullall@example.com">>}),
+    {ok, 1} = kura_test_repo:update_all(Q, #{age => null, metadata => null}),
+    {ok, Found} = kura_test_repo:get_by(kura_test_schema, [{email, <<"nullall@example.com">>}]),
+    ?assertEqual(undefined, maps:get(age, Found)),
+    ?assertEqual(undefined, maps:get(metadata, Found)).
+
+t_bulk_accepts_cast_shapes() ->
+    Entries = [
+        #{
+            name => <<"CastShape">>,
+            email => <<"castshape@example.com">>,
+            age => <<"33">>,
+            active => <<"true">>,
+            score => 7
+        }
+    ],
+    {ok, 1} = kura_test_repo:insert_all(kura_test_schema, Entries),
+    {ok, Found} = kura_test_repo:get_by(kura_test_schema, [{email, <<"castshape@example.com">>}]),
+    ?assertEqual(33, maps:get(age, Found)),
+    ?assertEqual(true, maps:get(active, Found)),
+    ?assertEqual(7.0, maps:get(score, Found)).
+
+t_update_all_dump_fails_closed() ->
+    {ok, _} = insert_user(<<"UpdAllBad">>, <<"updallbad@example.com">>),
+    Q = kura_query:where(kura_query:from(kura_test_schema), {email, <<"updallbad@example.com">>}),
+    ?assertMatch(
+        {error, {dump_failed, metadata, _}},
+        kura_test_repo:update_all(Q, #{metadata => {not_json, encodable}})
+    ).
+
+t_dump_fails_closed_when_cast_raises() ->
+    %% cast/2 raises badarg on these where dump/2 returns a clean error, so
+    %% the dump-first fallback must not turn a typed error into a crash.
+    Q = kura_query:where(kura_query:from(kura_test_schema), {email, <<"none@example.com">>}),
+    ?assertMatch(
+        {error, {dump_failed, updated_at, _}},
+        kura_test_repo:update_all(Q, #{updated_at => <<"2026-01-01T">>})
+    ),
+    ?assertMatch(
+        {error, {dump_failed, name, _}},
+        kura_test_repo:update_all(Q, #{name => [999999]})
+    ),
+    ?assertMatch(
+        {error, {dump_failed, name, _}},
+        kura_test_repo:insert_all(kura_test_schema, [
+            #{name => [999999], email => <<"castraise@example.com">>}
+        ])
+    ).
+
 t_delete_all() ->
     {ok, _} = insert_user(<<"DelAll1">>, <<"delall1@example.com">>),
     {ok, _} = insert_user(<<"DelAll2">>, <<"delall2@example.com">>),
@@ -896,6 +1072,25 @@ t_insert_on_conflict_nothing() ->
     %% Returns applied changeset (no DB row), original stays
     {ok, Fetched} = kura_test_repo:get(kura_test_schema, maps:get(id, First)),
     ?assertEqual(<<"OcNothing">>, maps:get(name, Fetched)).
+
+t_insert_on_conflict_partial_index() ->
+    Upsert = fun(Value) ->
+        CS = kura_changeset:cast(
+            kura_test_partial_upsert_schema,
+            #{},
+            #{<<"name">> => <<"quota">>, <<"value">> => Value},
+            [name, value]
+        ),
+        kura_test_repo:insert(CS, #{
+            on_conflict =>
+                {{columns, [name], #{where => ~"scope IS NULL"}}, {replace, [value]}}
+        })
+    end,
+    {ok, _} = Upsert(#{<<"limit">> => 1}),
+    {ok, Second} = Upsert(#{<<"limit">> => 2}),
+    ?assertEqual(#{<<"limit">> => 2}, maps:get(value, Second)),
+    {ok, Rows} = kura_test_repo:all(kura_query:from(kura_test_partial_upsert_schema)),
+    ?assertEqual(1, length(Rows)).
 
 t_insert_on_conflict_replace() ->
     {ok, _} = insert_user(<<"OcReplace">>, <<"ocreplace@example.com">>),

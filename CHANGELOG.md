@@ -23,8 +23,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   applied versions; `fake/2` leaves every other application's migrations
   pending.
 
+### Security
+
+- **`update_all/2` wrote plaintext into `{encrypted, _}` columns.** It was
+  the only write path that never dumped values through the schema, so a
+  value bound for an encrypted column reached the driver unencrypted and
+  was stored in the clear. Every other write path (`insert`, `update`,
+  `insert_all`) encrypted correctly. Any row whose encrypted column was
+  last written by `update_all/2` holds plaintext and needs rewriting. A
+  value is ciphertext if and only if `kura_crypto:decrypt/1` does not
+  raise on it; the frame is
+  `<<Version:8, KeyId:8, Nonce:12/binary, Tag:16/binary, Cipher/binary>>`,
+  so in practice a stored value under 30 bytes, or one whose first byte is
+  not the frame version, is plaintext. No known consumer is affected - no
+  repo depending on kura declares an `{encrypted, _}` field.
+- CTE names passed to `kura_query:with_cte/3` and the many-to-many
+  join-table name are now quoted, and `quote_ident/1` doubles an embedded
+  double quote. A consumer deriving any of those from request data could
+  previously break out of the quoting and inject SQL. No identifier kura
+  itself renders was affected - all of them come from developer-supplied
+  atoms.
+
 ### Fixed
 
+- **A binary written to a `jsonb` field is no longer double-encoded.**
+  `kura_types:dump/2` encoded every binary as a JSON string scalar, so an
+  already-serialised document was stored as a quoted string: `->`, `->>`
+  and `@>` against it all returned NULL, and a predicate shaped
+  `WHERE NOT (policy @> '...')` failed open. A binary that parses as a JSON
+  object or array is now stored as the document it is; anything else is
+  still encoded as a string, which keeps the `load/2` round trip intact for
+  stored JSON string scalars. This affected `insert` and `update` as well,
+  not only the bulk paths.
+- The atom `null` dumps to SQL NULL for every type, matching `undefined`.
+  It previously reached the driver raw through the fall-open seam, which
+  also meant `{enum, _}` stored the literal string `"null"`.
+- Writes fail closed when a value cannot be dumped. Previously the raw
+  undumped value was handed to the driver, which turned a deterministic
+  type error into a driver-level `badarg` or, for a value the server
+  happened to accept, a silent write of the wrong thing. Changeset paths
+  add the error to the changeset; `insert_all/2,3` and `update_all/2`
+  return `{error, {dump_failed, Field, Message}}`.
 - A migration version claimed by two modules is now
   `{error, {duplicate_migration_version, [{Version, [{App, Module}]}]}}`
   instead of a partially-applied batch failing on the
@@ -53,6 +92,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `update_all/2` dumps its SET map through the schema's field types
+  whenever the query source is a schema module, matching `insert` and
+  `update`. A `jsonb` map or any other non-primitive is now serialised
+  rather than reaching the driver raw.
+- The bulk write paths accept values in the form `cast/2` accepts, not
+  only the form `dump/2` accepts. `insert_all/2,3` and `update_all/2`
+  take raw maps rather than cast changesets, so `~"admin"` for an enum or
+  `~"2026-01-01"` for a date now casts before dumping instead of failing.
+  The cast only runs after a dump attempt fails, so the happy path is
+  unchanged. `{encrypted, _}` fields are the exception: they raise on a bad
+  value rather than casting, so that a crypto failure can never be treated
+  as recoverable. A type module that does not load raises too - the
+  fail-closed contract covers invalid data, not a broken deployment.
+- `on_conflict` accepts `{{columns, Cols, #{where => Predicate}}, Action}`,
+  emitting `ON CONFLICT (cols) WHERE predicate`. Tables using partial
+  unique indexes can now express a single-statement upsert;
+  `ON CONFLICT ON CONSTRAINT` cannot name a partial index. The predicate
+  is raw SQL, spliced verbatim - it must be a trusted literal matching
+  the index definition. An options map carrying anything other than a
+  binary `where` now raises rather than silently emitting no predicate,
+  which would let PostgreSQL infer a different unique index.
 - `kura_migrator:status/1` may now return `{error, Reason}` when
   discovery fails, and lists migrations in apply order. Unchanged for a
   single-application repo.

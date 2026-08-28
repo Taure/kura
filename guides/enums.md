@@ -44,6 +44,11 @@ kura_types:dump({enum, [draft, published]}, draft).
 %% {ok, ~"draft"}
 ```
 
+`dump/2` itself takes the atom form. The bulk write paths (`insert_all/2,3`,
+`update_all/2`) also accept the binary a `cast/2` would produce it from, because they
+cast on a failed dump - see the bulk-write notes in
+[Changesets](changesets.md#dump-failures).
+
 ## Load (PostgreSQL to Erlang)
 
 Binaries from the database are converted back to atoms:

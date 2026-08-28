@@ -540,6 +540,71 @@ insert_on_conflict_replace_fields_test() ->
     ),
     ?assertEqual([<<"Alice">>, <<"a@b.com">>, <<"Alice">>], Params).
 
+insert_on_conflict_partial_index_nothing_test() ->
+    {SQL, Params} = kura_dialect_pg:insert(
+        kura_test_schema,
+        [name, email],
+        #{name => <<"Alice">>, email => <<"a@b.com">>},
+        #{on_conflict => {{columns, [email], #{where => <<"deleted_at IS NULL">>}}, nothing}}
+    ),
+    ?assertEqual(
+        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) ON CONFLICT (\"email\") WHERE deleted_at IS NULL DO NOTHING RETURNING *">>,
+        SQL
+    ),
+    ?assertEqual([<<"Alice">>, <<"a@b.com">>], Params).
+
+insert_on_conflict_partial_index_replace_test() ->
+    {SQL, Params} = kura_dialect_pg:insert(
+        kura_test_schema,
+        [name, email],
+        #{name => <<"Alice">>, email => <<"a@b.com">>},
+        #{
+            on_conflict =>
+                {{columns, [email], #{where => <<"deleted_at IS NULL">>}}, {replace, [name]}}
+        }
+    ),
+    ?assertEqual(
+        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) ON CONFLICT (\"email\") WHERE deleted_at IS NULL DO UPDATE SET \"name\" = $3 RETURNING *">>,
+        SQL
+    ),
+    ?assertEqual([<<"Alice">>, <<"a@b.com">>, <<"Alice">>], Params).
+
+insert_on_conflict_partial_index_replace_all_test() ->
+    {SQL, _Params} = kura_dialect_pg:insert(
+        kura_test_schema,
+        [name, email],
+        #{name => <<"Alice">>, email => <<"a@b.com">>},
+        #{on_conflict => {{columns, [email], #{where => <<"deleted_at IS NULL">>}}, replace_all}}
+    ),
+    ?assertEqual(
+        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) ON CONFLICT (\"email\") WHERE deleted_at IS NULL DO UPDATE SET \"name\" = $3 RETURNING *">>,
+        SQL
+    ).
+
+insert_on_conflict_empty_opts_has_no_predicate_test() ->
+    {SQL, _Params} = kura_dialect_pg:insert(
+        kura_test_schema,
+        [name, email],
+        #{name => <<"Alice">>, email => <<"a@b.com">>},
+        #{on_conflict => {{columns, [email], #{}}, nothing}}
+    ),
+    ?assertEqual(
+        <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2) ON CONFLICT (\"email\") DO NOTHING RETURNING *">>,
+        SQL
+    ).
+
+insert_on_conflict_malformed_opts_raises_test() ->
+    Insert = fun(Opts) ->
+        kura_dialect_pg:insert(
+            kura_test_schema,
+            [name, email],
+            #{name => <<"Alice">>, email => <<"a@b.com">>},
+            #{on_conflict => {{columns, [email], Opts}, nothing}}
+        )
+    end,
+    ?assertError({kura, {invalid_on_conflict_opts, _}}, Insert(#{where => "scope IS NULL"})),
+    ?assertError({kura, {invalid_on_conflict_opts, _}}, Insert(#{wehre => <<"scope IS NULL">>})).
+
 insert_on_conflict_columns_nothing_test() ->
     {SQL, Params} = kura_dialect_pg:insert(
         kura_test_schema,
@@ -777,7 +842,7 @@ single_cte_test() ->
     Q = kura_query:with_cte(kura_query:from(active_users), <<"active_users">>, CteQ),
     {SQL, Params} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
-        <<"WITH active_users AS (SELECT * FROM \"user\" WHERE \"active\" = $1) SELECT * FROM \"active_users\"">>,
+        <<"WITH \"active_users\" AS (SELECT * FROM \"user\" WHERE \"active\" = $1) SELECT * FROM \"active_users\"">>,
         SQL
     ),
     ?assertEqual([true], Params).
@@ -790,11 +855,30 @@ multiple_ctes_test() ->
     Q2 = kura_query:with_cte(Q1, <<"admin_users">>, CteQ2),
     {SQL, Params} = kura_dialect_pg:to_sql(Q2),
     ?assertEqual(
-        <<"WITH active_users AS (SELECT * FROM \"user\" WHERE \"active\" = $1), admin_users AS (SELECT * FROM \"user\" WHERE \"role\" = $2) SELECT * FROM \"active_users\"">>,
+        <<"WITH \"active_users\" AS (SELECT * FROM \"user\" WHERE \"active\" = $1), \"admin_users\" AS (SELECT * FROM \"user\" WHERE \"role\" = $2) SELECT * FROM \"active_users\"">>,
         SQL
     ),
     ?assertEqual([true, <<"admin">>], Params).
 
+cte_name_is_quoted_test() ->
+    CteQ = kura_query:from(user),
+    Q = kura_query:with_cte(kura_query:from(evil), <<"evil\") SELECT * FROM secrets --">>, CteQ),
+    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    ?assertEqual(
+        <<"WITH \"evil\"\") SELECT * FROM secrets --\" AS (SELECT * FROM \"user\") SELECT * FROM \"evil\"">>,
+        SQL
+    ).
+
+%%----------------------------------------------------------------------
+%% Identifier quoting
+%%----------------------------------------------------------------------
+
+quote_ident_doubles_embedded_quotes_test() ->
+    Q = kura_query:where(kura_query:from(user), {'name" = \'x\' OR "1', 1}),
+    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    ?assertEqual(<<"SELECT * FROM \"user\" WHERE \"name\"\" = 'x' OR \"\"1\" = $1">>, SQL).
+
+%%----------------------------------------------------------------------
 %%----------------------------------------------------------------------
 %% UNION / INTERSECT / EXCEPT
 %%----------------------------------------------------------------------

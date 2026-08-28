@@ -196,10 +196,16 @@ t_optimistic_lock_race() ->
     {ok, User} = insert_stress_user(<<"LockRace">>, <<"lockrace@test.com">>),
     Id = maps:get(id, User),
     Self = self(),
-    %% Two processes both read the same row, then try to update
+    %% Both processes must read before either writes. Without the barrier the
+    %% second can read the already-updated row, and its update then succeeds
+    %% legitimately - the test fails with [ok, ok] on a loaded runner.
     Do = fun(Tag) ->
         spawn_link(fun() ->
             {ok, Row} = kura_stress_repo:get(kura_stress_schema, Id),
+            Self ! {ready, Tag, self()},
+            receive
+                go -> ok
+            end,
             CS = kura_changeset:cast(
                 kura_stress_schema, Row, #{<<"name">> => <<"Updated">>}, [name]
             ),
@@ -210,6 +216,18 @@ t_optimistic_lock_race() ->
     end,
     Do(proc1),
     Do(proc2),
+    Pid1 =
+        receive
+            {ready, proc1, P1} -> P1
+        after 10000 -> error(timeout)
+        end,
+    Pid2 =
+        receive
+            {ready, proc2, P2} -> P2
+        after 10000 -> error(timeout)
+        end,
+    Pid1 ! go,
+    Pid2 ! go,
     R1 =
         receive
             {proc1, V1} -> V1
@@ -220,7 +238,8 @@ t_optimistic_lock_race() ->
             {proc2, V2} -> V2
         after 10000 -> error(timeout)
         end,
-    %% One should succeed, one should get stale
+    %% Both read lock_version 0, so whichever commits first bumps it and the
+    %% other matches no rows. The winner is arbitrary; that one loses is not.
     Results = lists:sort([element(1, R1), element(1, R2)]),
     ?assertEqual([error, ok], Results).
 

@@ -155,3 +155,48 @@ case kura_repo_worker:insert(my_repo, CS) of
         Errors
 end.
 ```
+
+### Dump Failures
+
+`put_change/3` writes a value into the changeset without casting it, so a value the
+field's type cannot serialise only surfaces on the way to the driver. Writes fail
+closed there: the field's dump error is added to the changeset and the statement is
+never sent.
+
+```erlang
+CS1 = kura_changeset:put_change(CS, metadata, {not_json, encodable}),
+{error, #kura_changeset{errors = [{metadata, ~"cannot cast to jsonb"}]}} =
+    my_repo:insert(CS1).
+```
+
+The bulk paths have no changeset to carry the error, so they return it directly:
+
+```erlang
+{error, {dump_failed, metadata, ~"cannot cast to jsonb"}} =
+    my_repo:insert_all(my_schema, Entries).
+
+{error, {dump_failed, metadata, ~"cannot cast to jsonb"}} =
+    my_repo:update_all(Query, #{metadata => {not_json, encodable}}).
+```
+
+`update_all/2` dumps its SET map through the schema's field types whenever the query's
+source is a schema module, so a `jsonb` map or any other non-primitive reaches the
+driver already serialised.
+
+The bulk paths take raw maps rather than cast changesets, so they also accept values in
+the form `cast/2` accepts: `~"admin"` for an `{enum, _}` field, `~"2026-01-01"` for a
+date. A dump is attempted first and the cast only runs if it fails, so the happy path
+costs nothing.
+
+A binary written to a `jsonb` field is treated as an already-serialised document only
+when it parses as a JSON **object or array**; anything else is stored as a JSON string.
+That keeps both directions honest: a pre-encoded document survives the bulk paths, and a
+value that came back from `load/2` - which decodes a stored JSON string into a bare
+binary - re-encodes to the string it was, rather than turning `"123"` into the number
+`123` on the next read-modify-write. To store a scalar, pass the Erlang term: `123`, or
+`true`, not their text.
+
+One asymmetry to know about: a `jsonb` column holding JSON `null` loads as the atom
+`null`, and writing that back stores SQL NULL rather than JSON null. `col IS NULL` and
+`jsonb_typeof(col) = 'null'` distinguish the two, so read a nullable jsonb column with
+that in mind.

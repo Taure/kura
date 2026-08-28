@@ -15,7 +15,8 @@
     group_by_tuple/3,
     reverse_maps/2,
     join_bins/2,
-    group_m2m_join/5
+    group_m2m_join/5,
+    quote_ident_bin/1
 ]).
 -endif.
 
@@ -198,7 +199,12 @@ preload_many_to_many(
                 [quote_ident_bin(atom_to_binary(C, utf8)) || C <- OwnerCols ++ RelatedCols], ~", "
             ),
             JoinSQL = iolist_to_binary([
-                ~"SELECT ", SelectCols, ~" FROM ", JoinTableBin, ~" WHERE ", InSQL
+                ~"SELECT ",
+                SelectCols,
+                ~" FROM ",
+                quote_ident_bin(JoinTableBin),
+                ~" WHERE ",
+                InSQL
             ]),
             #{rows := JoinRows} = kura_repo_worker:pgo_query(RepoMod, JoinSQL, InParams),
             RelTuples = lists:usort([fk_tuple(RelatedCols, JR) || JR <- JoinRows]),
@@ -243,7 +249,8 @@ m2m_placeholders(N, Counter, Acc) ->
     ]).
 
 quote_ident_bin(Name) when is_binary(Name) ->
-    <<$", Name/binary, $">>.
+    Escaped = binary:replace(Name, ~"\"", ~"\"\"", [global]),
+    <<$", Escaped/binary, $">>.
 
 %%----------------------------------------------------------------------
 %% Has many through

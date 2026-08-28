@@ -236,3 +236,57 @@ read_only_repo_rejects_soft_delete_test() ->
         CS = kura_changeset:cast(kura_test_soft_delete_schema, #{}, #{name => <<"x">>}, [name]),
         ?assertEqual({error, read_only}, kura_repo_worker:soft_delete(ro_repo, CS))
     end).
+
+quote_ident_bin_doubles_embedded_quotes_test() ->
+    ?assertEqual(
+        <<"\"users\"\" -- \"">>,
+        kura_repo_worker:quote_ident_bin(<<"users\" -- ">>)
+    ).
+
+quote_ident_bin_wraps_plain_name_test() ->
+    ?assertEqual(<<"\"users\"">>, kura_repo_worker:quote_ident_bin(<<"users">>)).
+
+%%----------------------------------------------------------------------
+%% dump_field/2 fails closed whatever cast/2 does
+%%----------------------------------------------------------------------
+
+dump_field_happy_path_test() ->
+    ?assertEqual({ok, 5}, kura_repo_worker:dump_field(integer, 5)).
+
+dump_field_casts_when_dump_rejects_test() ->
+    ?assertEqual({ok, 33}, kura_repo_worker:dump_field(integer, <<"33">>)),
+    ?assertEqual({ok, <<"admin">>}, kura_repo_worker:dump_field({enum, [admin]}, <<"admin">>)).
+
+dump_field_reports_the_cast_message_test() ->
+    ?assertEqual(
+        {error, <<"is not a valid enum value">>},
+        kura_repo_worker:dump_field({enum, [admin]}, <<"deleted">>)
+    ).
+
+dump_field_fails_closed_when_cast_raises_badarg_test() ->
+    ?assertEqual(
+        {error, <<"cannot dump utc_datetime">>},
+        kura_repo_worker:dump_field(utc_datetime, <<"2026-01-01T">>)
+    ),
+    ?assertEqual(
+        {error, <<"cannot dump string">>},
+        kura_repo_worker:dump_field(string, [999999])
+    ).
+
+dump_field_fails_closed_when_a_custom_cast_raises_test() ->
+    %% kura_test_raising_type:cast/1 has no binary clause: function_clause,
+    %% not badarg, which is what arbitrary consumer code raises.
+    ?assertEqual(
+        {error, <<"cannot dump">>},
+        kura_repo_worker:dump_field({custom, kura_test_raising_type}, <<"nope">>)
+    ).
+
+dump_field_raises_on_a_broken_type_module_test() ->
+    %% The boundary of the fail-closed contract: invalid data returns
+    %% {error, _}, a type module that does not load raises. dump/2 is called
+    %% outside the catch on purpose - that same call is what makes an
+    %% {encrypted, _} failure fail loud instead of substituting plaintext.
+    ?assertError(
+        undef,
+        kura_repo_worker:dump_field({custom, kura_no_such_type_module}, <<"nope">>)
+    ).

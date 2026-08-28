@@ -42,8 +42,6 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
 %% eqWAlizer: cast/2, dump/2, load/2 each have >7 clauses narrowing on the
 %% kura_type() union - exceeds eqWAlizer's clause-narrowing limit.
 -eqwalizer({nowarn_function, cast/2}).
--eqwalizer({nowarn_function, dump/2}).
--eqwalizer({nowarn_function, load/2}).
 
 -ifdef(TEST).
 -export([encryptable_inner/1, encode_inner/2, decode_inner/2]).
@@ -301,6 +299,8 @@ cast(Type, _V) ->
 -spec dump(kura_type(), term()) -> {ok, term()} | {error, binary()}.
 dump(_Type, undefined) ->
     {ok, null};
+dump(_Type, null) ->
+    {ok, null};
 dump(id, V) when is_integer(V) ->
     {ok, V};
 dump(integer, V) when is_integer(V) ->
@@ -335,14 +335,21 @@ dump(uuid, V) when is_binary(V) ->
     {ok, V};
 dump(jsonb, V) when is_map(V); is_list(V) ->
     json_encode(V);
-%% Postgres jsonb at the wire level is just a JSON document — scalars,
-%% booleans, and null are all valid roots. Mirror the `cast/2` change so
-%% scalar values that pass cast can also be dumped. Binaries cover JSON
-%% string scalars produced by `cast/2` (e.g. `<<"\"hi\"">>` casts to
-%% `<<"hi">>`), which previously had no dump clause and could not
-%% round-trip.
-dump(jsonb, V) when is_number(V); is_boolean(V); is_binary(V) ->
+%% Postgres jsonb at the wire level is just a JSON document - scalars,
+%% booleans, and null are all valid roots.
+dump(jsonb, V) when is_number(V); is_boolean(V) ->
     json_encode(V);
+%% A binary is ambiguous: an already-serialised document from a bulk-write
+%% caller, or a JSON string scalar that `load/2` or `cast/2` decoded out of
+%% one. Encoding the first turns a document into a quoted string; passing the
+%% second through turns the stored string "123" into the number 123 on the
+%% next read-modify-write. Only an object or an array is unambiguously a
+%% document - every scalar has an unambiguous non-binary spelling.
+dump(jsonb, V) when is_binary(V) ->
+    case json_decode(V) of
+        {ok, Doc} when is_map(Doc); is_list(Doc) -> {ok, V};
+        _ -> json_encode(V)
+    end;
 dump({enum, _}, V) when is_atom(V) ->
     {ok, atom_to_binary(V, utf8)};
 dump({array, Inner}, V) when is_list(V) ->
@@ -352,8 +359,8 @@ dump({embed, embeds_one, Mod}, V) when is_map(V) ->
 dump({embed, embeds_many, Mod}, V) when is_list(V) ->
     json_encode([dump_embed_to_term(Mod, Item) || Item <- V]);
 dump({encrypted, Inner}, V) ->
-    %% Raise (never return {error}) so the fail-open dump seam can't
-    %% substitute plaintext for an encrypted field.
+    %% Raise (never return {error}) so no caller can substitute plaintext
+    %% for an encrypted field by treating a dump failure as recoverable.
     encryptable_inner(Inner) orelse erlang:error({kura_crypto, {not_encryptable, Inner}}),
     {ok, Wire} = dump(Inner, V),
     {ok, kura_crypto:encrypt(encode_inner(Inner, Wire))};

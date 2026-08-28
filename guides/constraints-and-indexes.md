@@ -360,6 +360,10 @@ my_repo:insert(CS, #{on_conflict => {{constraint, ~"users_email_index"}, nothing
 %% Multi-column conflict target (matches a multi-column unique INDEX)
 my_repo:insert(CS, #{on_conflict =>
     {{columns, [world_id, zone_x, zone_y]}, {replace, [updated_at, payload]}}}).
+
+%% Partial unique index: pass the index predicate so PostgreSQL can infer it
+my_repo:insert(CS, #{on_conflict =>
+    {{columns, [name], #{where => ~"scope IS NULL"}}, {replace, [value]}}}).
 ```
 
 Use `{columns, [...]}` when your unique index spans multiple columns. `kura_migration`'s
@@ -367,6 +371,26 @@ Use `{columns, [...]}` when your unique index spans multiple columns. `kura_migr
 `ON CONFLICT (cols)` is the form PostgreSQL accepts — `{constraint, Name}` only
 works for indexes promoted to constraints (e.g. via `ADD CONSTRAINT ... UNIQUE USING INDEX`).
 Column order in the target must match the index definition.
+
+A table that uses *partial* unique indexes (e.g. one index for globally scoped rows
+and another for per-owner rows) cannot be targeted by `{constraint, Name}` - PostgreSQL
+will not accept a partial index there. Use the three-element `{columns, Cols, Opts}`
+target and give `where` the same predicate as the index; the emitted
+`ON CONFLICT (cols) WHERE pred` lets PostgreSQL infer the partial index, which makes a
+real single-statement upsert expressible instead of a fetch-then-branch with a TOCTOU
+window.
+
+`where` is raw SQL, spliced into the statement verbatim. kura does not parse, validate
+or escape it, and unlike `{fragment, SQL, Params}` it has no parameter channel -
+PostgreSQL cannot infer a partial unique index from a predicate containing a bind
+parameter, so any value in the predicate has to be an inlined literal. Never build this
+string from request data, a tenant identifier, or any other runtime value. It must be a
+compile-time constant matching the predicate you gave `create_index` character for
+character; anything looser can make PostgreSQL infer a different unique index and update
+a row you did not intend. `where` is the only key read. An empty map means no
+predicate, the same as the two-element `{columns, Cols}` target; a map carrying
+anything other than a binary `where` raises rather than silently dropping a predicate
+you believed you had written.
 
 ## Quick Reference
 

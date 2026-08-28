@@ -405,6 +405,34 @@ dump_jsonb_scalar_roots_test() ->
 dump_enum_test() ->
     ?assertEqual({ok, <<"active">>}, kura_types:dump({enum, [active, inactive]}, active)).
 
+dump_null_atom_test() ->
+    ?assertEqual({ok, null}, kura_types:dump(integer, null)),
+    ?assertEqual({ok, null}, kura_types:dump(jsonb, null)),
+    ?assertEqual({ok, null}, kura_types:dump({enum, [active, inactive]}, null)).
+
+dump_jsonb_binary_document_is_not_re_encoded_test() ->
+    ?assertEqual({ok, <<"{\"a\":1}">>}, kura_types:dump(jsonb, <<"{\"a\":1}">>)).
+
+dump_jsonb_binary_round_trips_a_string_scalar_test() ->
+    %% load/2 decodes a stored JSON string into a bare binary, so dump/2 must
+    %% encode it back rather than reading it as a document. Only an object or
+    %% an array is unambiguously already-serialised.
+    RT = fun(Stored) ->
+        {ok, Loaded} = kura_types:load(jsonb, Stored),
+        kura_types:dump(jsonb, Loaded)
+    end,
+    ?assertEqual({ok, <<"\"123\"">>}, RT(<<"\"123\"">>)),
+    ?assertEqual({ok, <<"\"true\"">>}, RT(<<"\"true\"">>)),
+    ?assertEqual({ok, <<"\"null\"">>}, RT(<<"\"null\"">>)),
+    ?assertEqual({ok, <<"\"hi\"">>}, RT(<<"\"hi\"">>)),
+    ?assertEqual({ok, <<"{\"a\":1}">>}, RT(<<"{\"a\":1}">>)).
+
+dump_jsonb_binary_array_is_a_document_test() ->
+    ?assertEqual({ok, <<"[1,2]">>}, kura_types:dump(jsonb, <<"[1,2]">>)).
+
+dump_jsonb_binary_scalar_is_encoded_test() ->
+    ?assertEqual({ok, <<"\"hi\"">>}, kura_types:dump(jsonb, <<"hi">>)).
+
 dump_enum_undefined_test() ->
     ?assertEqual({ok, null}, kura_types:dump({enum, [active, inactive]}, undefined)).
 

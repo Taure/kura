@@ -128,3 +128,12 @@ join_bins_multiple_test() ->
         <<"a, b, c">>,
         kura_preloader:join_bins([<<"a">>, <<"b">>, <<"c">>], <<", ">>)
     ).
+
+quote_ident_bin_doubles_embedded_quotes_test() ->
+    ?assertEqual(
+        <<"\"posts\"\" -- \"">>,
+        kura_preloader:quote_ident_bin(<<"posts\" -- ">>)
+    ).
+
+quote_ident_bin_wraps_plain_name_test() ->
+    ?assertEqual(<<"\"posts_tags\"">>, kura_preloader:quote_ident_bin(<<"posts_tags">>)).
