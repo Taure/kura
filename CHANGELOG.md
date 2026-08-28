@@ -30,9 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value bound for an encrypted column reached the driver unencrypted and
   was stored in the clear. Every other write path (`insert`, `update`,
   `insert_all`) encrypted correctly. Any row whose encrypted column was
-  last written by `update_all/2` holds plaintext and needs rewriting;
-  ciphertext is length-prefixed and version-tagged, so a value that is
-  not is a plaintext row.
+  last written by `update_all/2` holds plaintext and needs rewriting. A
+  value is ciphertext if and only if `kura_crypto:decrypt/1` does not
+  raise on it; the frame is
+  `<<Version:8, KeyId:8, Nonce:12/binary, Tag:16/binary, Cipher/binary>>`,
+  so in practice a stored value under 30 bytes, or one whose first byte is
+  not the frame version, is plaintext. No known consumer is affected - no
+  repo depending on kura declares an `{encrypted, _}` field.
 - CTE names passed to `kura_query:with_cte/3` and the many-to-many
   join-table name are now quoted, and `quote_ident/1` doubles an embedded
   double quote. A consumer deriving any of those from request data could
@@ -42,6 +46,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A binary written to a `jsonb` field is no longer double-encoded.**
+  `kura_types:dump/2` encoded every binary as a JSON string scalar, so an
+  already-serialised document was stored as a quoted string: `->`, `->>`
+  and `@>` against it all returned NULL, and a predicate shaped
+  `WHERE NOT (policy @> '...')` failed open. A binary that parses as JSON
+  is now stored as the document it is; one that does not is still encoded
+  as a string scalar, which keeps the `cast/2` round trip. This affected
+  `insert` and `update` as well, not only the bulk paths.
+- The atom `null` dumps to SQL NULL for every type, matching `undefined`.
+  It previously reached the driver raw through the fall-open seam, which
+  also meant `{enum, _}` stored the literal string `"null"`.
 - Writes fail closed when a value cannot be dumped. Previously the raw
   undumped value was handed to the driver, which turned a deterministic
   type error into a driver-level `badarg` or, for a value the server
@@ -85,7 +100,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   take raw maps rather than cast changesets, so `~"admin"` for an enum or
   `~"2026-01-01"` for a date now casts before dumping instead of failing.
   The cast only runs after a dump attempt fails, so the happy path is
-  unchanged.
+  unchanged. `{encrypted, _}` fields are the exception: they raise on a bad
+  value rather than casting, so that a crypto failure can never be treated
+  as recoverable.
 - `on_conflict` accepts `{{columns, Cols, #{where => Predicate}}, Action}`,
   emitting `ON CONFLICT (cols) WHERE predicate`. Tables using partial
   unique indexes can now express a single-statement upsert;

@@ -909,8 +909,9 @@ dump_set_fields([{K, V} | Rest], Types, Acc) ->
 %% The bulk paths take raw maps rather than cast changesets, so a caller
 %% reasonably passes a value in the form `cast/2` accepts - `~"admin"` for an
 %% enum, `~"2026-01-01"` for a date. Dump first so the cast costs nothing on
-%% the happy path, and fall back to casting before failing the write. The
-%% original dump message is the one reported: it names the target type.
+%% the happy path, and fall back to casting before failing the write. When the
+%% cast also fails its message is the one reported - `dump/2` only knows the
+%% shape is wrong, while `cast/2` knows why the value is invalid.
 dump_field(Type, V) ->
     case kura_types:dump(Type, V) of
         {ok, Dumped} ->
@@ -918,7 +919,7 @@ dump_field(Type, V) ->
         {error, Msg} ->
             case kura_types:cast(Type, V) of
                 {ok, Cast} -> dump_cast(Type, Cast, Msg);
-                {error, _} -> {error, Msg}
+                {error, CastMsg} -> {error, CastMsg}
             end
     end.
 

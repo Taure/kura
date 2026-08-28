@@ -16,9 +16,10 @@ random 96-bit nonce. Keys come from a `kura_keyring` (default
 lookup, never a trial-decrypt.
 
 Every failure **raises** `error({kura_crypto, Reason})` - it never returns
-a value or an `{error, _}` tuple. This is deliberate: the dump/load seams
-fall open (substitute the raw value on `{error, _}`), so a raise is the
-only way to guarantee a crypto failure never writes plaintext to an
+a value or an `{error, _}` tuple. This is deliberate: the write path treats
+an `{error, _}` from `kura_types:dump/2` as recoverable and retries it
+through `kura_types:cast/2`, and the load seam still falls open, so a raise
+is the only way to guarantee a crypto failure never writes plaintext to an
 encrypted column or returns ciphertext as if it were the value. `Reason`
 carries only atoms and the (non-secret) `KeyId` - never key material,
 plaintext, or ciphertext, which would leak into crash reports and logs.

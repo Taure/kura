@@ -165,20 +165,33 @@ never sent.
 
 ```erlang
 CS1 = kura_changeset:put_change(CS, metadata, {not_json, encodable}),
-{error, #kura_changeset{errors = [{metadata, ~"cannot dump jsonb"}]}} =
+{error, #kura_changeset{errors = [{metadata, ~"cannot cast to jsonb"}]}} =
     my_repo:insert(CS1).
 ```
 
 The bulk paths have no changeset to carry the error, so they return it directly:
 
 ```erlang
-{error, {dump_failed, metadata, ~"cannot dump jsonb"}} =
+{error, {dump_failed, metadata, ~"cannot cast to jsonb"}} =
     my_repo:insert_all(my_schema, Entries).
 
-{error, {dump_failed, metadata, ~"cannot dump jsonb"}} =
+{error, {dump_failed, metadata, ~"cannot cast to jsonb"}} =
     my_repo:update_all(Query, #{metadata => {not_json, encodable}}).
 ```
 
 `update_all/2` dumps its SET map through the schema's field types whenever the query's
 source is a schema module, so a `jsonb` map or any other non-primitive reaches the
 driver already serialised.
+
+The bulk paths take raw maps rather than cast changesets, so they also accept values in
+the form `cast/2` accepts: `~"admin"` for an `{enum, _}` field, `~"2026-01-01"` for a
+date. A dump is attempted first and the cast only runs if it fails, so the happy path
+costs nothing.
+
+A binary written to a `jsonb` field is treated as an already-serialised document when it
+parses as JSON, and as a JSON string scalar when it does not. That mirrors `cast/2`,
+which decodes a jsonb binary, so both write paths agree on what a binary means. It also
+means `~"true"`, `~"123"` and `~"null"` are stored as a JSON boolean, number and null
+rather than as strings - pass `~"\"123\""` to store the string. One divergence worth
+knowing: the atom `null` writes SQL NULL, while the binary `~"null"` writes a jsonb
+null, and `col IS NULL` and `jsonb_typeof(col) = 'null'` tell those apart.
