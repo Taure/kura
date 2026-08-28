@@ -620,8 +620,10 @@ columns_target(Columns) ->
 
 index_predicate(#{where := Expr}) when is_binary(Expr) ->
     [~" WHERE ", Expr];
-index_predicate(#{}) ->
-    [].
+index_predicate(Opts) when map_size(Opts) =:= 0 ->
+    [];
+index_predicate(Opts) ->
+    erlang:error({kura, {invalid_on_conflict_opts, Opts}}).
 
 compile_on_conflict_update(ConflictTarget, UpdateFields, Data, Counter) ->
     {Sets, Params, _} = build_set_parts(UpdateFields, Data, Counter),

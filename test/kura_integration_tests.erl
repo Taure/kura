@@ -101,6 +101,10 @@ integration_test_() ->
             {"insert_all fails closed on an undumpable field",
                 fun t_insert_all_dump_fails_closed/0},
             {"update_all dumps through the schema", fun t_update_all_dumps/0},
+            {"update_all keeps a pre-encoded jsonb document a document",
+                fun t_update_all_jsonb_binary_document/0},
+            {"update_all writes SQL NULL for a null value", fun t_update_all_null/0},
+            {"bulk paths accept cast-shaped values", fun t_bulk_accepts_cast_shapes/0},
             {"update_all fails closed on an undumpable field",
                 fun t_update_all_dump_fails_closed/0},
 
@@ -951,6 +955,44 @@ t_update_all_dumps() ->
         {email, <<"updalldump@example.com">>}
     ]),
     ?assertEqual(#{<<"tier">> => <<"gold">>}, maps:get(metadata, Found)).
+
+t_update_all_jsonb_binary_document() ->
+    {ok, _} = insert_user(<<"JsonBin">>, <<"jsonbin@example.com">>),
+    Q = kura_query:where(kura_query:from(kura_test_schema), {email, <<"jsonbin@example.com">>}),
+    {ok, 1} = kura_test_repo:update_all(Q, #{metadata => <<"{\"admin\":true}">>}),
+    {ok, [Row]} = kura_test_repo:query(
+        "SELECT jsonb_typeof(metadata) AS kind, metadata->>'admin' AS admin "
+        "FROM users WHERE email = $1",
+        [<<"jsonbin@example.com">>]
+    ),
+    ?assertEqual(<<"object">>, maps:get(kind, Row)),
+    ?assertEqual(<<"true">>, maps:get(admin, Row)).
+
+t_update_all_null() ->
+    {ok, _} = insert_user(<<"NullAll">>, <<"nullall@example.com">>, #{
+        <<"age">> => 41, <<"metadata">> => #{<<"a">> => 1}
+    }),
+    Q = kura_query:where(kura_query:from(kura_test_schema), {email, <<"nullall@example.com">>}),
+    {ok, 1} = kura_test_repo:update_all(Q, #{age => null, metadata => null}),
+    {ok, Found} = kura_test_repo:get_by(kura_test_schema, [{email, <<"nullall@example.com">>}]),
+    ?assertEqual(undefined, maps:get(age, Found)),
+    ?assertEqual(undefined, maps:get(metadata, Found)).
+
+t_bulk_accepts_cast_shapes() ->
+    Entries = [
+        #{
+            name => <<"CastShape">>,
+            email => <<"castshape@example.com">>,
+            age => <<"33">>,
+            active => <<"true">>,
+            score => 7
+        }
+    ],
+    {ok, 1} = kura_test_repo:insert_all(kura_test_schema, Entries),
+    {ok, Found} = kura_test_repo:get_by(kura_test_schema, [{email, <<"castshape@example.com">>}]),
+    ?assertEqual(33, maps:get(age, Found)),
+    ?assertEqual(true, maps:get(active, Found)),
+    ?assertEqual(7.0, maps:get(score, Found)).
 
 t_update_all_dump_fails_closed() ->
     {ok, _} = insert_user(<<"UpdAllBad">>, <<"updallbad@example.com">>),

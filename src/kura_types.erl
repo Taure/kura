@@ -301,6 +301,8 @@ cast(Type, _V) ->
 -spec dump(kura_type(), term()) -> {ok, term()} | {error, binary()}.
 dump(_Type, undefined) ->
     {ok, null};
+dump(_Type, null) ->
+    {ok, null};
 dump(id, V) when is_integer(V) ->
     {ok, V};
 dump(integer, V) when is_integer(V) ->
@@ -335,21 +337,21 @@ dump(uuid, V) when is_binary(V) ->
     {ok, V};
 dump(jsonb, V) when is_map(V); is_list(V) ->
     json_encode(V);
-%% Postgres jsonb at the wire level is just a JSON document — scalars,
-%% booleans, and null are all valid roots. Mirror the `cast/2` change so
-%% scalar values that pass cast can also be dumped. Binaries cover JSON
-%% string scalars produced by `cast/2` (e.g. `<<"\"hi\"">>` casts to
-%% `<<"hi">>`), which previously had no dump clause and could not
-%% round-trip.
-dump(jsonb, V) when is_number(V); is_boolean(V); is_binary(V) ->
+%% Postgres jsonb at the wire level is just a JSON document - scalars,
+%% booleans, and null are all valid roots.
+dump(jsonb, V) when is_number(V); is_boolean(V) ->
     json_encode(V);
+%% A binary is ambiguous: an already-serialised document from a bulk-write
+%% caller, or a JSON string scalar that `cast/2` decoded out of one. Encoding
+%% the first turns a document into a quoted string, so resolve it the way
+%% `cast/2` does - if it parses as JSON it is already a document.
+dump(jsonb, V) when is_binary(V) ->
+    case json_decode(V) of
+        {ok, _} -> {ok, V};
+        {error, _} -> json_encode(V)
+    end;
 dump({enum, _}, V) when is_atom(V) ->
     {ok, atom_to_binary(V, utf8)};
-dump({enum, Values}, V) when is_binary(V) ->
-    case lists:any(fun(A) -> atom_to_binary(A, utf8) =:= V end, Values) of
-        true -> {ok, V};
-        false -> {error, ~"is not a valid enum value"}
-    end;
 dump({array, Inner}, V) when is_list(V) ->
     dump_array(Inner, V, []);
 dump({embed, embeds_one, Mod}, V) when is_map(V) ->

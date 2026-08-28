@@ -23,8 +23,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   applied versions; `fake/2` leaves every other application's migrations
   pending.
 
+### Security
+
+- **`update_all/2` wrote plaintext into `{encrypted, _}` columns.** It was
+  the only write path that never dumped values through the schema, so a
+  value bound for an encrypted column reached the driver unencrypted and
+  was stored in the clear. Every other write path (`insert`, `update`,
+  `insert_all`) encrypted correctly. Any row whose encrypted column was
+  last written by `update_all/2` holds plaintext and needs rewriting;
+  ciphertext is length-prefixed and version-tagged, so a value that is
+  not is a plaintext row.
+- CTE names passed to `kura_query:with_cte/3` and the many-to-many
+  join-table name are now quoted, and `quote_ident/1` doubles an embedded
+  double quote. A consumer deriving any of those from request data could
+  previously break out of the quoting and inject SQL. No identifier kura
+  itself renders was affected - all of them come from developer-supplied
+  atoms.
+
 ### Fixed
 
+- Writes fail closed when a value cannot be dumped. Previously the raw
+  undumped value was handed to the driver, which turned a deterministic
+  type error into a driver-level `badarg` or, for a value the server
+  happened to accept, a silent write of the wrong thing. Changeset paths
+  add the error to the changeset; `insert_all/2,3` and `update_all/2`
+  return `{error, {dump_failed, Field, Message}}`.
 - A migration version claimed by two modules is now
   `{error, {duplicate_migration_version, [{Version, [{App, Module}]}]}}`
   instead of a partially-applied batch failing on the
@@ -53,6 +76,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `update_all/2` dumps its SET map through the schema's field types
+  whenever the query source is a schema module, matching `insert` and
+  `update`. A `jsonb` map or any other non-primitive is now serialised
+  rather than reaching the driver raw.
+- The bulk write paths accept values in the form `cast/2` accepts, not
+  only the form `dump/2` accepts. `insert_all/2,3` and `update_all/2`
+  take raw maps rather than cast changesets, so `~"admin"` for an enum or
+  `~"2026-01-01"` for a date now casts before dumping instead of failing.
+  The cast only runs after a dump attempt fails, so the happy path is
+  unchanged.
+- `on_conflict` accepts `{{columns, Cols, #{where => Predicate}}, Action}`,
+  emitting `ON CONFLICT (cols) WHERE predicate`. Tables using partial
+  unique indexes can now express a single-statement upsert;
+  `ON CONFLICT ON CONSTRAINT` cannot name a partial index. The predicate
+  is raw SQL, spliced verbatim - it must be a trusted literal matching
+  the index definition. An options map carrying anything other than a
+  binary `where` now raises rather than silently emitting no predicate,
+  which would let PostgreSQL infer a different unique index.
 - `kura_migrator:status/1` may now return `{error, Reason}` when
   discovery fails, and lists migrations in apply order. Unchanged for a
   single-application repo.

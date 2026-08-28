@@ -593,6 +593,18 @@ insert_on_conflict_empty_opts_has_no_predicate_test() ->
         SQL
     ).
 
+insert_on_conflict_malformed_opts_raises_test() ->
+    Insert = fun(Opts) ->
+        kura_dialect_pg:insert(
+            kura_test_schema,
+            [name, email],
+            #{name => <<"Alice">>, email => <<"a@b.com">>},
+            #{on_conflict => {{columns, [email], Opts}, nothing}}
+        )
+    end,
+    ?assertError({kura, {invalid_on_conflict_opts, _}}, Insert(#{where => "scope IS NULL"})),
+    ?assertError({kura, {invalid_on_conflict_opts, _}}, Insert(#{wehre => <<"scope IS NULL">>})).
+
 insert_on_conflict_columns_nothing_test() ->
     {SQL, Params} = kura_dialect_pg:insert(
         kura_test_schema,

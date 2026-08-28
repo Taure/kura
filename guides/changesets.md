@@ -164,7 +164,7 @@ closed there: the field's dump error is added to the changeset and the statement
 never sent.
 
 ```erlang
-CS1 = kura_changeset:put_change(CS, metadata, {not, json}),
+CS1 = kura_changeset:put_change(CS, metadata, {not_json, encodable}),
 {error, #kura_changeset{errors = [{metadata, ~"cannot dump jsonb"}]}} =
     my_repo:insert(CS1).
 ```
@@ -176,7 +176,7 @@ The bulk paths have no changeset to carry the error, so they return it directly:
     my_repo:insert_all(my_schema, Entries).
 
 {error, {dump_failed, metadata, ~"cannot dump jsonb"}} =
-    my_repo:update_all(Query, #{metadata => {not, json}}).
+    my_repo:update_all(Query, #{metadata => {not_json, encodable}}).
 ```
 
 `update_all/2` dumps its SET map through the schema's field types whenever the query's

@@ -827,7 +827,10 @@ persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
     Children = [persist_m2m_child(RepoMod, ChildCS) || ChildCS <- ChildCSs],
     {OwnerConds, OwnerParams, _} = key_conds(lists:zip(OwnerCols, OwnerValues), 1),
     DeleteSQL = iolist_to_binary([
-        ~"DELETE FROM ", JoinTable, ~" WHERE ", lists:join(~" AND ", OwnerConds)
+        ~"DELETE FROM ",
+        quote_ident_bin(JoinTable),
+        ~" WHERE ",
+        lists:join(~" AND ", OwnerConds)
     ]),
     _ = kura_db:query(RepoMod, DeleteSQL, OwnerParams),
     lists:foreach(
@@ -849,7 +852,13 @@ m2m_insert_sql(JoinTable, Cols, Values) ->
      || N <- lists:seq(1, length(Cols))
     ]),
     SQL = iolist_to_binary([
-        ~"INSERT INTO ", JoinTable, ~" (", ColSQL, ~") VALUES (", Placeholders, ~")"
+        ~"INSERT INTO ",
+        quote_ident_bin(JoinTable),
+        ~" (",
+        ColSQL,
+        ~") VALUES (",
+        Placeholders,
+        ~")"
     ]),
     {SQL, Values}.
 
@@ -889,12 +898,34 @@ dump_set_fields([], _Types, Acc) ->
 dump_set_fields([{K, V} | Rest], Types, Acc) ->
     case Types of
         #{K := Type} ->
-            case kura_types:dump(Type, V) of
+            case dump_field(Type, V) of
                 {ok, Dumped} -> dump_set_fields(Rest, Types, Acc#{K => Dumped});
                 {error, Msg} -> {error, {dump_failed, K, Msg}}
             end;
         #{} ->
             dump_set_fields(Rest, Types, Acc#{K => V})
+    end.
+
+%% The bulk paths take raw maps rather than cast changesets, so a caller
+%% reasonably passes a value in the form `cast/2` accepts - `~"admin"` for an
+%% enum, `~"2026-01-01"` for a date. Dump first so the cast costs nothing on
+%% the happy path, and fall back to casting before failing the write. The
+%% original dump message is the one reported: it names the target type.
+dump_field(Type, V) ->
+    case kura_types:dump(Type, V) of
+        {ok, Dumped} ->
+            {ok, Dumped};
+        {error, Msg} ->
+            case kura_types:cast(Type, V) of
+                {ok, Cast} -> dump_cast(Type, Cast, Msg);
+                {error, _} -> {error, Msg}
+            end
+    end.
+
+dump_cast(Type, Cast, Msg) ->
+    case kura_types:dump(Type, Cast) of
+        {ok, Dumped} -> {ok, Dumped};
+        {error, _} -> {error, Msg}
     end.
 
 is_schema_module(Mod) ->
@@ -931,7 +962,7 @@ dump_change_fields([{K, V} | Rest], Types, NonVirtual, Acc) ->
         {false, _} ->
             dump_change_fields(Rest, Types, NonVirtual, Acc);
         {true, #{K := Type}} ->
-            case kura_types:dump(Type, V) of
+            case dump_field(Type, V) of
                 {ok, Dumped} -> dump_change_fields(Rest, Types, NonVirtual, Acc#{K => Dumped});
                 {error, Msg} -> {error, {K, Msg}}
             end;

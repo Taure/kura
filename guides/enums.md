@@ -44,18 +44,6 @@ kura_types:dump({enum, [draft, published]}, draft).
 %% {ok, ~"draft"}
 ```
 
-A binary that already names one of the declared values dumps unchanged, so the bulk
-paths (`insert_all/2`, `update_all/2`), which take raw maps rather than cast
-changesets, accept either form. A binary that names no declared value is rejected.
-
-```erlang
-kura_types:dump({enum, [draft, published]}, ~"draft").
-%% {ok, ~"draft"}
-
-kura_types:dump({enum, [draft, published]}, ~"deleted").
-%% {error, ~"is not a valid enum value"}
-```
-
 ## Load (PostgreSQL to Erlang)
 
 Binaries from the database are converted back to atoms:

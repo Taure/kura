@@ -380,6 +380,16 @@ target and give `where` the same predicate as the index; the emitted
 real single-statement upsert expressible instead of a fetch-then-branch with a TOCTOU
 window.
 
+`where` is raw SQL, spliced into the statement verbatim. kura does not parse, validate
+or escape it, and unlike `{fragment, SQL, Params}` it has no parameter channel -
+PostgreSQL cannot infer a partial unique index from a predicate containing a bind
+parameter, so any value in the predicate has to be an inlined literal. Never build this
+string from request data, a tenant identifier, or any other runtime value. It must be a
+compile-time constant matching the predicate you gave `create_index` character for
+character; anything looser can make PostgreSQL infer a different unique index and update
+a row you did not intend. The options map takes `where` and nothing else, and a map
+carrying anything other than a binary `where` raises.
+
 ## Quick Reference
 
 | SQL | Kura Schema | Kura Migration |
