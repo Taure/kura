@@ -54,6 +54,10 @@ was really a global version window could never select it.
     rollback_of_an_application_outside_the_set_is_named/1,
     fake_refuses_a_multi_application_repo/1,
     fake_of_one_application_leaves_the_others_pending/1,
+    fake_up_to_a_version_leaves_later_ones_pending/1,
+    fake_up_to_a_version_no_migration_has_stamps_nothing/1,
+    fake_up_to_a_version_refuses_a_multi_application_repo/1,
+    fake_of_one_application_up_to_a_version/1,
     rollback_names_applied_versions_with_no_module/1,
     rollback_ignores_orphans_outside_the_window/1,
     duplicate_version_across_apps_blocks_migrate/1,
@@ -92,6 +96,10 @@ all() ->
         rollback_of_an_application_outside_the_set_is_named,
         fake_refuses_a_multi_application_repo,
         fake_of_one_application_leaves_the_others_pending,
+        fake_up_to_a_version_leaves_later_ones_pending,
+        fake_up_to_a_version_no_migration_has_stamps_nothing,
+        fake_up_to_a_version_refuses_a_multi_application_repo,
+        fake_of_one_application_up_to_a_version,
         rollback_names_applied_versions_with_no_module,
         rollback_ignores_orphans_outside_the_window,
         duplicate_version_across_apps_blocks_migrate,
@@ -306,6 +314,61 @@ fake_of_one_application_leaves_the_others_pending(_Config) ->
     ?assertEqual(
         {error, {unknown_migration_app, ?CLASH, [?CORE, ?EXT]}},
         kura_migrator:fake(?REPO, ?CLASH)
+    ).
+
+fake_up_to_a_version_leaves_later_ones_pending(_Config) ->
+    %% Partial brownfield (kura#156): an introspected baseline whose
+    %% tables exist, then a genuinely new migration whose table does not.
+    ?assertEqual({ok, [?CORE_A]}, kura_migrator:fake(?PLAIN_REPO, ?CORE_A)),
+    ?assertNot(table_exists(~"ma_core_a")),
+    ?assertEqual(
+        [
+            {?CORE_A, m20250101100000_ma_core_a, up},
+            {?CORE_C, m20250101300000_ma_core_c, pending}
+        ],
+        kura_migrator:status(?PLAIN_REPO)
+    ),
+    ?assertEqual({ok, [?CORE_C]}, kura_migrator:migrate(?PLAIN_REPO)),
+    ?assert(table_exists(~"ma_core_c")).
+
+fake_up_to_a_version_no_migration_has_stamps_nothing(_Config) ->
+    %% A mistyped timestamp above every version would otherwise stamp the
+    %% lot, which is the fake/1 footgun this form exists to avoid.
+    ?assertEqual(
+        {error, {unknown_migration_version, 20259999000000}},
+        kura_migrator:fake(?PLAIN_REPO, 20259999000000)
+    ),
+    ?assertEqual([], applied_versions()).
+
+fake_up_to_a_version_refuses_a_multi_application_repo(_Config) ->
+    declare([?EXT]),
+
+    ?assertEqual(
+        {error, {ambiguous_fake, [?CORE, ?EXT]}},
+        kura_migrator:fake(?REPO, ?EXT_B)
+    ),
+    ?assertEqual([], applied_versions()).
+
+fake_of_one_application_up_to_a_version(_Config) ->
+    %% ?EXT_B sorts between core's versions but belongs to the extension,
+    %% so it is no bound for core, and a core window reaching past it
+    %% (?CORE_C) must still leave it pending. A window chosen by version
+    %% alone would stamp it.
+    declare([?EXT]),
+
+    ?assertEqual(
+        {error, {unknown_migration_version, ?EXT_B}},
+        kura_migrator:fake(?REPO, ?CORE, ?EXT_B)
+    ),
+    ?assertEqual({ok, [?CORE_A, ?CORE_C]}, kura_migrator:fake(?REPO, ?CORE, ?CORE_C)),
+    ?assertEqual([?CORE_A, ?CORE_C], applied_versions()),
+    ?assertEqual({ok, [?EXT_B]}, kura_migrator:migrate(?REPO)),
+    ?assert(table_exists(~"ma_ext_b")),
+    ?assertNot(table_exists(~"ma_core_c")),
+
+    ?assertEqual(
+        {error, {unknown_migration_app, ?CLASH, [?CORE, ?EXT]}},
+        kura_migrator:fake(?REPO, ?CLASH, ?CORE_A)
     ).
 
 rollback_names_applied_versions_with_no_module(_Config) ->

@@ -38,6 +38,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memoised. `is_schema/1` replaces three hand-rolled copies of the same
   `code:ensure_loaded/1` + `function_exported/3` check, whose negative
   answer cost a `code_server` round trip on every call.
+- Version-scoped baselining. `kura_migrator:fake(Repo, UpTo)` stamps only
+  the pending migrations at or below version `UpTo`, so a partial
+  brownfield adoption can baseline the introspected prefix and let
+  `migrate/1` create the genuinely new tables. `fake/3` does the same
+  for one application of a multi-application repo. `UpTo` must be the
+  version of a discovered migration, so a mistyped timestamp stamps
+  nothing instead of everything (#156).
 
 
 ### Added
