@@ -31,13 +31,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   constraint instead of upserting, and the partial-index conflict target
   was unreachable from the bulk path. The `DO UPDATE` SET list is built
   from `EXCLUDED`, because one clause applies to every row.
-- `kura_schema_verify` matches a declared index by its key columns, in
-  order, `unique`, and whether it is partial, instead of by the generated
-  `<table>_<cols>_index` name. An index created under a custom name, or
-  renamed since, no longer reports as `missing_index`, and one that has
-  the generated name over the wrong columns or without `UNIQUE` now does.
-  A partial index's predicate is not compared, since PostgreSQL stores
-  its own rewrite of the `WHERE` text.
+- `kura_schema_verify` matches a declared index by what it is instead of
+  by the generated `<table>_<cols>_index` name: the same key columns in
+  order, and for a unique declaration a valid unique index that is
+  partial exactly when the declaration is. A plain declaration is also
+  satisfied by a unique index, and a partial one by a full index. An
+  index created under a custom name, renamed since, or added as
+  `ADD CONSTRAINT ... UNIQUE` no longer reports as `missing_index`. A
+  partial index's predicate is not compared, since PostgreSQL stores its
+  own rewrite of the `WHERE` text.
+
+  **Upgrading:** `verify/1,2` can report drift on a database that passed
+  before, so a readiness probe built on it may turn unready after the
+  bump. Each new report is real: an index under the generated name over
+  the wrong columns, without `UNIQUE`, partial where the declaration is
+  not, or left invalid by a failed `CREATE INDEX CONCURRENTLY`, which
+  PostgreSQL ignores, for `ON CONFLICT` too.
+
+### Deprecated
+
+- `kura_schema_verify:declared_index_name/2`. Call
+  `kura_migration:index_name/2`, which it wraps.
 
 ### Added
 

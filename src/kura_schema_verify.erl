@@ -29,15 +29,31 @@ in practice and would generate false positives). We pin only:
 
 - declared tables exist
 - declared columns exist (by name) on those tables
-- declared indexes exist, matched on their key columns in order,
-  `unique`, and whether they are partial
+- declared indexes exist as valid indexes, matched by what they are,
+  not by what they are called: an index created under a custom name,
+  or renamed since, counts, and one carrying the generated name over
+  the wrong columns does not
 
-An index is matched by what it is, not by what it is called: one
-created under a custom name, or renamed since, still counts, and one
-that carries the generated name over the wrong columns does not. A
-partial index's predicate is not compared, because PostgreSQL stores
-its own rewrite of the `WHERE` text (`status = 'active'` comes back as
-`((status)::text = 'active'::text)`).
+A declared index is satisfied by a live one over the same key columns,
+in order. A declared unique index needs a unique one that is partial
+exactly when the declaration is. A declared plain index is also
+satisfied by a unique one, and a partial declaration by a full index,
+since either serves the same lookups. Expression columns never match a
+declared column, and `INCLUDE` columns are not key columns. A partial
+index's predicate is not compared, because PostgreSQL stores its own
+rewrite of the `WHERE` text (`status = 'active'` comes back as
+`((status)::text = 'active'::text)`). An index left invalid by a failed
+`CREATE INDEX CONCURRENTLY` does not count: PostgreSQL ignores it, for
+`ON CONFLICT` inference too.
+
+Out of scope: an `on_conflict` target naming a constraint
+(`{constraint, Name}`) resolves through `pg_constraint`, which kura's
+`CREATE UNIQUE INDEX` never populates. Only `current_schema()` is
+checked, so under schema-prefix tenancy this does not show whether any
+tenant's schema is migrated.
+
+Each call runs two catalog queries. Run it at boot, or cache the result
+behind a readiness probe, rather than once per probe request.
 
 False negatives are possible (e.g. column type drift), but every
 issue this *does* report is a real, blocking problem.
@@ -54,13 +70,14 @@ issue this *does* report is a real, blocking problem.
 
 -export_type([drift_issue/0]).
 
+-deprecated({declared_index_name, 2, "use kura_migration:index_name/2"}).
+
 -type drift_issue() ::
     {missing_table, binary()}
     | {missing_column, binary(), binary()}
     | {missing_index, binary(), [atom()], map()}.
 
-%% Key columns in order, unique, partial.
--type index_shape() :: {[binary()], boolean(), boolean()}.
+-type index_shape() :: {KeyColumns :: [binary()], Unique :: boolean(), Partial :: boolean()}.
 
 %%----------------------------------------------------------------------
 %% Public API
@@ -112,8 +129,7 @@ discover_schemas(RepoMod) ->
 
 -doc """
 The conventional name kura generates for an index declared via
-`c:kura_schema:indexes/0`. `verify/1,2` does not match on it; it is
-exposed for callers building diagnostics.
+`c:kura_schema:indexes/0`. Deprecated: call `kura_migration:index_name/2`.
 """.
 -spec declared_index_name(binary(), [atom()]) -> binary().
 declared_index_name(Table, Cols) ->
@@ -186,7 +202,7 @@ load_columns(RepoMod) ->
     %% know about. Schema-declared column names are converted to binary
     %% at compare time.
     SQL =
-        ~"SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = current_schema()",
+        ~"SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = pg_catalog.current_schema()",
     case kura_db:query(RepoMod, SQL, []) of
         #{rows := Rows} when is_list(Rows) ->
             {ok, build_col_state(Rows, #{})};
@@ -209,14 +225,30 @@ build_col_state([_ | Rest], Acc) ->
 -spec load_indexes(module()) ->
     {ok, #{binary() => [index_shape()]}} | {error, term()}.
 load_indexes(RepoMod) ->
-    %% One row per key column, in key order. An expression column has no
-    %% attname and reads as `<<>>`, so it never matches a declared column;
-    %% INCLUDE columns sit past indnkeyatts and are left out.
+    %% An expression column has no attname and reads as `<<>>`, so it never
+    %% matches a declared column. INCLUDE columns sit past indnkeyatts.
+    %% Catalog names are qualified so a search_path cannot shadow them.
     SQL =
-        ~"SELECT c.relname::text AS tablename, i.relname::text AS indexname, ix.indisunique AS is_unique, ix.indpred IS NOT NULL AS is_partial, COALESCE(a.attname::text, '') AS column_name FROM pg_index ix JOIN pg_class i ON i.oid = ix.indexrelid JOIN pg_class c ON c.oid = ix.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace CROSS JOIN LATERAL unnest(ix.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord) LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum WHERE n.nspname = current_schema() AND k.ord <= ix.indnkeyatts ORDER BY i.relname, k.ord",
+        ~"""
+    SELECT c.relname::text AS tablename,
+           i.relname::text AS indexname,
+           ix.indisunique AS is_unique,
+           ix.indpred IS NOT NULL AS is_partial,
+           COALESCE(a.attname::text, '') AS column_name
+    FROM pg_catalog.pg_index ix
+    JOIN pg_catalog.pg_class i ON i.oid = ix.indexrelid
+    JOIN pg_catalog.pg_class c ON c.oid = ix.indrelid
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    CROSS JOIN LATERAL pg_catalog.unnest(ix.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)
+    LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+    WHERE n.nspname = pg_catalog.current_schema()
+      AND ix.indisvalid
+      AND k.ord <= ix.indnkeyatts
+    ORDER BY i.relname, k.ord
+    """,
     case kura_db:query(RepoMod, SQL, []) of
         #{rows := Rows} when is_list(Rows) ->
-            {ok, build_idx_state(group_index_columns(Rows, #{}))};
+            {ok, add_shapes(maps:to_list(group_index_columns(Rows, #{})), #{})};
         {error, Reason} ->
             {error, Reason}
     end.
@@ -243,11 +275,6 @@ group_index_columns(
     group_index_columns(Rest, Acc#{Key => {Cols ++ [ensure_binary(ColBin)], Unique, Partial}});
 group_index_columns([_ | Rest], Acc) ->
     group_index_columns(Rest, Acc).
-
--spec build_idx_state(#{{binary(), binary()} => index_shape()}) ->
-    #{binary() => [index_shape()]}.
-build_idx_state(Grouped) ->
-    add_shapes(maps:to_list(Grouped), #{}).
 
 -spec add_shapes([{{binary(), binary()}, index_shape()}], #{binary() => [index_shape()]}) ->
     #{binary() => [index_shape()]}.
@@ -310,16 +337,25 @@ check_indexes(Mod, Table, IdxState) ->
             [
                 {missing_index, Table, Cols, Opts}
              || {Cols, Opts} <- Mod:indexes(),
-                not lists:member(declared_shape(Cols, Opts), Existing)
+                not satisfied(declared_shape(Cols, Opts), Existing)
             ]
     end.
+
+-spec satisfied(index_shape(), [index_shape()]) -> boolean().
+satisfied(_Declared, []) -> false;
+satisfied(Declared, [Live | Rest]) -> satisfies(Live, Declared) orelse satisfied(Declared, Rest).
+
+-spec satisfies(index_shape(), index_shape()) -> boolean().
+satisfies({Cols, true, Partial}, {Cols, true, Partial}) -> true;
+satisfies({Cols, _Unique, LivePartial}, {Cols, false, Partial}) -> Partial orelse not LivePartial;
+satisfies(_Live, _Declared) -> false.
 
 -spec declared_shape([atom()], kura_migration:index_opts_map()) -> index_shape().
 declared_shape(Cols, Opts) ->
     {
         [atom_to_binary(C, utf8) || C <- Cols],
         maps:get(unique, Opts, false) =:= true,
-        maps:is_key(where, Opts)
+        is_binary(maps:get(where, Opts, undefined))
     }.
 
 -spec ensure_binary(binary() | string()) -> binary().

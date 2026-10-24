@@ -17,9 +17,9 @@ trust it as a healthcheck/readiness gate:
 - missing column: schema added a field that no migration migrated in
 - missing index (the asobi case): `indexes/0` declares an index that
   no migration created
-- indexes match by structure (key columns, unique, partial), not by
-  name: a custom name passes, the generated name over the wrong shape
-  does not
+- indexes match by structure (key columns in order, unique, partial),
+  not by name: a custom name passes, the generated name over the wrong
+  shape does not, and an invalid index does not count
 - column-aliasing: schemas using `column = <<"...">>` should compare
   against the aliased column, not the field name
 - absence of `indexes/0`: a schema without the optional callback
@@ -45,6 +45,12 @@ trust it as a healthcheck/readiness gate:
     verify_does_not_match_expression_index/1,
     verify_matches_partial_index_without_comparing_predicate/1,
     verify_reports_full_index_for_partial_declaration/1,
+    verify_ignores_invalid_index/1,
+    verify_matches_unique_constraint/1,
+    verify_matches_composite_index_in_key_order/1,
+    verify_reports_composite_index_in_wrong_order/1,
+    verify_accepts_unique_index_for_plain_declaration/1,
+    verify_reports_partial_index_for_full_declaration/1,
     verify_handles_column_aliasing/1,
     verify_skips_schema_without_indexes_callback/1,
     verify_returns_pool_error_when_pool_missing/1,
@@ -70,6 +76,12 @@ all() ->
         verify_does_not_match_expression_index,
         verify_matches_partial_index_without_comparing_predicate,
         verify_reports_full_index_for_partial_declaration,
+        verify_ignores_invalid_index,
+        verify_matches_unique_constraint,
+        verify_matches_composite_index_in_key_order,
+        verify_reports_composite_index_in_wrong_order,
+        verify_accepts_unique_index_for_plain_declaration,
+        verify_reports_partial_index_for_full_declaration,
         verify_handles_column_aliasing,
         verify_skips_schema_without_indexes_callback,
         verify_returns_pool_error_when_pool_missing,
@@ -91,7 +103,8 @@ init_per_suite(Config) ->
                 kura_schema_verify_test_complete_schema,
                 kura_schema_verify_test_aliased_schema,
                 kura_schema_verify_test_no_indexes_schema,
-                kura_schema_verify_test_partial_schema
+                kura_schema_verify_test_partial_schema,
+                kura_schema_verify_test_composite_schema
             ]},
             {registered, []},
             {applications, [kernel, stdlib]}
@@ -220,6 +233,57 @@ verify_reports_full_index_for_partial_declaration(_Config) ->
         kura_schema_verify:verify(?REPO, [kura_schema_verify_test_partial_schema])
     ).
 
+verify_ignores_invalid_index(_Config) ->
+    create_aligned_table(),
+    sql(
+        ~"UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'kura_verify_test_t_email_index'::regclass"
+    ),
+    ?assertMatch(
+        {drift, [{missing_index, _, [email], #{unique := true}}]},
+        kura_schema_verify:verify(?REPO, [kura_schema_verify_test_complete_schema])
+    ).
+
+verify_matches_unique_constraint(_Config) ->
+    create_aligned_table_without_index(),
+    sql(~"ALTER TABLE kura_verify_test_t ADD CONSTRAINT email_key UNIQUE (email)"),
+    ?assertEqual(ok, kura_schema_verify:verify(?REPO, [kura_schema_verify_test_complete_schema])).
+
+verify_matches_composite_index_in_key_order(_Config) ->
+    create_composite_table(),
+    sql(~"CREATE INDEX any_name ON kura_verify_test_composite (email, name)"),
+    sql(~"CREATE INDEX full_name ON kura_verify_test_composite (name)"),
+    ?assertEqual(ok, kura_schema_verify:verify(?REPO, [kura_schema_verify_test_composite_schema])).
+
+verify_reports_composite_index_in_wrong_order(_Config) ->
+    create_composite_table(),
+    sql(
+        ~"CREATE INDEX kura_verify_test_composite_email_name_index ON kura_verify_test_composite (name, email)"
+    ),
+    sql(~"CREATE INDEX full_name ON kura_verify_test_composite (name)"),
+    ?assertMatch(
+        {drift, [{missing_index, _, [email, name], _}]},
+        kura_schema_verify:verify(?REPO, [kura_schema_verify_test_composite_schema])
+    ).
+
+verify_accepts_unique_index_for_plain_declaration(_Config) ->
+    create_composite_table(),
+    sql(~"CREATE UNIQUE INDEX unique_pair ON kura_verify_test_composite (email, name)"),
+    sql(~"CREATE UNIQUE INDEX unique_name ON kura_verify_test_composite (name)"),
+    ?assertEqual(ok, kura_schema_verify:verify(?REPO, [kura_schema_verify_test_composite_schema])).
+
+verify_reports_partial_index_for_full_declaration(_Config) ->
+    create_composite_table(),
+    sql(
+        ~"CREATE INDEX partial_pair ON kura_verify_test_composite (email, name) WHERE (name IS NOT NULL)"
+    ),
+    sql(
+        ~"CREATE INDEX partial_name ON kura_verify_test_composite (name) WHERE (email IS NOT NULL)"
+    ),
+    ?assertMatch(
+        {drift, [{missing_index, _, [email, name], _}]},
+        kura_schema_verify:verify(?REPO, [kura_schema_verify_test_composite_schema])
+    ).
+
 verify_handles_column_aliasing(_Config) ->
     %% Schemas can map a logical field name to a different physical
     %% column via `column = <<"...">>`. verify/1,2 must compare
@@ -311,28 +375,20 @@ pool_config() ->
     }.
 
 drop_test_table() ->
-    _ = kura_driver_minato:query(
-        kura_pool_minato, ?LIVE_POOL, ~"DROP TABLE IF EXISTS kura_verify_test_t CASCADE", [], #{}
-    ),
-    _ = kura_driver_minato:query(
-        kura_pool_minato,
-        ?LIVE_POOL,
-        ~"DROP TABLE IF EXISTS kura_verify_test_aliased CASCADE",
-        [],
-        #{}
-    ),
-    _ = kura_driver_minato:query(
-        kura_pool_minato,
-        ?LIVE_POOL,
-        ~"DROP TABLE IF EXISTS kura_verify_test_no_idx CASCADE",
-        [],
-        #{}
-    ),
-    sql(~"DROP TABLE IF EXISTS kura_verify_test_partial CASCADE").
+    sql(~"DROP TABLE IF EXISTS kura_verify_test_t CASCADE"),
+    sql(~"DROP TABLE IF EXISTS kura_verify_test_aliased CASCADE"),
+    sql(~"DROP TABLE IF EXISTS kura_verify_test_no_idx CASCADE"),
+    sql(~"DROP TABLE IF EXISTS kura_verify_test_partial CASCADE"),
+    sql(~"DROP TABLE IF EXISTS kura_verify_test_composite CASCADE").
 
 sql(SQL) ->
     #{} = kura_driver_minato:query(kura_pool_minato, ?LIVE_POOL, SQL, [], #{}),
     ok.
+
+create_composite_table() ->
+    sql(
+        ~"CREATE TABLE kura_verify_test_composite (id BIGSERIAL PRIMARY KEY, email VARCHAR(255), name VARCHAR(255))"
+    ).
 
 create_partial_table() ->
     sql(
