@@ -38,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memoised. `is_schema/1` replaces three hand-rolled copies of the same
   `code:ensure_loaded/1` + `function_exported/3` check, whose negative
   answer cost a `code_server` round trip on every call.
+- `kura_schema:forget/1` drops a module's memoised schema lookups and
+  flushes the compiled-query cache, for tools that reload schema modules
+  in one VM. The cache never expired before, so a reloaded module kept
+  answering with the old module's key and associations (#169).
 
 
 ### Added

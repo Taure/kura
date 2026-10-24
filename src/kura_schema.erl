@@ -68,7 +68,8 @@ fields() ->
     run_after_update/2,
     run_before_delete/2,
     run_after_delete/2,
-    has_after_hook/2
+    has_after_hook/2,
+    forget/1
 ]).
 
 -export_type([on_delete/0]).
@@ -503,10 +504,37 @@ run_after_hook(Mod, Hook, Record) ->
         false -> {ok, Record}
     end.
 
+-doc """
+Drop every cached schema lookup for `Mod`, and every compiled query.
+
+Lookups such as `key/1` and `associations/1` are memoised per module for
+the life of the VM, which is correct while a module's code never changes.
+A tool that loads, purges and reloads schema modules in one VM (a build
+plugin, a test harness) calls this after replacing `Mod`, so the next
+lookup reads the new code instead of the old module's answer. The
+compiled-query cache is flushed too, since its SQL carries the old
+module's table and column names.
+
+Call it once the new code is loaded and before anything queries `Mod`
+again: a lookup already computing from the old code when `forget/1`
+runs can store its answer afterwards.
+
+Each erased entry forces a scan of every process (a global GC), so this
+is for tooling, not request paths.
+""".
+-spec forget(module()) -> ok.
+forget(Mod) ->
+    _ = [
+        persistent_term:erase(Key)
+     || {{kura_schema, _, M} = Key, _} <- persistent_term:get(), M =:= Mod
+    ],
+    kura_query_cache:flush().
+
 %%----------------------------------------------------------------------
 %% Internal: persistent_term cache
 %%----------------------------------------------------------------------
 
+%% Keys are {kura_schema, Tag, Mod}; forget/1 relies on that shape.
 cache(Key, Fun) ->
     try
         persistent_term:get(Key)

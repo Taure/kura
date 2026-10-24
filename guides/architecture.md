@@ -52,7 +52,8 @@ modules fit together.
 Behaviour that defines the shape of a database table. Schemas declare
 their table name, fields (via `#kura_field{}` records), primary key,
 and optionally associations and embeds. Field metadata is cached in
-`persistent_term` for fast lookups at runtime.
+`persistent_term` for fast lookups at runtime. Tools that reload schema
+modules in one VM call `kura_schema:forget/1` after replacing a module.
 
 ### `kura_changeset`
 
