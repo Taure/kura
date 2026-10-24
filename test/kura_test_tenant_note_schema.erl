@@ -23,6 +23,8 @@ associations() ->
             schema = kura_test_tenant_item_schema,
             foreign_key = item_id
         },
+        %% A second association on the same key, so preloading both takes the
+        %% parallel path.
         #kura_assoc{
             name = parent,
             type = belongs_to,

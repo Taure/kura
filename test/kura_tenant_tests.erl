@@ -4,6 +4,7 @@
 
 -define(S, kura_tenant_test_schema).
 -define(REPO, kura_tenant_test_repo).
+-define(T, {org_id, 7}).
 
 setup() ->
     application:set_env(kura, repos, #{?REPO => #{dialect => kura_dialect_pg}}).
@@ -37,6 +38,11 @@ put_tenant_refuses_what_would_scope_nothing_test() ->
             acme
         ]
     ],
+    ?assertEqual(undefined, kura_tenant:get_tenant()).
+
+put_tenant_accepts_undefined_as_no_tenant_test() ->
+    kura_tenant:clear_tenant(),
+    ?assertEqual(undefined, kura_tenant:put_tenant(undefined)),
     ?assertEqual(undefined, kura_tenant:get_tenant()).
 
 get_tenant_refuses_a_malformed_stored_tenant_test() ->
@@ -195,12 +201,10 @@ explicit_prefix_overrides_process_dict_test() ->
         cleanup()
     end.
 
--define(T, {org_id, 7}).
-
 scope_query_without_attribute_tenant_is_identity_test() ->
     Q = nested_query(),
-    ?assert(Q =:= kura_tenant:scope_query(undefined, Q)),
-    ?assert(Q =:= kura_tenant:scope_query({prefix, ~"acme"}, Q)).
+    ?assertEqual(Q, kura_tenant:scope_query(undefined, Q)),
+    ?assertEqual(Q, kura_tenant:scope_query({prefix, ~"acme"}, Q)).
 
 scope_query_scopes_every_nested_query_test() ->
     Scoped = kura_tenant:scope_query({attribute, ?T}, nested_query()),
@@ -224,8 +228,6 @@ compiled_sql_without_tenant_is_unchanged_test() ->
         cleanup()
     end.
 
-%% A query nested every way a query can be: a CTE holding a union, and
-%% subqueries under and/or/not in WHERE and under HAVING.
 nested_query() ->
     Sub = fun(Title) -> {subquery, kura_query:where(kura_query:from(?S), {title, Title})} end,
     Cte = kura_query:union(kura_query:from(?S), kura_query:from(?S)),

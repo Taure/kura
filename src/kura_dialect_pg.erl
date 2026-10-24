@@ -249,10 +249,6 @@ insert_all(SchemaOrTable, Fields, Rows, Opts) ->
     ],
     {iolist_to_binary(SQL), Params}.
 
-%% A bulk upsert applies one DO UPDATE clause to every row, so the SET values
-%% cannot come from any single row's parameters the way the single-row form
-%% builds them. EXCLUDED names the row that failed to insert, which is what
-%% makes one clause correct for all of them - and it binds no parameters.
 guarded_bulk_on_conflict(Table, #{on_conflict := OnConflict0} = Opts, Fields) ->
     {OnConflict, Guard} = conflict_guard(OnConflict0),
     [
@@ -262,6 +258,10 @@ guarded_bulk_on_conflict(Table, #{on_conflict := OnConflict0} = Opts, Fields) ->
 guarded_bulk_on_conflict(_Table, Opts, Fields) ->
     bulk_on_conflict(Opts, Fields).
 
+%% A bulk upsert applies one DO UPDATE clause to every row, so the SET values
+%% cannot come from any single row's parameters the way the single-row form
+%% builds them. EXCLUDED names the row that failed to insert, which is what
+%% makes one clause correct for all of them - and it binds no parameters.
 bulk_on_conflict(#{on_conflict := {Target, nothing}}, _Fields) ->
     [conflict_target(Target), ~" DO NOTHING"];
 bulk_on_conflict(#{on_conflict := {Target, replace_all}}, Fields) ->
@@ -596,10 +596,7 @@ compile_on_conflict({Target, replace_all}, Fields, Data, Counter) ->
 compile_on_conflict({Target, {replace, UpdateFields}}, _Fields, Data, Counter) ->
     compile_on_conflict_update(conflict_target(Target), UpdateFields, Data, Counter).
 
-%% `{Target, Action, #{guard => Fields}}` updates a conflicting row only where
-%% each guard field already equals the value being inserted, so an upsert
-%% cannot write over a row it does not own. A row the guard refuses is left
-%% as it is and not returned, as with DO NOTHING.
+%% A row the guard refuses is left as it is and not returned, as with DO NOTHING.
 conflict_guard({Target, Action, #{guard := Fields} = Opts}) when
     is_list(Fields), map_size(Opts) =:= 1
 ->

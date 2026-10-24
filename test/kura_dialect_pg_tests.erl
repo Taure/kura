@@ -643,7 +643,7 @@ insert_on_conflict_guard_test() ->
     {SQL, _Params} = kura_dialect_pg:insert(
         kura_test_schema,
         [name, email],
-        #{name => <<"Alice">>, email => <<"a@b.com">>},
+        #{name => ~"Alice", email => ~"a@b.com"},
         #{on_conflict => {email, replace_all, #{guard => [email]}}}
     ),
     ?assertEqual(
@@ -659,7 +659,7 @@ insert_all_on_conflict_guard_test() ->
     {SQL, _Params} = kura_dialect_pg:insert_all(
         kura_test_schema,
         [name, email],
-        [#{name => <<"A">>, email => <<"a@b.com">>}, #{name => <<"B">>, email => <<"b@b.com">>}],
+        [#{name => ~"A", email => ~"a@b.com"}, #{name => ~"B", email => ~"b@b.com"}],
         #{on_conflict => {email, replace_all, #{guard => [email]}}}
     ),
     ?assertEqual(
@@ -673,14 +673,24 @@ insert_all_on_conflict_guard_test() ->
 
 insert_on_conflict_guard_rejects_other_opts_test() ->
     ?assertError(
-        _,
+        {kura, {invalid_on_conflict_opts, _}},
         kura_dialect_pg:insert(
             kura_test_schema,
             [name, email],
-            #{name => <<"Alice">>, email => <<"a@b.com">>},
+            #{name => ~"Alice", email => ~"a@b.com"},
             #{on_conflict => {email, replace_all, #{guard => [email], extra => true}}}
         )
     ).
+
+update_numbers_key_clauses_after_the_set_test() ->
+    {SQL, Params} = kura_dialect_pg:update(
+        t, [name], #{name => ~"n"}, [{org_id, ~"o"}, {user_id, ~"u"}, {lock_version, 3}]
+    ),
+    ?assertEqual(
+        ~"UPDATE \"t\" SET \"name\" = $1 WHERE \"org_id\" = $2 AND \"user_id\" = $3 AND \"lock_version\" = $4 RETURNING *",
+        SQL
+    ),
+    ?assertEqual([~"n", ~"o", ~"u", 3], Params).
 
 insert_all_on_conflict_partial_index_with_returning_test() ->
     {SQL, _} = kura_dialect_pg:insert_all(

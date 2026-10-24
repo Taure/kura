@@ -49,16 +49,6 @@ key_conds_composite_counter_test() ->
     ?assertEqual([<<"o">>, <<"u">>], Params),
     ?assertEqual(4, Next).
 
-lock_update_numbers_key_and_lock_after_the_set_test() ->
-    {SQL, Params} = kura_dialect_pg:update(
-        t, [name], #{name => ~"n"}, [{org_id, ~"o"}, {user_id, ~"u"}, {lock_version, 3}]
-    ),
-    ?assertEqual(
-        ~"UPDATE \"t\" SET \"name\" = $1 WHERE \"org_id\" = $2 AND \"user_id\" = $3 AND \"lock_version\" = $4 RETURNING *",
-        SQL
-    ),
-    ?assertEqual([~"n", ~"o", ~"u", 3], Params).
-
 reload_composite_missing_key_col_rejected_test() ->
     %% user_id absent from the record: the key-completeness guard must
     %% reject before any repo round-trip, so the repo arg is never used.

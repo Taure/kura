@@ -53,7 +53,8 @@ Compile a query record into `{SQL, Params}` for `RepoMod`'s dialect.
 
 Every query compiled here, and by the other query entry points in this
 module, is first confined to the ambient tenant with
-`kura_tenant:scope_query/2`, so no caller can compile a query that skips it.
+`kura_tenant:scope_query/2`, so no caller of this module can compile a query that
+skips it.
 """.
 -spec to_sql(module(), #kura_query{}) -> {iodata(), [term()]}.
 to_sql(RepoMod, Query) ->

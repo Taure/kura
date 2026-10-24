@@ -95,7 +95,7 @@ start(RepoMod) ->
 -doc "Execute a query and return all matching rows.".
 -spec all(module(), #kura_query{}) -> {ok, [map()]} | {error, term()}.
 all(RepoMod, Query) ->
-    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_query(Query)),
+    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_prefix(Query)),
     {SQL, Params} = kura_query_compiler:to_sql_cached(RepoMod, Q1),
 
     case kura_db:query(RepoMod, SQL, Params) of
@@ -408,7 +408,7 @@ update_all(RepoMod, Query, Updates) ->
     guard_write(RepoMod, fun() -> do_update_all(RepoMod, Query, Updates) end).
 
 do_update_all(RepoMod, Query, Updates) ->
-    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_query(Query)),
+    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_prefix(Query)),
     case dump_set_map(Q1#kura_query.from, pin_tenant(Updates)) of
         {error, _} = DumpErr ->
             DumpErr;
@@ -427,7 +427,7 @@ delete_all(RepoMod, Query) ->
     guard_write(RepoMod, fun() -> do_delete_all(RepoMod, Query) end).
 
 do_delete_all(RepoMod, Query) ->
-    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_query(Query)),
+    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_prefix(Query)),
     {SQL, Params} = kura_query_compiler:delete_all(RepoMod, Q1),
 
     case kura_db:query(RepoMod, SQL, Params) of
@@ -589,7 +589,7 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
             {error, ErrCS#kura_changeset{action = update}};
         {ok, CS} ->
             Changes = CS#kura_changeset.changes,
-            case maps:size(Changes) of
+            case map_size(Changes) of
                 0 when map_size(CS#kura_changeset.assoc_changes) > 0 ->
                     owned_by_tenant(RepoMod, CS, Data);
                 0 ->
@@ -1126,7 +1126,7 @@ has_soft_delete(SchemaMod) ->
     Types = kura_schema:field_types(SchemaMod),
     maps:is_key(deleted_at, Types).
 
-maybe_apply_tenant_query(Query) ->
+maybe_apply_tenant_prefix(Query) ->
     case kura_tenant:get_tenant() of
         {prefix, Prefix} ->
             case Query#kura_query.prefix of
@@ -1137,22 +1137,18 @@ maybe_apply_tenant_query(Query) ->
             Query
     end.
 
-%% Under attribute tenancy a record is addressed by its key and its tenant, so
-%% another tenant's row is not found rather than written.
 tenant_key_clauses(KeyClauses) ->
     case kura_tenant:get_tenant() of
         {attribute, {Field, Value}} -> KeyClauses ++ [{Field, Value}];
         _ -> KeyClauses
     end.
 
-%% A change to the tenant field cannot move a row to another tenant.
 pin_tenant(Changes) ->
     case kura_tenant:get_tenant() of
         {attribute, {Field, Value}} when is_map_key(Field, Changes) -> Changes#{Field => Value};
         _ -> Changes
     end.
 
-%% An upsert that hits another tenant's row must leave it alone.
 guard_upsert(#{on_conflict := OnConflict} = Opts) ->
     case kura_tenant:get_tenant() of
         {attribute, {Field, _Value}} -> Opts#{on_conflict => guarded(OnConflict, Field)};

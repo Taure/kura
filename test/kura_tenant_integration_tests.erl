@@ -35,6 +35,9 @@ tenant_test_() ->
             {"an upsert leaves a foreign row alone", fun upsert_skips_foreign_row/0},
             {"an upsert updates the tenant's own row", fun upsert_updates_own_row/0},
             {"a bulk upsert leaves a foreign row alone", fun bulk_upsert_skips_foreign_row/0},
+            {"a bulk upsert updates the tenant's own row", fun bulk_upsert_updates_own_row/0},
+            {"a nested child update cannot reach a foreign child",
+                fun nested_child_update_cannot_reach_a_foreign_child/0},
             {"associations cannot be written onto a foreign record",
                 fun assoc_onto_foreign_record/0},
             {"associations can be written onto the tenant's own record",
@@ -114,7 +117,7 @@ not_exists_is_scoped() ->
     ?assertEqual([~"one-a", ~"one-b"], names(Rows)).
 
 cte_is_scoped() ->
-    Cte = kura_query:where(kura_query:from(?ITEMS), {name, ~"two-only"}),
+    Cte = kura_query:select(kura_query:where(kura_query:from(?ITEMS), {name, ~"two-only"}), [name]),
     Q0 = kura_query:where(
         kura_query:from(?ITEMS),
         {exists, {subquery, kura_query:from(kura_test_tenant_cte_schema)}}
@@ -123,8 +126,10 @@ cte_is_scoped() ->
     ?assertEqual({ok, []}, as(?ONE, fun() -> kura_test_repo:all(Q) end)).
 
 in_subquery_is_scoped() ->
-    Sub = kura_query:select(kura_query:where(kura_query:from(?ITEMS), {score, '>', 5}), [score]),
-    Q = kura_query:where(kura_query:from(?ITEMS), {score, in, {subquery, Sub}}),
+    Sub = kura_query:select(
+        kura_query:where(kura_query:from(?ITEMS), {name, ~"two-only"}), [lock_version]
+    ),
+    Q = kura_query:where(kura_query:from(?ITEMS), {lock_version, in, {subquery, Sub}}),
     ?assertEqual({ok, []}, as(?ONE, fun() -> kura_test_repo:all(Q) end)).
 
 aggregates_are_scoped() ->
@@ -197,7 +202,7 @@ own_rows_are_writable() ->
 update_cannot_move_row() ->
     Id = id_of(~"one-a"),
     CS = kura_changeset:cast(?ITEMS, #{id => Id}, #{org_id => 2}, [org_id]),
-    _ = as(?ONE, fun() -> kura_test_repo:update(CS) end),
+    ?assertMatch({ok, #{org_id := 1}}, as(?ONE, fun() -> kura_test_repo:update(CS) end)),
     ?assertEqual({1, ~"one-a"}, raw_row(Id)).
 
 update_all_cannot_move_rows() ->
@@ -227,8 +232,7 @@ upsert_skips_foreign_row() ->
     Result = as(?ONE, fun() ->
         kura_test_repo:insert(CS, #{on_conflict => {name, replace_all}})
     end),
-    ?assertNotMatch({ok, #{org_id := 2}}, Result),
-    ?assertNotMatch({ok, #{score := 20}}, Result),
+    ?assertMatch({ok, Skipped} when not is_map_key(id, Skipped), Result),
     ?assertEqual({2, ~"two-only"}, raw_row(Id)),
     ?assertEqual(20, raw_score(Id)).
 
@@ -246,15 +250,51 @@ upsert_updates_own_row() ->
 bulk_upsert_skips_foreign_row() ->
     Id = id_of(~"two-only"),
     Entries = [#{name => ~"two-only", org_id => 1, score => 99}],
-    _ = as(?ONE, fun() ->
-        kura_test_repo:insert_all(?ITEMS, Entries, #{on_conflict => {name, replace_all}})
-    end),
+    ?assertEqual(
+        {ok, 0},
+        as(?ONE, fun() ->
+            kura_test_repo:insert_all(?ITEMS, Entries, #{on_conflict => {name, replace_all}})
+        end)
+    ),
     ?assertEqual({2, ~"two-only"}, raw_row(Id)),
     ?assertEqual(20, raw_score(Id)).
 
-%%----------------------------------------------------------------------
-%% Helpers
-%%----------------------------------------------------------------------
+bulk_upsert_updates_own_row() ->
+    Id = id_of(~"one-a"),
+    Entries = [#{name => ~"one-a", score => 99}],
+    ?assertEqual(
+        {ok, 1},
+        as(?ONE, fun() ->
+            kura_test_repo:insert_all(?ITEMS, Entries, #{on_conflict => {name, {replace, [score]}}})
+        end)
+    ),
+    ?assertEqual(99, raw_score(Id)).
+
+nested_child_update_cannot_reach_a_foreign_child() ->
+    OwnId = id_of(~"one-a"),
+    {ok, _} = raw("INSERT INTO tenant_notes (org_id, item_id, body) VALUES (2, $1, 'theirs')", [
+        OwnId
+    ]),
+    {ok, [#{id := NoteId}]} = raw("SELECT id FROM tenant_notes WHERE body = 'theirs'", []),
+    Child0 = kura_changeset:cast(
+        kura_test_tenant_note_schema, #{id => NoteId, item_id => OwnId}, #{body => ~"hijacked"}, [
+            body
+        ]
+    ),
+    Child = Child0#kura_changeset{action = update},
+    CS = kura_changeset:put_assoc(kura_changeset:cast(?ITEMS, #{id => OwnId}, #{}, []), notes, [
+        Child
+    ]),
+    Result =
+        try
+            as(?ONE, fun() -> kura_test_repo:update(CS) end)
+        catch
+            error:Reason -> {raised, Reason}
+        end,
+    ?assertNotMatch({ok, _}, Result),
+    ?assertEqual(
+        {ok, [#{body => ~"theirs"}]}, raw("SELECT body FROM tenant_notes WHERE id = $1", [NoteId])
+    ).
 
 %%----------------------------------------------------------------------
 %% Associations and joins
@@ -308,6 +348,10 @@ parallel_preload_keeps_prefix() ->
     {ok, [Note]} = as({prefix, ~"tenant_p1"}, fun() -> kura_test_repo:all(Q) end),
     ?assertMatch(#{name := ~"p1-item"}, maps:get(item, Note)),
     ?assertMatch(#{name := ~"p1-item"}, maps:get(parent, Note)).
+
+%%----------------------------------------------------------------------
+%% Helpers
+%%----------------------------------------------------------------------
 
 as(Tenant, Fun) ->
     kura_tenant:with_tenant(Tenant, Fun).

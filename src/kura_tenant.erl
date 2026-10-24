@@ -29,32 +29,33 @@ Set the current tenant strategy in the process dictionary.
 Raises `{invalid_tenant, Tenant}` on anything that is not a strategy, rather
 than storing something that would scope nothing. The attribute value cannot be
 `is_nil` or `is_not_nil`, which a condition reads as a test rather than a value.
+`undefined` is accepted and leaves the process without a tenant.
 """.
--spec put_tenant(strategy()) -> undefined | strategy().
+-spec put_tenant(undefined | strategy()) -> undefined | strategy().
 put_tenant(Tenant) ->
-    _ = valid(Tenant),
-    valid(erlang:put(kura_tenant, Tenant)).
+    _ = validate_tenant(Tenant),
+    validate_tenant(erlang:put(kura_tenant, Tenant)).
 
 -doc "Get the current tenant strategy from the process dictionary.".
 -spec get_tenant() -> undefined | strategy().
 get_tenant() ->
-    valid(erlang:get(kura_tenant)).
+    validate_tenant(erlang:get(kura_tenant)).
 
 -doc "Remove the current tenant strategy from the process dictionary.".
 -spec clear_tenant() -> undefined | strategy().
 clear_tenant() ->
-    valid(erlang:erase(kura_tenant)).
+    validate_tenant(erlang:erase(kura_tenant)).
 
--spec valid(term()) -> undefined | strategy().
-valid(undefined) ->
+-spec validate_tenant(term()) -> undefined | strategy().
+validate_tenant(undefined) ->
     undefined;
-valid({prefix, Prefix}) when is_binary(Prefix) ->
+validate_tenant({prefix, Prefix}) when is_binary(Prefix) ->
     {prefix, Prefix};
-valid({attribute, {Field, Value}}) when
+validate_tenant({attribute, {Field, Value}}) when
     is_atom(Field), Value =/= is_nil, Value =/= is_not_nil
 ->
     {attribute, {Field, Value}};
-valid(Other) ->
+validate_tenant(Other) ->
     error({invalid_tenant, Other}).
 
 -doc "Execute a function with a temporary tenant, restoring the previous tenant after.".

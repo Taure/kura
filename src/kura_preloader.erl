@@ -54,8 +54,6 @@ do_preload(RepoMod, Records, Schema, Assocs) ->
     ),
     collect_preload_results(Refs, Records).
 
-%% The tenant lives in the process dictionary, so a preload process scopes
-%% nothing unless it is handed the caller's.
 inherit_tenant(undefined) ->
     ok;
 inherit_tenant(Tenant) ->
