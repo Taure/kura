@@ -233,3 +233,46 @@ primary_key_field_composite_raises_named_error_test() ->
         {composite_primary_key, kura_test_composite_schema, [org_id, user_id]},
         kura_schema:primary_key_field(kura_test_composite_schema)
     ).
+
+forget_reads_the_reloaded_module_test_() ->
+    Mod = kura_schema_forget_reload,
+    {setup, fun() -> ok end, fun(_) -> unload(Mod) end, fun() ->
+        load_key_schema(Mod, [a]),
+        ?assertEqual([a], kura_schema:key(Mod)),
+        load_key_schema(Mod, [b]),
+        ?assertEqual([a], kura_schema:key(Mod)),
+        ok = kura_schema:forget(Mod),
+        ?assertEqual([b], kura_schema:key(Mod))
+    end}.
+
+forget_leaves_other_modules_cached_test() ->
+    Key = kura_schema:key(kura_test_composite_schema),
+    ok = kura_schema:forget(kura_schema_forget_unrelated),
+    ?assertEqual(Key, persistent_term:get({kura_schema, key, kura_test_composite_schema})).
+
+forget_flushes_compiled_queries_test() ->
+    kura_query_cache:init(),
+    kura_query_cache:put({kura_schema_forget_repo, q}, {~"SELECT 1", []}),
+    ok = kura_schema:forget(kura_schema_forget_unrelated),
+    ?assertEqual(miss, kura_query_cache:get({kura_schema_forget_repo, q})).
+
+load_key_schema(Mod, Key) ->
+    Forms = [
+        {attribute, 1, module, Mod},
+        {attribute, 2, export, [{table, 0}, {fields, 0}, {key, 0}]},
+        {function, 3, table, 0, [{clause, 3, [], [], [erl_parse:abstract(~"t")]}]},
+        {function, 4, fields, 0, [{clause, 4, [], [], [erl_parse:abstract([])]}]},
+        {function, 5, key, 0, [{clause, 5, [], [], [erl_parse:abstract(Key)]}]}
+    ],
+    {ok, Mod, Bin} = compile:forms(Forms, [binary]),
+    true = is_binary(Bin),
+    _ = code:purge(Mod),
+    {module, Mod} = code:load_binary(Mod, atom_to_list(Mod) ++ ".erl", Bin),
+    ok.
+
+unload(Mod) ->
+    ok = kura_schema:forget(Mod),
+    _ = code:purge(Mod),
+    _ = code:delete(Mod),
+    _ = code:purge(Mod),
+    ok.

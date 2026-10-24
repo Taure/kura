@@ -45,6 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for one application of a multi-application repo. `UpTo` must be the
   version of a discovered migration, so a mistyped timestamp stamps
   nothing instead of everything (#156).
+- `kura_schema:forget/1` drops a module's memoised schema lookups and
+  flushes the compiled-query cache, for tools that reload schema modules
+  in one VM. The cache never expired before, so a reloaded module kept
+  answering with the old module's key and associations (#169).
 
 
 ### Added
