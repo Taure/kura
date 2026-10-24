@@ -171,3 +171,70 @@ explicit_prefix_overrides_process_dict_test() ->
     after
         cleanup()
     end.
+
+-define(T, {org_id, 7}).
+
+scope_query_without_attribute_tenant_is_identity_test() ->
+    Q = nested_query(),
+    ?assert(Q =:= kura_tenant:scope_query(undefined, Q)),
+    ?assert(Q =:= kura_tenant:scope_query({prefix, ~"acme"}, Q)).
+
+scope_query_scopes_every_nested_query_test() ->
+    Scoped = kura_tenant:scope_query({attribute, ?T}, nested_query()),
+    ?assertEqual(6, count_queries(Scoped)),
+    ?assertEqual(6, count_scoped(Scoped)).
+
+scope_query_appends_after_existing_conditions_test() ->
+    Q = kura_query:where(kura_query:from(?S), {title, ~"a"}),
+    #kura_query{wheres = Wheres} = kura_tenant:scope_query({attribute, ?T}, Q),
+    ?assertEqual([{title, ~"a"}, ?T], Wheres).
+
+compiled_sql_without_tenant_is_unchanged_test() ->
+    setup(),
+    try
+        Q = nested_query(),
+        ?assertEqual(
+            kura_dialect_pg:to_sql(Q),
+            kura_query_compiler:to_sql(?REPO, Q)
+        )
+    after
+        cleanup()
+    end.
+
+%% A query nested every way a query can be: a CTE holding a union, and
+%% subqueries under and/or/not in WHERE and under HAVING.
+nested_query() ->
+    Sub = fun(Title) -> {subquery, kura_query:where(kura_query:from(?S), {title, Title})} end,
+    Cte = kura_query:union(kura_query:from(?S), kura_query:from(?S)),
+    Q0 = kura_query:where(
+        kura_query:from(?S), {'and', [{exists, Sub(~"a")}, {'or', [{'not', {id, in, Sub(~"b")}}]}]}
+    ),
+    Q1 = kura_query:having(Q0, {not_exists, Sub(~"c")}),
+    kura_query:with_cte(Q1, ~"cte", Cte).
+
+count_queries(#kura_query{} = Q) ->
+    1 + count_nested(Q, fun count_queries/1).
+
+count_scoped(#kura_query{wheres = Wheres} = Q) ->
+    Own =
+        case lists:last(Wheres) of
+            ?T -> 1;
+            _ -> 0
+        end,
+    Own + count_nested(Q, fun count_scoped/1).
+
+count_nested(#kura_query{wheres = W, havings = H, ctes = Ctes, combinations = Cs}, Count) ->
+    lists:sum(
+        [Count(Sub) || Sub <- subqueries(W ++ H)] ++
+            [Count(Cte) || {_, Cte} <- Ctes] ++
+            [Count(C) || {_, C} <- Cs]
+    ).
+
+subqueries(Conditions) ->
+    lists:append([subqueries_in(C) || C <- Conditions]).
+
+subqueries_in({Op, Cs}) when Op =:= 'and'; Op =:= 'or' -> subqueries(Cs);
+subqueries_in({'not', C}) -> subqueries_in(C);
+subqueries_in({_, in, {subquery, Q}}) -> [Q];
+subqueries_in({E, {subquery, Q}}) when E =:= exists; E =:= not_exists -> [Q];
+subqueries_in(_) -> [].

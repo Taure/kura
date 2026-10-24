@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Attribute tenancy (`{attribute, {Field, Value}}`) now confines every
+  query and write kura issues to the current tenant. Before, only the top
+  level of a query was filtered: a union, CTE, `in`/`exists` subquery,
+  aggregate or stream read other tenants' rows; `update`/`delete` of a
+  record, including the optimistic-lock path, matched by key alone;
+  `insert_all` and `insert/3` did not stamp the tenant; an upsert could
+  overwrite another tenant's row; and a change to the tenant field moved a
+  row to another tenant. The condition is now added at the compiler, at
+  every nested query, and to the key of every record write; inserts are
+  stamped; upserts only update rows of the same tenant; and the tenant
+  field cannot be changed.
+- **Upgrading:** every table a scoped query reads, including nested ones,
+  must carry the tenant field. A nested query over a table without it now
+  fails instead of running unscoped. `query/3` with raw SQL, fragments and
+  joined tables are still not scoped; see the multitenancy guide.
 - `kura_migrator`'s DDL identifier quoting now doubles an embedded double
   quote, matching the fix `kura_dialect_pg`, `kura_preloader` and
   `kura_repo_worker` already carry. It was the last unhardened copy of
