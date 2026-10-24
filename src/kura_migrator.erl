@@ -198,9 +198,9 @@ each must correspond to schema that already exists.
 fake(RepoMod, App) when is_atom(App) ->
     case prepare(RepoMod) of
         {ok, Groups} ->
-            case lists:keyfind(App, 1, Groups) of
-                {App, Ordered} -> run_fake(RepoMod, Ordered);
-                false -> refuse_unknown_app(RepoMod, App, group_apps(Groups))
+            case app_migrations(App, Groups) of
+                {ok, Ordered} -> run_fake(RepoMod, Ordered);
+                error -> refuse_unknown_app(RepoMod, App, group_apps(Groups))
             end;
         {error, _} = Err ->
             Err
@@ -227,9 +227,9 @@ application's migrations stay pending whatever their version.
 fake(RepoMod, App, UpTo) when is_atom(App), is_integer(UpTo) ->
     case prepare(RepoMod) of
         {ok, Groups} ->
-            case lists:keyfind(App, 1, Groups) of
-                {App, Ordered} -> run_fake_up_to(RepoMod, Ordered, UpTo);
-                false -> refuse_unknown_app(RepoMod, App, group_apps(Groups))
+            case app_migrations(App, Groups) of
+                {ok, Ordered} -> run_fake_up_to(RepoMod, Ordered, UpTo);
+                error -> refuse_unknown_app(RepoMod, App, group_apps(Groups))
             end;
         {error, _} = Err ->
             Err
@@ -334,12 +334,12 @@ application applied a version, so kura cannot tell an orphan row of
 rollback(RepoMod, App, Steps) ->
     case prepare(RepoMod) of
         {ok, Groups} ->
-            case lists:keyfind(App, 1, Groups) of
-                {App, Ordered} ->
+            case app_migrations(App, Groups) of
+                {ok, Ordered} ->
                     run_rollback_locked(RepoMod, fun() ->
                         run_rollback(RepoMod, Ordered, Steps, app_applied(RepoMod, Ordered))
                     end);
-                false ->
+                error ->
                     refuse_unknown_app(RepoMod, App, group_apps(Groups))
             end;
         {error, _} = Err ->
@@ -825,6 +825,13 @@ flatten_groups([{_App, Ms} | Rest]) -> Ms ++ flatten_groups(Rest).
 -spec group_apps([migration_group()]) -> [atom()].
 group_apps(Groups) ->
     [App || {App, _Ms} <- Groups].
+
+-spec app_migrations(atom(), [migration_group()]) -> {ok, [{integer(), module()}]} | error.
+app_migrations(App, Groups) ->
+    case [Ms || {A, Ms} <- Groups, A =:= App] of
+        [Ms] -> {ok, Ms};
+        [] -> error
+    end.
 
 %% A version is the whole primary key of `schema_migrations`, so it has
 %% to be unique across every application feeding the repo. Reporting
