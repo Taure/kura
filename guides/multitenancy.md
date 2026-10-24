@@ -101,7 +101,7 @@ Under a tenant context, writes to a table without the tenant field differ: `upda
 
 kura does not check that a foreign key points at a row of the same tenant. A tenant can still set `post_id` to another tenant's post: reads stay scoped, but the insert tells it the id exists, and the row it plants can block the other tenant's delete under `ON DELETE RESTRICT`. Make tenant foreign keys composite, `FOREIGN KEY (org_id, post_id) REFERENCES posts (org_id, id)` over a unique `(org_id, id)`, so the database refuses them.
 
-Under the schema prefix strategy, the dialect qualifies each table with the tenant's schema, including many-to-many join tables. If the query already has an explicit prefix set, the tenant prefix is not overridden.
+Under the schema prefix strategy, the dialect qualifies each table with the tenant's schema. If the query already has an explicit prefix set, the tenant prefix is not overridden. Many-to-many join tables are always qualified with the tenant's schema, whatever prefix the query sets.
 
 ### What is not scoped
 
