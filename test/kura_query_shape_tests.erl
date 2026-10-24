@@ -160,6 +160,21 @@ is_nil_is_part_of_the_shape_test() ->
         )
     end).
 
+%% `{F, '=', is_nil}' compares against the atom; only `{F, is_nil}' tests
+%% for NULL. The two used to compile alike, so the cached path (which only
+%% ever sees a marker) and the uncached one disagreed.
+equals_binds_an_unary_op_atom_as_a_value_test() ->
+    with_pg(fun() ->
+        [
+            begin
+                Q = #kura_query{from = users, wheres = [{status, '=', Op}]},
+                ?assertEqual({~"SELECT * FROM \"users\" WHERE \"status\" = $1", [Op]}, sql(Q)),
+                ?assertEqual(sql(Q), cached_sql(Q))
+            end
+         || Op <- [is_nil, is_not_nil]
+        ]
+    end).
+
 nil_stays_in_the_shape_test() ->
     {Shape, Values} = kura_query_shape:split(
         #kura_query{from = users, wheres = [{deleted_at, nil}, {role, in, [admin, nil]}]}
@@ -180,6 +195,20 @@ in_lists_of_different_lengths_are_different_shapes_test() ->
          || Ids <- [[1], [1, 2], [3], [1, 2, 3], [4, 5]]
         ],
         ?assertEqual(3, ets:info(kura_query_cache, size))
+    end).
+
+row_tuples_that_do_not_match_the_columns_are_rejected_test() ->
+    with_pg(fun() ->
+        [
+            begin
+                ?assertError({row_arity_mismatch, _, _}, sql(Q)),
+                ?assertError({row_arity_mismatch, _, _}, cached_sql(Q))
+            end
+         || Q <- [
+                #kura_query{from = users, wheres = [{[id], in, [{1, 2}]}]},
+                #kura_query{from = users, wheres = [{[a, b], in, [{1, 2, 3}, {4}]}]}
+            ]
+        ]
     end).
 
 ambient_tenant_is_part_of_the_shape_key_test() ->
@@ -251,6 +280,14 @@ valid_template_test_() ->
         ?_assertNot(kura_query_shape:valid_template([M(1), [M(1)]], 1)),
         ?_assertNot(kura_query_shape:valid_template([M(1), #{k => M(1)}], 1))
     ].
+
+sql(Q) ->
+    {SQL, Params} = kura_query_compiler:to_sql(?REPO, Q),
+    {iolist_to_binary(SQL), Params}.
+
+cached_sql(Q) ->
+    {SQL, Params} = kura_query_compiler:to_sql_cached(?REPO, Q),
+    {iolist_to_binary(SQL), Params}.
 
 to_sql(#kura_query{limit = Limit}) when Limit =/= undefined, not is_integer(Limit); Limit < 0 ->
     error(badarg);

@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.7 us for the lookup and from 0.8 to 3.0 us for the filtered page. A
   dialect must pass bound values through to the parameter list untouched;
   see `kura_dialect`.
+- `{Field, '=', Value}` always binds `Value`. It used to be dispatched as
+  `{Field, Value}`, so `{status, '=', is_nil}` compiled to `IS NULL`.
+- A row-value `in` whose tuples do not match the column count raises
+  `{row_arity_mismatch, Arity, Tuple}`. It used to drop or shift values
+  between rows.
+- Building `in`/`not_in` and row-value `in` placeholders is linear in the
+  list length; it was quadratic.
 
 ### Security
 
