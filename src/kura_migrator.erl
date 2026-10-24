@@ -46,7 +46,7 @@ one.
 
 -export([
     migrate/1,
-    fake/1, fake/2,
+    fake/1, fake/2, fake/3,
     rollback/1, rollback/2, rollback/3,
     status/1,
     migration_apps/1,
@@ -151,8 +151,8 @@ corresponds to schema that already exists - a genuinely-new migration
 in the pending set would be stamped without its table ever being
 created, and a later `migrate/1` would then treat it as done. Check
 `status/1` first; the versions about to be stamped are also logged at
-warning level. For the mixed new/existing case use a version-scoped
-baseline (kura#156).
+warning level. For the mixed new/existing case baseline up to a version
+with `fake/2`.
 """.
 -spec fake(module()) -> {ok, [integer()]} | {error, term()}.
 fake(RepoMod) ->
@@ -166,31 +166,88 @@ fake(RepoMod) ->
     end.
 
 -doc """
-Stamp `App`'s pending migrations as applied WITHOUT running their DDL.
+Stamp pending migrations as applied WITHOUT running their DDL, either
+those of one application or those up to a version.
 
-The per-application form of `fake/1`, for a repo drawing migrations
-from more than one application. Only `App`'s pending migrations are
-stamped; every other application's stay pending, so a host can be
-baselined while a freshly installed extension still gets its tables
-created by `migrate/1`.
+`fake(RepoMod, App)` is the per-application form of `fake/1`, for a
+repo drawing migrations from more than one application. Only `App`'s
+pending migrations are stamped; every other application's stay pending,
+so a host can be baselined while a freshly installed extension still
+gets its tables created by `migrate/1`. `App` must be one of
+`migration_apps/1`, otherwise `{error, {unknown_migration_app, App,
+Apps}}` and nothing is stamped.
 
-`App` must be one of `migration_apps/1`, otherwise
-`{error, {unknown_migration_app, App, Apps}}` and nothing is stamped.
+`fake(RepoMod, UpTo)` stamps only the pending migrations with a version
+at or below `UpTo`, for the partial-brownfield case: an introspected
+baseline followed by genuinely new migrations. Baseline the prefix, then
+`migrate/1` runs the rest for real. `UpTo` is a version, not a count as
+in `rollback/2`. Every pending migration at or below it is stamped,
+including one with an older timestamp merged in from another branch
+after later versions were applied. `UpTo` must be the version of a
+discovered migration, otherwise `{error, {unknown_migration_version,
+UpTo}}` and nothing is stamped, so a mistyped timestamp cannot widen the
+window to every pending migration. Like `fake/1` it refuses a
+multi-application repo; use `fake/3`.
 
-`fake/1`'s precondition applies unchanged, scoped to `App`: every one
-of its pending migrations must correspond to schema that already
-exists.
+`fake/1`'s precondition applies unchanged to the migrations selected:
+each must correspond to schema that already exists.
 """.
--spec fake(module(), atom()) -> {ok, [integer()]} | {error, term()}.
-fake(RepoMod, App) ->
+-spec fake
+    (module(), atom()) -> {ok, [integer()]} | {error, term()};
+    (module(), pos_integer()) -> {ok, [integer()]} | {error, term()}.
+fake(RepoMod, App) when is_atom(App) ->
     case prepare(RepoMod) of
         {ok, Groups} ->
-            case lists:keyfind(App, 1, Groups) of
-                {App, Ordered} -> run_fake(RepoMod, Ordered);
-                false -> refuse_unknown_app(RepoMod, App, group_apps(Groups))
+            case app_migrations(App, Groups) of
+                {ok, Ordered} -> run_fake(RepoMod, Ordered);
+                error -> refuse_unknown_app(RepoMod, App, group_apps(Groups))
             end;
         {error, _} = Err ->
             Err
+    end;
+fake(RepoMod, UpTo) when is_integer(UpTo) ->
+    case prepare(RepoMod) of
+        {ok, [_, _ | _] = Groups} ->
+            refuse_multi_app(ambiguous_fake, RepoMod, group_apps(Groups));
+        {ok, Groups} ->
+            run_fake_up_to(RepoMod, flatten_groups(Groups), UpTo);
+        {error, _} = Err ->
+            Err
+    end.
+
+-doc """
+Stamp `App`'s pending migrations up to version `UpTo` as applied WITHOUT
+running their DDL.
+
+Both scopes of `fake/2` at once, for a multi-application repo: `UpTo`
+must be the version of one of `App`'s migrations, and every other
+application's migrations stay pending whatever their version.
+""".
+-spec fake(module(), atom(), pos_integer()) -> {ok, [integer()]} | {error, term()}.
+fake(RepoMod, App, UpTo) when is_atom(App), is_integer(UpTo) ->
+    case prepare(RepoMod) of
+        {ok, Groups} ->
+            case app_migrations(App, Groups) of
+                {ok, Ordered} -> run_fake_up_to(RepoMod, Ordered, UpTo);
+                error -> refuse_unknown_app(RepoMod, App, group_apps(Groups))
+            end;
+        {error, _} = Err ->
+            Err
+    end.
+
+-spec run_fake_up_to(module(), [{integer(), module()}], integer()) ->
+    {ok, [integer()]} | {error, term()}.
+run_fake_up_to(RepoMod, Ordered, UpTo) ->
+    case lists:keymember(UpTo, 1, Ordered) of
+        true ->
+            run_fake(RepoMod, [M || {V, _} = M <- Ordered, V =< UpTo]);
+        false ->
+            logger:error(#{
+                msg => ~"kura: fake up to a version no migration has",
+                repo => RepoMod,
+                version => UpTo
+            }),
+            {error, {unknown_migration_version, UpTo}}
     end.
 
 -spec run_fake(module(), [{integer(), module()}]) -> {ok, [integer()]} | {error, term()}.
@@ -277,12 +334,12 @@ application applied a version, so kura cannot tell an orphan row of
 rollback(RepoMod, App, Steps) ->
     case prepare(RepoMod) of
         {ok, Groups} ->
-            case lists:keyfind(App, 1, Groups) of
-                {App, Ordered} ->
+            case app_migrations(App, Groups) of
+                {ok, Ordered} ->
                     run_rollback_locked(RepoMod, fun() ->
                         run_rollback(RepoMod, Ordered, Steps, app_applied(RepoMod, Ordered))
                     end);
-                false ->
+                error ->
                     refuse_unknown_app(RepoMod, App, group_apps(Groups))
             end;
         {error, _} = Err ->
@@ -339,7 +396,7 @@ refuse_multi_app(Reason, RepoMod, Apps) ->
         repo => RepoMod,
         reason => Reason,
         apps => Apps,
-        hint => ~"name one application: rollback/3 or fake/2"
+        hint => ~"name one application: rollback/3, fake(Repo, App) or fake/3"
     }),
     {error, {Reason, Apps}}.
 
@@ -768,6 +825,13 @@ flatten_groups([{_App, Ms} | Rest]) -> Ms ++ flatten_groups(Rest).
 -spec group_apps([migration_group()]) -> [atom()].
 group_apps(Groups) ->
     [App || {App, _Ms} <- Groups].
+
+-spec app_migrations(atom(), [migration_group()]) -> {ok, [{integer(), module()}]} | error.
+app_migrations(App, Groups) ->
+    case [Ms || {A, Ms} <- Groups, A =:= App] of
+        [Ms] -> {ok, Ms};
+        [] -> error
+    end.
 
 %% A version is the whole primary key of `schema_migrations`, so it has
 %% to be unique across every application feeding the repo. Reporting

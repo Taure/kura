@@ -304,6 +304,24 @@ migration corresponds to schema that already exists - check `status/1` first.
 The versions it stamps are logged at warning level. It runs under the same
 advisory-locked transaction as `migrate/1`.
 
+### Baselining up to a version
+
+When the pending set mixes the introspected baseline with genuinely new
+migrations, `fake/1` would stamp the new ones too, and their tables would
+never be created. Pass the last baseline version instead: `fake/2` with an
+integer stamps only the pending migrations at or below it.
+
+```erlang
+%% Stamp the introspected baseline, nothing after it.
+{ok, _} = kura_migrator:fake(my_repo, 20260301120000).
+
+%% The new migrations run for real.
+{ok, _} = kura_migrator:migrate(my_repo).
+```
+
+The version must belong to a discovered migration, otherwise
+`{error, {unknown_migration_version, Version}}` and nothing is stamped.
+
 ### Baselining a repo with more than one application
 
 `fake/1` **refuses** a repo whose migrations come from more than one
@@ -334,7 +352,8 @@ application's migrations pending so `migrate/1` still runs them for real:
 ```
 
 An application not in `migration_apps/1` gives
-`{error, {unknown_migration_app, App, Apps}}`.
+`{error, {unknown_migration_app, App, Apps}}`. To baseline one application
+up to a version, use `fake/3`: `kura_migrator:fake(my_repo, my_app, Version)`.
 
 ## Schema-Level Indexes
 
