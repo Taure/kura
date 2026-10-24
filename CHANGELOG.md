@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   constraint instead of upserting, and the partial-index conflict target
   was unreachable from the bulk path. The `DO UPDATE` SET list is built
   from `EXCLUDED`, because one clause applies to every row.
+- `kura_schema_verify` matches a declared index by its key columns, in
+  order, `unique`, and whether it is partial, instead of by the generated
+  `<table>_<cols>_index` name. An index created under a custom name, or
+  renamed since, no longer reports as `missing_index`, and one that has
+  the generated name over the wrong columns or without `UNIQUE` now does.
+  A partial index's predicate is not compared, since PostgreSQL stores
+  its own rewrite of the `WHERE` text.
 
 ### Added
 

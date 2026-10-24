@@ -29,7 +29,15 @@ in practice and would generate false positives). We pin only:
 
 - declared tables exist
 - declared columns exist (by name) on those tables
-- declared indexes exist (by generated name)
+- declared indexes exist, matched on their key columns in order,
+  `unique`, and whether they are partial
+
+An index is matched by what it is, not by what it is called: one
+created under a custom name, or renamed since, still counts, and one
+that carries the generated name over the wrong columns does not. A
+partial index's predicate is not compared, because PostgreSQL stores
+its own rewrite of the `WHERE` text (`status = 'active'` comes back as
+`((status)::text = 'active'::text)`).
 
 False negatives are possible (e.g. column type drift), but every
 issue this *does* report is a real, blocking problem.
@@ -50,6 +58,9 @@ issue this *does* report is a real, blocking problem.
     {missing_table, binary()}
     | {missing_column, binary(), binary()}
     | {missing_index, binary(), [atom()], map()}.
+
+%% Key columns in order, unique, partial.
+-type index_shape() :: {[binary()], boolean(), boolean()}.
 
 %%----------------------------------------------------------------------
 %% Public API
@@ -101,8 +112,8 @@ discover_schemas(RepoMod) ->
 
 -doc """
 The conventional name kura generates for an index declared via
-`c:kura_schema:indexes/0`. Exposed so callers building diagnostics
-can match against `pg_indexes.indexname`.
+`c:kura_schema:indexes/0`. `verify/1,2` does not match on it; it is
+exposed for callers building diagnostics.
 """.
 -spec declared_index_name(binary(), [atom()]) -> binary().
 declared_index_name(Table, Cols) ->
@@ -146,7 +157,7 @@ run_checks(RepoMod, SchemaMods) ->
 -spec collect_issues(
     [module()],
     #{binary() => sets:set(binary())},
-    #{binary() => sets:set(binary())}
+    #{binary() => [index_shape()]}
 ) -> [drift_issue()].
 collect_issues([], _Cols, _Idx) ->
     [];
@@ -154,7 +165,7 @@ collect_issues([Mod | Rest], Cols, Idx) ->
     check_schema(Mod, Cols, Idx) ++ collect_issues(Rest, Cols, Idx).
 
 -spec load_existing_state(module()) ->
-    {ok, #{binary() => sets:set(binary())}, #{binary() => sets:set(binary())}}
+    {ok, #{binary() => sets:set(binary())}, #{binary() => [index_shape()]}}
     | {error, term()}.
 load_existing_state(RepoMod) ->
     case load_columns(RepoMod) of
@@ -196,32 +207,59 @@ build_col_state([_ | Rest], Acc) ->
     build_col_state(Rest, Acc).
 
 -spec load_indexes(module()) ->
-    {ok, #{binary() => sets:set(binary())}} | {error, term()}.
+    {ok, #{binary() => [index_shape()]}} | {error, term()}.
 load_indexes(RepoMod) ->
-    SQL = ~"SELECT tablename, indexname FROM pg_indexes WHERE schemaname = current_schema()",
+    %% One row per key column, in key order. An expression column has no
+    %% attname and reads as `<<>>`, so it never matches a declared column;
+    %% INCLUDE columns sit past indnkeyatts and are left out.
+    SQL =
+        ~"SELECT c.relname::text AS tablename, i.relname::text AS indexname, ix.indisunique AS is_unique, ix.indpred IS NOT NULL AS is_partial, COALESCE(a.attname::text, '') AS column_name FROM pg_index ix JOIN pg_class i ON i.oid = ix.indexrelid JOIN pg_class c ON c.oid = ix.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace CROSS JOIN LATERAL unnest(ix.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord) LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum WHERE n.nspname = current_schema() AND k.ord <= ix.indnkeyatts ORDER BY i.relname, k.ord",
     case kura_db:query(RepoMod, SQL, []) of
         #{rows := Rows} when is_list(Rows) ->
-            {ok, build_idx_state(Rows, #{})};
+            {ok, build_idx_state(group_index_columns(Rows, #{}))};
         {error, Reason} ->
             {error, Reason}
     end.
 
--spec build_idx_state([map()], #{binary() => sets:set(binary())}) ->
-    #{binary() => sets:set(binary())}.
-build_idx_state([], Acc) ->
+-spec group_index_columns([map()], #{{binary(), binary()} => index_shape()}) ->
+    #{{binary(), binary()} => index_shape()}.
+group_index_columns([], Acc) ->
     Acc;
-build_idx_state([#{tablename := TableBin, indexname := IdxBin} | Rest], Acc) ->
-    Table = ensure_binary(TableBin),
-    IdxName = ensure_binary(IdxBin),
-    Existing = maps:get(Table, Acc, sets:new([{version, 2}])),
-    build_idx_state(Rest, Acc#{Table => sets:add_element(IdxName, Existing)});
-build_idx_state([_ | Rest], Acc) ->
-    build_idx_state(Rest, Acc).
+group_index_columns(
+    [
+        #{
+            tablename := TableBin,
+            indexname := IdxBin,
+            is_unique := Unique,
+            is_partial := Partial,
+            column_name := ColBin
+        }
+        | Rest
+    ],
+    Acc
+) when is_boolean(Unique), is_boolean(Partial) ->
+    Key = {ensure_binary(TableBin), ensure_binary(IdxBin)},
+    {Cols, _, _} = maps:get(Key, Acc, {[], Unique, Partial}),
+    group_index_columns(Rest, Acc#{Key => {Cols ++ [ensure_binary(ColBin)], Unique, Partial}});
+group_index_columns([_ | Rest], Acc) ->
+    group_index_columns(Rest, Acc).
+
+-spec build_idx_state(#{{binary(), binary()} => index_shape()}) ->
+    #{binary() => [index_shape()]}.
+build_idx_state(Grouped) ->
+    add_shapes(maps:to_list(Grouped), #{}).
+
+-spec add_shapes([{{binary(), binary()}, index_shape()}], #{binary() => [index_shape()]}) ->
+    #{binary() => [index_shape()]}.
+add_shapes([], Acc) ->
+    Acc;
+add_shapes([{{Table, _Name}, Shape} | Rest], Acc) ->
+    add_shapes(Rest, Acc#{Table => [Shape | maps:get(Table, Acc, [])]}).
 
 -spec check_schema(
     module(),
     #{binary() => sets:set(binary())},
-    #{binary() => sets:set(binary())}
+    #{binary() => [index_shape()]}
 ) -> [drift_issue()].
 check_schema(Mod, ColState, IdxState) ->
     Table = Mod:table(),
@@ -261,32 +299,28 @@ column_binary(_Name, Column) when is_binary(Column) -> Column.
 -spec check_indexes(
     module(),
     binary(),
-    #{binary() => sets:set(binary())}
+    #{binary() => [index_shape()]}
 ) -> [drift_issue()].
 check_indexes(Mod, Table, IdxState) ->
     case erlang:function_exported(Mod, indexes, 0) of
         false ->
             [];
         true ->
-            Existing = maps:get(Table, IdxState, sets:new([{version, 2}])),
-            check_indexes_loop(Mod:indexes(), Table, Existing)
+            Existing = maps:get(Table, IdxState, []),
+            [
+                {missing_index, Table, Cols, Opts}
+             || {Cols, Opts} <- Mod:indexes(),
+                not lists:member(declared_shape(Cols, Opts), Existing)
+            ]
     end.
 
--spec check_indexes_loop(
-    [{[atom()], map()}],
-    binary(),
-    sets:set(binary())
-) -> [drift_issue()].
-check_indexes_loop([], _Table, _Existing) ->
-    [];
-check_indexes_loop([{Cols, Opts} | Rest], Table, Existing) ->
-    Name = declared_index_name(Table, Cols),
-    case sets:is_element(Name, Existing) of
-        true ->
-            check_indexes_loop(Rest, Table, Existing);
-        false ->
-            [{missing_index, Table, Cols, Opts} | check_indexes_loop(Rest, Table, Existing)]
-    end.
+-spec declared_shape([atom()], kura_migration:index_opts_map()) -> index_shape().
+declared_shape(Cols, Opts) ->
+    {
+        [atom_to_binary(C, utf8) || C <- Cols],
+        maps:get(unique, Opts, false) =:= true,
+        maps:is_key(where, Opts)
+    }.
 
 -spec ensure_binary(binary() | string()) -> binary().
 ensure_binary(B) when is_binary(B) -> B;

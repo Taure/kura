@@ -17,6 +17,9 @@ trust it as a healthcheck/readiness gate:
 - missing column: schema added a field that no migration migrated in
 - missing index (the asobi case): `indexes/0` declares an index that
   no migration created
+- indexes match by structure (key columns, unique, partial), not by
+  name: a custom name passes, the generated name over the wrong shape
+  does not
 - column-aliasing: schemas using `column = <<"...">>` should compare
   against the aliased column, not the field name
 - absence of `indexes/0`: a schema without the optional callback
@@ -36,6 +39,12 @@ trust it as a healthcheck/readiness gate:
     verify_reports_missing_table/1,
     verify_reports_missing_column/1,
     verify_reports_missing_index/1,
+    verify_matches_index_under_custom_name/1,
+    verify_reports_generated_name_over_wrong_shape/1,
+    verify_ignores_include_columns/1,
+    verify_does_not_match_expression_index/1,
+    verify_matches_partial_index_without_comparing_predicate/1,
+    verify_reports_full_index_for_partial_declaration/1,
     verify_handles_column_aliasing/1,
     verify_skips_schema_without_indexes_callback/1,
     verify_returns_pool_error_when_pool_missing/1,
@@ -55,6 +64,12 @@ all() ->
         verify_reports_missing_table,
         verify_reports_missing_column,
         verify_reports_missing_index,
+        verify_matches_index_under_custom_name,
+        verify_reports_generated_name_over_wrong_shape,
+        verify_ignores_include_columns,
+        verify_does_not_match_expression_index,
+        verify_matches_partial_index_without_comparing_predicate,
+        verify_reports_full_index_for_partial_declaration,
         verify_handles_column_aliasing,
         verify_skips_schema_without_indexes_callback,
         verify_returns_pool_error_when_pool_missing,
@@ -75,7 +90,8 @@ init_per_suite(Config) ->
                 ?REPO,
                 kura_schema_verify_test_complete_schema,
                 kura_schema_verify_test_aliased_schema,
-                kura_schema_verify_test_no_indexes_schema
+                kura_schema_verify_test_no_indexes_schema,
+                kura_schema_verify_test_partial_schema
             ]},
             {registered, []},
             {applications, [kernel, stdlib]}
@@ -161,6 +177,47 @@ verify_reports_missing_index(_Config) ->
     ?assertMatch(
         [{missing_index, _, [email], #{unique := true}}],
         [I || {missing_index, _, _, _} = I <- Issues]
+    ).
+
+verify_matches_index_under_custom_name(_Config) ->
+    create_aligned_table_without_index(),
+    sql(~"CREATE UNIQUE INDEX hand_named_email ON kura_verify_test_t (email)"),
+    ?assertEqual(ok, kura_schema_verify:verify(?REPO, [kura_schema_verify_test_complete_schema])).
+
+verify_reports_generated_name_over_wrong_shape(_Config) ->
+    create_aligned_table_without_index(),
+    sql(~"CREATE INDEX kura_verify_test_t_email_index ON kura_verify_test_t (email)"),
+    ?assertMatch(
+        {drift, [{missing_index, _, [email], #{unique := true}}]},
+        kura_schema_verify:verify(?REPO, [kura_schema_verify_test_complete_schema])
+    ).
+
+verify_ignores_include_columns(_Config) ->
+    create_aligned_table_without_index(),
+    sql(~"CREATE UNIQUE INDEX covering_email ON kura_verify_test_t (email) INCLUDE (name)"),
+    ?assertEqual(ok, kura_schema_verify:verify(?REPO, [kura_schema_verify_test_complete_schema])).
+
+verify_does_not_match_expression_index(_Config) ->
+    create_aligned_table_without_index(),
+    sql(~"CREATE UNIQUE INDEX lower_email ON kura_verify_test_t (lower(email))"),
+    ?assertMatch(
+        {drift, [{missing_index, _, [email], _}]},
+        kura_schema_verify:verify(?REPO, [kura_schema_verify_test_complete_schema])
+    ).
+
+verify_matches_partial_index_without_comparing_predicate(_Config) ->
+    create_partial_table(),
+    sql(
+        ~"CREATE UNIQUE INDEX live_email ON kura_verify_test_partial (email) WHERE (deleted_at IS NULL)"
+    ),
+    ?assertEqual(ok, kura_schema_verify:verify(?REPO, [kura_schema_verify_test_partial_schema])).
+
+verify_reports_full_index_for_partial_declaration(_Config) ->
+    create_partial_table(),
+    sql(~"CREATE UNIQUE INDEX all_email ON kura_verify_test_partial (email)"),
+    ?assertMatch(
+        {drift, [{missing_index, _, [email], #{where := _}}]},
+        kura_schema_verify:verify(?REPO, [kura_schema_verify_test_partial_schema])
     ).
 
 verify_handles_column_aliasing(_Config) ->
@@ -271,7 +328,16 @@ drop_test_table() ->
         [],
         #{}
     ),
+    sql(~"DROP TABLE IF EXISTS kura_verify_test_partial CASCADE").
+
+sql(SQL) ->
+    #{} = kura_driver_minato:query(kura_pool_minato, ?LIVE_POOL, SQL, [], #{}),
     ok.
+
+create_partial_table() ->
+    sql(
+        ~"CREATE TABLE kura_verify_test_partial (id BIGSERIAL PRIMARY KEY, email VARCHAR(255), deleted_at VARCHAR(255))"
+    ).
 
 create_aligned_table() ->
     %% Matches `kura_schema_verify_test_complete_schema`.
