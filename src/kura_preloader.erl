@@ -4,7 +4,8 @@
 
 -export([
     preload/4,
-    do_preload/4
+    do_preload/4,
+    quote_table_bin/1
 ]).
 
 -ifdef(TEST).
@@ -202,7 +203,7 @@ preload_many_to_many(
                 ~"SELECT ",
                 SelectCols,
                 ~" FROM ",
-                quote_ident_bin(JoinTableBin),
+                quote_table_bin(JoinTableBin),
                 ~" WHERE ",
                 InSQL
             ]),
@@ -251,6 +252,15 @@ m2m_placeholders(N, Counter, Acc) ->
 quote_ident_bin(Name) when is_binary(Name) ->
     Escaped = binary:replace(Name, ~"\"", ~"\"\"", [global]),
     <<$", Escaped/binary, $">>.
+
+-spec quote_table_bin(binary()) -> binary().
+quote_table_bin(Table) ->
+    case kura_tenant:get_tenant() of
+        {prefix, Prefix} ->
+            <<(quote_ident_bin(Prefix))/binary, $., (quote_ident_bin(Table))/binary>>;
+        _ ->
+            quote_ident_bin(Table)
+    end.
 
 %%----------------------------------------------------------------------
 %% Has many through

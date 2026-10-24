@@ -34,7 +34,12 @@ tenant_test_() ->
             {"insert with options stamps the tenant", fun insert_with_opts_stamps_tenant/0},
             {"an upsert leaves a foreign row alone", fun upsert_skips_foreign_row/0},
             {"an upsert updates the tenant's own row", fun upsert_updates_own_row/0},
-            {"a bulk upsert leaves a foreign row alone", fun bulk_upsert_skips_foreign_row/0}
+            {"a bulk upsert leaves a foreign row alone", fun bulk_upsert_skips_foreign_row/0},
+            {"associations cannot be written onto a foreign record",
+                fun assoc_onto_foreign_record/0},
+            {"associations can be written onto the tenant's own record",
+                fun assoc_onto_own_record/0},
+            {"a join between two tenant tables is refused", fun join_of_tenant_tables_fails/0}
         ]}
     end}.
 
@@ -52,17 +57,27 @@ setup() ->
         ")",
         []
     ),
+    {ok, _} = kura_test_repo:query(
+        "CREATE TABLE IF NOT EXISTS tenant_notes ("
+        "  id BIGSERIAL PRIMARY KEY,"
+        "  org_id INTEGER NOT NULL,"
+        "  item_id BIGINT NOT NULL,"
+        "  body VARCHAR(255)"
+        ")",
+        []
+    ),
     ok.
 
 teardown(_) ->
     _ = kura_tenant:clear_tenant(),
+    kura_test_repo:query("DROP TABLE IF EXISTS tenant_notes CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS tenant_items CASCADE", []),
     ok.
 
 seed() ->
     _ = kura_tenant:clear_tenant(),
     kura_query_cache:flush(),
-    {ok, _} = kura_test_repo:query("TRUNCATE tenant_items RESTART IDENTITY", []),
+    {ok, _} = kura_test_repo:query("TRUNCATE tenant_items, tenant_notes RESTART IDENTITY", []),
     {ok, _} = kura_test_repo:query(
         "INSERT INTO tenant_items (org_id, name, score) VALUES "
         "(1, 'one-a', 1), (1, 'one-b', 2), (2, 'two-a', 10), (2, 'two-only', 20)",
@@ -235,6 +250,32 @@ bulk_upsert_skips_foreign_row() ->
 %%----------------------------------------------------------------------
 %% Helpers
 %%----------------------------------------------------------------------
+
+%%----------------------------------------------------------------------
+%% Associations and joins
+%%----------------------------------------------------------------------
+
+assoc_onto_foreign_record() ->
+    Id = id_of(~"two-only"),
+    CS0 = kura_changeset:cast(?ITEMS, #{id => Id}, #{}, []),
+    CS = kura_changeset:put_assoc(CS0, notes, [#{body => ~"planted"}]),
+    ?assertMatch({error, _}, as(?ONE, fun() -> kura_test_repo:update(CS) end)),
+    ?assertEqual({ok, []}, raw("SELECT id FROM tenant_notes WHERE item_id = $1", [Id])).
+
+assoc_onto_own_record() ->
+    Id = id_of(~"one-a"),
+    CS0 = kura_changeset:cast(?ITEMS, #{id => Id}, #{}, []),
+    CS = kura_changeset:put_assoc(CS0, notes, [#{body => ~"mine"}]),
+    ?assertMatch({ok, _}, as(?ONE, fun() -> kura_test_repo:update(CS) end)),
+    ?assertMatch(
+        {ok, [#{org_id := 1}]}, raw("SELECT org_id FROM tenant_notes WHERE item_id = $1", [Id])
+    ).
+
+join_of_tenant_tables_fails() ->
+    Q = kura_query:join(
+        kura_query:from(?ITEMS), inner, kura_test_tenant_note_schema, {id, item_id}
+    ),
+    ?assertMatch({error, _}, as(?ONE, fun() -> kura_test_repo:all(Q) end)).
 
 as(Tenant, Fun) ->
     kura_tenant:with_tenant(Tenant, Fun).

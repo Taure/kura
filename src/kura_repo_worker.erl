@@ -590,6 +590,8 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
         {ok, CS} ->
             Changes = CS#kura_changeset.changes,
             case maps:size(Changes) of
+                0 when map_size(CS#kura_changeset.assoc_changes) > 0 ->
+                    owned_by_tenant(RepoMod, CS, Data);
                 0 ->
                     {ok, Data};
                 _ ->
@@ -612,6 +614,27 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
                             end
                     end
             end
+    end.
+
+%% With no field to write the key never reaches the database, so under attribute
+%% tenancy the record is looked up before its associations are written.
+owned_by_tenant(RepoMod, CS = #kura_changeset{schema = SchemaMod}, Data) ->
+    case kura_tenant:get_tenant() of
+        {attribute, _} ->
+            Q0 = apply_clauses(kura_query:from(SchemaMod), key_pairs(SchemaMod, Data)),
+            case all(RepoMod, kura_query:limit(Q0#kura_query{include_deleted = true}, 1)) of
+                {ok, [_]} ->
+                    {ok, Data};
+                {ok, []} ->
+                    {error,
+                        kura_changeset:add_error(
+                            CS#kura_changeset{action = update}, base, ~"record not found"
+                        )};
+                {error, _} = Err ->
+                    Err
+            end;
+        _ ->
+            {ok, Data}
     end.
 
 do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, KeyClauses) ->
@@ -775,7 +798,7 @@ persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
     {OwnerConds, OwnerParams, _} = key_conds(lists:zip(OwnerCols, OwnerValues), 1),
     DeleteSQL = iolist_to_binary([
         ~"DELETE FROM ",
-        quote_ident_bin(JoinTable),
+        kura_preloader:quote_table_bin(JoinTable),
         ~" WHERE ",
         lists:join(~" AND ", OwnerConds)
     ]),
@@ -800,7 +823,7 @@ m2m_insert_sql(JoinTable, Cols, Values) ->
     ]),
     SQL = iolist_to_binary([
         ~"INSERT INTO ",
-        quote_ident_bin(JoinTable),
+        kura_preloader:quote_table_bin(JoinTable),
         ~" (",
         ColSQL,
         ~") VALUES (",

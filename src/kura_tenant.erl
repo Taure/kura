@@ -62,10 +62,11 @@ Confine `Query` to the tenant `Strategy` names.
 
 Under `{attribute, {Field, Value}}` the condition `{Field, Value}` is added
 to the query, to each CTE and combination, and to every `in` and `exists`
-subquery in its `WHERE` and `HAVING` conditions, however deeply nested. Every
-table a scoped query reads must therefore carry `Field`: a nested query over a
-table without it fails rather than running unscoped. Any other strategy leaves
-`Query` as it is.
+subquery in its `WHERE` and `HAVING` conditions, however deeply nested. The
+condition names `Field` unqualified. A top-level query, CTE or union branch over
+a table without it fails. An `in` or `exists` subquery over such a table does
+not: the database resolves `Field` to the outer query's column, and the inner
+table is not scoped. Any other strategy leaves `Query` as it is.
 """.
 -spec scope_query(undefined | strategy(), #kura_query{}) -> #kura_query{}.
 scope_query({attribute, {Field, Value}}, Query) when is_atom(Field) ->
