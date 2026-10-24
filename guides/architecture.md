@@ -156,7 +156,8 @@ alone; a version claimed by two applications is refused before any DDL
 runs. Recording no application is also why the two operations that
 select versions without running the DDL those versions stand for -
 `rollback/1,2` and `fake/1` - refuse a multi-application repo outright
-rather than guess. `rollback/3` and `fake/2` take the application as an
+rather than guess, as does `fake/2` given a version. `rollback/3`,
+`fake/2` given an application and `fake/3` take the application as an
 argument.
 
 ## Other Modules
