@@ -20,6 +20,21 @@ identifier quoting `"foo"` vs `` `foo` ``, `RETURNING` vs lastrowid,
 `ON CONFLICT` vs `ON DUPLICATE KEY UPDATE`, `LIMIT/OFFSET` vs `FETCH
 FIRST`) all live in the dialect impl. The AST stays the same.
 
+## Bound values
+
+`kura_query_compiler:to_sql_cached/2` compiles a query's shape once, with
+every bound value replaced by a marker (see `kura_query_shape`), and
+reuses the result for every call that differs only in its values. An
+implementation must therefore pass a value in a bound position through to
+`params()` unchanged, and never inspect it or write it into the SQL text.
+That includes `limit` and `offset`: in a shape they hold a marker, not
+the integer the record type names.
+
+A template whose markers are missing, repeated or nested is detected and
+not cached, and so is a shape the implementation raises on, but SQL that
+varies with a value's content cannot be. `nil` and `undefined` are never
+replaced by a marker, so an implementation may compile them specially.
+
 ## Public API entry point
 
 Consumers go through `kura_query_compiler`, which delegates to the

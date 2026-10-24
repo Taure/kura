@@ -58,6 +58,11 @@
     schema :: module()
 }).
 
+%% The operators of a unary condition `{Field, Op}`. Every other
+%% `{Field, Value}` binds Value, and kura_query_shape relies on this list
+%% to tell the two apart, so a new unary operator must be added here.
+-define(KURA_IS_UNARY_OP(Op), (Op =:= is_nil orelse Op =:= is_not_nil)).
+
 -record(kura_query, {
     from :: atom() | module() | undefined,
     select = [] :: [atom() | term()] | {exprs, [term()]},

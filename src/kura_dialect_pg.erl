@@ -160,6 +160,9 @@ compile_row_tuples([Tuple | Rest], Arity, Counter, SQLs, Params) ->
     RowSQL = [~"(", join_comma(Placeholders), ~")"],
     compile_row_tuples(Rest, Arity, NextCounter, [RowSQL | SQLs], Params ++ tuple_to_list(Tuple)).
 
+unary_sql(is_nil) -> ~" IS NULL";
+unary_sql(is_not_nil) -> ~" IS NOT NULL".
+
 row_placeholders(0, Counter, Acc) ->
     {lists:reverse(Acc), Counter};
 row_placeholders(N, Counter, Acc) ->
@@ -330,10 +333,8 @@ compile_condition({'not', Condition}, Counter) ->
 compile_condition({fragment, SQL, Params}, Counter) ->
     {RewrittenSQL, NewCounter} = rewrite_fragment_placeholders(SQL, Counter),
     {RewrittenSQL, Params, NewCounter};
-compile_condition({Field, is_nil}, Counter) when is_atom(Field) ->
-    {[quote_ident(atom_to_binary(Field, utf8)), ~" IS NULL"], [], Counter};
-compile_condition({Field, is_not_nil}, Counter) when is_atom(Field) ->
-    {[quote_ident(atom_to_binary(Field, utf8)), ~" IS NOT NULL"], [], Counter};
+compile_condition({Field, Op}, Counter) when is_atom(Field), ?KURA_IS_UNARY_OP(Op) ->
+    {[quote_ident(atom_to_binary(Field, utf8)), unary_sql(Op)], [], Counter};
 compile_condition({Field, '=', Value}, Counter) when is_atom(Field) ->
     compile_condition({Field, Value}, Counter);
 compile_condition({Field, '!=', Value}, Counter) when is_atom(Field) ->

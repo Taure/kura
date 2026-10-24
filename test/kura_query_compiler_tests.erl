@@ -96,30 +96,27 @@ to_sql_cached_hit_returns_stored_result_test() ->
     end.
 
 %%----------------------------------------------------------------------
-%% Regression: two distinct queries that share an `erlang:phash2/1' value
-%% must not share a cache entry. A cached entry carries bound parameters
-%% as well as SQL, so keying on that hash returned another query's rows -
-%% in the wild, rows of a different table entirely.
+%% Regression: two distinct shapes that share an `erlang:phash2/1' value
+%% must not share a cache entry. A cached entry carries SQL and a parameter
+%% template, so keying on that hash returned another query's rows - in the
+%% wild, rows of a different table entirely. The cache keys on the shape,
+%% so the collisions are searched for between shapes.
 %%
 %% The colliding pairs are searched for at run time rather than hardcoded:
 %% the test then stays meaningful if a future OTP changes phash2/1, and it
 %% documents how dense collisions are in a 27-bit keyspace.
 %%----------------------------------------------------------------------
 
-colliding_queries_across_schemas_do_not_share_cache_entries_test() ->
+colliding_shapes_across_schemas_do_not_share_cache_entries_test() ->
     Build = fun(N) ->
+        Prefix = <<"t_", (integer_to_binary(N))/binary>>,
         [
-            #kura_query{from = schema_a, wheres = [{id, N}]},
-            #kura_query{from = schema_b, wheres = [{id, N}]}
+            #kura_query{from = schema_a, prefix = Prefix, wheres = [{id, N}]},
+            #kura_query{from = schema_b, prefix = Prefix, wheres = [{id, N}]}
         ]
     end,
     DifferentTable = fun(A, B) -> A#kura_query.from =/= B#kura_query.from end,
     {QA, QB} = find_collision(Build, DifferentTable),
-    assert_cached_independently(QA, QB).
-
-colliding_params_within_a_schema_do_not_share_cache_entries_test() ->
-    Build = fun(N) -> [#kura_query{from = schema_a, wheres = [{id, N}]}] end,
-    {QA, QB} = find_collision(Build, fun(_, _) -> true end),
     assert_cached_independently(QA, QB).
 
 %% The severity driver: a collision between two tenants' queries is a
@@ -163,8 +160,9 @@ ambient_tenant_is_part_of_the_cache_key_test() ->
         unset_repo()
     end.
 
-%% Walk N upwards building candidate queries until two that Accept approves
-%% hash alike. A rejected collision keeps the incumbent and scanning goes on.
+%% Walk N upwards building candidate queries until two whose shapes hash
+%% alike are approved by Accept. A rejected collision keeps the incumbent
+%% and scanning goes on.
 find_collision(Build, Accept) ->
     find_collision(Build, Accept, #{}, 0).
 
@@ -179,7 +177,7 @@ find_collision(Build, Accept, Seen, N) ->
 scan_candidates([], _Accept, Seen) ->
     {ok, Seen};
 scan_candidates([Q | Rest], Accept, Seen) ->
-    Hash = erlang:phash2(Q),
+    Hash = shape_hash(Q),
     case maps:find(Hash, Seen) of
         {ok, Other} ->
             case Accept(Other, Q) of
@@ -190,12 +188,16 @@ scan_candidates([Q | Rest], Accept, Seen) ->
             scan_candidates(Rest, Accept, Seen#{Hash => Q})
     end.
 
+shape_hash(Q) ->
+    {Shape, _} = kura_query_shape:split(Q),
+    erlang:phash2(Shape).
+
 assert_cached_independently(QA, QB) ->
     set_repo_dialect(kura_dialect_pg),
     kura_query_cache:init(),
     kura_query_cache:flush(),
     try
-        ?assertEqual(erlang:phash2(QA), erlang:phash2(QB)),
+        ?assertEqual(shape_hash(QA), shape_hash(QB)),
         ExpectedA = kura_query_compiler:to_sql(?REPO, QA),
         ExpectedB = kura_query_compiler:to_sql(?REPO, QB),
         ?assertNotEqual(ExpectedA, ExpectedB),
@@ -210,10 +212,10 @@ assert_cached_independently(QA, QB) ->
     end.
 
 %%----------------------------------------------------------------------
-%% The cache is bounded: parameterised queries intern one entry per
-%% distinct value set, so an unbounded table is a memory leak. Both limits
-%% are in words, because entry *size* is caller-influenced - one `in' list
-%% is stored in the key and again in the value.
+%% The cache is bounded: an `in' list is one shape per list length, so a
+%% caller-supplied array can still intern many entries. Both limits are in
+%% words, because entry *size* is caller-influenced - an `in' list puts a
+%% marker per element in the key and again in the template.
 %%----------------------------------------------------------------------
 
 cache_is_bounded_by_max_memory_test() ->
@@ -222,8 +224,9 @@ cache_is_bounded_by_max_memory_test() ->
     kura_query_cache:flush(),
     application:set_env(kura, query_cache_max_memory, 2000),
     try
-        Q = fun(N) -> #kura_query{from = bounded_schema, wheres = [{id, N}]} end,
-        _ = [kura_query_compiler:to_sql_cached(?REPO, Q(N)) || N <- lists:seq(1, 500)],
+        Q = fun(N) -> #kura_query{from = bounded_schema, wheres = [{id, in, lists:seq(1, N)}]} end,
+        _ = [kura_query_compiler:to_sql_cached(?REPO, Q(N)) || N <- lists:seq(1, 60)],
+        ?assert(ets:info(kura_query_cache, size) < 60),
         ?assert(ets:info(kura_query_cache, memory) < 2000 * 2),
         %% Eviction must never change what a query compiles to. This is what
         %% stops a future LRU from evicting by anything other than whole key.
