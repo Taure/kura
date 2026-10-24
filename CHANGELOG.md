@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   query, and to the key of every record write; such an update checks the
   record first; inserts are stamped; upserts only update rows of the
   same tenant; and the tenant field cannot be changed.
+- Preloading two or more associations ran each one in a new process,
+  which has no tenant. Under attribute tenancy a `belongs_to` whose
+  foreign key the caller set returned another tenant's row, and
+  `has_many` returned other tenants' children; under prefix tenancy the
+  preload read the connection's default schema. The preload processes
+  now carry the caller's tenant.
+- `kura_tenant:put_tenant/1` accepted any term and stored it, and a term
+  that was not a valid strategy then read back as no tenant, so a typo
+  such as `{prefix, "acme"}` turned scoping off without a word. It now
+  raises `{invalid_tenant, Tenant}`. An attribute value of `is_nil` or
+  `is_not_nil` is refused as well, because the condition read it as a
+  null test and matched every tenant.
 - Prefix tenancy (`{prefix, Schema}`) left two paths on the search_path
   instead of the tenant's schema: the optimistic-lock update, and the
   many-to-many join table, both when it was written through an
@@ -33,8 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without it now fails. Inside an `in` or `exists` subquery the condition
   is not qualified, so over a table without the field it resolves to the
   outer query's column and does not scope that table. Writes to a table
-  without the tenant field under a tenant context: an upsert fails, and a
-  plain insert succeeds unstamped. `query/3` with raw SQL, fragments and
+  without the tenant field under a tenant context: `update/2`, `delete/2`
+  and an upsert fail, and a plain insert succeeds unstamped. An invalid
+  tenant passed to `put_tenant/1` raises instead of being ignored. `query/3` with raw SQL, fragments and
   joins between two tenant tables are not scoped; see the multitenancy
   guide.
 - `kura_migrator`'s DDL identifier quoting now doubles an embedded double

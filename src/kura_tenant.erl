@@ -23,26 +23,39 @@ table with the schema when it emits SQL.
 -type strategy() :: {prefix, binary()} | {attribute, {atom(), term()}}.
 -export_type([strategy/0]).
 
--doc "Set the current tenant strategy in the process dictionary.".
+-doc """
+Set the current tenant strategy in the process dictionary.
+
+Raises `{invalid_tenant, Tenant}` on anything that is not a strategy, rather
+than storing something that would scope nothing. The attribute value cannot be
+`is_nil` or `is_not_nil`, which a condition reads as a test rather than a value.
+""".
 -spec put_tenant(strategy()) -> undefined | strategy().
 put_tenant(Tenant) ->
-    validate_tenant(erlang:put(kura_tenant, Tenant)).
+    _ = valid(Tenant),
+    valid(erlang:put(kura_tenant, Tenant)).
 
 -doc "Get the current tenant strategy from the process dictionary.".
 -spec get_tenant() -> undefined | strategy().
 get_tenant() ->
-    validate_tenant(erlang:get(kura_tenant)).
+    valid(erlang:get(kura_tenant)).
 
 -doc "Remove the current tenant strategy from the process dictionary.".
 -spec clear_tenant() -> undefined | strategy().
 clear_tenant() ->
-    validate_tenant(erlang:erase(kura_tenant)).
+    valid(erlang:erase(kura_tenant)).
 
--spec validate_tenant(term()) -> undefined | strategy().
-validate_tenant(undefined) -> undefined;
-validate_tenant({prefix, P}) when is_binary(P) -> {prefix, P};
-validate_tenant({attribute, {F, _V}} = A) when is_atom(F) -> A;
-validate_tenant(_) -> undefined.
+-spec valid(term()) -> undefined | strategy().
+valid(undefined) ->
+    undefined;
+valid({prefix, Prefix}) when is_binary(Prefix) ->
+    {prefix, Prefix};
+valid({attribute, {Field, Value}}) when
+    is_atom(Field), Value =/= is_nil, Value =/= is_not_nil
+->
+    {attribute, {Field, Value}};
+valid(Other) ->
+    error({invalid_tenant, Other}).
 
 -doc "Execute a function with a temporary tenant, restoring the previous tenant after.".
 -spec with_tenant(strategy(), fun(() -> T)) -> T when T :: term().

@@ -39,7 +39,11 @@ tenant_test_() ->
                 fun assoc_onto_foreign_record/0},
             {"associations can be written onto the tenant's own record",
                 fun assoc_onto_own_record/0},
-            {"a join between two tenant tables is refused", fun join_of_tenant_tables_fails/0}
+            {"a join between two tenant tables is refused", fun join_of_tenant_tables_fails/0},
+            {"preloading several associations stays in the tenant",
+                fun parallel_preload_is_scoped/0},
+            {"preloading several associations stays in the prefix schema",
+                fun parallel_preload_keeps_prefix/0}
         ]}
     end}.
 
@@ -70,6 +74,7 @@ setup() ->
 
 teardown(_) ->
     _ = kura_tenant:clear_tenant(),
+    kura_test_repo:query("DROP SCHEMA IF EXISTS tenant_p1 CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS tenant_notes CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS tenant_items CASCADE", []),
     ok.
@@ -276,6 +281,33 @@ join_of_tenant_tables_fails() ->
         kura_query:from(?ITEMS), inner, kura_test_tenant_note_schema, {id, item_id}
     ),
     ?assertMatch({error, _}, as(?ONE, fun() -> kura_test_repo:all(Q) end)).
+
+parallel_preload_is_scoped() ->
+    Foreign = id_of(~"two-only"),
+    {ok, _} = raw("INSERT INTO tenant_notes (org_id, item_id, body) VALUES (1, $1, 'planted')", [
+        Foreign
+    ]),
+    Q = kura_query:preload(kura_query:from(kura_test_tenant_note_schema), [item, parent]),
+    {ok, [Note]} = as(?ONE, fun() -> kura_test_repo:all(Q) end),
+    ?assertEqual(nil, maps:get(item, Note)),
+    ?assertEqual(nil, maps:get(parent, Note)).
+
+parallel_preload_keeps_prefix() ->
+    {ok, _} = raw("DROP SCHEMA IF EXISTS tenant_p1 CASCADE", []),
+    {ok, _} = raw("CREATE SCHEMA tenant_p1", []),
+    {ok, _} = raw("CREATE TABLE tenant_p1.tenant_items (LIKE tenant_items INCLUDING ALL)", []),
+    {ok, _} = raw("CREATE TABLE tenant_p1.tenant_notes (LIKE tenant_notes INCLUDING ALL)", []),
+    PublicId = id_of(~"one-a"),
+    {ok, _} = raw(
+        "INSERT INTO tenant_p1.tenant_items (id, org_id, name) VALUES ($1, 1, 'p1-item')", [
+            PublicId
+        ]
+    ),
+    {ok, _} = raw("INSERT INTO tenant_p1.tenant_notes (org_id, item_id) VALUES (1, $1)", [PublicId]),
+    Q = kura_query:preload(kura_query:from(kura_test_tenant_note_schema), [item, parent]),
+    {ok, [Note]} = as({prefix, ~"tenant_p1"}, fun() -> kura_test_repo:all(Q) end),
+    ?assertMatch(#{name := ~"p1-item"}, maps:get(item, Note)),
+    ?assertMatch(#{name := ~"p1-item"}, maps:get(parent, Note)).
 
 as(Tenant, Fun) ->
     kura_tenant:with_tenant(Tenant, Fun).

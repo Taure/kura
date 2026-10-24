@@ -24,6 +24,29 @@ put_get_tenant_test() ->
     kura_tenant:clear_tenant(),
     ?assertEqual(undefined, kura_tenant:get_tenant()).
 
+put_tenant_refuses_what_would_scope_nothing_test() ->
+    kura_tenant:clear_tenant(),
+    [
+        ?assertError({invalid_tenant, Bad}, erlang:apply(kura_tenant, put_tenant, [Bad]))
+     || Bad <- [
+            {attribute, {"org_id", 1}},
+            {attribute, org_id, 1},
+            {prefix, "acme"},
+            {attribute, {org_id, is_nil}},
+            {attribute, {org_id, is_not_nil}},
+            acme
+        ]
+    ],
+    ?assertEqual(undefined, kura_tenant:get_tenant()).
+
+get_tenant_refuses_a_malformed_stored_tenant_test() ->
+    _ = erlang:put(kura_tenant, {prefix, "acme"}),
+    try
+        ?assertError({invalid_tenant, {prefix, "acme"}}, kura_tenant:get_tenant())
+    after
+        erlang:erase(kura_tenant)
+    end.
+
 with_tenant_test() ->
     kura_tenant:clear_tenant(),
     Result = kura_tenant:with_tenant({prefix, <<"tmp">>}, fun() ->

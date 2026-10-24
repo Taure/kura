@@ -39,10 +39,12 @@ do_preload(RepoMod, Records, Schema, Assocs) ->
     %% Parallel preload: spawn each association query concurrently,
     %% then merge results sequentially to preserve record ordering.
     Self = self(),
+    Tenant = kura_tenant:get_tenant(),
     Refs = lists:map(
         fun(Assoc) ->
             Ref = make_ref(),
             spawn_link(fun() ->
+                ok = inherit_tenant(Tenant),
                 Result = preload_assoc(RepoMod, Records, Schema, Assoc),
                 Self ! {preload_done, Ref, Assoc, Result}
             end),
@@ -51,6 +53,14 @@ do_preload(RepoMod, Records, Schema, Assocs) ->
         Assocs
     ),
     collect_preload_results(Refs, Records).
+
+%% The tenant lives in the process dictionary, so a preload process scopes
+%% nothing unless it is handed the caller's.
+inherit_tenant(undefined) ->
+    ok;
+inherit_tenant(Tenant) ->
+    _ = kura_tenant:put_tenant(Tenant),
+    ok.
 
 collect_preload_results([], Records) ->
     Records;

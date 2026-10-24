@@ -623,8 +623,8 @@ owned_by_tenant(RepoMod, CS = #kura_changeset{schema = SchemaMod}, Data) ->
         {attribute, _} ->
             Q0 = apply_clauses(kura_query:from(SchemaMod), key_pairs(SchemaMod, Data)),
             case all(RepoMod, kura_query:limit(Q0#kura_query{include_deleted = true}, 1)) of
-                {ok, [_]} ->
-                    {ok, Data};
+                {ok, [Row]} ->
+                    {ok, Row};
                 {ok, []} ->
                     {error,
                         kura_changeset:add_error(
