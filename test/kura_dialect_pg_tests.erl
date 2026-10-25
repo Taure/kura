@@ -2,20 +2,6 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
--eqwalizer({nowarn_function, join_test/0}).
--eqwalizer({nowarn_function, left_join_test/0}).
--eqwalizer({nowarn_function, join_chained_test/0}).
--eqwalizer({nowarn_function, join_with_alias_test/0}).
--eqwalizer({nowarn_function, join_schema_module_test/0}).
--eqwalizer({nowarn_function, order_by_test/0}).
--eqwalizer({nowarn_function, group_by_test/0}).
--eqwalizer({nowarn_function, having_test/0}).
--eqwalizer({nowarn_function, limit_test/0}).
--eqwalizer({nowarn_function, limit_offset_test/0}).
--eqwalizer({nowarn_function, distinct_test/0}).
--eqwalizer({nowarn_function, distinct_on_test/0}).
--eqwalizer({nowarn_function, lock_test/0}).
-
 %%----------------------------------------------------------------------
 %% SELECT compilation
 %%----------------------------------------------------------------------
@@ -250,7 +236,7 @@ where_fragment_test() ->
 
 where_matches_test() ->
     Q = kura_query:where(kura_query:from(article), {body, matches, <<"erlang database">>}),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
         <<"SELECT * FROM \"article\" WHERE to_tsvector(\"body\") @@ plainto_tsquery($1)">>,
         SQL
@@ -263,13 +249,13 @@ where_matches_test() ->
 
 join_test() ->
     Q = kura_query:join(kura_query:from(user), inner, post, {id, user_id}),
-    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assert(binary:match(SQL, <<"INNER JOIN \"post\"">>) =/= nomatch),
     ?assert(binary:match(SQL, <<"ON \"user\".\"id\" = \"post\".\"user_id\"">>) =/= nomatch).
 
 left_join_test() ->
     Q = kura_query:join(kura_query:from(user), left, post, {id, user_id}),
-    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assert(binary:match(SQL, <<"LEFT JOIN \"post\"">>) =/= nomatch),
     ?assert(binary:match(SQL, <<"ON \"user\".\"id\" = \"post\".\"user_id\"">>) =/= nomatch).
 
@@ -277,13 +263,13 @@ join_chained_test() ->
     Q0 = kura_query:from(user),
     Q1 = kura_query:join(Q0, inner, post, {id, user_id}),
     Q2 = kura_query:join(Q1, inner, comment, {id, post_id}),
-    {SQL, _} = kura_dialect_pg:to_sql(Q2),
+    {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q2),
     ?assert(binary:match(SQL, <<"ON \"user\".\"id\" = \"post\".\"user_id\"">>) =/= nomatch),
     ?assert(binary:match(SQL, <<"ON \"post\".\"id\" = \"comment\".\"post_id\"">>) =/= nomatch).
 
 join_with_alias_test() ->
     Q = kura_query:join(kura_query:from(user), inner, post, {id, user_id}, p),
-    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assert(binary:match(SQL, <<"INNER JOIN \"post\" AS \"p\"">>) =/= nomatch),
     ?assert(binary:match(SQL, <<"ON \"user\".\"id\" = \"p\".\"user_id\"">>) =/= nomatch).
 
@@ -291,7 +277,7 @@ join_schema_module_test() ->
     Q = kura_query:join(
         kura_query:from(kura_test_schema), inner, kura_test_post_schema, {id, author_id}
     ),
-    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assert(binary:match(SQL, <<"INNER JOIN \"posts\"">>) =/= nomatch).
 
 %%----------------------------------------------------------------------
@@ -300,7 +286,7 @@ join_schema_module_test() ->
 
 order_by_test() ->
     Q = kura_query:order_by(kura_query:from(user), [{name, asc}, {age, desc}]),
-    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assert(binary:match(SQL, <<"ORDER BY \"name\" ASC, \"age\" DESC">>) =/= nomatch).
 
 %%----------------------------------------------------------------------
@@ -310,14 +296,14 @@ order_by_test() ->
 group_by_test() ->
     Q = kura_query:group_by(kura_query:from(user), [role]),
     Q2 = kura_query:count(Q),
-    {SQL, _} = kura_dialect_pg:to_sql(Q2),
+    {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q2),
     ?assert(binary:match(SQL, <<"GROUP BY \"role\"">>) =/= nomatch).
 
 having_test() ->
     Q = kura_query:group_by(kura_query:from(user), [role]),
     Q2 = kura_query:having(Q, {age, '>', 5}),
     Q3 = kura_query:count(Q2),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q3),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q3),
     ?assert(binary:match(SQL, <<"HAVING \"age\" > $">>) =/= nomatch),
     ?assertEqual([5], Params).
 
@@ -327,7 +313,7 @@ having_test() ->
 
 limit_test() ->
     Q = kura_query:limit(kura_query:from(user), 10),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q),
     ?assert(binary:match(SQL, <<"LIMIT $1">>) =/= nomatch),
     ?assertEqual([10], Params).
 
@@ -335,7 +321,7 @@ limit_offset_test() ->
     Q0 = kura_query:from(user),
     Q1 = kura_query:limit(Q0, 10),
     Q2 = kura_query:offset(Q1, 20),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q2),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q2),
     ?assert(binary:match(SQL, <<"LIMIT $1">>) =/= nomatch),
     ?assert(binary:match(SQL, <<"OFFSET $2">>) =/= nomatch),
     ?assertEqual([10, 20], Params).
@@ -346,12 +332,12 @@ limit_offset_test() ->
 
 distinct_test() ->
     Q = kura_query:distinct(kura_query:from(user)),
-    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assert(binary:match(SQL, <<"SELECT DISTINCT *">>) =/= nomatch).
 
 distinct_on_test() ->
     Q = kura_query:distinct(kura_query:from(user), [email]),
-    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assert(binary:match(SQL, <<"SELECT DISTINCT ON (\"email\") *">>) =/= nomatch).
 
 %%----------------------------------------------------------------------
@@ -360,7 +346,7 @@ distinct_on_test() ->
 
 lock_test() ->
     Q = kura_query:lock(kura_query:from(user), <<"FOR UPDATE">>),
-    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assert(binary:match(SQL, <<"FOR UPDATE">>) =/= nomatch).
 
 %%----------------------------------------------------------------------
@@ -369,7 +355,7 @@ lock_test() ->
 
 prefix_test() ->
     Q = kura_query:prefix(kura_query:from(user), <<"tenant_1">>),
-    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(<<"SELECT * FROM \"tenant_1\".\"user\"">>, SQL).
 
 %%----------------------------------------------------------------------
@@ -378,17 +364,17 @@ prefix_test() ->
 
 count_star_test() ->
     Q = kura_query:count(kura_query:from(user)),
-    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(<<"SELECT count(*) AS \"count\" FROM \"user\"">>, SQL).
 
 count_field_test() ->
     Q = kura_query:count(kura_query:from(user), email),
-    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(<<"SELECT count(\"email\") AS \"count\" FROM \"user\"">>, SQL).
 
 sum_test() ->
     Q = kura_query:sum(kura_query:from(user), score),
-    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(<<"SELECT sum(\"score\") AS \"sum\" FROM \"user\"">>, SQL).
 
 %%----------------------------------------------------------------------
@@ -826,7 +812,7 @@ complex_query_test() ->
     Q4 = kura_query:order_by(Q3, [{name, asc}]),
     Q5 = kura_query:limit(Q4, 10),
     Q6 = kura_query:offset(Q5, 5),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q6),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q6),
     Expected = <<
         "SELECT \"name\", \"email\" FROM \"users\""
         " WHERE \"age\" > $1 AND \"active\" = $2"
@@ -854,7 +840,7 @@ to_sql_from_start_counter_test() ->
 subquery_in_test() ->
     SubQ = kura_query:select(kura_query:from(post), [user_id]),
     Q = kura_query:where(kura_query:from(user), {id, in, {subquery, SubQ}}),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
         <<"SELECT * FROM \"user\" WHERE \"id\" IN (SELECT \"user_id\" FROM \"post\")">>,
         SQL
@@ -867,7 +853,7 @@ subquery_in_with_where_test() ->
         {published, true}
     ),
     Q = kura_query:where(kura_query:from(user), {id, in, {subquery, SubQ}}),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
         <<"SELECT * FROM \"user\" WHERE \"id\" IN (SELECT \"user_id\" FROM \"post\" WHERE \"published\" = $1)">>,
         SQL
@@ -877,7 +863,7 @@ subquery_in_with_where_test() ->
 exists_subquery_test() ->
     SubQ = kura_query:where(kura_query:from(post), {user_id, 1}),
     Q = kura_query:where(kura_query:from(user), {exists, {subquery, SubQ}}),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
         <<"SELECT * FROM \"user\" WHERE EXISTS (SELECT * FROM \"post\" WHERE \"user_id\" = $1)">>,
         SQL
@@ -887,7 +873,7 @@ exists_subquery_test() ->
 not_exists_subquery_test() ->
     SubQ = kura_query:where(kura_query:from(post), {user_id, 1}),
     Q = kura_query:where(kura_query:from(user), {not_exists, {subquery, SubQ}}),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
         <<"SELECT * FROM \"user\" WHERE NOT EXISTS (SELECT * FROM \"post\" WHERE \"user_id\" = $1)">>,
         SQL
@@ -902,7 +888,7 @@ select_expr_row_number_test() ->
     Q = kura_query:select_expr(kura_query:from(user), [
         {row_num, {fragment, <<"ROW_NUMBER() OVER (ORDER BY id)">>, []}}
     ]),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
         <<"SELECT ROW_NUMBER() OVER (ORDER BY id) AS \"row_num\" FROM \"user\"">>,
         SQL
@@ -913,7 +899,7 @@ select_expr_sum_over_test() ->
     Q = kura_query:select_expr(kura_query:from(user), [
         {total, {fragment, <<"SUM(score) OVER (PARTITION BY role)">>, []}}
     ]),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
         <<"SELECT SUM(score) OVER (PARTITION BY role) AS \"total\" FROM \"user\"">>,
         SQL
@@ -924,7 +910,7 @@ select_expr_with_params_test() ->
     Q = kura_query:select_expr(kura_query:from(user), [
         {result, {fragment, <<"CASE WHEN age > ? THEN 'senior' ELSE 'junior' END">>, [50]}}
     ]),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
         <<"SELECT CASE WHEN age > $1 THEN 'senior' ELSE 'junior' END AS \"result\" FROM \"user\"">>,
         SQL
@@ -938,7 +924,7 @@ select_expr_with_params_test() ->
 single_cte_test() ->
     CteQ = kura_query:where(kura_query:from(user), {active, true}),
     Q = kura_query:with_cte(kura_query:from(active_users), <<"active_users">>, CteQ),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
         <<"WITH \"active_users\" AS (SELECT * FROM \"user\" WHERE \"active\" = $1) SELECT * FROM \"active_users\"">>,
         SQL
@@ -951,7 +937,7 @@ multiple_ctes_test() ->
     Q0 = kura_query:from(active_users),
     Q1 = kura_query:with_cte(Q0, <<"active_users">>, CteQ1),
     Q2 = kura_query:with_cte(Q1, <<"admin_users">>, CteQ2),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q2),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q2),
     ?assertEqual(
         <<"WITH \"active_users\" AS (SELECT * FROM \"user\" WHERE \"active\" = $1), \"admin_users\" AS (SELECT * FROM \"user\" WHERE \"role\" = $2) SELECT * FROM \"active_users\"">>,
         SQL
@@ -961,7 +947,7 @@ multiple_ctes_test() ->
 cte_name_is_quoted_test() ->
     CteQ = kura_query:from(user),
     Q = kura_query:with_cte(kura_query:from(evil), <<"evil\") SELECT * FROM secrets --">>, CteQ),
-    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
         <<"WITH \"evil\"\") SELECT * FROM secrets --\" AS (SELECT * FROM \"user\") SELECT * FROM \"evil\"">>,
         SQL
@@ -973,7 +959,7 @@ cte_name_is_quoted_test() ->
 
 quote_ident_doubles_embedded_quotes_test() ->
     Q = kura_query:where(kura_query:from(user), {'name" = \'x\' OR "1', 1}),
-    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(<<"SELECT * FROM \"user\" WHERE \"name\"\" = 'x' OR \"\"1\" = $1">>, SQL).
 
 %%----------------------------------------------------------------------
@@ -985,7 +971,7 @@ union_test() ->
     Q1 = kura_query:where(kura_query:from(user), {role, <<"admin">>}),
     Q2 = kura_query:where(kura_query:from(user), {role, <<"mod">>}),
     Q = kura_query:union(Q1, Q2),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
         <<"SELECT * FROM \"user\" WHERE \"role\" = $1 UNION SELECT * FROM \"user\" WHERE \"role\" = $2">>,
         SQL
@@ -996,7 +982,7 @@ union_all_test() ->
     Q1 = kura_query:where(kura_query:from(user), {role, <<"admin">>}),
     Q2 = kura_query:where(kura_query:from(user), {role, <<"mod">>}),
     Q = kura_query:union_all(Q1, Q2),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
         <<"SELECT * FROM \"user\" WHERE \"role\" = $1 UNION ALL SELECT * FROM \"user\" WHERE \"role\" = $2">>,
         SQL
@@ -1007,7 +993,7 @@ intersect_test() ->
     Q1 = kura_query:where(kura_query:from(user), {active, true}),
     Q2 = kura_query:where(kura_query:from(user), {role, <<"admin">>}),
     Q = kura_query:intersect(Q1, Q2),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
         <<"SELECT * FROM \"user\" WHERE \"active\" = $1 INTERSECT SELECT * FROM \"user\" WHERE \"role\" = $2">>,
         SQL
@@ -1018,7 +1004,7 @@ except_test() ->
     Q1 = kura_query:where(kura_query:from(user), {active, true}),
     Q2 = kura_query:where(kura_query:from(user), {role, <<"banned">>}),
     Q = kura_query:except(Q1, Q2),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
         <<"SELECT * FROM \"user\" WHERE \"active\" = $1 EXCEPT SELECT * FROM \"user\" WHERE \"role\" = $2">>,
         SQL
@@ -1030,7 +1016,7 @@ chained_union_test() ->
     Q2 = kura_query:where(kura_query:from(user), {role, <<"b">>}),
     Q3 = kura_query:where(kura_query:from(user), {role, <<"c">>}),
     Q = kura_query:union(kura_query:union(Q1, Q2), Q3),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
         <<"SELECT * FROM \"user\" WHERE \"role\" = $1 UNION SELECT * FROM \"user\" WHERE \"role\" = $2 UNION SELECT * FROM \"user\" WHERE \"role\" = $3">>,
         SQL
@@ -1044,7 +1030,7 @@ chained_union_test() ->
 scope_single_test() ->
     Active = fun(Q) -> kura_query:where(Q, {active, true}) end,
     Q = kura_query:scope(kura_query:from(user), Active),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(<<"SELECT * FROM \"user\" WHERE \"active\" = $1">>, SQL),
     ?assertEqual([true], Params).
 
@@ -1052,7 +1038,7 @@ scope_chained_test() ->
     Active = fun(Q) -> kura_query:where(Q, {active, true}) end,
     Admin = fun(Q) -> kura_query:where(Q, {role, <<"admin">>}) end,
     Q = kura_query:scope(kura_query:scope(kura_query:from(user), Active), Admin),
-    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
         <<"SELECT * FROM \"user\" WHERE \"active\" = $1 AND \"role\" = $2">>,
         SQL

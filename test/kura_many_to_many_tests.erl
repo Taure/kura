@@ -2,9 +2,6 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
--eqwalizer({nowarn_function, cast_assoc_many_to_many_test/0}).
--eqwalizer({nowarn_function, put_assoc_many_to_many_test/0}).
-
 %%----------------------------------------------------------------------
 %% Association record
 %%----------------------------------------------------------------------
@@ -53,7 +50,7 @@ cast_assoc_many_to_many_test() ->
     CS = kura_changeset:cast(kura_test_post, #{}, Params, [title, body, author_id]),
     CS1 = kura_changeset:cast_assoc(CS, tags),
     ?assert(CS1#kura_changeset.valid),
-    #{tags := ChildCSs} = CS1#kura_changeset.assoc_changes,
+    #{tags := [_ | _] = ChildCSs} = CS1#kura_changeset.assoc_changes,
     ?assertEqual(2, length(ChildCSs)),
     [C1, C2] = ChildCSs,
     ?assertEqual(insert, C1#kura_changeset.action),
@@ -102,7 +99,7 @@ put_assoc_many_to_many_test() ->
         #{name => <<"tag1">>},
         #{name => <<"tag2">>}
     ]),
-    #{tags := Children} = CS1#kura_changeset.assoc_changes,
+    #{tags := [_ | _] = Children} = CS1#kura_changeset.assoc_changes,
     ?assertEqual(2, length(Children)),
     [C1, _C2] = Children,
     ?assertEqual(insert, C1#kura_changeset.action).

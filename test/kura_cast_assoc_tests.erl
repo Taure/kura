@@ -2,8 +2,6 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
--eqwalizer({nowarn_function, put_assoc_with_maps_test/0}).
-
 %%----------------------------------------------------------------------
 %% cast_assoc has_many
 %%----------------------------------------------------------------------
@@ -143,7 +141,7 @@ put_assoc_with_maps_test() ->
         #{body => <<"Comment 1">>, author_id => 1},
         #{body => <<"Comment 2">>, author_id => 2}
     ]),
-    #{comments := Children} = CS1#kura_changeset.assoc_changes,
+    #{comments := [_ | _] = Children} = CS1#kura_changeset.assoc_changes,
     ?assertEqual(2, length(Children)),
     [C1, _C2] = Children,
     ?assertEqual(insert, C1#kura_changeset.action).

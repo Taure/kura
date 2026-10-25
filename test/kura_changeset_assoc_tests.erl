@@ -2,9 +2,6 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
--eqwalizer({nowarn_function, cast_assoc_has_many_with_existing_test/0}).
--eqwalizer({nowarn_function, cast_assoc_has_many_insert_only_test/0}).
-
 %%----------------------------------------------------------------------
 %% cast_embed embeds_many: exercises cast_embed_list, all_valid, reverse_changesets
 %%----------------------------------------------------------------------
@@ -116,7 +113,7 @@ cast_assoc_has_many_with_existing_test() ->
     ),
     CS1 = kura_changeset:cast_assoc(CS, comments),
     ?assert(CS1#kura_changeset.valid),
-    #{comments := ChildCSs} = CS1#kura_changeset.assoc_changes,
+    #{comments := [_ | _] = ChildCSs} = CS1#kura_changeset.assoc_changes,
     ?assertEqual(2, length(ChildCSs)),
     [C1, C2] = ChildCSs,
     ?assertEqual(update, C1#kura_changeset.action),
@@ -136,7 +133,7 @@ cast_assoc_has_many_insert_only_test() ->
     CS = kura_changeset:cast(kura_test_post, #{}, Params, [title, body, author_id]),
     CS1 = kura_changeset:cast_assoc(CS, comments),
     ?assert(CS1#kura_changeset.valid),
-    #{comments := ChildCSs} = CS1#kura_changeset.assoc_changes,
+    #{comments := [_ | _] = ChildCSs} = CS1#kura_changeset.assoc_changes,
     ?assertEqual(2, length(ChildCSs)),
     lists:foreach(
         fun(ChildCS) ->
