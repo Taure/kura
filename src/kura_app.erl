@@ -8,8 +8,6 @@
 -export([start_repo_pool/1]).
 -endif.
 
--include_lib("kernel/include/logger.hrl").
-
 start(_StartType, _StartArgs) ->
     resolve_backends(),
     maybe_configure_pg_types(),
@@ -76,62 +74,7 @@ ensure_pools() ->
 
 -spec start_repo_pool(module()) -> ok.
 start_repo_pool(Repo) ->
-    Config = pool_config(Repo),
-    PoolMod = kura_db:get_pool_module(Repo),
-    case PoolMod:start_pool(Repo, Config) of
-        {ok, _Pid} ->
-            ok;
-        {error, {already_started, _Pid}} ->
-            ok;
-        {error, Reason} ->
-            ?LOG_ERROR(#{
-                msg => ~"kura: pool did not start",
-                repo => Repo,
-                pool_module => PoolMod,
-                reason => redacted(Reason, secrets(Config))
-            }),
-            ok
-    end.
-
-%% A supervisor reports a failed start with the child's start arguments, and
-%% those hold the connection settings, password included.
--spec secrets(map()) -> [binary() | string()].
-secrets(#{password := Password}) when is_binary(Password), Password =/= <<>> ->
-    [Password];
-secrets(#{password := Password}) when is_list(Password), Password =/= [] ->
-    case unicode:characters_to_binary(Password) of
-        Binary when is_binary(Binary) -> [Password, Binary];
-        _NotText -> [Password]
-    end;
-secrets(_Config) ->
-    [].
-
--spec redacted(term(), [binary() | string()]) -> term().
-redacted(Term, Secrets) ->
-    case lists:member(Term, Secrets) of
-        true -> redacted;
-        false -> redacted_parts(Term, Secrets)
-    end.
-
--spec redacted_parts(term(), [binary() | string()]) -> term().
-redacted_parts({password, _}, _Secrets) ->
-    {password, redacted};
-redacted_parts(Map, Secrets) when is_map(Map) ->
-    #{redacted(K, Secrets) => redacted_value(K, V, Secrets) || K := V <- Map};
-redacted_parts(Tuple, Secrets) when is_tuple(Tuple) ->
-    list_to_tuple([redacted(E, Secrets) || E <- tuple_to_list(Tuple)]);
-redacted_parts(List, Secrets) when is_list(List) ->
-    try length(List) of
-        _Proper -> [redacted(E, Secrets) || E <- List]
-    catch
-        error:badarg -> redacted
-    end;
-redacted_parts(Term, _Secrets) ->
-    Term.
-
--spec redacted_value(term(), term(), [binary() | string()]) -> term().
-redacted_value(password, _Value, _Secrets) -> redacted;
-redacted_value(_Key, Value, Secrets) -> redacted(Value, Secrets).
+    kura_db:start_pool(Repo, Repo, pool_config(Repo)).
 
 %% Per-repo pool config. Multi-repo: read from the repos map. Single-repo
 %% legacy: pull the flat kura env keys.

@@ -71,21 +71,25 @@ kura_repo_worker:start(MyRepo),
 -spec start(module()) -> ok.
 start(RepoMod) ->
     Config = kura_repo:config(RepoMod),
-    Pool = maps:get(pool, Config, RepoMod),
-    PoolMod = kura_db:get_pool_module(RepoMod),
     PgoConfig = #{
-        host => binary_to_list(maps:get(hostname, Config, ~"localhost")),
+        host => text(hostname, Config, ~"localhost"),
         port => maps:get(port, Config, 5432),
-        database => binary_to_list(maps:get(database, Config)),
-        user => binary_to_list(maps:get(username, Config, ~"postgres")),
-        password => binary_to_list(maps:get(password, Config, <<>>)),
+        database => text(database, Config, undefined),
+        user => text(username, Config, ~"postgres"),
+        password => text(password, Config, <<>>),
         pool_size => maps:get(pool_size, Config, 10),
         decode_opts => [return_rows_as_maps, column_name_as_atom]
     },
-    case PoolMod:start_pool(Pool, PgoConfig) of
-        {ok, _Pid} -> ok;
-        {error, {already_started, _Pid}} -> ok;
-        {error, _} -> ok
+    kura_db:start_pool(RepoMod, maps:get(pool, Config, RepoMod), PgoConfig).
+
+%% Raises without the config in the stacktrace: it holds the password.
+-spec text(atom(), map(), binary() | undefined) -> string().
+text(Key, Config, Default) ->
+    case maps:get(Key, Config, Default) of
+        Binary when is_binary(Binary) -> binary_to_list(Binary);
+        List when is_list(List) -> List;
+        undefined -> error({missing_repo_config, Key});
+        _Other -> error({invalid_repo_config, Key})
     end.
 
 -doc "Execute a query and return all matching rows.".
