@@ -21,8 +21,8 @@ matches their backend.
 
 `checkout/2` returns both a `conn()` and a `token()`. The `conn()` is
 what callers actually use to run work: `kura_pool_minato` hands back a
-process that owns the connection and answers queries, and the pgo impl
-hands back pgo's own conn record. The `token()` is the
+process that owns the connection and answers queries, and
+`kura_pool_sqlite` hands back the esqlite connection. The `token()` is the
 opaque value the caller hands back to `checkin/2`. Implementations are
 free to make them the same value if they like.
 

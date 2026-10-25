@@ -2,7 +2,7 @@
 -moduledoc """
 Central database wrapper. Routes all SQL through a configured
 `kura_driver` impl over a configured `kura_pool` impl, so swapping
-the underlying client (pgo, esqlite, ...) is one config change.
+the underlying client (minato, esqlite, ...) is one config change.
 
 All driver calls go through this module, providing a single place
 for pool lookup, sandbox support, telemetry, and type loading.
@@ -12,6 +12,7 @@ for pool lookup, sandbox support, telemetry, and type loading.
     query/3,
     transaction/2,
     transaction_ok/2,
+    in_transaction/1,
     get_pool/1,
     get_pool_module/1,
     get_driver_module/1,
@@ -60,16 +61,109 @@ query(RepoMod, SQL, Params) ->
 %% Transaction
 %%----------------------------------------------------------------------
 
+-doc """
+Run `Fun` in a transaction on `RepoMod`'s pool, through its driver.
+
+The driver's `c:kura_driver:transaction/4` decides what a nested call
+does and what a failure raises. In a sandboxed test the sandbox
+connection is already inside a transaction, so `Fun` runs under a
+`SAVEPOINT` on it instead, the way a driver runs a nested transaction:
+an exception rolls back to the savepoint and is re-raised, and a
+savepoint the database will not release raises
+`transaction_rolled_back` after rolling back to it. Another process
+opening a transaction on the same sandbox connection while this one is
+open raises `{kura_sandbox, overlapping_transactions}`.
+""".
 -spec transaction(module(), fun(() -> term())) -> term().
 transaction(RepoMod, Fun) ->
     Pool = get_pool(RepoMod),
-    case kura_sandbox:get_conn(Pool) of
-        {ok, _Conn} ->
-            Fun();
-        not_found ->
-            DriverMod = get_driver_module(RepoMod),
-            PoolMod = get_pool_module(RepoMod),
-            DriverMod:transaction(PoolMod, Pool, Fun, #{})
+    DriverMod = get_driver_module(RepoMod),
+    Nested = erlang:get({?MODULE, transaction, Pool}) =:= true,
+    _ = erlang:put({?MODULE, transaction, Pool}, true),
+    try
+        case kura_sandbox:get_conn(Pool) of
+            {ok, Conn} ->
+                sandboxed(DriverMod, Conn, Fun);
+            not_found ->
+                PoolMod = get_pool_module(RepoMod),
+                DriverMod:transaction(PoolMod, Pool, Fun, #{})
+        end
+    after
+        left_transaction(Pool, Nested)
+    end.
+
+-doc """
+Whether this process is inside `transaction/2` on `RepoMod`'s pool. A
+process it spawns is not, and would not see the transaction's
+uncommitted work.
+""".
+-spec in_transaction(module()) -> boolean().
+in_transaction(RepoMod) ->
+    erlang:get({?MODULE, transaction, get_pool(RepoMod)}) =:= true.
+
+-spec left_transaction(atom(), boolean()) -> ok.
+left_transaction(Pool, false) ->
+    _ = erlang:erase({?MODULE, transaction, Pool}),
+    ok;
+left_transaction(_Pool, true) ->
+    ok.
+
+-spec sandboxed(module(), kura_pool:conn(), fun(() -> term())) -> term().
+sandboxed(DriverMod, Conn, Fun) ->
+    ok = kura_sandbox:enter_transaction(Conn),
+    try
+        savepointed(DriverMod, Conn, Fun)
+    after
+        ok = kura_sandbox:leave_transaction(Conn)
+    end.
+
+-spec savepointed(module(), kura_pool:conn(), fun(() -> term())) -> term().
+savepointed(DriverMod, Conn, Fun) ->
+    Savepoint = [
+        ~"kura_savepoint_", integer_to_binary(erlang:unique_integer([positive, monotonic]))
+    ],
+    case on_sandbox(DriverMod, Conn, [~"SAVEPOINT ", Savepoint]) of
+        {error, Refused} -> error({DriverMod, {savepoint_failed, reduced(Refused)}});
+        _Started -> ok
+    end,
+    try Fun() of
+        Value -> released(DriverMod, Conn, Savepoint, Value)
+    catch
+        Class:Reason:Stack ->
+            ok = rolled_back_to(DriverMod, Conn, Savepoint),
+            erlang:raise(Class, Reason, Stack)
+    end.
+
+-spec released(module(), kura_pool:conn(), iodata(), term()) -> term().
+released(DriverMod, Conn, Savepoint, Value) ->
+    case on_sandbox(DriverMod, Conn, [~"RELEASE SAVEPOINT ", Savepoint]) of
+        {error, _} ->
+            ok = rolled_back_to(DriverMod, Conn, Savepoint),
+            error(transaction_rolled_back);
+        _Released ->
+            Value
+    end.
+
+-spec rolled_back_to(module(), kura_pool:conn(), iodata()) -> ok.
+rolled_back_to(DriverMod, Conn, Savepoint) ->
+    _ = on_sandbox(DriverMod, Conn, [~"ROLLBACK TO SAVEPOINT ", Savepoint]),
+    _ = on_sandbox(DriverMod, Conn, [~"RELEASE SAVEPOINT ", Savepoint]),
+    ok.
+
+%% A server error's message and detail can carry row values.
+-spec reduced(term()) -> term().
+reduced({pgsql_error, Fields}) when is_map(Fields) ->
+    {pgsql_error, maps:with([code, constraint, severity, severity_non_localised], Fields)};
+reduced(Reason) ->
+    Reason.
+
+%% A raise here would replace the exception being cleaned up after.
+-spec on_sandbox(module(), kura_pool:conn(), iodata()) -> dynamic().
+on_sandbox(DriverMod, Conn, SQL) ->
+    try
+        DriverMod:query_on(Conn, SQL, [], #{})
+    catch
+        Class:_ -> {error, {raised, Class}}
     end.
 
 -spec transaction_ok(module(), fun(() -> term())) -> {ok, term()} | {error, term()}.

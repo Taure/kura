@@ -39,8 +39,8 @@ one.
 -define(MIGRATION_LOCK_KEY, 571629482).
 
 %% Defaults for the pool-readiness wait at the start of migrator operations.
-%% pgo workers connect asynchronously, so the pool may exist but have no
-%% available connections yet; we retry `SELECT 1` until the pool answers.
+%% A pool can exist before its connections are open; we retry `SELECT 1`
+%% until the pool answers.
 -define(POOL_READY_TIMEOUT_MS, 5000).
 -define(POOL_READY_INTERVAL_MS, 50).
 
@@ -443,7 +443,7 @@ emit_migrate_stop(RepoMod, T0, Direction, Result) ->
 
 -spec telemetry_event([atom()], map(), map()) -> ok.
 telemetry_event(EventName, Measurements, Metadata) ->
-    %% telemetry is a hard dependency of kura via pgo, but we still
+    %% telemetry is a hard dependency of kura, but we still
     %% guard the call: telemetry handlers run inline and an exception
     %% inside one must not abort a migration. The whole point of
     %% emitting these events is operational observability, and dropping
@@ -566,9 +566,9 @@ create_schema_migrations(RepoMod, SQL) ->
 -doc """
 Wait until the repo's connection pool has at least one ready worker.
 
-`pgo` workers connect asynchronously, so when an application starts
-and immediately calls `migrate/1` the pool may exist but reject queries
-with `none_available` until handshake completes. The migrator races
+A pool can exist before its connections are open, so when an
+application starts and immediately calls `migrate/1` the pool may
+reject queries until the first handshake completes. The migrator races
 this every time on fast CT startup. Other operations (rollback, status)
 share the same hazard. We retry `SELECT 1` until it succeeds or the
 configured timeout elapses; any successful round-trip proves the pool

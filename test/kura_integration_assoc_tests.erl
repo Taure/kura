@@ -62,7 +62,36 @@ assoc_test_() ->
             {"left join query", fun t_join_left/0},
 
             %% Foreign key constraint on assoc table
-            {"FK constraint on post with bad author_id", fun t_fk_constraint_post/0}
+            {"FK constraint on post with bad author_id", fun t_fk_constraint_post/0},
+
+            %% Failed association writes
+            {"a failed child returns the parent changeset and writes nothing",
+                fun t_failed_child_returns_changeset/0},
+            {"a failed child inside a transaction leaves the transaction usable",
+                fun t_failed_child_in_transaction/0},
+            {"a failed parent with assoc changes returns its changeset",
+                fun t_failed_parent_with_assocs/0},
+            {"a failed has_one child returns the parent changeset", fun t_failed_has_one_child/0},
+            {"a new many_to_many child that fails to insert returns the parent changeset",
+                fun t_failed_new_many_to_many_child/0},
+            {"a child hook error is reported on the parent changeset",
+                fun t_child_hook_error_on_parent/0},
+
+            {"a link to a missing many_to_many row returns the parent changeset",
+                fun t_failed_join_row_returns_changeset/0},
+            {"a failed child on update returns the parent changeset",
+                fun t_failed_child_on_update/0},
+
+            %% Preload on the caller's connection
+            {"preload of several assocs inside a transaction sees its writes",
+                fun t_preload_in_transaction/0},
+            {"preload of several assocs in a sandbox sees its writes", fun t_preload_in_sandbox/0},
+            {"preload after a nested assoc write still sees the transaction",
+                fun t_preload_after_nested_transaction/0},
+            {"in_transaction is cleared when the transaction returns or raises",
+                fun t_in_transaction_cleared/0},
+            {"preload of several assocs in a stream callback sees the stream's transaction",
+                fun t_preload_in_stream/0}
         ]
     end}.
 
@@ -144,6 +173,21 @@ create_tables() ->
         []
     ),
     {ok, _} = kura_test_repo:query(
+        "CREATE TABLE IF NOT EXISTS hook_parents ("
+        "  id BIGSERIAL PRIMARY KEY,"
+        "  name VARCHAR(255) NOT NULL"
+        ")",
+        []
+    ),
+    {ok, _} = kura_test_repo:query(
+        "CREATE TABLE IF NOT EXISTS hook_children ("
+        "  id BIGSERIAL PRIMARY KEY,"
+        "  name VARCHAR(255) NOT NULL,"
+        "  parent_id BIGINT NOT NULL REFERENCES hook_parents(id)"
+        ")",
+        []
+    ),
+    {ok, _} = kura_test_repo:query(
         "CREATE TABLE IF NOT EXISTS memberships ("
         "  org_id UUID NOT NULL,"
         "  user_id UUID NOT NULL,"
@@ -187,6 +231,8 @@ drop_tables() ->
     kura_test_repo:query("DROP TABLE IF EXISTS membership_tags CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS membership_notes CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS memberships CASCADE", []),
+    kura_test_repo:query("DROP TABLE IF EXISTS hook_children CASCADE", []),
+    kura_test_repo:query("DROP TABLE IF EXISTS hook_parents CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS posts_tags CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS comments CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS tags CASCADE", []),
@@ -840,3 +886,234 @@ t_fk_constraint_post() ->
     {error, ErrCS} = kura_test_repo:insert(CS1),
     ?assertNot(ErrCS#kura_changeset.valid),
     ?assert(lists:keymember(author_id, 1, ErrCS#kura_changeset.errors)).
+
+%%----------------------------------------------------------------------
+%% Failed association writes
+%%----------------------------------------------------------------------
+
+post_with_comments(Title, AuthorId, CommentAuthors) ->
+    CS = kura_changeset:cast(
+        kura_test_post_schema,
+        #{},
+        #{
+            title => Title,
+            body => <<"body">>,
+            author_id => AuthorId,
+            comments => [#{body => <<"c">>, author_id => A} || A <- CommentAuthors]
+        },
+        [title, body, author_id]
+    ),
+    kura_changeset:cast_assoc(
+        kura_changeset:foreign_key_constraint(CS, author_id),
+        comments,
+        #{with => fun commented/2}
+    ).
+
+commented(Data, Params) ->
+    CS = kura_changeset:cast(kura_test_comment_schema, Data, Params, [body, author_id]),
+    kura_changeset:foreign_key_constraint(CS, author_id).
+
+posts_titled(Title) ->
+    {ok, Posts} = kura_test_repo:all(
+        kura_query:where(kura_query:from(kura_test_post_schema), {title, Title})
+    ),
+    Posts.
+
+t_failed_child_returns_changeset() ->
+    {ok, User} = insert_user(<<"FC_Author">>, <<"fc_author@test.com">>),
+    UserId = maps:get(id, User),
+    CS = post_with_comments(<<"FC Post">>, UserId, [UserId, 999999, UserId]),
+    {error, ErrCS} = kura_test_repo:insert(CS),
+    ?assertNot(ErrCS#kura_changeset.valid),
+    ?assertEqual(insert, ErrCS#kura_changeset.action),
+    [Ok1, Failed, Ok3] = maps:get(comments, ErrCS#kura_changeset.assoc_changes),
+    ?assert(Ok1#kura_changeset.valid),
+    ?assertEqual([{author_id, <<"does not exist">>}], Failed#kura_changeset.errors),
+    ?assert(Ok3#kura_changeset.valid),
+    ?assertEqual([], posts_titled(<<"FC Post">>)).
+
+t_failed_child_in_transaction() ->
+    {ok, User} = insert_user(<<"FT_Author">>, <<"ft_author@test.com">>),
+    UserId = maps:get(id, User),
+    Result = kura_test_repo:transaction(fun() ->
+        {error, ErrCS} = kura_test_repo:insert(
+            post_with_comments(<<"FT Failed">>, UserId, [999999])
+        ),
+        {ok, Kept} = insert_post(<<"FT Kept">>, <<"body">>, UserId),
+        {ok, ErrCS, Kept}
+    end),
+    ?assertMatch({ok, #kura_changeset{valid = false}, #{title := <<"FT Kept">>}}, Result),
+    ?assertEqual([], posts_titled(<<"FT Failed">>)),
+    ?assertMatch([_], posts_titled(<<"FT Kept">>)).
+
+t_failed_parent_with_assocs() ->
+    {ok, User} = insert_user(<<"FP_Author">>, <<"fp_author@test.com">>),
+    CS = post_with_comments(<<"FP Post">>, 999999, [maps:get(id, User)]),
+    {error, ErrCS} = kura_test_repo:insert(CS),
+    ?assertEqual([{author_id, <<"does not exist">>}], ErrCS#kura_changeset.errors),
+    ?assertEqual([], posts_titled(<<"FP Post">>)).
+
+t_failed_join_row_returns_changeset() ->
+    {ok, User} = insert_user(<<"FJ_Author">>, <<"fj_author@test.com">>),
+    {ok, Tag} = insert_tag(<<"fj_tag">>),
+    CS = kura_changeset:cast(
+        kura_test_post_schema,
+        #{},
+        #{title => <<"FJ Post">>, body => <<"body">>, author_id => maps:get(id, User)},
+        [title, body, author_id]
+    ),
+    CS1 = kura_changeset:put_assoc(CS, tags, [Tag, #{id => 999999, name => <<"missing">>}]),
+    {error, ErrCS} = kura_test_repo:insert(CS1),
+    ?assertNot(ErrCS#kura_changeset.valid),
+    ?assertEqual([{tags, ~"does not exist"}], ErrCS#kura_changeset.errors),
+    ?assertEqual([], posts_titled(<<"FJ Post">>)).
+
+t_failed_has_one_child() ->
+    CS = kura_changeset:cast(
+        kura_test_schema,
+        #{},
+        #{name => ~"HO_User", email => ~"ho_user@test.com", profile => #{bio => long_text()}},
+        [name, email]
+    ),
+    {error, ErrCS} = kura_test_repo:insert(kura_changeset:cast_assoc(CS, profile)),
+    ?assertNot(ErrCS#kura_changeset.valid),
+    Failed = maps:get(profile, ErrCS#kura_changeset.assoc_changes),
+    ?assertMatch(#kura_changeset{valid = false, errors = [{base, _}]}, Failed),
+    ?assertEqual([], users_named(~"HO_User")).
+
+t_failed_new_many_to_many_child() ->
+    {ok, User} = insert_user(~"FN_Author", ~"fn_author@test.com"),
+    {ok, Tag} = insert_tag(~"fn_tag"),
+    CS = kura_changeset:cast(
+        kura_test_post_schema,
+        #{},
+        #{title => ~"FN Post", body => ~"body", author_id => maps:get(id, User)},
+        [title, body, author_id]
+    ),
+    CS1 = kura_changeset:put_assoc(CS, tags, [Tag, #{name => long_text()}]),
+    {error, ErrCS} = kura_test_repo:insert(CS1),
+    ?assertNot(ErrCS#kura_changeset.valid),
+    [Kept, Failed] = maps:get(tags, ErrCS#kura_changeset.assoc_changes),
+    ?assert(Kept#kura_changeset.valid),
+    ?assertMatch(#kura_changeset{valid = false, errors = [{base, _}]}, Failed),
+    ?assertEqual([], posts_titled(~"FN Post")),
+    {ok, Tags} = kura_test_repo:all(kura_query:from(kura_test_tag_schema)),
+    ?assertEqual([], [T || #{name := Name} = T <- Tags, Name =:= long_text()]).
+
+t_child_hook_error_on_parent() ->
+    CS = kura_changeset:cast(
+        kura_test_hook_parent_schema,
+        #{},
+        #{name => ~"HE Parent", children => [#{name => ~"ok"}, #{name => ~"fail"}]},
+        [name]
+    ),
+    {error, ErrCS} = kura_test_repo:insert(kura_changeset:cast_assoc(CS, children)),
+    ?assertMatch(#kura_changeset{valid = false, action = insert}, ErrCS),
+    ?assertEqual([{base, ~"an associated record could not be saved"}], ErrCS#kura_changeset.errors),
+    {ok, Parents} = kura_test_repo:all(
+        kura_query:where(kura_query:from(kura_test_hook_parent_schema), {name, ~"HE Parent"})
+    ),
+    ?assertEqual([], Parents),
+    {ok, Children} = kura_test_repo:all(kura_query:from(kura_test_hook_child_schema)),
+    ?assertEqual([], Children).
+
+long_text() ->
+    binary:copy(~"x", 300).
+
+users_named(Name) ->
+    {ok, Users} = kura_test_repo:all(
+        kura_query:where(kura_query:from(kura_test_schema), {name, Name})
+    ),
+    Users.
+
+t_failed_child_on_update() ->
+    {ok, User} = insert_user(<<"FU_Author">>, <<"fu_author@test.com">>),
+    UserId = maps:get(id, User),
+    {ok, Post} = insert_post(<<"FU Post">>, <<"body">>, UserId),
+    CS = kura_changeset:cast(
+        kura_test_post_schema,
+        Post#{comments => []},
+        #{title => <<"FU Renamed">>, comments => [#{body => <<"c">>, author_id => 999999}]},
+        [title]
+    ),
+    CS1 = kura_changeset:cast_assoc(CS, comments, #{with => fun commented/2}),
+    {error, ErrCS} = kura_test_repo:update(CS1),
+    ?assertEqual(update, ErrCS#kura_changeset.action),
+    [Failed] = maps:get(comments, ErrCS#kura_changeset.assoc_changes),
+    ?assertEqual([{author_id, <<"does not exist">>}], Failed#kura_changeset.errors),
+    ?assertMatch([_], posts_titled(<<"FU Post">>)),
+    ?assertEqual([], posts_titled(<<"FU Renamed">>)).
+
+%%----------------------------------------------------------------------
+%% Preload on the caller's connection
+%%----------------------------------------------------------------------
+
+t_preload_in_transaction() ->
+    Result = kura_test_repo:transaction(fun() ->
+        {ok, User} = insert_user(<<"PT_Author">>, <<"pt_author@test.com">>),
+        UserId = maps:get(id, User),
+        {ok, Post} = insert_post(<<"PT Post">>, <<"body">>, UserId),
+        {ok, _} = insert_comment(<<"PT comment">>, maps:get(id, Post), UserId),
+        kura_test_repo:preload(kura_test_post_schema, Post, [author, comments])
+    end),
+    ?assertMatch(
+        #{author := #{name := <<"PT_Author">>}, comments := [#{body := <<"PT comment">>}]},
+        Result
+    ).
+
+t_preload_in_sandbox() ->
+    kura_sandbox:start(),
+    ok = kura_sandbox:checkout(kura_test_repo),
+    try
+        {ok, User} = insert_user(<<"PS_Author">>, <<"ps_author@test.com">>),
+        UserId = maps:get(id, User),
+        {ok, Post} = insert_post(<<"PS Post">>, <<"body">>, UserId),
+        {ok, _} = insert_comment(<<"PS comment">>, maps:get(id, Post), UserId),
+        ?assertMatch(
+            #{author := #{name := <<"PS_Author">>}, comments := [#{body := <<"PS comment">>}]},
+            kura_test_repo:preload(kura_test_post_schema, Post, [author, comments])
+        )
+    after
+        ok = kura_sandbox:checkin(kura_test_repo)
+    end,
+    ?assertEqual([], posts_titled(<<"PS Post">>)).
+
+t_preload_after_nested_transaction() ->
+    Result = kura_test_repo:transaction(fun() ->
+        {ok, User} = insert_user(~"PN_Author", ~"pn_author@test.com"),
+        UserId = maps:get(id, User),
+        {ok, Post} = kura_test_repo:insert(post_with_comments(~"PN Post", UserId, [UserId])),
+        kura_test_repo:preload(kura_test_post_schema, maps:remove(comments, Post), [
+            author, comments
+        ])
+    end),
+    ?assertMatch(#{author := #{name := ~"PN_Author"}, comments := [_]}, Result).
+
+t_in_transaction_cleared() ->
+    ?assertNot(kura_db:in_transaction(kura_test_repo)),
+    ?assert(kura_test_repo:transaction(fun() -> kura_db:in_transaction(kura_test_repo) end)),
+    ?assertNot(kura_db:in_transaction(kura_test_repo)),
+    ?assertError(boom, kura_test_repo:transaction(fun() -> error(boom) end)),
+    ?assertNot(kura_db:in_transaction(kura_test_repo)).
+
+t_preload_in_stream() ->
+    {ok, User} = insert_user(~"PSt_Author", ~"pst_author@test.com"),
+    UserId = maps:get(id, User),
+    {ok, _} = insert_post(~"PSt Post", ~"body", UserId),
+    Q = kura_query:where(kura_query:from(kura_test_post_schema), {title, ~"PSt Post"}),
+    ok = kura_stream:stream(kura_test_repo, Q, fun([Post]) ->
+        ?assert(kura_db:in_transaction(kura_test_repo)),
+        {ok, _} = insert_comment(~"PSt comment", maps:get(id, Post), UserId),
+        self() !
+            {preloaded, kura_test_repo:preload(kura_test_post_schema, Post, [author, comments])},
+        ok
+    end),
+    ?assertNot(kura_db:in_transaction(kura_test_repo)),
+    receive
+        {preloaded, Preloaded} ->
+            ?assertMatch(
+                #{author := #{name := ~"PSt_Author"}, comments := [#{body := ~"PSt comment"}]},
+                Preloaded
+            )
+    after 0 -> error(no_batch)
+    end.

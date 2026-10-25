@@ -15,10 +15,18 @@ handle is that process. Nothing on the ordinary query path goes through it -
 `kura_driver_minato:query/5` borrows and returns a connection inside one call -
 so the holder is only paid for by callers who asked for a connection to keep.
 
-The holder watches whoever owns the checkout and gives the connection back if
-that process dies, so a test that crashes returns its connection instead of
-taking it out of the pool. `give_away/3` moves the watch rather than the socket,
-because the socket never left the holder.
+The holder watches whoever owns the checkout and discards the connection if that
+process dies, so the pool opens a fresh one in its place. Nothing the owner left
+on the session survives into the next borrower: an advisory lock, a `SET`, a
+temporary table or an open transaction all end with the connection. A
+statement that fails without handing a connection back, or raises, ends the
+holder the same way, since there is no connection left to answer from. A call
+that times out ends it too, so a request still queued behind it cannot run
+later. `give_away/3` moves the watch rather than the socket, because the
+socket never left the holder.
+
+A `checkin/2` hands the connection to minato, which rolls back an open
+transaction and resets the session before it lends the connection again.
 """.
 
 -behaviour(kura_pool).
@@ -53,7 +61,8 @@ capabilities() ->
         vector,
         transactions,
         savepoints,
-        prepared_statements
+        prepared_statements,
+        concurrent_indexes
     ].
 
 -doc """
@@ -68,6 +77,10 @@ kura's options are translated to minato's: `pool_size` becomes `size`, and the
 connection settings are gathered under `connection`. `host`, `user`, `password`
 and `database` are accepted as strings or binaries, because kura configuration
 in the wild is written both ways.
+
+`transport` is passed through. minato chooses one by default and documents the
+other as the way back from that choice, which is only true from here if the
+option survives the translation.
 """.
 -spec start_pool(kura_pool:name(), kura_pool:opts()) -> {ok, pid()} | {error, term()}.
 start_pool(Name, Opts) ->
@@ -105,7 +118,17 @@ checkout(Name, Opts) ->
             {error, Reason};
         {'DOWN', Monitor, process, Holder, Reason} ->
             {error, Reason}
-    after Timeout + 1000 -> {error, checkout_timeout}
+    after Timeout + 1000 ->
+        exit(Holder, kill),
+        receive
+            {'DOWN', Monitor, process, Holder, _} -> ok
+        end,
+        receive
+            {holding, Holder} -> ok;
+            {failed, Holder, _} -> ok
+        after 0 -> ok
+        end,
+        {error, checkout_timeout}
     end.
 
 -doc "Give a borrowed connection back.".
@@ -119,7 +142,7 @@ Hand the checkout to another process.
 
 Only the watch moves: the socket belongs to the holder and stays there, so
 nothing about the connection changes. The new owner is now the one whose death
-returns the connection, and it is the one that should call `checkin/2`.
+discards the connection, and it is the one that should call `checkin/2`.
 """.
 -spec give_away(kura_pool:token(), pid(), term()) -> ok | {error, term()}.
 give_away(Holder, NewOwner, GiftData) when is_pid(Holder), is_pid(NewOwner) ->
@@ -133,10 +156,22 @@ give_away(Holder, NewOwner, GiftData) when is_pid(Holder), is_pid(NewOwner) ->
 give_away(_Token, _NotAPid, _GiftData) ->
     {error, badarg}.
 
--doc "Run a statement on a held connection. Used by `m:kura_driver_minato`.".
+-doc """
+Run a statement on a held connection. Used by `m:kura_driver_minato`.
+
+`timeout` in `Opts` is handed to minato, which cancels the statement on the
+server when it expires. It can shorten a statement but not lengthen it: minato
+still gives up on any single read after the connection's own read timeout. The
+wait for the holder's answer is not bounded here, so whatever ends the statement
+comes back as its error rather than the caller giving up first. A pool whose
+`timeout` is `infinity` therefore waits as long as the socket does.
+""".
 -spec run(pid(), iodata(), [term()], map()) -> dynamic().
 run(Holder, Sql, Params, Opts) ->
-    call(Holder, {run, Sql, Params, Opts}).
+    case call(Holder, {run, Sql, Params, Opts}, infinity) of
+        {raised, Class, Reason, Stack} -> erlang:raise(Class, Reason, Stack);
+        Answer -> Answer
+    end.
 
 -doc "The holder of the transaction this process is inside, or `undefined`.".
 -spec transaction_conn(kura_pool:name()) -> pid() | undefined.
@@ -176,44 +211,61 @@ hold(Pool, Owner, Timeout) ->
 -spec held(kura_pool:name(), minato_conn:conn(), reference()) -> ok.
 held(Pool, Conn, Monitor) ->
     receive
-        {call, From, Tag, {run, Sql, Params, Opts}} ->
-            {Answer, Next} = ran(Conn, Sql, Params, Opts),
-            From ! {Tag, Answer},
-            held(Pool, Next, Monitor);
-        {call, From, Tag, checkin} ->
+        {call, Alias, {run, Sql, Params, Opts}} ->
+            try ran(Conn, Sql, Params, Opts) of
+                {lost, Answer} ->
+                    minato_pool:discard(Pool, Conn),
+                    Alias ! {Alias, Answer},
+                    ok;
+                {continue, Answer, Next} ->
+                    Alias ! {Alias, Answer},
+                    held(Pool, Next, Monitor)
+            catch
+                Class:Reason:Stack ->
+                    minato_pool:discard(Pool, Conn),
+                    Alias ! {Alias, {raised, Class, Reason, Stack}},
+                    ok
+            end;
+        {call, Alias, checkin} ->
             ok = minato_pool:checkin(Pool, Conn),
             true = erlang:demonitor(Monitor, [flush]),
-            From ! {Tag, ok},
+            Alias ! {Alias, ok},
             ok;
-        {call, From, Tag, {give_away, NewOwner}} ->
+        {call, Alias, {give_away, NewOwner}} ->
             true = erlang:demonitor(Monitor, [flush]),
-            From ! {Tag, ok},
+            Alias ! {Alias, ok},
             held(Pool, Conn, erlang:monitor(process, NewOwner));
         {'DOWN', Monitor, process, _Owner, _Reason} ->
-            minato_pool:checkin(Pool, Conn)
+            minato_pool:discard(Pool, Conn)
     end.
 
 -spec ran(minato_conn:conn(), iodata(), [term()], map()) ->
-    {dynamic(), minato_conn:conn()}.
+    {continue, dynamic(), minato_conn:conn()} | {lost, dynamic()}.
 ran(Conn, Sql, Params, Opts) ->
     case minato_query:query(Conn, Sql, Params, Opts) of
-        {ok, Result, Next} -> {Result, Next};
-        {error, Reason, Next} -> {{error, Reason}, Next};
-        {error, Reason} -> {{error, Reason}, Conn}
+        {ok, Result, Next} -> {continue, Result, Next};
+        {error, Reason, Next} -> {continue, {error, Reason}, Next};
+        {error, Reason} -> {lost, {error, Reason}}
     end.
 
 -spec call(pid(), term()) -> dynamic().
 call(Holder, Message) ->
-    Tag = make_ref(),
-    Monitor = erlang:monitor(process, Holder),
-    Holder ! {call, self(), Tag, Message},
+    call(Holder, Message, ?CALL_TIMEOUT).
+
+-spec call(pid(), term(), timeout()) -> dynamic().
+call(Holder, Message, Timeout) ->
+    Alias = erlang:monitor(process, Holder, [{alias, demonitor}]),
+    Holder ! {call, Alias, Message},
     receive
-        {Tag, Answer} ->
-            true = erlang:demonitor(Monitor, [flush]),
+        {Alias, Answer} ->
+            true = erlang:demonitor(Alias, [flush]),
             Answer;
-        {'DOWN', Monitor, process, Holder, Reason} ->
+        {'DOWN', Alias, process, Holder, Reason} ->
             {error, {holder_died, Reason}}
-    after ?CALL_TIMEOUT -> {error, timeout}
+    after Timeout ->
+        exit(Holder, kill),
+        true = erlang:demonitor(Alias, [flush]),
+        {error, timeout}
     end.
 
 %%----------------------------------------------------------------------
@@ -240,6 +292,7 @@ connection(queue_target, _Value, Connection) -> Connection;
 connection(queue_interval, _Value, Connection) -> Connection;
 connection(connect_timeout, Value, Connection) -> Connection#{connect_timeout => Value};
 connection(timeout, Value, Connection) -> Connection#{timeout => Value};
+connection(transport, Value, Connection) -> Connection#{transport => Value};
 connection(_Key, _Value, Connection) -> Connection.
 
 -spec password(term()) -> binary() | fun(() -> binary()).

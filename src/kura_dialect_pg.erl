@@ -1,7 +1,7 @@
 -module(kura_dialect_pg).
 -moduledoc """
 PostgreSQL dialect. Translates a `#kura_query{}` AST into parameterized
-SQL using pgo's `$N` placeholder convention.
+SQL using PostgreSQL's `$N` placeholder convention.
 
 This module is an implementation of `kura_dialect`. Public callers go
 through `kura_query_compiler`, which delegates to the dialect

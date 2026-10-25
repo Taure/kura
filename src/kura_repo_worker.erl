@@ -54,17 +54,16 @@ kura_repo_worker:start(MyRepo),
     key_clauses/2,
     key_conds/2,
     quote_ident_bin/1,
-    dump_field/2
+    dump_field/2,
+    join_error/3
 ]).
 -endif.
 
--eqwalizer({nowarn_function, do_insert/2}).
--eqwalizer({nowarn_function, do_update/2}).
--eqwalizer({nowarn_function, do_delete/2}).
 -eqwalizer({nowarn_function, multi/2}).
--eqwalizer({nowarn_function, persist_many_to_many/6}).
+-eqwalizer({nowarn_function, join_many_to_many/5}).
 
 -type write_error() :: {error, read_only}.
+-type assoc_change() :: #kura_changeset{} | [#kura_changeset{}].
 -export_type([write_error/0]).
 
 %%----------------------------------------------------------------------
@@ -287,32 +286,19 @@ insert(RepoMod, CS) ->
 
 do_insert(_RepoMod, CS = #kura_changeset{valid = false}) ->
     {error, CS#kura_changeset{action = insert}};
-do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}) when
-    map_size(AC) > 0
-->
-    kura_db:transaction_ok(RepoMod, fun() ->
+do_insert(RepoMod, CS = #kura_changeset{assoc_changes = AC}) when map_size(AC) > 0 ->
+    atomically(RepoMod, fun() ->
         case insert_record(RepoMod, CS) of
             {ok, ParentRow} ->
-                persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AC);
+                persist_assoc_changes(RepoMod, CS#kura_changeset{action = insert}, ParentRow);
             {error, _} = Err ->
                 Err
         end
     end);
 do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
     case needs_transaction(SchemaMod, insert) of
-        true ->
-            try
-                kura_db:transaction_ok(RepoMod, fun() ->
-                    case insert_record(RepoMod, CS) of
-                        {ok, _} = Ok -> Ok;
-                        {error, Reason} -> throw({kura_rollback, Reason})
-                    end
-                end)
-            catch
-                throw:{kura_rollback, Reason} -> {error, Reason}
-            end;
-        false ->
-            insert_record(RepoMod, CS)
+        true -> atomically(RepoMod, fun() -> insert_record(RepoMod, CS) end);
+        false -> insert_record(RepoMod, CS)
     end.
 
 -spec insert(module(), #kura_changeset{}, map()) ->
@@ -352,32 +338,19 @@ update(RepoMod, CS) ->
 
 do_update(_RepoMod, CS = #kura_changeset{valid = false}) ->
     {error, CS#kura_changeset{action = update}};
-do_update(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}) when
-    map_size(AC) > 0
-->
-    kura_db:transaction_ok(RepoMod, fun() ->
+do_update(RepoMod, CS = #kura_changeset{assoc_changes = AC}) when map_size(AC) > 0 ->
+    atomically(RepoMod, fun() ->
         case update_record(RepoMod, CS) of
             {ok, ParentRow} ->
-                persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AC);
+                persist_assoc_changes(RepoMod, CS#kura_changeset{action = update}, ParentRow);
             {error, _} = Err ->
                 Err
         end
     end);
 do_update(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
     case needs_transaction(SchemaMod, update) of
-        true ->
-            try
-                kura_db:transaction_ok(RepoMod, fun() ->
-                    case update_record(RepoMod, CS) of
-                        {ok, _} = Ok -> Ok;
-                        {error, Reason} -> throw({kura_rollback, Reason})
-                    end
-                end)
-            catch
-                throw:{kura_rollback, Reason} -> {error, Reason}
-            end;
-        false ->
-            update_record(RepoMod, CS)
+        true -> atomically(RepoMod, fun() -> update_record(RepoMod, CS) end);
+        false -> update_record(RepoMod, CS)
     end.
 
 -doc "Delete the record referenced by the changeset's data.".
@@ -387,19 +360,23 @@ delete(RepoMod, CS) ->
 
 do_delete(RepoMod, #kura_changeset{schema = SchemaMod, data = Data}) ->
     case needs_transaction(SchemaMod, delete) of
-        true ->
-            try
-                kura_db:transaction_ok(RepoMod, fun() ->
-                    case delete_record(RepoMod, SchemaMod, Data) of
-                        {ok, _} = Ok -> Ok;
-                        {error, Reason} -> throw({kura_rollback, Reason})
-                    end
-                end)
-            catch
-                throw:{kura_rollback, Reason} -> {error, Reason}
-            end;
-        false ->
-            delete_record(RepoMod, SchemaMod, Data)
+        true -> atomically(RepoMod, fun() -> delete_record(RepoMod, SchemaMod, Data) end);
+        false -> delete_record(RepoMod, SchemaMod, Data)
+    end.
+
+%% A `{error, _}` from `Fun` is thrown so the transaction rolls back, nested or
+%% not, rather than commit whatever was written before it.
+atomically(RepoMod, Fun) ->
+    Rollback = make_ref(),
+    try
+        kura_db:transaction_ok(RepoMod, fun() ->
+            case Fun() of
+                {ok, _} = Ok -> Ok;
+                {error, Reason} -> throw({Rollback, Reason})
+            end
+        end)
+    catch
+        throw:{Rollback, Reason} -> {error, Reason}
     end.
 
 -doc "Bulk update all rows matching the query, returning the count of affected rows.".
@@ -543,7 +520,7 @@ execute_multi_op(_RepoMod, {run, Fun}, Acc) ->
     Fun(Acc).
 
 %%----------------------------------------------------------------------
-%% Internal: pgo bridge (delegates to kura_db)
+%% Internal: query bridge (delegates to kura_db)
 %%----------------------------------------------------------------------
 
 pgo_query(RepoMod, SQL, Params) ->
@@ -708,42 +685,87 @@ apply_clauses(Q, []) ->
 apply_clauses(Q, [{Field, Value} | Rest]) ->
     apply_clauses(kura_query:where(Q, {Field, Value}), Rest).
 
-persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AssocChanges) ->
-    maps:fold(
-        fun(AssocName, ChildCSs, {ok, AccRow}) ->
-            {ok, Assoc} = kura_schema:association(SchemaMod, AssocName),
-            case Assoc#kura_assoc.type of
-                many_to_many ->
-                    persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs);
-                _ ->
-                    persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs)
-            end
+persist_assoc_changes(RepoMod, CS = #kura_changeset{assoc_changes = AC}, ParentRow) ->
+    persist_assocs(RepoMod, CS, ParentRow, maps:to_list(AC)).
+
+persist_assocs(_RepoMod, _CS, Row, []) ->
+    {ok, Row};
+persist_assocs(RepoMod, CS, Row, [{AssocName, ChildCSs} | Rest]) ->
+    SchemaMod = CS#kura_changeset.schema,
+    {ok, Assoc} = kura_schema:association(SchemaMod, AssocName),
+    Persisted =
+        case Assoc#kura_assoc.type of
+            many_to_many -> persist_many_to_many(RepoMod, SchemaMod, Row, Assoc, ChildCSs);
+            _ -> persist_owned_assoc(RepoMod, SchemaMod, Row, Assoc, ChildCSs)
         end,
-        {ok, ParentRow},
-        AssocChanges
-    ).
+    case Persisted of
+        {ok, Children} ->
+            persist_assocs(RepoMod, CS, Row#{AssocName => Children}, Rest);
+        {child_failed, Failed} ->
+            AC = CS#kura_changeset.assoc_changes,
+            {error, CS#kura_changeset{valid = false, assoc_changes = AC#{AssocName => Failed}}};
+        {join_failed, PgError} ->
+            {error, join_error(CS, AssocName, PgError)};
+        link_missing ->
+            {error, kura_changeset:add_error(CS, AssocName, ~"does not exist")};
+        {error, Reason} ->
+            {error, kura_changeset:add_error(CS, base, child_error(Reason))}
+    end.
+
+%% Only a constraint violation says something about the parent's own fields.
+join_error(CS, _AssocName, {pgsql_error, #{code := Code}} = PgError) when
+    Code =:= ~"23505";
+    Code =:= ~"23503";
+    Code =:= ~"23514";
+    Code =:= ~"23P01";
+    Code =:= ~"23502"
+->
+    handle_pg_error(CS, PgError);
+join_error(CS, AssocName, _PgError) ->
+    kura_changeset:add_error(CS, AssocName, ~"could not be saved").
+
+child_error(stale) -> ~"an associated record is stale";
+child_error(_Reason) -> ~"an associated record could not be saved".
 
 -spec persist_owned_assoc(
     module(),
     module(),
     map(),
-    atom(),
     #kura_assoc{},
     #kura_changeset{} | [#kura_changeset{}]
-) -> {ok, map()}.
-persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) when
-    is_list(ChildCSs)
-->
+) -> {ok, map() | [map()]} | {child_failed, assoc_change()} | {error, term()}.
+persist_owned_assoc(RepoMod, SchemaMod, AccRow, Assoc, ChildCSs) when is_list(ChildCSs) ->
     Binding = owned_fk_binding(Assoc, SchemaMod, AccRow),
-    Children = [
-        persist_child(RepoMod, set_owned_fk(ChildCS, Binding))
-     || ChildCS <- ChildCSs
-    ],
-    {ok, AccRow#{AssocName => Children}};
-persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCS) ->
+    Bound = [set_owned_fk(ChildCS, Binding) || ChildCS <- ChildCSs],
+    persist_children(RepoMod, owned, Bound, ChildCSs);
+persist_owned_assoc(RepoMod, SchemaMod, AccRow, Assoc, ChildCS) ->
     Binding = owned_fk_binding(Assoc, SchemaMod, AccRow),
-    Child = persist_child(RepoMod, set_owned_fk(ChildCS, Binding)),
-    {ok, AccRow#{AssocName => Child}}.
+    case persist_child(RepoMod, owned, set_owned_fk(ChildCS, Binding)) of
+        {ok, Child} -> {ok, Child};
+        {error, #kura_changeset{} = Failed} -> {child_failed, Failed};
+        {error, _} = Err -> Err
+    end.
+
+%% On a failure the failed changeset takes its place in the list the caller
+%% passed, so the parent's `assoc_changes` shows which child it was.
+-spec persist_children(
+    module(), owned | many_to_many, [#kura_changeset{}], [#kura_changeset{}]
+) -> {ok, [map()]} | {child_failed, [#kura_changeset{}]} | {error, term()}.
+persist_children(_RepoMod, _Kind, [], _Given) ->
+    {ok, []};
+persist_children(RepoMod, Kind, [ChildCS | Rest], [Given | GivenRest]) ->
+    case persist_child(RepoMod, Kind, ChildCS) of
+        {ok, Child} ->
+            case persist_children(RepoMod, Kind, Rest, GivenRest) of
+                {ok, Children} -> {ok, [Child | Children]};
+                {child_failed, Failed} -> {child_failed, [Given | Failed]};
+                {error, _} = Err -> Err
+            end;
+        {error, #kura_changeset{} = Failed} ->
+            {child_failed, [Failed | GivenRest]};
+        {error, _} = Err ->
+            Err
+    end.
 
 %% Single-column FKs are the one-element case of the same binding.
 owned_fk_binding(Assoc, SchemaMod, AccRow) ->
@@ -760,31 +782,54 @@ set_owned_fk(CS, []) ->
 set_owned_fk(CS, [{Col, Value} | Rest]) ->
     set_owned_fk(kura_changeset:put_change(CS, Col, Value), Rest).
 
-persist_child(RepoMod, CS = #kura_changeset{action = insert}) ->
-    {ok, Child} = insert_record(RepoMod, CS),
-    Child;
-persist_child(RepoMod, CS = #kura_changeset{action = update}) ->
-    {ok, Child} = update_record(RepoMod, CS),
-    Child.
-
-persist_m2m_child(RepoMod, CS = #kura_changeset{action = insert}) ->
-    {ok, Child} = insert_record(RepoMod, CS),
-    Child;
-persist_m2m_child(RepoMod, CS = #kura_changeset{action = update}) ->
-    {ok, Child} = update_record(RepoMod, CS),
-    Child;
-persist_m2m_child(_RepoMod, CS = #kura_changeset{action = undefined}) ->
-    kura_changeset:apply_changes(CS).
+persist_child(RepoMod, _Kind, CS = #kura_changeset{action = insert}) ->
+    insert_record(RepoMod, CS);
+persist_child(RepoMod, _Kind, CS = #kura_changeset{action = update}) ->
+    update_record(RepoMod, CS);
+persist_child(_RepoMod, many_to_many, CS = #kura_changeset{action = undefined}) ->
+    {ok, kura_changeset:apply_changes(CS)}.
 
 -spec persist_many_to_many(
     module(),
     module(),
     map(),
-    atom(),
     #kura_assoc{},
     [#kura_changeset{}]
-) -> {ok, map()}.
-persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
+) ->
+    {ok, [map()]}
+    | {child_failed, assoc_change()}
+    | {join_failed, term()}
+    | link_missing
+    | {error, term()}.
+persist_many_to_many(RepoMod, SchemaMod, AccRow, Assoc, ChildCSs) ->
+    case linked(RepoMod, ChildCSs) of
+        true -> persist_linked(RepoMod, SchemaMod, AccRow, Assoc, ChildCSs);
+        false -> link_missing;
+        {error, _} = Err -> Err
+    end.
+
+persist_linked(RepoMod, SchemaMod, AccRow, Assoc, ChildCSs) ->
+    case persist_children(RepoMod, many_to_many, ChildCSs, ChildCSs) of
+        {ok, Children} -> join_many_to_many(RepoMod, SchemaMod, AccRow, Assoc, Children);
+        Failed -> Failed
+    end.
+
+%% A child with no action links a row by its key, so the row is looked up the
+%% way any read is, under the current tenant, before a join row names it.
+-spec linked(module(), [#kura_changeset{}]) -> boolean() | {error, term()}.
+linked(_RepoMod, []) ->
+    true;
+linked(RepoMod, [#kura_changeset{action = undefined, schema = RelSchema} = CS | Rest]) ->
+    Key = key_pairs(RelSchema, kura_changeset:apply_changes(CS)),
+    case exists(RepoMod, apply_clauses(kura_query:from(RelSchema), Key)) of
+        {ok, true} -> linked(RepoMod, Rest);
+        {ok, false} -> false;
+        {error, _} = Err -> Err
+    end;
+linked(RepoMod, [_Written | Rest]) ->
+    linked(RepoMod, Rest).
+
+join_many_to_many(RepoMod, SchemaMod, AccRow, Assoc, Children) ->
     #kura_assoc{schema = RelSchema, join_through = JoinThrough} = Assoc,
     {OwnerCols, RelatedCols} = kura_schema:assoc_join_keys(Assoc),
     OwnerValues = [maps:get(K, AccRow) || K <- kura_schema:key(SchemaMod)],
@@ -794,7 +839,6 @@ persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
             B when is_binary(B) -> B;
             M when is_atom(M) -> M:table()
         end,
-    Children = [persist_m2m_child(RepoMod, ChildCS) || ChildCS <- ChildCSs],
     {OwnerConds, OwnerParams, _} = key_conds(lists:zip(OwnerCols, OwnerValues), 1),
     DeleteSQL = iolist_to_binary([
         ~"DELETE FROM ",
@@ -802,18 +846,24 @@ persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
         ~" WHERE ",
         lists:join(~" AND ", OwnerConds)
     ]),
-    _ = kura_db:query(RepoMod, DeleteSQL, OwnerParams),
-    lists:foreach(
-        fun(Child) ->
-            RelValues = [maps:get(K, Child) || K <- RelKey],
-            {InsertSQL, InsertParams} = m2m_insert_sql(
-                JoinTable, OwnerCols ++ RelatedCols, OwnerValues ++ RelValues
-            ),
-            kura_db:query(RepoMod, InsertSQL, InsertParams)
-        end,
-        Children
-    ),
-    {ok, AccRow#{AssocName => Children}}.
+    Inserts = [
+        m2m_insert_sql(
+            JoinTable, OwnerCols ++ RelatedCols, OwnerValues ++ [maps:get(K, Child) || K <- RelKey]
+        )
+     || Child <- Children
+    ],
+    case join_writes(RepoMod, [{DeleteSQL, OwnerParams} | Inserts]) of
+        ok -> {ok, Children};
+        {error, PgError} -> {join_failed, PgError}
+    end.
+
+join_writes(_RepoMod, []) ->
+    ok;
+join_writes(RepoMod, [{SQL, Params} | Rest]) ->
+    case kura_db:query(RepoMod, SQL, Params) of
+        {error, _} = Err -> Err;
+        _ -> join_writes(RepoMod, Rest)
+    end.
 
 m2m_insert_sql(JoinTable, Cols, Values) ->
     ColSQL = lists:join(~", ", [quote_ident_bin(atom_to_binary(C, utf8)) || C <- Cols]),

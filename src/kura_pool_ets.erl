@@ -11,7 +11,7 @@ refs from an ETS-tracked free list. Useful for:
 
 This pool does NOT speak any database protocol. The `conn()` value
 returned from `checkout/2` is an opaque reference that callers can
-match on in tests but cannot pass to `pgo` or any other driver.
+match on in tests but cannot pass to any driver.
 
 ## Pool layout
 

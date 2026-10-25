@@ -4,7 +4,7 @@
   <img src="priv/kura.png" alt="Kura" width="600" />
 </p>
 
-Database layer for Erlang - Ecto-equivalent abstractions in pure Erlang. Pluggable backends: [`kura_postgres`](https://github.com/Taure/kura_postgres) (PostgreSQL via pgo), [`kura_sqlite`](https://github.com/Taure/kura_sqlite) (SQLite via esqlite).
+Database layer for Erlang - Ecto-equivalent abstractions in pure Erlang. Pluggable backends: [`kura_postgres`](https://github.com/Taure/kura_postgres) (PostgreSQL via minato), [`kura_sqlite`](https://github.com/Taure/kura_sqlite) (SQLite via esqlite).
 
 ## Features
 

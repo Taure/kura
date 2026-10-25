@@ -106,13 +106,20 @@ This means:
 - Tests can run in any order without interference
 - No manual cleanup of test data needed
 
+A `kura_repo_worker:transaction/2` inside a sandboxed test runs under a
+savepoint on the sandbox connection, the same way a nested transaction
+runs outside the sandbox. A raise inside it undoes only its own work,
+and a statement that fails inside it does not end the sandbox.
+
 ### Cross-Process Tests
 
 By default, only the process that called `checkout/1` sees the sandbox
 transaction. If your test spawns helper processes that need to share the
 same in-test view of the database, either pass `#{shared => true}` to
 `checkout/2`, or call `kura_sandbox:allow/3` to grant a specific child
-process access to the owner's connection.
+process access to the owner's connection. Processes sharing a sandbox
+connection share its savepoints, so their transactions should nest or
+run one after another rather than overlap.
 
 ## Testing Constraints
 

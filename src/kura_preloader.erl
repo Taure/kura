@@ -36,6 +36,21 @@ do_preload(_RepoMod, Records, _Schema, []) ->
 do_preload(RepoMod, Records, Schema, [Assoc]) ->
     preload_assoc(RepoMod, Records, Schema, Assoc);
 do_preload(RepoMod, Records, Schema, Assocs) ->
+    case kura_db:in_transaction(RepoMod) orelse sandboxed(RepoMod) of
+        true -> preload_in_turn(RepoMod, Records, Schema, Assocs);
+        false -> preload_in_parallel(RepoMod, Records, Schema, Assocs)
+    end.
+
+sandboxed(RepoMod) ->
+    kura_sandbox:get_conn(kura_db:get_pool(RepoMod)) =/= not_found.
+
+%% A spawned process would query outside this process's transaction or sandbox.
+preload_in_turn(_RepoMod, Records, _Schema, []) ->
+    Records;
+preload_in_turn(RepoMod, Records, Schema, [Assoc | Rest]) ->
+    preload_in_turn(RepoMod, preload_assoc(RepoMod, Records, Schema, Assoc), Schema, Rest).
+
+preload_in_parallel(RepoMod, Records, Schema, Assocs) ->
     %% Parallel preload: spawn each association query concurrently,
     %% then merge results sequentially to preserve record ordering.
     Self = self(),

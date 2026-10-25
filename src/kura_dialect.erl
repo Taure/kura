@@ -10,7 +10,7 @@ into SQL bytes appropriate for a given backend.
 ## Today
 
 The canonical implementation is `kura_dialect_pg`, which targets
-PostgreSQL via the pgo driver's `$N` placeholder convention.
+PostgreSQL with its `$N` placeholder convention.
 
 ## Tomorrow
 
