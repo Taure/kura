@@ -27,8 +27,6 @@ configured for the running app.
     format_default/1
 ]).
 
-%% eqWAlizer: compile_condition/2 has >16 clauses narrowing on condition union
--eqwalizer({nowarn_function, compile_condition/2}).
 -eqwalizer({nowarn_function, format_default/1}).
 
 -doc "Compile a query record into `{SQL, Params}`.".
@@ -156,11 +154,24 @@ key_where([{Field, Value} | Rest], Counter, Conds, Params) ->
 %% Render one `($n, ...)` group per value-tuple for a row-value IN, params
 %% flattened in row-then-column order.
 compile_row_tuples([], _Arity, Counter, SQLs, Params) ->
-    {lists:reverse(SQLs), Params, Counter};
-compile_row_tuples([Tuple | Rest], Arity, Counter, SQLs, Params) ->
+    {lists:reverse(SQLs), lists:reverse(Params), Counter};
+compile_row_tuples([Tuple | Rest], Arity, Counter, SQLs, Params) when tuple_size(Tuple) =:= Arity ->
     {Placeholders, NextCounter} = row_placeholders(Arity, Counter, []),
     RowSQL = [~"(", join_comma(Placeholders), ~")"],
-    compile_row_tuples(Rest, Arity, NextCounter, [RowSQL | SQLs], Params ++ tuple_to_list(Tuple)).
+    compile_row_tuples(
+        Rest, Arity, NextCounter, [RowSQL | SQLs], lists:reverse(tuple_to_list(Tuple), Params)
+    );
+compile_row_tuples([Tuple | _], Arity, _Counter, _SQLs, _Params) ->
+    error({row_arity_mismatch, Arity, Tuple}).
+
+unary_sql(is_nil) -> ~" IS NULL";
+unary_sql(is_not_nil) -> ~" IS NOT NULL".
+
+single_value({Value}) -> Value;
+single_value(Tuple) -> error({row_arity_mismatch, 1, Tuple}).
+
+placeholders(Counter, Count) ->
+    [[~"$", integer_to_binary(N)] || N <- lists:seq(Counter, Counter + Count - 1)].
 
 row_placeholders(0, Counter, Acc) ->
     {lists:reverse(Acc), Counter};
@@ -345,12 +356,14 @@ compile_condition({'not', Condition}, Counter) ->
 compile_condition({fragment, SQL, Params}, Counter) ->
     {RewrittenSQL, NewCounter} = rewrite_fragment_placeholders(SQL, Counter),
     {RewrittenSQL, Params, NewCounter};
-compile_condition({Field, is_nil}, Counter) when is_atom(Field) ->
-    {[quote_ident(atom_to_binary(Field, utf8)), ~" IS NULL"], [], Counter};
-compile_condition({Field, is_not_nil}, Counter) when is_atom(Field) ->
-    {[quote_ident(atom_to_binary(Field, utf8)), ~" IS NOT NULL"], [], Counter};
+compile_condition({Field, Op}, Counter) when is_atom(Field), ?KURA_IS_UNARY_OP(Op) ->
+    {[quote_ident(atom_to_binary(Field, utf8)), unary_sql(Op)], [], Counter};
 compile_condition({Field, '=', Value}, Counter) when is_atom(Field) ->
-    compile_condition({Field, Value}, Counter);
+    {
+        [quote_ident(atom_to_binary(Field, utf8)), ~" = $", integer_to_binary(Counter)],
+        [Value],
+        Counter + 1
+    };
 compile_condition({Field, '!=', Value}, Counter) when is_atom(Field) ->
     {
         [quote_ident(atom_to_binary(Field, utf8)), ~" != $", integer_to_binary(Counter)],
@@ -415,7 +428,7 @@ compile_condition({not_exists, {subquery, SubQ}}, Counter) ->
     {SubSQL, SubParams, Counter2} = to_sql_from(SubQ, Counter),
     {[~"NOT EXISTS (", SubSQL, ~")"], SubParams, Counter2};
 compile_condition({[Col], in, Tuples}, Counter) when is_atom(Col), is_list(Tuples) ->
-    compile_condition({Col, in, [element(1, T) || T <- Tuples]}, Counter);
+    compile_condition({Col, in, [single_value(T) || T <- Tuples]}, Counter);
 compile_condition({Cols, in, Tuples}, Counter) when is_list(Cols), is_list(Tuples) ->
     ColSQL = [
         ~"(",
@@ -425,26 +438,16 @@ compile_condition({Cols, in, Tuples}, Counter) when is_list(Cols), is_list(Tuple
     {RowSQLs, Params, NewCounter} = compile_row_tuples(Tuples, length(Cols), Counter, [], []),
     {[ColSQL, ~" IN (", join_comma(RowSQLs), ~")"], Params, NewCounter};
 compile_condition({Field, in, Values}, Counter) when is_atom(Field), is_list(Values) ->
-    {Placeholders, NewCounter} = lists:foldl(
-        fun(_, {Acc, N}) ->
-            {Acc ++ [[~"$", integer_to_binary(N)]], N + 1}
-        end,
-        {[], Counter},
-        Values
-    ),
+    Placeholders = placeholders(Counter, length(Values)),
+    NewCounter = Counter + length(Values),
     {
         [quote_ident(atom_to_binary(Field, utf8)), ~" IN (", join_comma(Placeholders), ~")"],
         Values,
         NewCounter
     };
 compile_condition({Field, not_in, Values}, Counter) when is_atom(Field), is_list(Values) ->
-    {Placeholders, NewCounter} = lists:foldl(
-        fun(_, {Acc, N}) ->
-            {Acc ++ [[~"$", integer_to_binary(N)]], N + 1}
-        end,
-        {[], Counter},
-        Values
-    ),
+    Placeholders = placeholders(Counter, length(Values)),
+    NewCounter = Counter + length(Values),
     {
         [
             quote_ident(atom_to_binary(Field, utf8)),

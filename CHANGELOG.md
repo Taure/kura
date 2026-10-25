@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- The query cache keys on a query's shape, with bound values replaced by
+  markers, instead of on the whole query term (#163). `get(User, Id)` now
+  holds one entry however many ids it is called with, where it held one
+  per id. Compiling a query with distinct values drops from 2.8 to 0.7 us
+  for a lookup by id and from 7.2 to 3.0 us for a filtered page. The
+  trade-off: a query repeated with the very same values, which used to be
+  a whole-query hit, now pays for splitting and binding, from 0.5 to
+  0.7 us for the lookup and from 0.8 to 3.0 us for the filtered page. A
+  dialect must pass bound values through to the parameter list untouched;
+  see `kura_dialect`.
+- `{Field, '=', Value}` always binds `Value`. It used to be dispatched as
+  `{Field, Value}`, so `{status, '=', is_nil}` compiled to `IS NULL`.
+- A row-value `in` whose tuples do not match the column count raises
+  `{row_arity_mismatch, Arity, Tuple}`. It used to drop or shift values
+  between rows.
+- Building `in`/`not_in` and row-value `in` placeholders is linear in the
+  list length; it was quadratic.
+
 ### Security
 
 - Attribute tenancy (`{attribute, {Field, Value}}`) leaked reads. Only

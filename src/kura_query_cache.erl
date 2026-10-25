@@ -2,31 +2,30 @@
 -moduledoc """
 ETS-based cache for compiled query results.
 
-Caches `{SQL, Params}` tuples keyed by `{RepoMod, Query}` so two repos
-with different dialects don't share entries. Identical queries through
-the same repo skip recompilation.
+Caches compiled query shapes for `kura_query_compiler:to_sql_cached/2`,
+keyed by `{RepoMod, Tenant, Shape}` so two repos with different dialects
+don't share entries. A shape is a query with its bound values replaced by
+markers (see `kura_query_shape`), so queries that differ only in their
+values share one entry.
 
-The key carries the whole query term rather than a hash of it: an entry
-holds bound parameters as well as SQL, so serving the wrong entry would
-hand a caller another query's rows rather than merely a slower path. ETS
+The key carries the whole shape term rather than a hash of it: an entry
+holds SQL and a parameter template, so serving the wrong entry would hand
+a caller another query's rows rather than merely a slower path. ETS
 hashes the term itself, so hashing the key by hand only reintroduces a
 collision class the table had already eliminated.
 
-Bound parameters are part of both key and value, so a parameterised query
-interns a fresh entry per distinct value set and the table only ever
-grows. Two limits bound it, both counted in words and both configurable:
+The table is bounded by the number of distinct shapes, plus one entry per
+value set for any condition `kura_query_shape` leaves in the shape. Two
+limits bound it regardless, both counted in words and both configurable:
 
 - `query_cache_max_memory` (default 8000000 words, ~64 MB on 64-bit) -
   once the table exceeds it the whole cache is dropped and refills.
-- `query_cache_max_entry_size` (default 4096 words) - a single result
+- `query_cache_max_entry_size` (default 4096 words) - a single entry
   bigger than this is never interned.
 
-The per-entry ceiling is the load-bearing one. A `where {id, in, List}`
-built from a caller-supplied array stores that list in both key and
-value, so capping entry *count* alone would still let a few thousand
-oversized entries exhaust the node.
-
-See kura#163 for the shape-only cache that removes the need for either.
+An `in` list is one shape per list length, so a caller-supplied array
+of arbitrary length still interns an entry per length. The per-entry
+ceiling keeps those entries small.
 
 The ETS table is owned by `kura_query_cache_owner` (a gen_server under
 `kura_sup`), so the table survives any caller exiting.
@@ -35,6 +34,10 @@ The ETS table is owned by `kura_query_cache_owner` (a gen_server under
 
 -export([init/0, get/1, put/2, flush/0]).
 -export([start_link/0, init/1, handle_call/3, handle_cast/2]).
+-export_type([entry/0]).
+
+-doc "A compiled shape's SQL and parameter template, or a shape that cannot be cached.".
+-type entry() :: {binary(), [term()]} | uncacheable.
 
 -define(TABLE, kura_query_cache).
 -define(DEFAULT_MAX_MEMORY_WORDS, 8000000).
@@ -58,30 +61,25 @@ init() ->
             ok
     end.
 
--doc "Look up a cached compiled query by key.".
--spec get(term()) -> {ok, {iodata(), [term()]}} | miss.
+-doc false.
+-spec get(term()) -> {ok, entry()} | miss.
 get(Key) ->
     case ets:whereis(?TABLE) of
         undefined ->
             miss;
         _ ->
             case ets:lookup(?TABLE, Key) of
-                [{_, Result}] -> {ok, Result};
-                [] -> miss
+                [{_, uncacheable}] ->
+                    {ok, uncacheable};
+                [{_, {SQL, Template}}] when is_binary(SQL), is_list(Template) ->
+                    {ok, {SQL, Template}};
+                _ ->
+                    miss
             end
     end.
 
--doc """
-Store a compiled query result for a key. Skips entries larger than
-`query_cache_max_entry_size`, and drops the whole cache first when it has
-grown past `query_cache_max_memory`, so a workload of parameterised
-queries cannot grow the table without bound.
-
-Dropping is not atomic with the insert, so concurrent putters can
-transiently overshoot the limit or wipe each other's entry. Both cost a
-recompile on the next lookup; neither can serve a wrong entry.
-""".
--spec put(term(), {iodata(), [term()]}) -> ok.
+-doc false.
+-spec put(term(), entry()) -> ok.
 put(Key, Result) ->
     case ets:whereis(?TABLE) of
         undefined ->

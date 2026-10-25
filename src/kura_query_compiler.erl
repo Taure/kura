@@ -64,10 +64,19 @@ to_sql(RepoMod, Query) ->
 Cached `to_sql/2`. The cache key includes `RepoMod` so two repos with
 different dialects don't share an entry.
 
-The key holds the whole query term, never a hash of it. `erlang:phash2/1`
+The key is the query's shape, with bound values replaced by markers
+(see `kura_query_shape`), so every call that differs only in its values
+shares one entry. The entry holds the SQL and a parameter template; the
+values are bound into the template on each call. A shape the dialect
+cannot compile, or whose template fails
+`kura_query_shape:valid_template/2`, is remembered as `uncacheable` and
+compiled directly from then on, so a genuine compile error still raises
+from the real query.
+
+The key holds the whole shape term, never a hash of it. `erlang:phash2/1`
 returns only 27 bits, so a long-lived cache accumulates collisions, and a
-collision here does not degrade a lookup - it returns another query's SQL
-*and* its bound parameters, so the caller silently reads rows from a
+collision here does not degrade a lookup - it returns another shape's SQL
+and parameter template, so the caller silently reads rows from a
 different table.
 
 The key also carries the ambient tenant. An attribute tenant is added to the
@@ -83,14 +92,38 @@ repo config. Swapping a repo's dialect at runtime requires an explicit
 """.
 -spec to_sql_cached(module(), #kura_query{}) -> {iodata(), [term()]}.
 to_sql_cached(RepoMod, Query) ->
-    Key = {RepoMod, kura_tenant:get_tenant(), Query},
+    {Shape, Values} = kura_query_shape:split(Query),
+    Key = {RepoMod, kura_tenant:get_tenant(), Shape},
     case kura_query_cache:get(Key) of
-        {ok, Result} ->
-            Result;
+        {ok, {SQL, Template}} ->
+            {SQL, kura_query_shape:bind(Template, Values)};
+        {ok, uncacheable} ->
+            to_sql(RepoMod, Query);
         miss ->
-            Result = to_sql(RepoMod, Query),
-            kura_query_cache:put(Key, Result),
-            Result
+            case compile_shape(RepoMod, Shape, tuple_size(Values)) of
+                {ok, {SQL, Template} = Entry} ->
+                    kura_query_cache:put(Key, Entry),
+                    {SQL, kura_query_shape:bind(Template, Values)};
+                uncacheable ->
+                    kura_query_cache:put(Key, uncacheable),
+                    to_sql(RepoMod, Query)
+            end
+    end.
+
+%% A dialect may reject a marker where its record type promises an integer
+%% (`limit`, `offset`), so a crash here means the shape is uncacheable, not
+%% that the query is wrong.
+-spec compile_shape(module(), #kura_query{}, non_neg_integer()) ->
+    {ok, {binary(), [term()]}} | uncacheable.
+compile_shape(RepoMod, Shape, Arity) ->
+    try to_sql(RepoMod, Shape) of
+        {SQL, Template} ->
+            case kura_query_shape:valid_template(Template, Arity) of
+                true -> {ok, {iolist_to_binary(SQL), Template}};
+                false -> uncacheable
+            end
+    catch
+        _:_ -> uncacheable
     end.
 
 -spec to_sql_from(module(), #kura_query{}, pos_integer()) ->
