@@ -137,3 +137,20 @@ quote_ident_bin_doubles_embedded_quotes_test() ->
 
 quote_ident_bin_wraps_plain_name_test() ->
     ?assertEqual(<<"\"posts_tags\"">>, kura_preloader:quote_ident_bin(<<"posts_tags">>)).
+
+quote_table_bin_is_bare_without_a_prefix_tenant_test() ->
+    ?assertEqual(~"\"posts_tags\"", kura_preloader:quote_table_bin(~"posts_tags")),
+    ?assertEqual(
+        ~"\"posts_tags\"",
+        kura_tenant:with_tenant({attribute, {org_id, 1}}, fun() ->
+            kura_preloader:quote_table_bin(~"posts_tags")
+        end)
+    ).
+
+quote_table_bin_qualifies_with_the_prefix_tenant_test() ->
+    ?assertEqual(
+        ~"\"tenant_a\".\"posts_tags\"",
+        kura_tenant:with_tenant({prefix, ~"tenant_a"}, fun() ->
+            kura_preloader:quote_table_bin(~"posts_tags")
+        end)
+    ).

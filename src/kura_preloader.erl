@@ -4,7 +4,8 @@
 
 -export([
     preload/4,
-    do_preload/4
+    do_preload/4,
+    quote_table_bin/1
 ]).
 
 -ifdef(TEST).
@@ -38,10 +39,12 @@ do_preload(RepoMod, Records, Schema, Assocs) ->
     %% Parallel preload: spawn each association query concurrently,
     %% then merge results sequentially to preserve record ordering.
     Self = self(),
+    Tenant = kura_tenant:get_tenant(),
     Refs = lists:map(
         fun(Assoc) ->
             Ref = make_ref(),
             spawn_link(fun() ->
+                ok = inherit_tenant(Tenant),
                 Result = preload_assoc(RepoMod, Records, Schema, Assoc),
                 Self ! {preload_done, Ref, Assoc, Result}
             end),
@@ -50,6 +53,12 @@ do_preload(RepoMod, Records, Schema, Assocs) ->
         Assocs
     ),
     collect_preload_results(Refs, Records).
+
+inherit_tenant(undefined) ->
+    ok;
+inherit_tenant(Tenant) ->
+    _ = kura_tenant:put_tenant(Tenant),
+    ok.
 
 collect_preload_results([], Records) ->
     Records;
@@ -202,7 +211,7 @@ preload_many_to_many(
                 ~"SELECT ",
                 SelectCols,
                 ~" FROM ",
-                quote_ident_bin(JoinTableBin),
+                quote_table_bin(JoinTableBin),
                 ~" WHERE ",
                 InSQL
             ]),
@@ -251,6 +260,15 @@ m2m_placeholders(N, Counter, Acc) ->
 quote_ident_bin(Name) when is_binary(Name) ->
     Escaped = binary:replace(Name, ~"\"", ~"\"\"", [global]),
     <<$", Escaped/binary, $">>.
+
+-spec quote_table_bin(binary()) -> binary().
+quote_table_bin(Table) ->
+    case kura_tenant:get_tenant() of
+        {prefix, Prefix} ->
+            <<(quote_ident_bin(Prefix))/binary, $., (quote_ident_bin(Table))/binary>>;
+        _ ->
+            quote_ident_bin(Table)
+    end.
 
 %%----------------------------------------------------------------------
 %% Has many through

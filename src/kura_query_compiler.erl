@@ -48,10 +48,17 @@ dialect(RepoMod) ->
             end
     end.
 
--doc "Compile a query record into `{SQL, Params}` for `RepoMod`'s dialect.".
+-doc """
+Compile a query record into `{SQL, Params}` for `RepoMod`'s dialect.
+
+Every query compiled here, and by the other query entry points in this
+module, is first confined to the ambient tenant with
+`kura_tenant:scope_query/2`, so no caller of this module can compile a query that
+skips it.
+""".
 -spec to_sql(module(), #kura_query{}) -> {iodata(), [term()]}.
 to_sql(RepoMod, Query) ->
-    (dialect(RepoMod)):to_sql(Query).
+    (dialect(RepoMod)):to_sql(scope(Query)).
 
 -doc """
 Cached `to_sql/2`. The cache key includes `RepoMod` so two repos with
@@ -72,12 +79,12 @@ collision here does not degrade a lookup - it returns another shape's SQL
 and parameter template, so the caller silently reads rows from a
 different table.
 
-The key also carries the ambient tenant. `kura_repo_worker` normalises the
-tenant into the top-level query record before compiling, but a nested CTE
-or combination query keeps `prefix = undefined` and resolves it from
-`kura_tenant` at emit time, so the compiled SQL is a function of ambient
-state the query term does not describe. Without the tenant in the key, one
-tenant's cached entry is served to the next - a cross-tenant read.
+The key also carries the ambient tenant. An attribute tenant is added to the
+query by `to_sql/2` itself, and a nested CTE or combination query keeps
+`prefix = undefined` and resolves a prefix tenant from `kura_tenant` at emit
+time, so the compiled SQL is a function of ambient state the query term does
+not describe. Without the tenant in the key, one tenant's cached entry is
+served to the next - a cross-tenant read.
 
 The dialect is deliberately *not* in the key: it is resolved from boot-time
 repo config. Swapping a repo's dialect at runtime requires an explicit
@@ -122,7 +129,7 @@ compile_shape(RepoMod, Shape, Arity) ->
 -spec to_sql_from(module(), #kura_query{}, pos_integer()) ->
     {iodata(), [term()], pos_integer()}.
 to_sql_from(RepoMod, Query, StartCounter) ->
-    (dialect(RepoMod)):to_sql_from(Query, StartCounter).
+    (dialect(RepoMod)):to_sql_from(scope(Query), StartCounter).
 
 -spec insert(module(), atom() | module(), [atom()], map()) -> {iodata(), [term()]}.
 insert(RepoMod, SchemaOrTable, Fields, Data) ->
@@ -143,11 +150,11 @@ delete(RepoMod, SchemaOrTable, KeyClauses) ->
 
 -spec update_all(module(), #kura_query{}, map()) -> {iodata(), [term()]}.
 update_all(RepoMod, Query, SetMap) ->
-    (dialect(RepoMod)):update_all(Query, SetMap).
+    (dialect(RepoMod)):update_all(scope(Query), SetMap).
 
 -spec delete_all(module(), #kura_query{}) -> {iodata(), [term()]}.
 delete_all(RepoMod, Query) ->
-    (dialect(RepoMod)):delete_all(Query).
+    (dialect(RepoMod)):delete_all(scope(Query)).
 
 -spec insert_all(module(), atom() | module(), [atom()], [map()]) -> {iodata(), [term()]}.
 insert_all(RepoMod, SchemaOrTable, Fields, Rows) ->
@@ -157,3 +164,7 @@ insert_all(RepoMod, SchemaOrTable, Fields, Rows) ->
     {iodata(), [term()]}.
 insert_all(RepoMod, SchemaOrTable, Fields, Rows, Opts) ->
     (dialect(RepoMod)):insert_all(SchemaOrTable, Fields, Rows, Opts).
+
+-spec scope(#kura_query{}) -> #kura_query{}.
+scope(Query) ->
+    kura_tenant:scope_query(kura_tenant:get_tenant(), Query).

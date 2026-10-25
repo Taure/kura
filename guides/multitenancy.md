@@ -1,6 +1,6 @@
 # Multitenancy
 
-`kura_tenant` provides process dictionary-based multitenancy with two strategies: schema prefix and attribute-based. Once a tenant is set, all Kura repo operations in that process are automatically scoped.
+`kura_tenant` provides process dictionary-based multitenancy with two strategies: schema prefix and attribute-based. Once a tenant is set, the queries and writes kura builds in that process are scoped to it. Raw SQL is not; see [What is not scoped](#what-is-not-scoped).
 
 > **Backend note:** the schema-prefix strategy uses PostgreSQL schemas. SQLite has no schema concept; for multi-tenant SQLite use one database file per tenant or `ATTACH DATABASE`. The attribute-based strategy works on any backend.
 
@@ -44,7 +44,7 @@ kura_tenant:put_tenant({prefix, ~"tenant_acme"}).
 kura_tenant:put_tenant({attribute, {org_id, 42}}).
 ```
 
-Returns the previously set tenant (or `undefined`).
+Returns the previously set tenant (or `undefined`). Anything that is not one of the two strategies raises `{invalid_tenant, Tenant}`, as does an attribute value of `is_nil` or `is_not_nil`.
 
 ### Getting the Current Tenant
 
@@ -83,11 +83,30 @@ This is useful when you need to temporarily access a different tenant's data wit
 
 ## How Scoping Works
 
-Tenant scoping is applied automatically by `kura_repo_worker`:
+Tenant scoping is applied automatically by `kura_repo_worker` and the query compiler.
 
-- **Queries** (`all`, `one`, `update_all`, `delete_all`): the tenant filter is applied before the query is compiled to SQL.
-- **Inserts**: for attribute-based tenancy, the tenant field and value are merged into the changeset's changes before the INSERT is executed.
-- **Schema prefix**: if the query already has an explicit prefix set, the tenant prefix is not overridden.
+Under the attribute strategy:
+
+- **Queries** (`all`, `one`, `get`, `exists`, aggregates, `stream`, preloads): the tenant condition is added to the query, to every CTE and union, and to every `in` and `exists` subquery, however deeply nested.
+- **Record writes** (`update`, `delete`, including optimistic locking): the record is addressed by its key and the tenant, so another tenant's row is not found rather than written.
+- **Bulk writes** (`update_all`, `delete_all`): scoped like queries. A change to the tenant field is pinned to the current tenant, so a row cannot be moved to another tenant.
+- **Inserts** (`insert`, `insert_all`): the tenant field and value are set on every row.
+- **Upserts** (`on_conflict` with a `DO UPDATE` action): the update only applies when the conflicting row belongs to the same tenant. A conflict with another tenant's row leaves it untouched.
+
+The tenant condition names the field unqualified. A query, CTE or union branch over a table without it fails rather than running unscoped. Inside an `in` or `exists` subquery it does not fail: the database resolves the field to the outer query's column, so the inner table is not scoped. Give every tenant table the same tenant column name.
+
+Upserts that hit another tenant's row behave like `DO NOTHING`. Under attribute tenancy, unique indexes should include the tenant column; a unique index across tenants still tells one tenant that a value exists in another.
+
+Under a tenant context, writes to a table without the tenant field differ: `update/2`, `delete/2` and an upsert fail, and a plain insert succeeds without the tenant.
+
+kura does not check that a foreign key points at a row of the same tenant. A tenant can still set `post_id` to another tenant's post: reads stay scoped, but the insert tells it the id exists, and the row it plants can block the other tenant's delete under `ON DELETE RESTRICT`. Make tenant foreign keys composite, `FOREIGN KEY (org_id, post_id) REFERENCES posts (org_id, id)` over a unique `(org_id, id)`, so the database refuses them.
+
+Under the schema prefix strategy, the dialect qualifies each table with the tenant's schema. If the query already has an explicit prefix set, the tenant prefix is not overridden. Many-to-many join tables are always qualified with the tenant's schema, whatever prefix the query sets.
+
+### What is not scoped
+
+- `query/3` with raw SQL, and `{fragment, SQL, Params}` conditions. kura cannot see into SQL text; add the tenant condition yourself.
+- Joins between two tenant tables. Both carry the tenant field, so the unqualified condition is ambiguous and the query fails. A join to a table without the field works, and that table is not scoped, which is right for global lookup tables.
 
 ## When to Use Which
 
@@ -115,3 +134,5 @@ pre_request(Req, State) ->
 ```
 
 Since Cowboy spawns a process per request, the tenant is naturally isolated between concurrent requests. Remember to clear the tenant if the process is reused.
+
+The tenant lives in the process dictionary, so a process you spawn does not have it. kura hands it to the processes it starts for a preload of several associations; for your own, read it with `get_tenant/0` and set it in the new process before it touches the repo.

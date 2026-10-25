@@ -71,7 +71,14 @@ Returns the next free counter so callers can chain sub-compilations.
 -doc "Compile a single-row INSERT (no options).".
 -callback insert(atom() | module(), [atom()], map()) -> {sql(), params()}.
 
--doc "Compile a single-row INSERT with options (e.g. `on_conflict`).".
+-doc """
+Compile a single-row INSERT with options (e.g. `on_conflict`).
+
+`on_conflict` may carry `#{guard => [Field]}` as a third element. The update
+must then only apply where each field of the existing row equals the
+incoming one. A dialect that cannot express that must raise, never drop the
+guard: it is what keeps an upsert inside its tenant.
+""".
 -callback insert(atom() | module(), [atom()], map(), map()) -> {sql(), params()}.
 
 -doc "Compile an UPDATE-by-primary-key. The key is one clause per column (single-key is a one-element list).".
@@ -89,7 +96,7 @@ Returns the next free counter so callers can chain sub-compilations.
 -doc "Compile a bulk INSERT (multi-row).".
 -callback insert_all(atom() | module(), [atom()], [map()]) -> {sql(), params()}.
 
--doc "Compile a bulk INSERT with options (`returning => true | [Field]`).".
+-doc "Compile a bulk INSERT with options (`returning`, and `on_conflict` as for `insert/4`, guard included).".
 -callback insert_all(atom() | module(), [atom()], [map()], map()) -> {sql(), params()}.
 
 -doc "Optional. SQL bytes for a kura column type, used by `kura_migrator` DDL.".
