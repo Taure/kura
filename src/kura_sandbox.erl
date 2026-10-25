@@ -94,10 +94,6 @@ checkout(RepoMod, Opts) ->
             ets:insert(?TABLE, {{Pool, Self}, {PoolMod, Token, Conn}})
     end,
 
-    %% Keep the pgo process-dict marker so any legacy code path that
-    %% still calls pgo:query/2 inside the sandbox finds the right conn.
-    %% Real query routing goes through kura_db -> get_conn/1 -> driver.
-    erlang:put(pgo_transaction_connection, Conn),
     _ = DriverMod:query_on(Conn, ~"BEGIN", [], #{}),
     ok.
 
@@ -128,7 +124,6 @@ checkin(RepoMod) ->
             ok;
         {PoolMod, Token, Conn} ->
             _ = DriverMod:query_on(Conn, ~"ROLLBACK", [], #{}),
-            erlang:erase(pgo_transaction_connection),
             ok = PoolMod:checkin(Pool, Token),
             ets:match_delete(?TABLE, {{Pool, '_', allowed}, Self}),
             ets:delete(?TABLE, {transaction, Conn}),
