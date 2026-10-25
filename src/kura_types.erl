@@ -39,9 +39,6 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
     | {embed, embeds_one | embeds_many, module()}
     | {custom, module()}.
 
-%% eqWAlizer: cast/2, dump/2, load/2 each have >7 clauses narrowing on the
-%% kura_type() union - exceeds eqWAlizer's clause-narrowing limit.
-
 -ifdef(TEST).
 -export([encryptable_inner/1, encode_inner/2, decode_inner/2]).
 -endif.

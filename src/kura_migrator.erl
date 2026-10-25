@@ -84,8 +84,6 @@ one.
 -type migration_group() :: {atom(), [{integer(), module()}]}.
 -export_type([migration_group/0]).
 
-%% eqWAlizer: operation() union has >7 variants - exceeds clause narrowing limit
-
 -doc "Run all pending migrations in order.".
 -spec migrate(module()) -> {ok, [integer()]} | {error, term()}.
 migrate(RepoMod) ->
