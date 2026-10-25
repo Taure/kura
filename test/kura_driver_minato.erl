@@ -286,7 +286,8 @@ host(Config) ->
         Value when is_atom(Value) -> atom_to_list(Value)
     end.
 
--spec first([atom()], map(), term()) -> term().
+%% Config values come from the application environment.
+-spec first([atom()], map(), term()) -> dynamic().
 first([], _Config, Default) ->
     Default;
 first([Key | Rest], Config, Default) ->
@@ -318,7 +319,7 @@ quoted(Name) ->
     Escaped = binary:replace(Name, ~"\"", ~"\"\"", [global]),
     <<$", Escaped/binary, $">>.
 
--spec binary(term()) -> binary().
+-spec binary(dynamic()) -> binary().
 binary(Value) when is_list(Value) -> list_to_binary(Value);
 binary(Value) when is_atom(Value) -> atom_to_binary(Value);
 binary(Value) -> Value.

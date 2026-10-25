@@ -86,8 +86,8 @@ option survives the translation.
 start_pool(Name, Opts) ->
     {ok, _Started} = application:ensure_all_started(minato),
     case minato:start_pool(Name, translate(Opts)) of
-        {ok, Pid} -> {ok, Pid};
-        {error, {already_started, Pid}} -> {ok, Pid};
+        {ok, Pid} when is_pid(Pid) -> {ok, Pid};
+        {error, {already_started, Pid}} when is_pid(Pid) -> {ok, Pid};
         {error, Reason} -> {error, Reason}
     end.
 
@@ -295,17 +295,17 @@ connection(timeout, Value, Connection) -> Connection#{timeout => Value};
 connection(transport, Value, Connection) -> Connection#{transport => Value};
 connection(_Key, _Value, Connection) -> Connection.
 
--spec password(term()) -> binary() | fun(() -> binary()).
+-spec password(dynamic()) -> binary() | fun(() -> binary()).
 password(Value) when is_function(Value, 0) -> Value;
 password(Value) -> binary(Value).
 
--spec text(term()) -> string().
+-spec text(dynamic()) -> string().
 text(Value) when is_binary(Value) -> binary_to_list(Value);
 text(Value) when is_list(Value) -> Value;
 text(Value) when is_atom(Value) -> atom_to_list(Value);
 text(Value) -> Value.
 
--spec binary(term()) -> binary().
+-spec binary(dynamic()) -> binary().
 binary(Value) when is_list(Value) -> list_to_binary(Value);
 binary(Value) when is_atom(Value) -> atom_to_binary(Value);
 binary(Value) -> Value.
