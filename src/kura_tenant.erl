@@ -59,7 +59,7 @@ validate_tenant(Other) ->
     error({invalid_tenant, Other}).
 
 -doc "Execute a function with a temporary tenant, restoring the previous tenant after.".
--spec with_tenant(strategy(), fun(() -> T)) -> T when T :: term().
+-spec with_tenant(strategy(), fun(() -> T)) -> T.
 with_tenant(Tenant, Fun) ->
     Old = put_tenant(Tenant),
     try
