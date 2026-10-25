@@ -95,7 +95,7 @@ start(RepoMod) ->
 -doc "Execute a query and return all matching rows.".
 -spec all(module(), #kura_query{}) -> {ok, [map()]} | {error, term()}.
 all(RepoMod, Query) ->
-    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_query(Query)),
+    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_prefix(Query)),
     {SQL, Params} = kura_query_compiler:to_sql_cached(RepoMod, Q1),
 
     case kura_db:query(RepoMod, SQL, Params) of
@@ -322,8 +322,9 @@ insert(RepoMod, CS, Opts) ->
 
 do_insert(_RepoMod, CS = #kura_changeset{valid = false}, _Opts) ->
     {error, CS#kura_changeset{action = insert}};
-do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opts) ->
-    Changes0 = maybe_generate_pk(RepoMod, SchemaMod, Changes),
+do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opts0) ->
+    Opts = guard_upsert(Opts0),
+    Changes0 = maybe_generate_pk(RepoMod, SchemaMod, maybe_apply_tenant_changes(Changes)),
     Changes1 = maybe_add_timestamps(SchemaMod, Changes0, insert),
     case dump_changes(SchemaMod, Changes1) of
         {error, DumpErr} ->
@@ -407,8 +408,8 @@ update_all(RepoMod, Query, Updates) ->
     guard_write(RepoMod, fun() -> do_update_all(RepoMod, Query, Updates) end).
 
 do_update_all(RepoMod, Query, Updates) ->
-    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_query(Query)),
-    case dump_set_map(Q1#kura_query.from, Updates) of
+    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_prefix(Query)),
+    case dump_set_map(Q1#kura_query.from, pin_tenant(Updates)) of
         {error, _} = DumpErr ->
             DumpErr;
         {ok, Dumped} ->
@@ -426,7 +427,7 @@ delete_all(RepoMod, Query) ->
     guard_write(RepoMod, fun() -> do_delete_all(RepoMod, Query) end).
 
 do_delete_all(RepoMod, Query) ->
-    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_query(Query)),
+    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_prefix(Query)),
     {SQL, Params} = kura_query_compiler:delete_all(RepoMod, Q1),
 
     case kura_db:query(RepoMod, SQL, Params) of
@@ -449,9 +450,9 @@ insert_all(RepoMod, SchemaMod, Entries, Opts) ->
     guard_write(RepoMod, fun() -> do_insert_all(RepoMod, SchemaMod, Entries, Opts) end).
 
 do_insert_all(RepoMod, SchemaMod, Entries, Opts) ->
-    case dump_entries(SchemaMod, Entries) of
+    case dump_entries(SchemaMod, [maybe_apply_tenant_changes(E) || E <- Entries]) of
         {error, _} = DumpErr -> DumpErr;
-        {ok, Rows} -> do_insert_all_rows(RepoMod, SchemaMod, Rows, Opts)
+        {ok, Rows} -> do_insert_all_rows(RepoMod, SchemaMod, Rows, guard_upsert(Opts))
     end.
 
 do_insert_all_rows(RepoMod, SchemaMod, Rows, Opts) ->
@@ -588,12 +589,14 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
             {error, ErrCS#kura_changeset{action = update}};
         {ok, CS} ->
             Changes = CS#kura_changeset.changes,
-            case maps:size(Changes) of
+            case map_size(Changes) of
+                0 when map_size(CS#kura_changeset.assoc_changes) > 0 ->
+                    owned_by_tenant(RepoMod, CS, Data);
                 0 ->
                     {ok, Data};
                 _ ->
-                    KeyClauses = key_pairs(SchemaMod, Data),
-                    Changes1 = maybe_add_timestamps(SchemaMod, Changes, update),
+                    KeyClauses = tenant_key_clauses(key_pairs(SchemaMod, Data)),
+                    Changes1 = maybe_add_timestamps(SchemaMod, pin_tenant(Changes), update),
                     case dump_changes(SchemaMod, Changes1) of
                         {error, DumpErr} ->
                             dump_error_changeset(CS, update, DumpErr);
@@ -611,6 +614,27 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
                             end
                     end
             end
+    end.
+
+%% With no field to write the key never reaches the database, so under attribute
+%% tenancy the record is looked up before its associations are written.
+owned_by_tenant(RepoMod, CS = #kura_changeset{schema = SchemaMod}, Data) ->
+    case kura_tenant:get_tenant() of
+        {attribute, _} ->
+            Q0 = apply_clauses(kura_query:from(SchemaMod), key_pairs(SchemaMod, Data)),
+            case all(RepoMod, kura_query:limit(Q0#kura_query{include_deleted = true}, 1)) of
+                {ok, [Row]} ->
+                    {ok, Row};
+                {ok, []} ->
+                    {error,
+                        kura_changeset:add_error(
+                            CS#kura_changeset{action = update}, base, ~"record not found"
+                        )};
+                {error, _} = Err ->
+                    Err
+            end;
+        _ ->
+            {ok, Data}
     end.
 
 do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, KeyClauses) ->
@@ -635,12 +659,8 @@ do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, KeyClauses) ->
         LockField ->
             Data = CS#kura_changeset.data,
             LockValue = maps:get(LockField, Data, 0),
-            {SQL, Params} = compile_update_with_lock(
-                SchemaMod,
-                Fields,
-                DumpedChanges,
-                KeyClauses,
-                {LockField, LockValue}
+            {SQL, Params} = kura_query_compiler:update(
+                RepoMod, SchemaMod, Fields, DumpedChanges, KeyClauses ++ [{LockField, LockValue}]
             ),
             case kura_db:query(RepoMod, SQL, Params) of
                 #{command := update, rows := [Row]} ->
@@ -664,28 +684,6 @@ apply_prepare_funs(CS, []) ->
 apply_prepare_funs(CS, [Fun | Rest]) ->
     apply_prepare_funs(Fun(CS), Rest).
 
-compile_update_with_lock(
-    SchemaOrTable, Fields, Changes, KeyClauses, {LockField, LockValue}
-) ->
-    Table = resolve_table_name(SchemaOrTable),
-    {Sets, Params, Counter} = build_lock_set_parts(Fields, Changes, 1),
-    {KeyConds, KeyParams, NextCounter} = key_conds(KeyClauses, Counter),
-    LockPlaceholder = [~"$", integer_to_binary(NextCounter)],
-    SQL = iolist_to_binary([
-        ~"UPDATE ",
-        quote_ident_bin(Table),
-        ~" SET ",
-        join_comma_bin(Sets),
-        ~" WHERE ",
-        lists:join(~" AND ", KeyConds),
-        ~" AND ",
-        quote_ident_bin(atom_to_binary(LockField, utf8)),
-        ~" = ",
-        LockPlaceholder,
-        ~" RETURNING *"
-    ]),
-    {SQL, Params ++ KeyParams ++ [LockValue]}.
-
 %% One `col = $n` condition per key column, using the binary quoter.
 key_conds(KeyClauses, Start) ->
     key_conds(KeyClauses, Start, [], []).
@@ -700,17 +698,6 @@ key_conds([{Field, Value} | Rest], Counter, Conds, Params) ->
 key_pairs(SchemaMod, Data) ->
     [{K, maps:get(K, Data)} || K <- kura_schema:key(SchemaMod)].
 
-resolve_table_name(Mod) when is_atom(Mod) ->
-    case code:ensure_loaded(Mod) of
-        {module, Mod} ->
-            case erlang:function_exported(Mod, table, 0) of
-                true -> Mod:table();
-                false -> atom_to_binary(Mod, utf8)
-            end;
-        _ ->
-            atom_to_binary(Mod, utf8)
-    end.
-
 quote_ident_bin(Name) when is_binary(Name) ->
     Escaped = binary:replace(Name, ~"\"", ~"\"\"", [global]),
     <<$", Escaped/binary, $">>.
@@ -720,19 +707,6 @@ apply_clauses(Q, []) ->
     Q;
 apply_clauses(Q, [{Field, Value} | Rest]) ->
     apply_clauses(kura_query:where(Q, {Field, Value}), Rest).
-
--spec build_lock_set_parts([atom()], map(), pos_integer()) ->
-    {[iodata()], [term()], pos_integer()}.
-build_lock_set_parts([], _Changes, N) ->
-    {[], [], N};
-build_lock_set_parts([Field | Rest], Changes, N) ->
-    Value = maps:get(Field, Changes),
-    Set = [quote_ident_bin(atom_to_binary(Field, utf8)), ~" = $", integer_to_binary(N)],
-    {Sets, Params, N2} = build_lock_set_parts(Rest, Changes, N + 1),
-    {[Set | Sets], [Value | Params], N2}.
-
-join_comma_bin(Parts) ->
-    lists:join(~", ", Parts).
 
 persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AssocChanges) ->
     maps:fold(
@@ -824,7 +798,7 @@ persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
     {OwnerConds, OwnerParams, _} = key_conds(lists:zip(OwnerCols, OwnerValues), 1),
     DeleteSQL = iolist_to_binary([
         ~"DELETE FROM ",
-        quote_ident_bin(JoinTable),
+        kura_preloader:quote_table_bin(JoinTable),
         ~" WHERE ",
         lists:join(~" AND ", OwnerConds)
     ]),
@@ -849,7 +823,7 @@ m2m_insert_sql(JoinTable, Cols, Values) ->
     ]),
     SQL = iolist_to_binary([
         ~"INSERT INTO ",
-        quote_ident_bin(JoinTable),
+        kura_preloader:quote_table_bin(JoinTable),
         ~" (",
         ColSQL,
         ~") VALUES (",
@@ -863,7 +837,7 @@ delete_record(RepoMod, SchemaMod, Data) ->
         {error, _} = Err ->
             Err;
         ok ->
-            KeyClauses = key_pairs(SchemaMod, Data),
+            KeyClauses = tenant_key_clauses(key_pairs(SchemaMod, Data)),
             {SQL, Params} = kura_query_compiler:delete(RepoMod, SchemaMod, KeyClauses),
             case kura_db:query(RepoMod, SQL, Params) of
                 #{command := delete, rows := [Row]} ->
@@ -1152,18 +1126,43 @@ has_soft_delete(SchemaMod) ->
     Types = kura_schema:field_types(SchemaMod),
     maps:is_key(deleted_at, Types).
 
-maybe_apply_tenant_query(Query) ->
+maybe_apply_tenant_prefix(Query) ->
     case kura_tenant:get_tenant() of
         {prefix, Prefix} ->
             case Query#kura_query.prefix of
                 undefined -> Query#kura_query{prefix = Prefix};
                 _ -> Query
             end;
-        {attribute, {Field, Value}} ->
-            kura_query:where(Query, {Field, Value});
-        undefined ->
+        _ ->
             Query
     end.
+
+tenant_key_clauses(KeyClauses) ->
+    case kura_tenant:get_tenant() of
+        {attribute, {Field, Value}} -> KeyClauses ++ [{Field, Value}];
+        _ -> KeyClauses
+    end.
+
+pin_tenant(Changes) ->
+    case kura_tenant:get_tenant() of
+        {attribute, {Field, Value}} when is_map_key(Field, Changes) -> Changes#{Field => Value};
+        _ -> Changes
+    end.
+
+guard_upsert(#{on_conflict := OnConflict} = Opts) ->
+    case kura_tenant:get_tenant() of
+        {attribute, {Field, _Value}} -> Opts#{on_conflict => guarded(OnConflict, Field)};
+        _ -> Opts
+    end;
+guard_upsert(Opts) ->
+    Opts.
+
+guarded({_Target, nothing} = OnConflict, _Field) ->
+    OnConflict;
+guarded({Target, Action}, Field) ->
+    {Target, Action, #{guard => [Field]}};
+guarded({Target, Action, Opts}, Field) when is_map(Opts) ->
+    {Target, Action, Opts#{guard => lists:usort([Field | maps:get(guard, Opts, [])])}}.
 
 maybe_apply_tenant_changes(Changes) ->
     case kura_tenant:get_tenant() of

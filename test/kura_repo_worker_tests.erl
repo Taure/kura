@@ -39,8 +39,6 @@ key_clauses_incomplete_key_rejected_test() ->
     ).
 
 key_conds_composite_counter_test() ->
-    %% The optimistic-lock UPDATE builder must continue placeholder
-    %% numbering from the SET counter and hand the lock the next slot.
     {Conds, Params, Next} = kura_repo_worker:key_conds(
         [{org_id, <<"o">>}, {user_id, <<"u">>}], 2
     ),

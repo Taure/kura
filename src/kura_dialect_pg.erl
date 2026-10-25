@@ -102,10 +102,12 @@ insert(SchemaOrTable, Fields, Data) ->
     {SQL, Params}.
 
 -spec insert(atom() | module(), [atom()], map(), map()) -> {iodata(), [term()]}.
-insert(SchemaOrTable, Fields, Data, #{on_conflict := OnConflict}) ->
+insert(SchemaOrTable, Fields, Data, #{on_conflict := OnConflict0}) ->
     Table = resolve_table(SchemaOrTable),
+    {OnConflict, Guard} = conflict_guard(OnConflict0),
     {Cols, Placeholders, Params, Counter} = build_insert_parts(Fields, Data, 1),
-    {ConflictSQL, ConflictParams} = compile_on_conflict(OnConflict, Fields, Data, Counter),
+    {ConflictSQL0, ConflictParams} = compile_on_conflict(OnConflict, Fields, Data, Counter),
+    ConflictSQL = [ConflictSQL0, guard_sql(Table, OnConflict, Guard)],
     SQL = iolist_to_binary([
         ~"INSERT INTO ",
         qualified_table(Table, resolve_prefix(undefined)),
@@ -240,8 +242,21 @@ insert_all(SchemaOrTable, Fields, Rows) ->
 -spec insert_all(atom() | module(), [atom()], [map()], map()) -> {iodata(), [term()]}.
 insert_all(SchemaOrTable, Fields, Rows, Opts) ->
     {BaseSQL, Params} = insert_all(SchemaOrTable, Fields, Rows),
-    SQL = [BaseSQL, bulk_on_conflict(Opts, Fields), bulk_returning(Opts)],
+    SQL = [
+        BaseSQL,
+        guarded_bulk_on_conflict(resolve_table(SchemaOrTable), Opts, Fields),
+        bulk_returning(Opts)
+    ],
     {iolist_to_binary(SQL), Params}.
+
+guarded_bulk_on_conflict(Table, #{on_conflict := OnConflict0} = Opts, Fields) ->
+    {OnConflict, Guard} = conflict_guard(OnConflict0),
+    [
+        bulk_on_conflict(Opts#{on_conflict => OnConflict}, Fields),
+        guard_sql(Table, OnConflict, Guard)
+    ];
+guarded_bulk_on_conflict(_Table, Opts, Fields) ->
+    bulk_on_conflict(Opts, Fields).
 
 %% A bulk upsert applies one DO UPDATE clause to every row, so the SET values
 %% cannot come from any single row's parameters the way the single-row form
@@ -580,6 +595,27 @@ compile_on_conflict({Target, replace_all}, Fields, Data, Counter) ->
     compile_on_conflict({Target, {replace, replaceable(Target, Fields)}}, Fields, Data, Counter);
 compile_on_conflict({Target, {replace, UpdateFields}}, _Fields, Data, Counter) ->
     compile_on_conflict_update(conflict_target(Target), UpdateFields, Data, Counter).
+
+%% A row the guard refuses is left as it is and not returned, as with DO NOTHING.
+conflict_guard({Target, Action, #{guard := Fields} = Opts}) when
+    is_list(Fields), map_size(Opts) =:= 1
+->
+    {{Target, Action}, Fields};
+conflict_guard({_Target, _Action, Opts}) ->
+    erlang:error({kura, {invalid_on_conflict_opts, Opts}});
+conflict_guard(OnConflict) ->
+    {OnConflict, []}.
+
+guard_sql(_Table, {_Target, nothing}, _Fields) ->
+    [];
+guard_sql(_Table, _OnConflict, []) ->
+    [];
+guard_sql(Table, _OnConflict, Fields) ->
+    [~" WHERE ", lists:join(~" AND ", [guard_condition(Table, F) || F <- Fields])].
+
+guard_condition(Table, Field) ->
+    Column = quote_ident(atom_to_binary(Field, utf8)),
+    [quote_ident(Table), ~".", Column, ~" = EXCLUDED.", Column].
 
 conflict_target(Field) when is_atom(Field) ->
     [~" ON CONFLICT (", quote_ident(atom_to_binary(Field, utf8)), ~")"];

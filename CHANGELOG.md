@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Attribute tenancy (`{attribute, {Field, Value}}`) leaked reads. Only
+  the top level of a query was filtered, so a union, CTE or `in`/`exists`
+  subquery read other tenants' rows, and aggregates and streams were not
+  filtered at all. The condition is now added by the compiler, to every
+  nested query.
+- Attribute tenancy leaked writes. `update/2` and `delete/2`, including
+  the optimistic-lock path, matched a record by key alone; an update with
+  only association changes wrote them onto whatever record it was given;
+  and a change to the tenant field moved a row to another tenant. Record
+  writes now carry the tenant in their key, such an update checks the
+  record first, and the tenant field is pinned.
+- Attribute tenancy leaked through inserts. `insert_all` and `insert/3`
+  did not stamp the tenant, and an upsert could overwrite another
+  tenant's row. Inserts are now stamped, and an upsert only updates a row
+  of the same tenant.
+- Preloading two or more associations ran each one in a new process,
+  which has no tenant. Under attribute tenancy a `belongs_to` whose
+  foreign key the caller set returned another tenant's row; under prefix
+  tenancy the preload read the connection's default schema. The preload
+  processes now carry the caller's tenant.
+- `kura_tenant:put_tenant/1` stored any term, and one that was not a
+  strategy read back as no tenant, so a typo such as `{prefix, "acme"}`
+  turned scoping off. It now raises `{invalid_tenant, Tenant}`. An
+  attribute value of `is_nil` or `is_not_nil` is refused too: the
+  condition read it as a null test, so `is_not_nil` matched every tenant.
+- Prefix tenancy (`{prefix, Schema}`) ran the optimistic-lock update and
+  many-to-many join tables on the search_path. Where two tenants' rows
+  share an id, one tenant could update the other's row and replace or
+  read its links. Both are now qualified with the tenant's schema.
+- **Upgrading:** a scoped query whose table lacks the tenant field now
+  fails, as do `update/2`, `delete/2` and upserts on such a table, and an
+  invalid tenant raises. See the multitenancy guide for what is and is
+  not scoped.
 - `kura_migrator`'s DDL identifier quoting now doubles an embedded double
   quote, matching the fix `kura_dialect_pg`, `kura_preloader` and
   `kura_repo_worker` already carry. It was the last unhardened copy of
