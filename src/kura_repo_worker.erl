@@ -59,9 +59,6 @@ kura_repo_worker:start(MyRepo),
 ]).
 -endif.
 
--eqwalizer({nowarn_function, multi/2}).
--eqwalizer({nowarn_function, join_many_to_many/5}).
-
 -type write_error() :: {error, read_only}.
 -type assoc_change() :: #kura_changeset{} | [#kura_changeset{}].
 -export_type([write_error/0]).
@@ -459,12 +456,12 @@ transaction(RepoMod, Fun) ->
     kura_db:transaction(RepoMod, Fun).
 
 -doc "Execute a `kura_multi` pipeline inside a transaction.".
--spec multi(module(), term()) ->
+-spec multi(module(), kura_multi:t()) ->
     {ok, map()} | {error, atom(), term(), map()}.
 multi(RepoMod, Multi) ->
     Ops = kura_multi:to_list(Multi),
     try
-        kura_db:transaction_ok(RepoMod, fun() ->
+        kura_db:transaction(RepoMod, fun() ->
             execute_multi_ops(RepoMod, Ops, #{})
         end)
     catch
@@ -494,6 +491,7 @@ preload(RepoMod, Schema, Records, Assocs) ->
 %% Internal: multi execution
 %%----------------------------------------------------------------------
 
+-spec execute_multi_ops(module(), [{atom(), term()}], map()) -> {ok, map()}.
 execute_multi_ops(_RepoMod, [], Acc) ->
     {ok, Acc};
 execute_multi_ops(RepoMod, [{Name, Op} | Rest], Acc) ->
