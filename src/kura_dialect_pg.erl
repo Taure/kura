@@ -27,8 +27,6 @@ configured for the running app.
     format_default/1
 ]).
 
--eqwalizer({nowarn_function, format_default/1}).
-
 -doc "Compile a query record into `{SQL, Params}`.".
 -spec to_sql(#kura_query{}) -> {iodata(), [term()]}.
 to_sql(Query) ->
@@ -914,8 +912,14 @@ format_default(false) ->
 format_default(Val) when is_atom(Val) ->
     quote_literal(atom_to_binary(Val));
 format_default(Val) when is_map(Val) ->
-    <<(quote_literal(iolist_to_binary(json:encode(Val))))/binary, "::jsonb">>;
+    jsonb_literal(Val);
 format_default(Val) when is_list(Val) ->
+    jsonb_literal(Val).
+
+%% A jsonb default is whatever term the migration supplied; json:encode/1
+%% raises on any part of it that is not JSON, which no guard can check.
+-spec jsonb_literal(dynamic()) -> binary().
+jsonb_literal(Val) ->
     <<(quote_literal(iolist_to_binary(json:encode(Val))))/binary, "::jsonb">>.
 
 %% A default is DDL text, not a bind parameter, so an embedded quote has to

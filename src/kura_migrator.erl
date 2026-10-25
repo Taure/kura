@@ -84,10 +84,6 @@ one.
 -type migration_group() :: {atom(), [{integer(), module()}]}.
 -export_type([migration_group/0]).
 
-%% eqWAlizer: operation() union has >7 variants - exceeds clause narrowing limit
--eqwalizer({nowarn_function, compile_operation/2}).
--eqwalizer({nowarn_function, default_default/1}).
-
 -doc "Run all pending migrations in order.".
 -spec migrate(module()) -> {ok, [integer()]} | {error, term()}.
 migrate(RepoMod) ->
@@ -1377,10 +1373,10 @@ format_default(RepoMod, Val) ->
             _ = code:ensure_loaded(M),
             case erlang:function_exported(M, format_default, 1) of
                 true -> M:format_default(Val);
-                false -> default_default(Val)
+                false -> kura_dialect_pg:format_default(Val)
             end;
         none ->
-            default_default(Val)
+            kura_dialect_pg:format_default(Val)
     end.
 
 -spec ddl_dialect(module()) -> {ok, module()} | none.
@@ -1395,29 +1391,6 @@ ddl_dialect(RepoMod) ->
                 _ -> none
             end
     end.
-
--spec default_default(term()) -> binary().
-default_default(Val) when is_integer(Val) ->
-    integer_to_binary(Val);
-default_default(Val) when is_float(Val) ->
-    float_to_binary(Val);
-default_default(Val) when is_binary(Val) ->
-    quote_literal(Val);
-default_default(true) ->
-    ~"TRUE";
-default_default(false) ->
-    ~"FALSE";
-default_default(Val) when is_atom(Val) ->
-    quote_literal(atom_to_binary(Val));
-default_default(Val) when is_map(Val) ->
-    <<(quote_literal(iolist_to_binary(json:encode(Val))))/binary, "::jsonb">>;
-default_default(Val) when is_list(Val) ->
-    <<(quote_literal(iolist_to_binary(json:encode(Val))))/binary, "::jsonb">>.
-
--spec quote_literal(binary()) -> binary().
-quote_literal(Val) ->
-    Escaped = binary:replace(Val, ~"'", ~"''", [global]),
-    <<$', Escaped/binary, $'>>.
 
 %%----------------------------------------------------------------------
 %% Internal: type narrowing helpers for eqWAlizer

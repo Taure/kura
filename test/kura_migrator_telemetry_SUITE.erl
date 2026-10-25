@@ -245,7 +245,7 @@ fake_stamps_pending_without_running_ddl(_Config) ->
 
     ?assertEqual(0, table_count(~"coverage_items")),
 
-    Status = kura_migrator:status(?REPO),
+    Status = [_ | _] = kura_migrator:status(?REPO),
     ?assertEqual(2, length(Status)),
     ?assert(lists:all(fun({_V, _M, S}) -> S =:= up end, Status)),
 

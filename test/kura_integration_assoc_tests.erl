@@ -3,15 +3,6 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
--eqwalizer({nowarn_function, t_nested_preload/0}).
--eqwalizer({nowarn_function, t_cast_assoc_has_many/0}).
--eqwalizer({nowarn_function, t_cast_assoc_single_child/0}).
--eqwalizer({nowarn_function, t_update_with_cast_assoc/0}).
--eqwalizer({nowarn_function, t_inline_preload_via_query/0}).
--eqwalizer({nowarn_function, t_inline_preload_multiple/0}).
--eqwalizer({nowarn_function, t_join_inner/0}).
--eqwalizer({nowarn_function, t_join_left/0}).
-
 %%----------------------------------------------------------------------
 %% Test fixture
 %%----------------------------------------------------------------------
@@ -32,6 +23,7 @@ assoc_test_() ->
             {"preload has_many", fun t_preload_has_many/0},
             {"preload has_one", fun t_preload_has_one/0},
             {"preload many_to_many", fun t_preload_many_to_many/0},
+            {"preload many_to_many across multiple records", fun t_preload_many_to_many_batch/0},
             {"preload many_to_many via composite join keys",
                 fun t_preload_many_to_many_composite/0},
             {"preload many_to_many composite on both sides",
@@ -492,6 +484,20 @@ t_preload_many_to_many() ->
     ?assertEqual(2, length(Tags)),
     TagNames = lists:sort([maps:get(name, T) || T <- Tags]),
     ?assertEqual([<<"erlang">>, <<"otp">>], TagNames).
+
+t_preload_many_to_many_batch() ->
+    {ok, User} = insert_user(~"M2M_Batch", ~"m2m_batch@test.com"),
+    UserId = maps:get(id, User),
+    {ok, PostA} = insert_post(~"M2M A", ~"body", UserId),
+    {ok, PostB} = insert_post(~"M2M B", ~"body", UserId),
+    {ok, TagA} = insert_tag(~"batch_a"),
+    {ok, TagB} = insert_tag(~"batch_b"),
+    {ok, _} = link_post_tag(maps:get(id, PostA), maps:get(id, TagA)),
+    {ok, _} = link_post_tag(maps:get(id, PostB), maps:get(id, TagB)),
+
+    [LoadedA, LoadedB] = kura_test_repo:preload(kura_test_post_schema, [PostA, PostB], [tags]),
+    ?assertEqual([~"batch_a"], [maps:get(name, T) || T <- maps:get(tags, LoadedA)]),
+    ?assertEqual([~"batch_b"], [maps:get(name, T) || T <- maps:get(tags, LoadedB)]).
 
 t_preload_many_to_many_composite() ->
     Org = ~"cccccccc-cccc-cccc-cccc-cccccccccccc",

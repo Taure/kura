@@ -204,6 +204,37 @@ default_enum_atom_test() ->
     ?assert(binary:match(SQL, <<"DEFAULT 'draft'">>) =/= nomatch),
     ?assertEqual(nomatch, binary:match(SQL, <<"DEFAULT ''draft''">>)).
 
+default_without_a_dialect_is_formatted_for_postgres_test() ->
+    with_dialect(undefined, fun() ->
+        ?assertNotEqual(
+            nomatch, binary:match(jsonb_default_sql(), <<"DEFAULT '{\"a\":1}'::jsonb">>)
+        )
+    end).
+
+default_with_a_dialect_that_has_no_formatter_is_formatted_for_postgres_test() ->
+    with_dialect(?MODULE, fun() ->
+        ?assertNotEqual(
+            nomatch, binary:match(jsonb_default_sql(), <<"DEFAULT '{\"a\":1}'::jsonb">>)
+        )
+    end).
+
+jsonb_default_sql() ->
+    kura_migrator:compile_operation(
+        ?REPO,
+        {create_table, <<"t">>, [#kura_column{name = x, type = jsonb, default = #{~"a" => 1}}]}
+    ).
+
+with_dialect(Dialect, Run) ->
+    case Dialect of
+        undefined -> application:unset_env(kura, dialect);
+        _ -> application:set_env(kura, dialect, Dialect)
+    end,
+    try
+        Run()
+    after
+        application:set_env(kura, dialect, kura_dialect_pg)
+    end.
+
 %%----------------------------------------------------------------------
 %% Unsafe operation detection tests
 %%----------------------------------------------------------------------

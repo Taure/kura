@@ -107,12 +107,12 @@ clear_actor() ->
     ok.
 
 -doc "Execute a function with a temporary actor, restoring the previous actor after.".
--spec with_actor(binary(), fun(() -> T)) -> T when T :: term().
+-spec with_actor(binary(), fun(() -> T)) -> T.
 with_actor(ActorId, Fun) ->
     with_actor(ActorId, undefined, Fun).
 
 -doc "Execute a function with a temporary actor and metadata.".
--spec with_actor(binary(), map() | undefined, fun(() -> T)) -> T when T :: term().
+-spec with_actor(binary(), map() | undefined, fun(() -> T)) -> T.
 with_actor(ActorId, Metadata, Fun) ->
     OldActor = erlang:get(kura_audit_actor),
     OldMeta = erlang:get(kura_audit_metadata),

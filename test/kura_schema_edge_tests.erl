@@ -2,8 +2,6 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
--eqwalizer({nowarn_function, primary_key_field_found_test/0}).
-
 association_not_found_test() ->
     ?assertEqual({error, not_found}, kura_schema:association(kura_test_schema, nonexistent)).
 
@@ -33,7 +31,7 @@ indexes_returned_for_schema_with_indexes_test() ->
     ?assertEqual([{[code], #{unique => true}}], Indexes).
 
 primary_key_field_found_test() ->
-    Field = kura_schema:primary_key_field(kura_test_schema),
+    #kura_field{} = Field = kura_schema:primary_key_field(kura_test_schema),
     ?assertEqual(id, Field#kura_field.name),
     ?assert(Field#kura_field.primary_key).
 

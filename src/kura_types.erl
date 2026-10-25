@@ -39,10 +39,6 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
     | {embed, embeds_one | embeds_many, module()}
     | {custom, module()}.
 
-%% eqWAlizer: cast/2, dump/2, load/2 each have >7 clauses narrowing on the
-%% kura_type() union - exceeds eqWAlizer's clause-narrowing limit.
--eqwalizer({nowarn_function, cast/2}).
-
 -ifdef(TEST).
 -export([encryptable_inner/1, encode_inner/2, decode_inner/2]).
 -endif.
@@ -154,7 +150,7 @@ from_pg_type(Other, _) when is_binary(Other) ->
 %%----------------------------------------------------------------------
 
 -doc "Coerce external input to an Erlang term for the given type.".
--spec cast(kura_type(), term()) -> {ok, term()} | {error, binary()}.
+-spec cast(kura_type(), dynamic()) -> {ok, term()} | {error, binary()}.
 cast(_Type, undefined) ->
     {ok, undefined};
 cast(_Type, null) ->

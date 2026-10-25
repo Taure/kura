@@ -80,7 +80,7 @@ savepoint the database will not release raises
 opening a transaction on the same sandbox connection while this one is
 open raises `{kura_sandbox, overlapping_transactions}`.
 """.
--spec transaction(module(), fun(() -> term())) -> term().
+-spec transaction(module(), fun(() -> Result)) -> Result.
 transaction(RepoMod, Fun) ->
     Pool = get_pool(RepoMod),
     DriverMod = get_driver_module(RepoMod),
@@ -114,7 +114,7 @@ left_transaction(Pool, false) ->
 left_transaction(_Pool, true) ->
     ok.
 
--spec sandboxed(module(), kura_pool:conn(), fun(() -> term())) -> term().
+-spec sandboxed(module(), kura_pool:conn(), fun(() -> Result)) -> Result.
 sandboxed(DriverMod, Conn, Fun) ->
     ok = kura_sandbox:enter_transaction(Conn),
     try
@@ -123,7 +123,7 @@ sandboxed(DriverMod, Conn, Fun) ->
         ok = kura_sandbox:leave_transaction(Conn)
     end.
 
--spec savepointed(module(), kura_pool:conn(), fun(() -> term())) -> term().
+-spec savepointed(module(), kura_pool:conn(), fun(() -> Result)) -> Result.
 savepointed(DriverMod, Conn, Fun) ->
     Savepoint = [
         ~"kura_savepoint_", integer_to_binary(erlang:unique_integer([positive, monotonic]))
@@ -140,7 +140,7 @@ savepointed(DriverMod, Conn, Fun) ->
             erlang:raise(Class, Reason, Stack)
     end.
 
--spec released(module(), kura_pool:conn(), iodata(), term()) -> term().
+-spec released(module(), kura_pool:conn(), iodata(), Result) -> Result.
 released(DriverMod, Conn, Savepoint, Value) ->
     case on_sandbox(DriverMod, Conn, [~"RELEASE SAVEPOINT ", Savepoint]) of
         {error, _} ->
