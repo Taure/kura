@@ -32,6 +32,15 @@ kura_sandbox:checkout(my_repo, #{shared => true}).
 
 All database operations within the sandbox are rolled back on checkin.
 No test data persists.
+
+A `kura_repo_worker:transaction/2` inside the sandbox runs under a
+`SAVEPOINT` on the sandbox connection, as a nested transaction does
+outside it: a raise undoes only that transaction's work, and a statement
+that fails inside it leaves the sandbox usable. Processes that share one
+sandbox connection (`allow/3` or `shared`) share its savepoints too, so
+their transactions must run one after another: a transaction opened
+while another process has one open on the same connection raises
+`{kura_sandbox, overlapping_transactions}`.
 """.
 
 -export([
@@ -40,7 +49,9 @@ No test data persists.
     checkout/2,
     checkin/1,
     allow/3,
-    get_conn/1
+    get_conn/1,
+    enter_transaction/1,
+    leave_transaction/1
 ]).
 
 -define(TABLE, kura_sandbox_registry).
@@ -120,6 +131,7 @@ checkin(RepoMod) ->
             erlang:erase(pgo_transaction_connection),
             ok = PoolMod:checkin(Pool, Token),
             ets:match_delete(?TABLE, {{Pool, '_', allowed}, Self}),
+            ets:delete(?TABLE, {transaction, Conn}),
             ok
     end.
 
@@ -145,6 +157,55 @@ get_conn(Pool) ->
     case ets:whereis(?TABLE) of
         undefined -> not_found;
         _Tid -> lookup_conn(Pool)
+    end.
+
+-doc """
+Note that this process opens a transaction on sandbox connection `Conn`.
+
+Called by `kura_db:transaction/2`. A process may nest its own
+transactions. Raises `{kura_sandbox, overlapping_transactions}` when
+another live process has one open on `Conn`, since their savepoints
+would interleave.
+""".
+-spec enter_transaction(kura_pool:conn()) -> ok.
+enter_transaction(Conn) ->
+    Self = self(),
+    Key = {transaction, Conn},
+    case ets:insert_new(?TABLE, {Key, Self, 1}) of
+        true ->
+            ok;
+        false ->
+            case ets:lookup(?TABLE, Key) of
+                [{_, Self, _Depth}] ->
+                    _ = ets:update_counter(?TABLE, Key, {3, 1}),
+                    ok;
+                [{_, Holder, _Depth} = Held] when is_pid(Holder) ->
+                    case is_process_alive(Holder) of
+                        true ->
+                            error({kura_sandbox, overlapping_transactions});
+                        false ->
+                            _ = ets:delete_object(?TABLE, Held),
+                            enter_transaction(Conn)
+                    end;
+                [] ->
+                    enter_transaction(Conn)
+            end
+    end.
+
+-doc "Note that this process closed a transaction it opened on `Conn`.".
+-spec leave_transaction(kura_pool:conn()) -> ok.
+leave_transaction(Conn) ->
+    Self = self(),
+    Key = {transaction, Conn},
+    case ets:lookup(?TABLE, Key) of
+        [{_, Self, 1} = Held] ->
+            _ = ets:delete_object(?TABLE, Held),
+            ok;
+        [{_, Self, _Depth}] ->
+            _ = ets:update_counter(?TABLE, Key, {3, -1}),
+            ok;
+        _NotHeld ->
+            ok
     end.
 
 %%----------------------------------------------------------------------
