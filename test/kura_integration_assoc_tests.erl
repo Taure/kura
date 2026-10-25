@@ -80,7 +80,18 @@ assoc_test_() ->
             {"a failed many_to_many join row returns the parent changeset",
                 fun t_failed_join_row_returns_changeset/0},
             {"a failed child on update returns the parent changeset",
-                fun t_failed_child_on_update/0}
+                fun t_failed_child_on_update/0},
+
+            %% Preload on the caller's connection
+            {"preload of several assocs inside a transaction sees its writes",
+                fun t_preload_in_transaction/0},
+            {"preload of several assocs in a sandbox sees its writes", fun t_preload_in_sandbox/0},
+            {"preload after a nested assoc write still sees the transaction",
+                fun t_preload_after_nested_transaction/0},
+            {"in_transaction is cleared when the transaction returns or raises",
+                fun t_in_transaction_cleared/0},
+            {"preload of several assocs in a stream callback sees the stream's transaction",
+                fun t_preload_in_stream/0}
         ]
     end}.
 
@@ -1032,3 +1043,77 @@ t_failed_child_on_update() ->
     ?assertEqual([{author_id, <<"does not exist">>}], Failed#kura_changeset.errors),
     ?assertMatch([_], posts_titled(<<"FU Post">>)),
     ?assertEqual([], posts_titled(<<"FU Renamed">>)).
+
+%%----------------------------------------------------------------------
+%% Preload on the caller's connection
+%%----------------------------------------------------------------------
+
+t_preload_in_transaction() ->
+    Result = kura_test_repo:transaction(fun() ->
+        {ok, User} = insert_user(<<"PT_Author">>, <<"pt_author@test.com">>),
+        UserId = maps:get(id, User),
+        {ok, Post} = insert_post(<<"PT Post">>, <<"body">>, UserId),
+        {ok, _} = insert_comment(<<"PT comment">>, maps:get(id, Post), UserId),
+        kura_test_repo:preload(kura_test_post_schema, Post, [author, comments])
+    end),
+    ?assertMatch(
+        #{author := #{name := <<"PT_Author">>}, comments := [#{body := <<"PT comment">>}]},
+        Result
+    ).
+
+t_preload_in_sandbox() ->
+    kura_sandbox:start(),
+    ok = kura_sandbox:checkout(kura_test_repo),
+    try
+        {ok, User} = insert_user(<<"PS_Author">>, <<"ps_author@test.com">>),
+        UserId = maps:get(id, User),
+        {ok, Post} = insert_post(<<"PS Post">>, <<"body">>, UserId),
+        {ok, _} = insert_comment(<<"PS comment">>, maps:get(id, Post), UserId),
+        ?assertMatch(
+            #{author := #{name := <<"PS_Author">>}, comments := [#{body := <<"PS comment">>}]},
+            kura_test_repo:preload(kura_test_post_schema, Post, [author, comments])
+        )
+    after
+        ok = kura_sandbox:checkin(kura_test_repo)
+    end,
+    ?assertEqual([], posts_titled(<<"PS Post">>)).
+
+t_preload_after_nested_transaction() ->
+    Result = kura_test_repo:transaction(fun() ->
+        {ok, User} = insert_user(~"PN_Author", ~"pn_author@test.com"),
+        UserId = maps:get(id, User),
+        {ok, Post} = kura_test_repo:insert(post_with_comments(~"PN Post", UserId, [UserId])),
+        kura_test_repo:preload(kura_test_post_schema, maps:remove(comments, Post), [
+            author, comments
+        ])
+    end),
+    ?assertMatch(#{author := #{name := ~"PN_Author"}, comments := [_]}, Result).
+
+t_in_transaction_cleared() ->
+    ?assertNot(kura_db:in_transaction(kura_test_repo)),
+    ?assert(kura_test_repo:transaction(fun() -> kura_db:in_transaction(kura_test_repo) end)),
+    ?assertNot(kura_db:in_transaction(kura_test_repo)),
+    ?assertError(boom, kura_test_repo:transaction(fun() -> error(boom) end)),
+    ?assertNot(kura_db:in_transaction(kura_test_repo)).
+
+t_preload_in_stream() ->
+    {ok, User} = insert_user(~"PSt_Author", ~"pst_author@test.com"),
+    UserId = maps:get(id, User),
+    {ok, _} = insert_post(~"PSt Post", ~"body", UserId),
+    Q = kura_query:where(kura_query:from(kura_test_post_schema), {title, ~"PSt Post"}),
+    ok = kura_stream:stream(kura_test_repo, Q, fun([Post]) ->
+        ?assert(kura_db:in_transaction(kura_test_repo)),
+        {ok, _} = insert_comment(~"PSt comment", maps:get(id, Post), UserId),
+        self() !
+            {preloaded, kura_test_repo:preload(kura_test_post_schema, Post, [author, comments])},
+        ok
+    end),
+    ?assertNot(kura_db:in_transaction(kura_test_repo)),
+    receive
+        {preloaded, Preloaded} ->
+            ?assertMatch(
+                #{author := #{name := ~"PSt_Author"}, comments := [#{body := ~"PSt comment"}]},
+                Preloaded
+            )
+    after 0 -> error(no_batch)
+    end.

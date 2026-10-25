@@ -12,6 +12,7 @@ for pool lookup, sandbox support, telemetry, and type loading.
     query/3,
     transaction/2,
     transaction_ok/2,
+    in_transaction/1,
     get_pool/1,
     get_pool_module/1,
     get_driver_module/1,
@@ -77,13 +78,35 @@ open raises `{kura_sandbox, overlapping_transactions}`.
 transaction(RepoMod, Fun) ->
     Pool = get_pool(RepoMod),
     DriverMod = get_driver_module(RepoMod),
-    case kura_sandbox:get_conn(Pool) of
-        {ok, Conn} ->
-            sandboxed(DriverMod, Conn, Fun);
-        not_found ->
-            PoolMod = get_pool_module(RepoMod),
-            DriverMod:transaction(PoolMod, Pool, Fun, #{})
+    Nested = erlang:get({?MODULE, transaction, Pool}) =:= true,
+    _ = erlang:put({?MODULE, transaction, Pool}, true),
+    try
+        case kura_sandbox:get_conn(Pool) of
+            {ok, Conn} ->
+                sandboxed(DriverMod, Conn, Fun);
+            not_found ->
+                PoolMod = get_pool_module(RepoMod),
+                DriverMod:transaction(PoolMod, Pool, Fun, #{})
+        end
+    after
+        left_transaction(Pool, Nested)
     end.
+
+-doc """
+Whether this process is inside `transaction/2` on `RepoMod`'s pool. A
+process it spawns is not, and would not see the transaction's
+uncommitted work.
+""".
+-spec in_transaction(module()) -> boolean().
+in_transaction(RepoMod) ->
+    erlang:get({?MODULE, transaction, get_pool(RepoMod)}) =:= true.
+
+-spec left_transaction(atom(), boolean()) -> ok.
+left_transaction(Pool, false) ->
+    _ = erlang:erase({?MODULE, transaction, Pool}),
+    ok;
+left_transaction(_Pool, true) ->
+    ok.
 
 -spec sandboxed(module(), kura_pool:conn(), fun(() -> term())) -> term().
 sandboxed(DriverMod, Conn, Fun) ->

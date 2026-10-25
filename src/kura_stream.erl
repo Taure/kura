@@ -30,9 +30,6 @@ stream(RepoMod, Query, Fun, Opts) ->
     BatchSize = maps:get(batch_size, Opts, 500),
     {SQL, Params} = kura_query_compiler:to_sql(RepoMod, Query),
     Schema = Query#kura_query.from,
-    Pool = kura_db:get_pool(RepoMod),
-    PoolMod = kura_db:get_pool_module(RepoMod),
-    DriverMod = kura_db:get_driver_module(RepoMod),
     CursorName = generate_cursor_name(),
     DeclareSQL = iolist_to_binary([
         ~"DECLARE ",
@@ -47,19 +44,14 @@ stream(RepoMod, Query, Fun, Opts) ->
         CursorName
     ]),
     CloseSQL = iolist_to_binary([~"CLOSE ", CursorName]),
-    Result = DriverMod:transaction(
-        PoolMod,
-        Pool,
-        fun() ->
-            _ = kura_db:query(RepoMod, DeclareSQL, Params),
-            try
-                fetch_loop(RepoMod, FetchSQL, Schema, Fun)
-            after
-                kura_db:query(RepoMod, CloseSQL, [])
-            end
-        end,
-        #{pool_options => [{timeout, infinity}]}
-    ),
+    Result = kura_db:transaction(RepoMod, fun() ->
+        _ = kura_db:query(RepoMod, DeclareSQL, Params),
+        try
+            fetch_loop(RepoMod, FetchSQL, Schema, Fun)
+        after
+            kura_db:query(RepoMod, CloseSQL, [])
+        end
+    end),
     narrow_transaction_result(Result).
 
 -spec narrow_transaction_result(term()) -> ok | {error, term()}.
