@@ -15,6 +15,7 @@ for pool lookup, sandbox support, telemetry, and type loading.
     in_transaction/1,
     get_pool/1,
     get_pool_module/1,
+    start_pool/3,
     get_driver_module/1,
     load_row/2,
     build_log_event/5,
@@ -31,6 +32,8 @@ for pool lookup, sandbox support, telemetry, and type loading.
     emit_telemetry/6
 ]).
 -endif.
+
+-include_lib("kernel/include/logger.hrl").
 
 -define(DECODE_OPTS, [return_rows_as_maps, column_name_as_atom]).
 
@@ -187,6 +190,112 @@ get_pool_module(RepoMod) ->
         M when is_atom(M), M =/= undefined -> M;
         _ -> error({no_pool_module_configured, RepoMod})
     end.
+
+-doc false.
+-spec start_pool(module(), atom(), map()) -> ok.
+start_pool(Repo, Pool, Config) ->
+    PoolMod = get_pool_module(Repo),
+    Secrets = secrets(Config),
+    try PoolMod:start_pool(Pool, Config) of
+        {ok, _Pid} ->
+            ok;
+        {error, {already_started, _Pid}} ->
+            ok;
+        {error, Reason} ->
+            not_started(Repo, PoolMod, #{reason => redacted(Reason, Secrets)})
+    catch
+        Class:Reason:Stack ->
+            not_started(Repo, PoolMod, #{
+                reason => {Class, redacted(Reason, Secrets)}, stacktrace => arities(Stack)
+            })
+    end.
+
+-spec not_started(module(), module(), map()) -> ok.
+not_started(Repo, PoolMod, Report) ->
+    ?LOG_ERROR(Report#{msg => ~"kura: pool did not start", repo => Repo, pool_module => PoolMod}),
+    ok.
+
+%% A start that raises carries the config in its stacktrace arguments.
+-spec arities(erlang:stacktrace()) -> erlang:stacktrace().
+arities(Stack) ->
+    [
+        {Module, Function, arity(Args), Location}
+     || {Module, Function, Args, Location} <- Stack
+    ].
+
+-spec arity(arity() | [term()]) -> arity().
+arity(Args) when is_list(Args) -> length(Args);
+arity(Arity) -> Arity.
+
+-define(IS_SECRET_KEY(Key), (Key =:= password orelse Key =:= key)).
+
+%% A supervisor reports a failed start with the child's start arguments, and
+%% those hold the connection settings, password included.
+-spec secrets(map()) -> [binary() | string()].
+secrets(#{password := Password}) when is_binary(Password), Password =/= <<>> ->
+    forms(Password);
+secrets(#{password := Password}) when is_list(Password), Password =/= [] ->
+    [
+        Password
+        | [
+            Form
+         || Binary <- [as_text(Password), as_bytes(Password)],
+            is_binary(Binary),
+            Form <- forms(Binary)
+        ]
+    ];
+secrets(_Config) ->
+    [].
+
+-spec forms(binary()) -> [binary() | string()].
+forms(Password) ->
+    Text = [List || List <- [unicode:characters_to_list(Password)], is_list(List)],
+    [Password, binary_to_list(Password) | Text].
+
+%% A password given as a binary reaches some pools as a list of its bytes,
+%% and is turned back into the binary by list_to_binary, not as text.
+-spec as_text(string()) -> binary() | undefined.
+as_text(Password) ->
+    case unicode:characters_to_binary(Password) of
+        Binary when is_binary(Binary) -> Binary;
+        _NotText -> undefined
+    end.
+
+-spec as_bytes(string()) -> binary() | undefined.
+as_bytes(Password) ->
+    try
+        list_to_binary(Password)
+    catch
+        error:badarg -> undefined
+    end.
+
+-spec redacted(term(), [binary() | string()]) -> term().
+redacted(Term, Secrets) ->
+    case lists:member(Term, Secrets) of
+        true -> redacted;
+        false -> redacted_parts(Term, Secrets)
+    end.
+
+%% `key` is the TLS private key in ssl options.
+-spec redacted_parts(term(), [binary() | string()]) -> term().
+redacted_parts({Key, _}, _Secrets) when ?IS_SECRET_KEY(Key) ->
+    {Key, redacted};
+redacted_parts(Map, Secrets) when is_map(Map) ->
+    #{redacted(K, Secrets) => redacted_value(K, V, Secrets) || K := V <- Map};
+redacted_parts(Tuple, Secrets) when is_tuple(Tuple) ->
+    list_to_tuple([redacted(E, Secrets) || E <- tuple_to_list(Tuple)]);
+redacted_parts(List, Secrets) when is_list(List) ->
+    try length(List) of
+        _Proper -> [redacted(E, Secrets) || E <- List]
+    catch
+        error:badarg -> redacted
+    end;
+redacted_parts(Term, _Secrets) ->
+    Term.
+
+-spec redacted_value(term(), term(), [binary() | string()]) -> term().
+redacted_value(Key, _Value, _Secrets) when ?IS_SECRET_KEY(Key) -> redacted;
+redacted_value(_Key, Value, Secrets) -> redacted(Value, Secrets).
 
 -doc "Resolve the `kura_driver` implementation module for a repo.".
 -spec get_driver_module(module()) -> module().
