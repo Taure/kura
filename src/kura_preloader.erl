@@ -254,13 +254,13 @@ composite_in_sql(Cols, Tuples) ->
     {Groups, Params, _} = m2m_row_groups(Tuples, length(Cols), 1, [], []),
     {[~"(", ColList, ~") IN (", join_bins(Groups, ~", "), ~")"], Params}.
 
--spec m2m_row_groups([tuple()], non_neg_integer(), pos_integer(), [iolist()], [term()]) ->
-    {[iolist()], [term()], pos_integer()}.
+-spec m2m_row_groups([tuple()], non_neg_integer(), pos_integer(), [binary()], [term()]) ->
+    {[binary()], [term()], pos_integer()}.
 m2m_row_groups([], _Arity, Counter, SQLs, Params) ->
     {lists:reverse(SQLs), Params, Counter};
 m2m_row_groups([Tuple | Rest], Arity, Counter, SQLs, Params) ->
     {Phs, Next} = m2m_placeholders(Arity, Counter, []),
-    Group = [~"(", join_bins(Phs, ~", "), ~")"],
+    Group = <<"(", (join_bins(Phs, ~", "))/binary, ")">>,
     m2m_row_groups(Rest, Arity, Next, [Group | SQLs], Params ++ tuple_to_list(Tuple)).
 
 -spec m2m_placeholders(non_neg_integer(), pos_integer(), [binary()]) ->
