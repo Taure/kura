@@ -3,8 +3,6 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
--eqwalizer({nowarn_function, t_audit_with_actor/0}).
-
 %%----------------------------------------------------------------------
 %% Test fixture
 %%----------------------------------------------------------------------
