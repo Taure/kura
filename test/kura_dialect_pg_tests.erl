@@ -1080,3 +1080,13 @@ insert_all_no_returning_test() ->
         <<"INSERT INTO \"users\" (\"name\", \"email\") VALUES ($1, $2)">>,
         SQL
     ).
+
+format_default_map_is_a_jsonb_literal_test() ->
+    ?assertEqual(
+        <<"'{\"a\":1}'::jsonb">>, kura_dialect_pg:format_default(#{~"a" => 1})
+    ).
+
+format_default_list_is_a_quoted_jsonb_literal_test() ->
+    ?assertEqual(
+        <<"'[\"it''s\",2]'::jsonb">>, kura_dialect_pg:format_default([~"it's", 2])
+    ).
