@@ -10,9 +10,9 @@ is held and nothing is threaded through kura.
 
 Inside a transaction it goes to the connection the transaction is running on,
 which `m:kura_pool_minato` holds and this module finds in the process
-dictionary. That is the same convention the pgo driver used, for the same
-reason: a query written inside `transaction/4`'s function is handed nothing, so
-the connection has to be found rather than passed.
+dictionary. The reason is that a query written inside `transaction/4`'s
+function is handed nothing, so the connection has to be found rather than
+passed.
 
 ## Results and errors
 
@@ -76,12 +76,34 @@ Raises `error(transaction_rolled_back)` when the server answers the `COMMIT`
 with `ROLLBACK`, which it does when the transaction had already failed. Nothing
 was written, and returning the function's value there would report success for
 work the server threw away.
+
+Called again from the same process inside a transaction on the same pool, it
+runs `Fun` on that transaction's connection under a `SAVEPOINT`: a normal return
+releases it, and an exception rolls back to it and is re-raised, leaving the
+work before it in place. A nested transaction therefore commits only with the
+outer one. Here `transaction_rolled_back` means a statement inside `Fun` failed
+and only the nested work was undone: the outer transaction is still open and
+may catch it and carry on. A process spawned from `Fun` is outside the
+transaction, and its own `transaction/4` is an independent outermost one.
+
+Other failures raise `error({kura_driver_minato, {Failure, Reason}})`:
+
+- `begin_failed` or `savepoint_failed`: the transaction or savepoint could not
+  start, and `Fun` did not run.
+- `commit_failed` or `release_failed`: the server refused it, so nothing in
+  that transaction or savepoint was kept.
+- `commit_unknown`: no answer came back, for example on a timeout or a lost
+  connection, so the server may or may not have committed.
+- `no_connection`: no connection could be checked out, and `Fun` did not run.
+
+A server error is reduced to its `code`, `constraint`, `severity` and
+`severity_non_localised`, since its message and detail can carry row values.
 """.
 -spec transaction(module(), kura_pool:name(), fun(() -> term()), map()) -> term().
 transaction(_PoolMod, Pool, Fun, _Opts) ->
-    case kura_pool_minato:checkout(Pool, #{}) of
-        {ok, Holder, _Token} -> inside(Pool, Holder, Fun);
-        {error, Reason} -> error({kura_driver_minato, {no_connection, Reason}})
+    case kura_pool_minato:transaction_conn(Pool) of
+        undefined -> outermost(Pool, Fun);
+        Holder -> nested(Holder, Fun)
     end.
 
 -doc "Create the database named in `Config` if it is not there.".
@@ -101,11 +123,18 @@ probe_pool(Pool) ->
 %% Transactions
 %%----------------------------------------------------------------------
 
+-spec outermost(kura_pool:name(), fun(() -> term())) -> term().
+outermost(Pool, Fun) ->
+    case kura_pool_minato:checkout(Pool, #{}) of
+        {ok, Holder, _Token} -> inside(Pool, Holder, Fun);
+        {error, Reason} -> error({kura_driver_minato, {no_connection, Reason}})
+    end.
+
 -spec inside(kura_pool:name(), pid(), fun(() -> term())) -> term().
 inside(Pool, Holder, Fun) ->
     ok = kura_pool_minato:in_transaction(Pool, Holder),
     try
-        _ = statement(Holder, ~"BEGIN"),
+        ok = expect(statement(Holder, ~"BEGIN"), 'begin', begin_failed),
         Value = Fun(),
         committed(Holder, Value)
     catch
@@ -120,13 +149,70 @@ inside(Pool, Holder, Fun) ->
 -spec committed(pid(), term()) -> term().
 committed(Holder, Value) ->
     case statement(Holder, ~"COMMIT") of
-        #{command := rollback} -> error(transaction_rolled_back);
-        _Committed -> Value
+        #{command := commit} ->
+            Value;
+        #{command := rollback} ->
+            error(transaction_rolled_back);
+        {error, {pgsql_error, _}} = Refused ->
+            failed(commit_failed, Refused);
+        Unknown ->
+            failed(commit_unknown, Unknown)
     end.
 
--spec statement(pid(), binary()) -> dynamic().
+-spec nested(pid(), fun(() -> term())) -> term().
+nested(Holder, Fun) ->
+    Savepoint = savepoint_name(),
+    ok = expect(statement(Holder, [~"SAVEPOINT ", Savepoint]), savepoint, savepoint_failed),
+    try
+        Value = Fun(),
+        released(Holder, Savepoint, Value)
+    catch
+        Class:Reason:Stacktrace ->
+            _ = statement(Holder, [~"ROLLBACK TO SAVEPOINT ", Savepoint]),
+            _ = statement(Holder, [~"RELEASE SAVEPOINT ", Savepoint]),
+            erlang:raise(Class, Reason, Stacktrace)
+    end.
+
+-spec released(pid(), binary(), term()) -> term().
+released(Holder, Savepoint, Value) ->
+    case statement(Holder, [~"RELEASE SAVEPOINT ", Savepoint]) of
+        #{command := release} -> Value;
+        {error, {pgsql_error, #{code := ~"25P02"}}} -> error(transaction_rolled_back);
+        Failed -> failed(release_failed, Failed)
+    end.
+
+-spec savepoint_name() -> binary().
+savepoint_name() ->
+    iolist_to_binary([~"kura_savepoint_", integer_to_binary(erlang:unique_integer([positive]))]).
+
+-spec expect(dynamic(), atom(), atom()) -> ok.
+expect(#{command := Command}, Command, _Failure) -> ok;
+expect(Answer, _Command, Failure) -> failed(Failure, Answer).
+
+-spec failed(atom(), dynamic()) -> no_return().
+failed(Failure, {error, {pgsql_error, Fields}}) when is_map(Fields) ->
+    error(
+        {kura_driver_minato,
+            {Failure,
+                {pgsql_error,
+                    maps:with([code, constraint, severity, severity_non_localised], Fields)}}}
+    );
+failed(Failure, {error, Reason}) ->
+    error({kura_driver_minato, {Failure, Reason}});
+failed(Failure, #{command := Command}) ->
+    error({kura_driver_minato, {Failure, {unexpected, Command}}});
+failed(Failure, Answer) ->
+    error({kura_driver_minato, {Failure, Answer}}).
+
+-spec statement(pid(), iodata()) -> dynamic().
+%% A raise here would replace the exception being cleaned up after, so it becomes
+%% an answer that the caller names like any other failure.
 statement(Holder, SQL) ->
-    kura_pool_minato:run(Holder, SQL, [], #{}).
+    try
+        kura_pool_minato:run(Holder, SQL, [], #{})
+    catch
+        Class:_ -> {raised, Class}
+    end.
 
 %%----------------------------------------------------------------------
 %% Creating the database
