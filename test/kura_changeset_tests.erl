@@ -2,10 +2,6 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
--eqwalizer({nowarn_function, validate_change_ok_test/0}).
--eqwalizer({nowarn_function, validate_change_error_test/0}).
--eqwalizer({nowarn_function, build_table_constraints_skips_unknown_test/0}).
-
 %%----------------------------------------------------------------------
 %% cast
 %%----------------------------------------------------------------------
@@ -197,7 +193,7 @@ non_virtual_fields_test() ->
 
 validate_change_ok_test() ->
     CS = kura_changeset:cast(kura_test_schema, #{}, #{name => <<"Alice">>}, [name]),
-    CS2 = kura_changeset:validate_change(CS, name, fun(V) ->
+    CS2 = kura_changeset:validate_change(CS, name, fun(V) when is_binary(V) ->
         case byte_size(V) >= 2 of
             true -> ok;
             false -> {error, <<"too short">>}
@@ -207,7 +203,7 @@ validate_change_ok_test() ->
 
 validate_change_error_test() ->
     CS = kura_changeset:cast(kura_test_schema, #{}, #{name => <<"A">>}, [name]),
-    CS2 = kura_changeset:validate_change(CS, name, fun(V) ->
+    CS2 = kura_changeset:validate_change(CS, name, fun(V) when is_binary(V) ->
         case byte_size(V) >= 2 of
             true -> ok;
             false -> {error, <<"too short">>}
@@ -735,8 +731,13 @@ build_table_constraints_multiple_test() ->
     ?assertEqual(check, Check#kura_constraint.type).
 
 build_table_constraints_skips_unknown_test() ->
-    Result = kura_changeset:build_table_constraints([{foreign_key, something}], <<"t">>),
+    Result = kura_changeset:build_table_constraints(unknown_constraints(), <<"t">>),
     ?assertEqual([], Result).
+
+%% A migration can hand over a constraint kura does not know.
+-spec unknown_constraints() -> dynamic().
+unknown_constraints() ->
+    [{foreign_key, something}].
 
 %%----------------------------------------------------------------------
 %% build_index_constraints
