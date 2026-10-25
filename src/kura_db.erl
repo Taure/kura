@@ -37,6 +37,9 @@ for pool lookup, sandbox support, telemetry, and type loading.
 
 -define(DECODE_OPTS, [return_rows_as_maps, column_name_as_atom]).
 
+%% `key` is the TLS private key in ssl options.
+-define(IS_SECRET_KEY(Key), (Key =:= password orelse Key =:= key)).
+
 %%----------------------------------------------------------------------
 %% Query
 %%----------------------------------------------------------------------
@@ -205,9 +208,9 @@ start_pool(Repo, Pool, Config) ->
             not_started(Repo, PoolMod, #{reason => redacted(Reason, Secrets)})
     catch
         Class:Reason:Stack ->
-            not_started(Repo, PoolMod, #{
-                reason => {Class, redacted(Reason, Secrets)}, stacktrace => arities(Stack)
-            })
+            Redacted = {Class, redacted(Reason, Secrets)},
+            ok = not_started(Repo, PoolMod, #{reason => Redacted, stacktrace => arities(Stack)}),
+            error({pool_start_failed, Repo, Redacted})
     end.
 
 -spec not_started(module(), module(), map()) -> ok.
@@ -216,25 +219,41 @@ not_started(Repo, PoolMod, Report) ->
     ok.
 
 %% A start that raises carries the config in its stacktrace arguments.
--spec arities(erlang:stacktrace()) -> erlang:stacktrace().
+-type frame() ::
+    {module(), atom(), arity() | [term()], [term()]} | {fun(), arity() | [term()], [term()]}.
+
+-spec arities([frame()]) -> [frame()].
 arities(Stack) ->
-    [
-        {Module, Function, arity(Args), Location}
-     || {Module, Function, Args, Location} <- Stack
-    ].
+    [arity_frame(Frame) || Frame <- Stack].
+
+-spec arity_frame(frame()) -> frame().
+arity_frame({Module, Function, Args, Location}) -> {Module, Function, arity(Args), Location};
+arity_frame({Fun, Args, Location}) -> {Fun, arity(Args), Location}.
 
 -spec arity(arity() | [term()]) -> arity().
 arity(Args) when is_list(Args) -> length(Args);
 arity(Arity) -> Arity.
 
--define(IS_SECRET_KEY(Key), (Key =:= password orelse Key =:= key)).
-
 %% A supervisor reports a failed start with the child's start arguments, and
-%% those hold the connection settings, password included.
--spec secrets(map()) -> [binary() | string()].
-secrets(#{password := Password}) when is_binary(Password), Password =/= <<>> ->
+%% those hold the connection settings, password and TLS key included.
+-spec secrets(map()) -> [term()].
+secrets(Config) ->
+    passwords(Config) ++ tls_keys(Config).
+
+-spec tls_keys(map()) -> [term()].
+tls_keys(#{ssl_options := Options}) when is_list(Options) ->
+    [Form || {key, Key} <- Options, Form <- key_forms(Key)];
+tls_keys(_Config) ->
+    [].
+
+-spec key_forms(term()) -> [term()].
+key_forms({_Type, Der} = Key) when is_binary(Der) -> [Key, Der];
+key_forms(Key) -> [Key].
+
+-spec passwords(map()) -> [binary() | string()].
+passwords(#{password := Password}) when is_binary(Password), Password =/= <<>> ->
     forms(Password);
-secrets(#{password := Password}) when is_list(Password), Password =/= [] ->
+passwords(#{password := Password}) when is_list(Password), Password =/= [] ->
     [
         Password
         | [
@@ -244,7 +263,7 @@ secrets(#{password := Password}) when is_list(Password), Password =/= [] ->
             Form <- forms(Binary)
         ]
     ];
-secrets(_Config) ->
+passwords(_Config) ->
     [].
 
 -spec forms(binary()) -> [binary() | string()].
@@ -252,8 +271,6 @@ forms(Password) ->
     Text = [List || List <- [unicode:characters_to_list(Password)], is_list(List)],
     [Password, binary_to_list(Password) | Text].
 
-%% A password given as a binary reaches some pools as a list of its bytes,
-%% and is turned back into the binary by list_to_binary, not as text.
 -spec as_text(string()) -> binary() | undefined.
 as_text(Password) ->
     case unicode:characters_to_binary(Password) of
@@ -261,6 +278,8 @@ as_text(Password) ->
         _NotText -> undefined
     end.
 
+%% A password given as a binary reaches some pools as a list of its bytes,
+%% and is turned back into the binary by list_to_binary, not as text.
 -spec as_bytes(string()) -> binary() | undefined.
 as_bytes(Password) ->
     try
@@ -269,15 +288,14 @@ as_bytes(Password) ->
         error:badarg -> undefined
     end.
 
--spec redacted(term(), [binary() | string()]) -> term().
+-spec redacted(term(), [term()]) -> term().
 redacted(Term, Secrets) ->
     case lists:member(Term, Secrets) of
         true -> redacted;
         false -> redacted_parts(Term, Secrets)
     end.
 
-%% `key` is the TLS private key in ssl options.
--spec redacted_parts(term(), [binary() | string()]) -> term().
+-spec redacted_parts(term(), [term()]) -> term().
 redacted_parts({Key, _}, _Secrets) when ?IS_SECRET_KEY(Key) ->
     {Key, redacted};
 redacted_parts(Map, Secrets) when is_map(Map) ->
@@ -293,7 +311,7 @@ redacted_parts(List, Secrets) when is_list(List) ->
 redacted_parts(Term, _Secrets) ->
     Term.
 
--spec redacted_value(term(), term(), [binary() | string()]) -> term().
+-spec redacted_value(term(), term(), [term()]) -> term().
 redacted_value(Key, _Value, _Secrets) when ?IS_SECRET_KEY(Key) -> redacted;
 redacted_value(_Key, Value, Secrets) -> redacted(Value, Secrets).
 

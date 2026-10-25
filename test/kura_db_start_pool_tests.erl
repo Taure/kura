@@ -126,10 +126,32 @@ repo_worker_already_started_is_not_logged_test() ->
 %% A start that raises, and secrets other than the password
 %%----------------------------------------------------------------------
 
-a_raised_start_is_logged_without_the_password_test() ->
-    Logged = logged_report({raise, {bad_opts, ~"s3cret"}}, #{password => ~"s3cret"}),
+a_raised_start_is_logged_and_fails_without_the_password_test() ->
+    Config = #{password => ~"s3cret"},
+    {Events, Raised} =
+        with_pool_answer({raise, {bad_opts, ~"s3cret"}}, Config, fun() ->
+            Run = fun() ->
+                try kura_db:start_pool(kura_db_failing_repo, kura_db_failing_repo, Config) of
+                    Result -> {returned, Result}
+                catch
+                    Class:Reason:Stack -> {Class, Reason, Stack}
+                end
+            end,
+            Self = self(),
+            Logs = with_captured_logs(fun() -> Self ! {raised, Run()} end),
+            receive
+                {raised, R} -> {Logs, R}
+            end
+        end),
+    ?assertMatch(
+        {error, {pool_start_failed, kura_db_failing_repo, {error, {bad_opts, redacted}}}, _},
+        Raised
+    ),
+    {error, _, Stack} = Raised,
+    ?assertEqual(nomatch, string:find(io_lib:format("~0p", [Stack]), "s3cret")),
+    [#{msg := {report, Report}}] = Events,
+    Logged = lists:flatten(io_lib:format("~p", [Report])),
     ?assertEqual(nomatch, string:find(Logged, "s3cret")),
-    ?assertNotEqual(nomatch, string:find(Logged, "bad_opts")),
     ?assertNotEqual(nomatch, string:find(Logged, "stacktrace")).
 
 a_tls_private_key_is_redacted_test() ->
@@ -137,6 +159,43 @@ a_tls_private_key_is_redacted_test() ->
     Logged = logged_report({error, {bad_pool_size, Config}}, Config),
     ?assertEqual(nomatch, string:find(Logged, "PRIVKEY")),
     ?assertNotEqual(nomatch, string:find(Logged, "bad_pool_size")).
+
+a_tls_private_key_in_positional_args_is_redacted_test() ->
+    Key = {'PrivateKeyInfo', ~"PRIVKEY"},
+    Config = #{ssl_options => [{key, Key}]},
+    Stack = [{ssl, validate_option, [key, Key, #{}], []}],
+    Logged = logged_report(
+        {error, {shutdown, {failed_to_start_child, c, {function_clause, Stack}}}}, Config
+    ),
+    ?assertEqual(nomatch, string:find(Logged, "PRIVKEY")),
+    ?assertEqual(
+        {bad_der, redacted}, logged_reason({error, {bad_der, ~"PRIVKEY"}}, Config)
+    ).
+
+a_tls_private_key_under_a_map_key_is_redacted_test() ->
+    Config = #{ssl => #{key => ~"PRIVKEY"}},
+    ?assertEqual(
+        {boom, #{key => redacted}}, logged_reason({error, {boom, #{key => ~"PRIVKEY"}}}, Config)
+    ).
+
+a_non_ascii_binary_password_as_code_points_is_redacted_test() ->
+    ?assertEqual(
+        {boom, redacted}, logged_reason({error, {boom, [112, 228]}}, #{password => ~"pä"})
+    ).
+
+a_non_ascii_binary_password_as_bytes_is_redacted_test() ->
+    ?assertEqual(
+        {boom, redacted}, logged_reason({error, {boom, [112, 195, 164]}}, #{password => ~"pä"})
+    ).
+
+a_non_ascii_charlist_password_as_utf8_is_redacted_test() ->
+    ?assertEqual(
+        {boom, {state, redacted}},
+        logged_reason({error, {boom, {state, ~"pä"}}}, #{password => [112, 228]})
+    ).
+
+an_empty_binary_password_is_not_treated_as_a_secret_test() ->
+    ?assertEqual({bad_value, ~""}, logged_reason({error, {bad_value, ~""}}, #{password => ~""})).
 
 a_binary_password_held_as_a_charlist_is_redacted_test() ->
     Logged = logged_report({error, {boom, {state, "s3cret"}}}, #{password => ~"s3cret"}),
@@ -199,13 +258,28 @@ logged_report(Answer, Config) ->
     [#{msg := {report, Report}}] = Events,
     lists:flatten(io_lib:format("~p", [Report])).
 
+logged_reason(Answer, Config) ->
+    Events = with_captured_logs(fun() ->
+        with_pool_answer(Answer, Config, fun() ->
+            ?assertEqual(ok, kura_db:start_pool(kura_db_failing_repo, kura_db_failing_repo, Config))
+        end)
+    end),
+    [#{msg := {report, #{reason := Reason}}}] = Events,
+    Reason.
+
 with_captured_logs(Run) ->
     Config = #{config => #{collector => self(), pid => self()}, level => all},
     ok = logger:add_handler(kura_db_start_pool_tests_capture, ?MODULE, Config),
+    Console = logger:get_handler_config(default),
+    _ = logger:set_handler_config(default, level, none),
     try
         Run()
     after
-        ok = logger:remove_handler(kura_db_start_pool_tests_capture)
+        ok = logger:remove_handler(kura_db_start_pool_tests_capture),
+        case Console of
+            {ok, #{level := Level}} -> ok = logger:set_handler_config(default, level, Level);
+            _NoConsole -> ok
+        end
     end,
     collected([]).
 
