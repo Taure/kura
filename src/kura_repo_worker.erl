@@ -520,7 +520,7 @@ execute_multi_op(_RepoMod, {run, Fun}, Acc) ->
     Fun(Acc).
 
 %%----------------------------------------------------------------------
-%% Internal: pgo bridge (delegates to kura_db)
+%% Internal: query bridge (delegates to kura_db)
 %%----------------------------------------------------------------------
 
 pgo_query(RepoMod, SQL, Params) ->

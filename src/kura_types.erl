@@ -6,8 +6,8 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
 `date`, `utc_datetime`, `uuid`, `jsonb`, `{array, Type}`.
 
 - `cast/2` - coerce external input to Erlang terms
-- `dump/2` - convert Erlang terms to pgo-compatible values
-- `load/2` - convert pgo results back to Erlang terms
+- `dump/2` - convert Erlang terms to values the driver can bind
+- `load/2` - convert driver results back to Erlang terms
 """.
 
 -export([to_pg_type/1, from_pg_type/2, cast/2, dump/2, load/2]).
@@ -292,10 +292,10 @@ cast(Type, _V) ->
     {error, <<"cannot cast to ", (format_type(Type))/binary>>}.
 
 %%----------------------------------------------------------------------
-%% Dump: Erlang term → pgo-compatible value
+%% Dump: Erlang term → driver value
 %%----------------------------------------------------------------------
 
--doc "Convert an Erlang term to a pgo-compatible value for storage.".
+-doc "Convert an Erlang term to a value the driver can bind for storage.".
 -spec dump(kura_type(), term()) -> {ok, term()} | {error, binary()}.
 dump(_Type, undefined) ->
     {ok, null};
@@ -374,10 +374,10 @@ dump(Type, _V) ->
     {error, <<"cannot dump ", (format_type(Type))/binary>>}.
 
 %%----------------------------------------------------------------------
-%% Load: pgo result → Erlang term
+%% Load: driver result → Erlang term
 %%----------------------------------------------------------------------
 
--doc "Convert a pgo result value back to an Erlang term.".
+-doc "Convert a driver result value back to an Erlang term.".
 -spec load(kura_type(), term()) -> {ok, term()} | {error, binary()}.
 load(_Type, null) ->
     {ok, undefined};

@@ -2,7 +2,7 @@
 -moduledoc """
 Central database wrapper. Routes all SQL through a configured
 `kura_driver` impl over a configured `kura_pool` impl, so swapping
-the underlying client (pgo, esqlite, ...) is one config change.
+the underlying client (minato, esqlite, ...) is one config change.
 
 All driver calls go through this module, providing a single place
 for pool lookup, sandbox support, telemetry, and type loading.

@@ -36,12 +36,12 @@ modules fit together.
     │  / kura_capabilities (behaviours)       │
     └──────┬──────────────────────┬───────────┘
            │                      │
-    ┌──────▼──────┐        ┌──────▼──────┐
-    │ kura_pool_pgo │      │ kura_pool_sqlite │
-    │ kura_driver_pgo │    │ kura_driver_sqlite │
-    │ kura_dialect_pg │    │ kura_dialect_sqlite │
-    │   (via pgo)    │     │  (via esqlite)     │
-    └──────┬──────┘        └──────┬──────┘
+    ┌──────▼─────────────┐ ┌──────▼──────────────┐
+    │ kura_pool_minato   │ │ kura_pool_sqlite    │
+    │ kura_driver_minato │ │ kura_driver_sqlite  │
+    │ kura_dialect_pg    │ │ kura_dialect_sqlite │
+    │   (via minato)     │ │   (via esqlite)     │
+    └──────┬─────────────┘ └──────┬──────────────┘
        Postgres                 SQLite
 ```
 

@@ -95,6 +95,10 @@ unchanged — only the OTP application providing them differs.
 | `kura/kura_driver_pgo` | `kura_postgres/kura_driver_pgo`          |
 | `kura/kura_dialect_pg` | `kura/kura_dialect_pg` (kept in core)    |
 
+kura_postgres 1.0 later replaced pgo with minato: its modules are now
+`kura_pool_minato` and `kura_driver_minato`, and `kura_backend_postgres`
+selects them, so a repo configured through `backend` needs no change.
+
 `kura_dialect_pg` is the default ANSI-ish SQL emitter. It lives in kura
 core so non-PG dialects (kura_dialect_sqlite, ...) can delegate to it
 without forcing a kura_postgres install.
