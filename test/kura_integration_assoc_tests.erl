@@ -77,7 +77,7 @@ assoc_test_() ->
             {"a child hook error is reported on the parent changeset",
                 fun t_child_hook_error_on_parent/0},
 
-            {"a failed many_to_many join row returns the parent changeset",
+            {"a link to a missing many_to_many row returns the parent changeset",
                 fun t_failed_join_row_returns_changeset/0},
             {"a failed child on update returns the parent changeset",
                 fun t_failed_child_on_update/0},

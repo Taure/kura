@@ -706,6 +706,8 @@ persist_assocs(RepoMod, CS, Row, [{AssocName, ChildCSs} | Rest]) ->
             {error, CS#kura_changeset{valid = false, assoc_changes = AC#{AssocName => Failed}}};
         {join_failed, PgError} ->
             {error, join_error(CS, AssocName, PgError)};
+        link_missing ->
+            {error, kura_changeset:add_error(CS, AssocName, ~"does not exist")};
         {error, Reason} ->
             {error, kura_changeset:add_error(CS, base, child_error(Reason))}
     end.
@@ -793,12 +795,39 @@ persist_child(_RepoMod, many_to_many, CS = #kura_changeset{action = undefined}) 
     map(),
     #kura_assoc{},
     [#kura_changeset{}]
-) -> {ok, [map()]} | {child_failed, assoc_change()} | {join_failed, term()} | {error, term()}.
+) ->
+    {ok, [map()]}
+    | {child_failed, assoc_change()}
+    | {join_failed, term()}
+    | link_missing
+    | {error, term()}.
 persist_many_to_many(RepoMod, SchemaMod, AccRow, Assoc, ChildCSs) ->
+    case linked(RepoMod, ChildCSs) of
+        true -> persist_linked(RepoMod, SchemaMod, AccRow, Assoc, ChildCSs);
+        false -> link_missing;
+        {error, _} = Err -> Err
+    end.
+
+persist_linked(RepoMod, SchemaMod, AccRow, Assoc, ChildCSs) ->
     case persist_children(RepoMod, many_to_many, ChildCSs, ChildCSs) of
         {ok, Children} -> join_many_to_many(RepoMod, SchemaMod, AccRow, Assoc, Children);
         Failed -> Failed
     end.
+
+%% A child with no action links a row by its key, so the row is looked up the
+%% way any read is, under the current tenant, before a join row names it.
+-spec linked(module(), [#kura_changeset{}]) -> boolean() | {error, term()}.
+linked(_RepoMod, []) ->
+    true;
+linked(RepoMod, [#kura_changeset{action = undefined, schema = RelSchema} = CS | Rest]) ->
+    Key = key_pairs(RelSchema, kura_changeset:apply_changes(CS)),
+    case exists(RepoMod, apply_clauses(kura_query:from(RelSchema), Key)) of
+        {ok, true} -> linked(RepoMod, Rest);
+        {ok, false} -> false;
+        {error, _} = Err -> Err
+    end;
+linked(RepoMod, [_Written | Rest]) ->
+    linked(RepoMod, Rest).
 
 join_many_to_many(RepoMod, SchemaMod, AccRow, Assoc, Children) ->
     #kura_assoc{schema = RelSchema, join_through = JoinThrough} = Assoc,

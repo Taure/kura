@@ -120,6 +120,11 @@ join row is reported on the parent changeset the way a constraint error
 on the parent is when it violates a constraint, and as `could not be
 saved` on the association otherwise.
 
+A `many_to_many` child given by key alone links an existing row. That
+row is looked up first, through the same tenant-scoped read as any
+query, and a row that is not found adds `does not exist` on the
+association instead of a join row.
+
 Inside an enclosing `kura_repo_worker:transaction/2` the write runs as a
 savepoint, so a failure undoes only this write and, on PostgreSQL, the
 enclosing transaction carries on. SQLite ends the whole transaction on
