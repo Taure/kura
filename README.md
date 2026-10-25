@@ -326,16 +326,16 @@ otp_app() -> my_app.
 
 Queries through `my_repo` emit Postgres SQL; queries through
 `analytics_repo` emit SQLite SQL. The query cache is keyed on
-`{Repo, Tenant, Query}` so neither dialects nor tenants share entries.
-
-Because bound parameters are part of the cached result, a parameterised
-query interns one entry per distinct value set. Two settings bound the
-table, both counted in words:
+`{Repo, Tenant, Shape}` so neither dialects nor tenants share entries.
+The shape is the query with its bound values taken out, so
+`get(User, Id)` holds one entry however many ids it is called with. An
+`in` list is one shape per list length. Two settings bound the table,
+both counted in words:
 
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `query_cache_max_memory` | `8000000` (~64 MB) | cache is dropped wholesale once the table exceeds this |
-| `query_cache_max_entry_size` | `4096` | a single result larger than this is never cached |
+| `query_cache_max_entry_size` | `4096` | a single entry larger than this is never cached |
 
 Lower `query_cache_max_entry_size` if callers build `in` filters from
 user-supplied lists and you want them kept out of the cache entirely.

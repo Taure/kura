@@ -169,11 +169,12 @@ argument.
   routes calls accordingly.
 - **`kura_type`** - behaviour for user-defined custom field types
   (`cast/1`, `dump/1`, `load/1`, `pg_type/0`).
-- **`kura_query_cache`** - ETS-backed cache for compiled `{SQL, Params}`
-  results, keyed by `{RepoMod, Tenant, Query}`. The tenant is in the key
-  because a nested CTE resolves its prefix from `kura_tenant` at emit
-  time. Bound parameters are part of both key and value, so a
-  parameterised query interns one entry per distinct value set;
+- **`kura_query_cache`** - ETS-backed cache for compiled query shapes,
+  keyed by `{RepoMod, Tenant, Shape}`. `kura_query_shape` replaces each
+  bound value with a marker, so queries that differ only in their values
+  share one entry, and binds the values back into the cached parameter
+  template on every call. The tenant is in the key because a nested CTE
+  resolves its prefix from `kura_tenant` at emit time.
   `query_cache_max_memory` and `query_cache_max_entry_size` bound the
   table.
 - **`kura_paginator`** - offset and cursor pagination on top of
