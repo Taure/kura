@@ -219,16 +219,14 @@ not_started(Repo, PoolMod, Report) ->
     ok.
 
 %% A start that raises carries the config in its stacktrace arguments.
--type frame() ::
-    {module(), atom(), arity() | [term()], [term()]} | {fun(), arity() | [term()], [term()]}.
+-type frame() :: {module(), atom(), arity() | [term()], [term()]}.
 
--spec arities([frame()]) -> [frame()].
+-spec arities(erlang:stacktrace()) -> [frame()].
 arities(Stack) ->
-    [arity_frame(Frame) || Frame <- Stack].
+    [arity_frame(Frame) || {_, _, _, _} = Frame <- Stack].
 
 -spec arity_frame(frame()) -> frame().
-arity_frame({Module, Function, Args, Location}) -> {Module, Function, arity(Args), Location};
-arity_frame({Fun, Args, Location}) -> {Fun, arity(Args), Location}.
+arity_frame({Module, Function, Args, Location}) -> {Module, Function, arity(Args), Location}.
 
 -spec arity(arity() | [term()]) -> arity().
 arity(Args) when is_list(Args) -> length(Args);
