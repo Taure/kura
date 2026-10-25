@@ -288,3 +288,27 @@ dump_field_raises_on_a_broken_type_module_test() ->
         undef,
         kura_repo_worker:dump_field({custom, kura_no_such_type_module}, <<"nope">>)
     ).
+
+%%----------------------------------------------------------------------
+%% join_error/3 (a failed many_to_many join row)
+%%----------------------------------------------------------------------
+
+join_error_maps_a_constraint_onto_the_parent_test() ->
+    CS = kura_changeset:cast(kura_test_post_schema, #{}, #{}, []),
+    Err = {pgsql_error, #{code => ~"23503", constraint => ~"posts_tags_tag_id_fkey"}},
+    ?assertEqual(
+        [{tags, ~"does not exist"}],
+        (kura_repo_worker:join_error(CS, tags, Err))#kura_changeset.errors
+    ).
+
+join_error_hides_any_other_server_error_test() ->
+    CS = kura_changeset:cast(kura_test_post_schema, #{}, #{}, []),
+    Err = {pgsql_error, #{code => ~"22001", message => ~"value too long: secret row value"}},
+    Failed = kura_repo_worker:join_error(CS, tags, Err),
+    ?assertEqual([{tags, ~"could not be saved"}], Failed#kura_changeset.errors),
+    ?assertNot(Failed#kura_changeset.valid).
+
+join_error_hides_a_non_server_error_test() ->
+    CS = kura_changeset:cast(kura_test_post_schema, #{}, #{}, []),
+    Failed = kura_repo_worker:join_error(CS, tags, {holder_died, normal}),
+    ?assertEqual([{tags, ~"could not be saved"}], Failed#kura_changeset.errors).

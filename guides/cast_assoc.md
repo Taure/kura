@@ -101,6 +101,31 @@ When a parent changeset has `assoc_changes`:
 3. Each child changeset is persisted with the foreign key automatically set to the parent's primary key value
 4. The parent row is returned with association data merged in
 
+If the parent or any child fails to write, the transaction is rolled back
+and nothing is kept. A failed parent returns `{error, ParentCS}` as it
+would without associations. A failed child returns `{error, ParentCS}`
+with `valid = false`, where the failed child changeset, carrying its
+errors, takes the place of the one you passed in `assoc_changes`:
+
+```erlang
+{error, ErrCS} = kura_repo_worker:insert(my_repo, CS),
+[_, FailedComment] = maps:get(comments, ErrCS#kura_changeset.assoc_changes),
+FailedComment#kura_changeset.errors.
+```
+
+A child that fails for a reason other than its changeset, such as a
+stale optimistic lock or an `after_*` hook returning `{error, Reason}`,
+adds a `base` error to the parent changeset. A failed `many_to_many`
+join row is reported on the parent changeset the way a constraint error
+on the parent is when it violates a constraint, and as `could not be
+saved` on the association otherwise.
+
+Inside an enclosing `kura_repo_worker:transaction/2` the write runs as a
+savepoint, so a failure undoes only this write and, on PostgreSQL, the
+enclosing transaction carries on. SQLite ends the whole transaction on
+some errors (`ON CONFLICT ROLLBACK`, a full disk, an I/O error); after
+one of those the enclosing transaction is gone as well.
+
 If `assoc_changes` is empty, the insert/update runs without transaction overhead.
 
 ## cast_assoc vs put_assoc
