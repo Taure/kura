@@ -100,8 +100,6 @@ dependency's migrations run first. See `kura_migrator:migration_apps/1`.
 
 -export([config/1, read_only/1, replica/1]).
 
--eqwalizer({nowarn_function, read_config/1}).
-
 -callback otp_app() -> atom().
 
 -callback init(Config :: map()) -> map().

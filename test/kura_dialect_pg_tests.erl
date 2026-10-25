@@ -15,15 +15,6 @@
 -eqwalizer({nowarn_function, distinct_test/0}).
 -eqwalizer({nowarn_function, distinct_on_test/0}).
 -eqwalizer({nowarn_function, lock_test/0}).
--eqwalizer({nowarn_function, where_matches_test/0}).
--eqwalizer({nowarn_function, window_row_number_test/0}).
--eqwalizer({nowarn_function, window_agg_running_total_test/0}).
--eqwalizer({nowarn_function, window_rank_order_only_test/0}).
--eqwalizer({nowarn_function, window_count_partition_only_test/0}).
--eqwalizer({nowarn_function, window_dense_rank_test/0}).
--eqwalizer({nowarn_function, window_agg_avg_min_max_test/0}).
--eqwalizer({nowarn_function, window_count_field_test/0}).
--eqwalizer({nowarn_function, window_empty_spec_test/0}).
 
 %%----------------------------------------------------------------------
 %% SELECT compilation

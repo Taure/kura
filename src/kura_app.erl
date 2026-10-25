@@ -10,11 +10,6 @@
 
 -include_lib("kernel/include/logger.hrl").
 
--eqwalizer({nowarn_function, resolve_backends/0}).
--eqwalizer({nowarn_function, ensure_pools/0}).
--eqwalizer({nowarn_function, pool_config/1}).
--eqwalizer({nowarn_function, any_pg_repo/0}).
-
 start(_StartType, _StartArgs) ->
     resolve_backends(),
     maybe_configure_pg_types(),
