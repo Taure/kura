@@ -104,7 +104,7 @@ encrypted_test_() ->
                 ?assertEqual({ok, #{<<"a">> => 1}}, kura_types:load({encrypted, jsonb}, E))
             end},
             {"ciphertext hides plaintext", fun() ->
-                {ok, E} = kura_types:dump({encrypted, string}, <<"secret">>),
+                {ok, <<E/binary>>} = kura_types:dump({encrypted, string}, <<"secret">>),
                 ?assertNotEqual(<<"secret">>, E),
                 ?assertEqual(nomatch, binary:match(E, <<"secret">>))
             end},
@@ -144,7 +144,7 @@ encrypted_test_() ->
                 )
             end},
             {"tampered ciphertext raises through load, never falls open to raw", fun() ->
-                {ok, E} = kura_types:dump({encrypted, string}, <<"secret">>),
+                {ok, <<E/binary>>} = kura_types:dump({encrypted, string}, <<"secret">>),
                 Bad = <<
                     (binary:part(E, 0, byte_size(E) - 1))/binary, ((binary:last(E)) bxor 255):8
                 >>,
@@ -395,11 +395,11 @@ dump_jsonb_test() ->
     ?assert(is_binary(Encoded)).
 
 dump_jsonb_scalar_roots_test() ->
-    {ok, N} = kura_types:dump(jsonb, 42),
+    {ok, <<N/binary>>} = kura_types:dump(jsonb, 42),
     ?assertEqual(<<"42">>, iolist_to_binary(N)),
-    {ok, B} = kura_types:dump(jsonb, true),
+    {ok, <<B/binary>>} = kura_types:dump(jsonb, true),
     ?assertEqual(<<"true">>, iolist_to_binary(B)),
-    {ok, S} = kura_types:dump(jsonb, <<"hi">>),
+    {ok, <<S/binary>>} = kura_types:dump(jsonb, <<"hi">>),
     ?assertEqual(<<"\"hi\"">>, iolist_to_binary(S)).
 
 dump_enum_test() ->

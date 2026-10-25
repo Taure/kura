@@ -298,7 +298,7 @@ insert_with_opts_pg_error(_Config) ->
         #{email => <<"c2pe@test.com">>},
         [email]
     ),
-    {error, ErrCS} = kura_repo_worker:insert(kura_test_repo, CS, #{}),
+    {error, #kura_changeset{} = ErrCS} = kura_repo_worker:insert(kura_test_repo, CS, #{}),
     ?assertNot(ErrCS#kura_changeset.valid),
     ?assertEqual(insert, ErrCS#kura_changeset.action).
 

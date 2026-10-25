@@ -442,7 +442,7 @@ t_single_delete_latency() ->
     UserArr = list_to_tuple(Users),
     {_P50, _P95, P99, _Avg, _Rate} = bench("single delete", N, fun() ->
         I = atomics:add_get(Ref, 1, 1),
-        Row = element(I, UserArr),
+        #{} = Row = element(I, UserArr),
         CS = kura_changeset:cast(kura_bench_schema_user, Row, #{}, []),
         {ok, _} = kura_stress_repo:delete(CS)
     end),

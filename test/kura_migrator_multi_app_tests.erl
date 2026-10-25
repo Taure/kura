@@ -160,7 +160,7 @@ duplicate_version_across_apps() ->
     ).
 
 duplicate_version_within_one_app() ->
-    {error, {duplicate_migration_version, [{Version, Owners}]}} =
+    {error, {duplicate_migration_version, [{Version, [_ | _] = Owners}]}} =
         kura_migrator:collect_migrations([?DUPSELF]),
     ?assertEqual(20250401120000, Version),
     ?assertEqual(

@@ -194,9 +194,8 @@ cast_assoc_composite_child_test() ->
     CS = kura_changeset:cast(kura_test_org_schema, #{}, Params, [name]),
     CS1 = kura_changeset:cast_assoc(CS, members),
     ?assert(CS1#kura_changeset.valid),
-    #{members := ChildCSs} = CS1#kura_changeset.assoc_changes,
+    #{members := [C1 | _] = ChildCSs} = CS1#kura_changeset.assoc_changes,
     ?assertEqual(2, length(ChildCSs)),
-    [C1 | _] = ChildCSs,
     ?assertEqual(~"admin", kura_changeset:get_change(C1, role)),
     %% the caller-supplied natural key column survives; only the FK org_id
     %% and the auto-gen surrogate PK are framework-owned

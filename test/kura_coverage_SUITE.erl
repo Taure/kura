@@ -330,7 +330,7 @@ migrate_up(_Config) ->
     {ok, _} = kura_test_repo:query("SELECT 1 FROM coverage_items LIMIT 0", []).
 
 migrate_status_after_up(_Config) ->
-    Status = kura_migrator:status(kura_coverage_mig_repo),
+    Status = [_ | _] = kura_migrator:status(kura_coverage_mig_repo),
     ?assertEqual(2, length(Status)),
     lists:foreach(fun({_V, _M, S}) -> ?assertEqual(up, S) end, Status).
 
@@ -348,7 +348,7 @@ rollback_multiple_steps(_Config) ->
     {ok, _} = kura_migrator:migrate(kura_coverage_mig_repo),
     {ok, Rolled} = kura_migrator:rollback(kura_coverage_mig_repo, 2),
     ?assertEqual(2, length(Rolled)),
-    Status = kura_migrator:status(kura_coverage_mig_repo),
+    Status = [_ | _] = kura_migrator:status(kura_coverage_mig_repo),
     lists:foreach(fun({_V, _M, S}) -> ?assertEqual(pending, S) end, Status).
 
 rollback_all(_Config) ->
@@ -543,14 +543,14 @@ multi_with_fun_delete(_Config) ->
 insert_invalid_changeset_with_opts(_Config) ->
     CS = kura_changeset:cast(kura_test_schema, #{}, #{}, [name, email]),
     CS1 = kura_changeset:validate_required(CS, [name, email]),
-    {error, ErrCS} = kura_repo_worker:insert(kura_test_repo, CS1, #{}),
+    {error, #kura_changeset{} = ErrCS} = kura_repo_worker:insert(kura_test_repo, CS1, #{}),
     ?assertNot(ErrCS#kura_changeset.valid),
     ?assertEqual(insert, ErrCS#kura_changeset.action).
 
 update_invalid_changeset(_Config) ->
     CS = kura_changeset:cast(kura_test_schema, #{id => 1}, #{name => <<"x">>}, [name]),
     CS1 = kura_changeset:validate_length(CS, name, [{min, 5}]),
-    {error, ErrCS} = kura_repo_worker:update(kura_test_repo, CS1),
+    {error, #kura_changeset{} = ErrCS} = kura_repo_worker:update(kura_test_repo, CS1),
     ?assertNot(ErrCS#kura_changeset.valid),
     ?assertEqual(update, ErrCS#kura_changeset.action).
 
