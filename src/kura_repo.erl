@@ -64,7 +64,9 @@ the per-app form (`application:get_env(OtpApp, RepoModule)`). The
 form. New projects should prefer the map form.
 
 Optionally implement `init/1` to modify config at runtime - useful for reading
-secrets from files, environment variables, or external services:
+secrets from files, environment variables, or external services. It runs during
+kura's own application start, before the application that owns the repo has
+started, so it must not call that application's processes:
 
 ```erlang
 -module(my_repo).
@@ -98,10 +100,19 @@ migration_apps() -> [my_gdpr_extension].
 dependency's migrations run first. See `kura_migrator:migration_apps/1`.
 """.
 
--export([config/1, read_only/1, replica/1]).
+-export([config/1, read_config/1, read_only/1, replica/1]).
 
 -callback otp_app() -> atom().
 
+-doc """
+Adjust the repo's config at runtime. Optional.
+
+It runs whenever kura reads the config, including during kura's own
+application start, when the pool is started. The consuming application has
+not started then, so `init/1` must not call processes it owns. One that raises
+does not stop kura: the pool is not started and the failure is logged, with
+secrets in the reason redacted.
+""".
 -callback init(Config :: map()) -> map().
 
 -callback migration_apps() -> [atom()].
@@ -144,6 +155,7 @@ replica(RepoMod) ->
         Replicas when is_list(Replicas) -> lists:nth(rand:uniform(length(Replicas)), Replicas)
     end.
 
+-doc false.
 -spec read_config(module()) -> map().
 read_config(RepoMod) ->
     case application:get_env(kura, repos) of

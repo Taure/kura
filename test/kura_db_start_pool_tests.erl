@@ -366,6 +366,59 @@ with_flat_env(Flat, Run) ->
         erase({?MODULE, pool_config})
     end.
 
+boot_logs_a_raising_init_and_carries_on_test() ->
+    Config = #{database => ~"db", password => ~"s3cret"},
+    Events = with_captured_logs(fun() ->
+        with_pool_answer({ok, self()}, kura_db_raising_init_repo, Config, fun() ->
+            ?assertEqual(ok, kura_app:start_repo_pool(kura_db_raising_init_repo)),
+            ?assertEqual(undefined, get({?MODULE, pool_name}))
+        end)
+    end),
+    [#{level := error, msg := {report, Report}}] = Events,
+    ?assertMatch(
+        #{
+            msg := ~"kura: repo init failed",
+            repo := kura_db_raising_init_repo,
+            reason := {error, {bad_config, redacted, #{password := redacted}}}
+        },
+        Report
+    ),
+    ?assertEqual(nomatch, string:find(io_lib:format("~p", [Report]), "s3cret")).
+
+repo_worker_start_returns_a_raising_init_redacted_test() ->
+    Config = #{database => ~"db", password => ~"s3cret"},
+    Result = with_captured_logs_result(fun() ->
+        with_pool_answer({ok, self()}, kura_db_raising_init_repo, Config, fun() ->
+            kura_repo_worker:start(kura_db_raising_init_repo)
+        end)
+    end),
+    ?assertMatch({error, {init_failed, {error, {bad_config, redacted, _}}}}, Result),
+    ?assertEqual(nomatch, string:find(io_lib:format("~p", [Result]), "s3cret")).
+
+a_raising_init_logs_no_arguments_from_the_stack_test() ->
+    Config = #{raise => function_clause, password => ~"s3cret"},
+    {Result, Events} = with_captured_logs_and_result(fun() ->
+        with_pool_answer({ok, self()}, kura_db_raising_init_repo, Config, fun() ->
+            kura_repo_worker:start(kura_db_raising_init_repo)
+        end)
+    end),
+    ?assertMatch({error, {init_failed, {error, function_clause}}}, Result),
+    [#{msg := {report, Report}}] = Events,
+    Logged = lists:flatten(io_lib:format("~p", [Report])),
+    ?assertEqual(nomatch, string:find(Logged, "s3cret")),
+    ?assertNotEqual(nomatch, string:find(Logged, "unmatched")).
+
+with_captured_logs_result(Run) ->
+    {Result, _Events} = with_captured_logs_and_result(Run),
+    Result.
+
+with_captured_logs_and_result(Run) ->
+    Self = self(),
+    Events = with_captured_logs(fun() -> Self ! {result, Run()} end),
+    receive
+        {result, Result} -> {Result, Events}
+    end.
+
 boot_logs_and_carries_on_where_start_returns_the_error_test() ->
     Events = with_captured_logs(fun() ->
         with_pool_answer({error, {missing_option, user}}, #{database => ~"db"}, fun() ->

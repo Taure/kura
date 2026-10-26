@@ -17,6 +17,7 @@ for pool lookup, sandbox support, telemetry, and type loading.
     get_pool_module/1,
     start_pool/1,
     start_pool/3,
+    resolve/1,
     get_driver_module/1,
     load_row/2,
     build_log_event/5,
@@ -221,12 +222,34 @@ here. The repo module is loaded first: `kura_repo:config/1` only calls an
 yet. Application boot and `kura_repo_worker:start/1` both start pools
 through this function. Kura adds no connection defaults; the pool module
 applies its own.
+
+An `init/1` that raises starts no pool. The failure is logged with secrets in
+the reason redacted, and returned as `{error, {init_failed, {Class, Redacted}}}`.
 """.
 -spec start_pool(module()) -> ok | {error, term()}.
 start_pool(Repo) ->
+    case resolve(Repo) of
+        {ok, Pool, Config} -> start_pool(Repo, Pool, Config);
+        {error, _} = Error -> Error
+    end.
+
+-doc false.
+-spec resolve(module()) -> {ok, atom(), map()} | {error, {init_failed, {atom(), term()}}}.
+resolve(Repo) ->
     _ = code:ensure_loaded(Repo),
-    Config = kura_repo:config(Repo),
-    start_pool(Repo, pool_name(Repo, Config), Config).
+    try kura_repo:config(Repo) of
+        Config -> {ok, pool_name(Repo, Config), Config}
+    catch
+        Class:Reason:Stack ->
+            Redacted = {Class, redacted(Reason, secrets(kura_repo:read_config(Repo)))},
+            ?LOG_ERROR(#{
+                msg => ~"kura: repo init failed",
+                repo => Repo,
+                reason => Redacted,
+                stacktrace => arities(Stack)
+            }),
+            {error, {init_failed, Redacted}}
+    end.
 
 -doc false.
 -spec start_pool(module(), atom(), map()) -> ok | {error, term()}.
