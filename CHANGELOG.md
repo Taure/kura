@@ -20,7 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `kura_sqlite` repo started this way gets its own defaults, `:memory:`
   among them, where it raised `badkey`. A Postgres repo that left out
   `username` and relied on the `postgres` default must now set it: the
-  pool refuses to start and `start/1` returns the error.
+  pool refuses to start and `start/1` returns the error. A missing
+  `database` no longer raises `missing_repo_config`: minato connects to
+  the database named after the user, as libpq does.
 - The query cache keys on a query's shape, with bound values replaced by
   markers, instead of on the whole query term (#163). `get(User, Id)` now
   holds one entry however many ids it is called with, where it held one

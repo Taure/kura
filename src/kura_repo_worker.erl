@@ -72,7 +72,9 @@ Start the connection pool for the given repo module.
 
 The repo's config goes to its `pool_module` as it is, and the pool module
 maps it onto its own options. Returns `{error, Reason}` when the pool does
-not start, with any secret in `Reason` replaced by `redacted`.
+not start, with any secret in `Reason` replaced by `redacted`. A pool module
+that raises instead makes this raise
+`{pool_start_failed, RepoMod, {Class, Redacted}}`.
 """.
 -spec start(module()) -> ok | {error, term()}.
 start(RepoMod) ->
