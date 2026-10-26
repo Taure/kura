@@ -181,6 +181,7 @@ per_app_config(RepoMod) ->
 kura_env_to_config() ->
     Excluded = [
         repo,
+        repos,
         backend,
         ensure_database,
         migration_pool_ready_timeout,

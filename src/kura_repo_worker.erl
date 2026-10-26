@@ -70,16 +70,18 @@ ok = kura_repo_worker:start(MyRepo),
 -doc """
 Start the connection pool for the given repo module.
 
-The connection settings in the repo's config go to its `pool_module`,
-which maps them onto its own options; kura's own settings are kept back. Returns `{error, Reason}` when the pool does
+The repo's config is read as `kura_repo:config/1` returns it, `init/1`
+applied, and the pool is named by its `pool` key, as at application boot.
+The connection settings in it go to its `pool_module`, which maps them onto
+its own options and defaults; kura's own settings are kept back. Returns
+`{error, Reason}` when the pool does
 not start, with any secret in `Reason` replaced by `redacted`. A pool module
 that raises instead makes this raise
 `{pool_start_failed, RepoMod, {Class, Redacted}}`.
 """.
 -spec start(module()) -> ok | {error, term()}.
 start(RepoMod) ->
-    Config = kura_repo:config(RepoMod),
-    kura_db:start_pool(RepoMod, maps:get(pool, Config, RepoMod), Config).
+    kura_db:start_pool(RepoMod).
 
 -doc "Execute a query and return all matching rows.".
 -spec all(module(), #kura_query{}) -> {ok, [map()]} | {error, term()}.

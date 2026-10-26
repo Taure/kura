@@ -15,6 +15,7 @@ for pool lookup, sandbox support, telemetry, and type loading.
     in_transaction/1,
     get_pool/1,
     get_pool_module/1,
+    start_pool/1,
     start_pool/3,
     get_driver_module/1,
     load_row/2,
@@ -195,7 +196,10 @@ transaction_ok(RepoMod, Fun) ->
 
 -spec get_pool(module()) -> atom().
 get_pool(RepoMod) ->
-    Config = kura_repo:config(RepoMod),
+    pool_name(RepoMod, kura_repo:config(RepoMod)).
+
+-spec pool_name(module(), map()) -> atom().
+pool_name(RepoMod, Config) ->
     maps:get(pool, Config, RepoMod).
 
 -doc "Resolve the `kura_pool` implementation module for a repo.".
@@ -206,6 +210,23 @@ get_pool_module(RepoMod) ->
         M when is_atom(M), M =/= undefined -> M;
         _ -> error({no_pool_module_configured, RepoMod})
     end.
+
+-doc """
+Start `Repo`'s pool from its config, as `kura_repo:config/1` resolves it.
+
+`Repo:init/1` has run on that config, and the pool takes its name from
+the `pool` key, as `get_pool/1` does, so queries reach the pool started
+here. The repo module is loaded first: `kura_repo:config/1` only calls an
+`init/1` it finds loaded, and at boot nothing has called into the module
+yet. Application boot and `kura_repo_worker:start/1` both start pools
+through this function. Kura adds no connection defaults; the pool module
+applies its own.
+""".
+-spec start_pool(module()) -> ok | {error, term()}.
+start_pool(Repo) ->
+    _ = code:ensure_loaded(Repo),
+    Config = kura_repo:config(Repo),
+    start_pool(Repo, pool_name(Repo, Config), Config).
 
 -doc false.
 -spec start_pool(module(), atom(), map()) -> ok | {error, term()}.

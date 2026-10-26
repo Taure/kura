@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Application boot starts a repo's pool the way `kura_repo_worker:start/1`
+  does, through `kura_db:start_pool/1`, from the config
+  `kura_repo:config/1` returns (#197). Boot now applies the repo's
+  `init/1`, loading the repo module first, and names the pool from the
+  `pool` key. A repo configured with `pool => X` got a pool named after
+  the repo at boot while its queries went to `X`, and connection settings
+  set in `init/1` were missing from the pool boot started. Boot still logs
+  a pool that did not start and carries on; `start/1` returns the error.
+- The legacy flat single-repo form (`{repo, _}` with connection keys at
+  the kura env level) no longer gets Postgres defaults at boot (#197).
+  Boot filled in `host` `"localhost"`, `port` 5432, `user` and `database`
+  `"postgres"`, an empty `password` and `pool_size` 10 that `start/1` did
+  not, so the same config could start at boot and fail through
+  `start/1`. Both now hand the pool module the settings as configured,
+  and the pool module applies its own defaults, which is what `start/1`
+  has done since #193. Kura no longer supplies a superuser login
+  nobody configured. With kura_postgres, `host`, `port` and `pool_size`
+  keep the same defaults and `database` defaults to the user's name, as
+  libpq does. A config that relied on the `postgres` user must set
+  `user`: without it the pool refuses to start with
+  `{missing_option, user}`, which boot logs, rather than starting
+  connections that cannot log in. One that relied on the `postgres`
+  database with another user must set `database`. The flat form no
+  longer passes a `repos` map in the kura env to the pool along with the
+  connection settings.
 - `kura_repo_worker:start/1` returns `{error, Reason}` when the pool does
   not start, where it logged the failure and returned `ok` (#192). A test
   setup written as `ok = kura_repo_worker:start(my_repo)` now stops at the
@@ -121,6 +146,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the wrong columns, without `UNIQUE`, partial where the declaration is
   not, or left invalid by a failed `CREATE INDEX CONCURRENTLY`, which
   PostgreSQL ignores, for `ON CONFLICT` too.
+
+### Removed
+
+- `kura_app:pool_config/0` and `kura_app:pool_config/1`, the boot-only
+  config reader that #197 replaces with `kura_db:start_pool/1`. They were
+  not documented (`kura_app` is hidden from the docs).
 
 ### Deprecated
 
