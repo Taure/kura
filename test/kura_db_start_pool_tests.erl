@@ -284,6 +284,185 @@ repo_worker_start_names_the_pool_from_the_config_test() ->
         ?assertEqual(other_pool, get({?MODULE, pool_name}))
     end).
 
+%%----------------------------------------------------------------------
+%% Boot and kura_repo_worker:start/1 resolve the config the same way
+%%----------------------------------------------------------------------
+
+boot_names_the_pool_from_the_config_test() ->
+    with_pool_answer({ok, self()}, #{pool => other_pool}, fun() ->
+        ?assertEqual(ok, kura_app:start_repo_pool(kura_db_failing_repo)),
+        ?assertEqual(other_pool, get({?MODULE, pool_name})),
+        ?assertEqual(other_pool, kura_db:get_pool(kura_db_failing_repo))
+    end).
+
+boot_names_the_pool_after_the_repo_without_a_pool_key_test() ->
+    with_pool_answer({ok, self()}, #{}, fun() ->
+        ?assertEqual(ok, kura_app:start_repo_pool(kura_db_failing_repo)),
+        ?assertEqual(kura_db_failing_repo, get({?MODULE, pool_name}))
+    end).
+
+boot_applies_the_repo_init_test() ->
+    with_pool_answer({ok, self()}, kura_db_init_repo, #{database => ~"db"}, fun() ->
+        ?assertEqual(ok, kura_app:start_repo_pool(kura_db_init_repo)),
+        ?assertEqual(kura_db_init_pool, get({?MODULE, pool_name})),
+        ?assertEqual(#{database => ~"from_init"}, get({?MODULE, pool_config}))
+    end).
+
+boot_applies_the_init_of_a_repo_not_yet_loaded_test() ->
+    _ = code:purge(kura_db_init_repo),
+    _ = code:delete(kura_db_init_repo),
+    _ = code:purge(kura_db_init_repo),
+    with_pool_answer({ok, self()}, kura_db_init_repo, #{database => ~"db"}, fun() ->
+        ?assertEqual(ok, kura_app:start_repo_pool(kura_db_init_repo)),
+        ?assertEqual(#{database => ~"from_init"}, get({?MODULE, pool_config}))
+    end).
+
+repo_worker_start_applies_the_repo_init_test() ->
+    with_pool_answer({ok, self()}, kura_db_init_repo, #{database => ~"db"}, fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_init_repo)),
+        ?assertEqual(kura_db_init_pool, get({?MODULE, pool_name})),
+        ?assertEqual(#{database => ~"from_init"}, get({?MODULE, pool_config}))
+    end).
+
+boot_and_start_pass_the_same_legacy_flat_config_test() ->
+    Flat = [
+        {repo, kura_db_failing_repo},
+        {dialect, kura_dialect_pg},
+        {pool_module, ?MODULE},
+        {database, ~"flat_db"}
+    ],
+    with_flat_env(Flat, fun() ->
+        ?assertEqual(ok, kura_app:start_repo_pool(kura_db_failing_repo)),
+        AtBoot = get({?MODULE, pool_config}),
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        ?assertEqual(AtBoot, get({?MODULE, pool_config})),
+        ?assertEqual(#{database => ~"flat_db"}, AtBoot)
+    end).
+
+legacy_flat_config_keeps_other_repos_from_the_pool_test() ->
+    Flat = [
+        {repo, kura_db_failing_repo},
+        {repos, #{other_repo => #{password => ~"s3cret"}}},
+        {pool_module, ?MODULE},
+        {database, ~"flat_db"}
+    ],
+    with_flat_env(Flat, fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        ?assertEqual(#{database => ~"flat_db"}, get({?MODULE, pool_config}))
+    end).
+
+with_flat_env(Flat, Run) ->
+    Saved = application:get_all_env(kura),
+    [application:unset_env(kura, Key) || {Key, _} <- Saved],
+    [application:set_env(kura, Key, Value) || {Key, Value} <- Flat],
+    put({?MODULE, pool_answer}, {ok, self()}),
+    try
+        Run()
+    after
+        [application:unset_env(kura, Key) || {Key, _} <- Flat],
+        [application:set_env(kura, Key, Value) || {Key, Value} <- Saved],
+        erase({?MODULE, pool_answer}),
+        erase({?MODULE, pool_name}),
+        erase({?MODULE, pool_config})
+    end.
+
+deprecated_pool_config_returns_the_resolved_config_test() ->
+    with_pool_answer({ok, self()}, kura_db_init_repo, #{database => ~"db"}, fun() ->
+        ?assertEqual(
+            #{database => ~"from_init", pool => kura_db_init_pool, pool_module => ?MODULE},
+            kura_app:pool_config(kura_db_init_repo)
+        )
+    end).
+
+deprecated_pool_config_raises_a_raising_init_redacted_test() ->
+    Config = #{password => ~"s3cret"},
+    {Raised, _Events} = with_captured_logs_and_result(fun() ->
+        with_pool_answer({ok, self()}, kura_db_raising_init_repo, Config, fun() ->
+            try kura_app:pool_config(kura_db_raising_init_repo) of
+                Returned -> {returned, Returned}
+            catch
+                error:Reason -> Reason
+            end
+        end)
+    end),
+    ?assertMatch({init_failed, {error, {bad_config, redacted, _}}}, Raised).
+
+deprecated_pool_config_reads_the_legacy_flat_repo_test() ->
+    Flat = [{repo, kura_db_failing_repo}, {pool_module, ?MODULE}, {database, ~"flat_db"}],
+    with_flat_env(Flat, fun() ->
+        ?assertEqual(#{database => ~"flat_db", pool_module => ?MODULE}, kura_app:pool_config())
+    end).
+
+boot_logs_a_raising_init_and_carries_on_test() ->
+    Config = #{database => ~"db", password => ~"s3cret"},
+    Events = with_captured_logs(fun() ->
+        with_pool_answer({ok, self()}, kura_db_raising_init_repo, Config, fun() ->
+            ?assertEqual(ok, kura_app:start_repo_pool(kura_db_raising_init_repo)),
+            ?assertEqual(undefined, get({?MODULE, pool_name}))
+        end)
+    end),
+    [#{level := error, msg := {report, Report}}] = Events,
+    ?assertMatch(
+        #{
+            msg := ~"kura: repo init failed",
+            repo := kura_db_raising_init_repo,
+            reason := {error, {bad_config, redacted, #{password := redacted}}}
+        },
+        Report
+    ),
+    ?assertEqual(nomatch, string:find(io_lib:format("~p", [Report]), "s3cret")).
+
+repo_worker_start_returns_a_raising_init_redacted_test() ->
+    Config = #{database => ~"db", password => ~"s3cret"},
+    Result = with_captured_logs_result(fun() ->
+        with_pool_answer({ok, self()}, kura_db_raising_init_repo, Config, fun() ->
+            kura_repo_worker:start(kura_db_raising_init_repo)
+        end)
+    end),
+    ?assertMatch({error, {init_failed, {error, {bad_config, redacted, _}}}}, Result),
+    ?assertEqual(nomatch, string:find(io_lib:format("~p", [Result]), "s3cret")).
+
+a_raising_init_logs_no_arguments_from_the_stack_test() ->
+    Config = #{raise => function_clause, password => ~"s3cret"},
+    {Result, Events} = with_captured_logs_and_result(fun() ->
+        with_pool_answer({ok, self()}, kura_db_raising_init_repo, Config, fun() ->
+            kura_repo_worker:start(kura_db_raising_init_repo)
+        end)
+    end),
+    ?assertMatch({error, {init_failed, {error, function_clause}}}, Result),
+    [#{msg := {report, Report}}] = Events,
+    Logged = lists:flatten(io_lib:format("~p", [Report])),
+    ?assertEqual(nomatch, string:find(Logged, "s3cret")),
+    ?assertNotEqual(nomatch, string:find(Logged, "unmatched")).
+
+with_captured_logs_result(Run) ->
+    {Result, _Events} = with_captured_logs_and_result(Run),
+    Result.
+
+with_captured_logs_and_result(Run) ->
+    Self = self(),
+    Events = with_captured_logs(fun() -> Self ! {result, Run()} end),
+    receive
+        {result, Result} -> {Result, Events}
+    end.
+
+boot_logs_and_carries_on_where_start_returns_the_error_test() ->
+    Events = with_captured_logs(fun() ->
+        with_pool_answer({error, {missing_option, user}}, #{database => ~"db"}, fun() ->
+            ?assertEqual(ok, kura_app:start_repo_pool(kura_db_failing_repo)),
+            ?assertEqual(
+                {error, {missing_option, user}}, kura_repo_worker:start(kura_db_failing_repo)
+            )
+        end)
+    end),
+    ?assertMatch(
+        [
+            #{msg := {report, #{reason := {missing_option, user}}}},
+            #{msg := {report, #{reason := {missing_option, user}}}}
+        ],
+        Events
+    ).
+
 start_pool(Pool, Config) ->
     put({?MODULE, pool_name}, Pool),
     put({?MODULE, pool_config}, Config),
@@ -301,9 +480,10 @@ with_pool_answer(Answer, Run) ->
     with_pool_answer(Answer, #{}, Run).
 
 with_pool_answer(Answer, Config, Run) ->
-    application:set_env(kura, repos, #{
-        kura_db_failing_repo => Config#{pool_module => ?MODULE}
-    }),
+    with_pool_answer(Answer, kura_db_failing_repo, Config, Run).
+
+with_pool_answer(Answer, Repo, Config, Run) ->
+    application:set_env(kura, repos, #{Repo => Config#{pool_module => ?MODULE}}),
     put({?MODULE, pool_answer}, Answer),
     try
         Run()

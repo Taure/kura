@@ -15,7 +15,9 @@ for pool lookup, sandbox support, telemetry, and type loading.
     in_transaction/1,
     get_pool/1,
     get_pool_module/1,
+    start_pool/1,
     start_pool/3,
+    resolve/1,
     get_driver_module/1,
     load_row/2,
     build_log_event/5,
@@ -195,7 +197,10 @@ transaction_ok(RepoMod, Fun) ->
 
 -spec get_pool(module()) -> atom().
 get_pool(RepoMod) ->
-    Config = kura_repo:config(RepoMod),
+    pool_name(RepoMod, kura_repo:config(RepoMod)).
+
+-spec pool_name(module(), map()) -> atom().
+pool_name(RepoMod, Config) ->
     maps:get(pool, Config, RepoMod).
 
 -doc "Resolve the `kura_pool` implementation module for a repo.".
@@ -205,6 +210,45 @@ get_pool_module(RepoMod) ->
     case maps:get(pool_module, Config, undefined) of
         M when is_atom(M), M =/= undefined -> M;
         _ -> error({no_pool_module_configured, RepoMod})
+    end.
+
+-doc """
+Start `Repo`'s pool from its config, as `kura_repo:config/1` resolves it.
+
+`Repo:init/1` has run on that config, and the pool takes its name from
+the `pool` key, as `get_pool/1` does, so queries reach the pool started
+here. The repo module is loaded first: `kura_repo:config/1` only calls an
+`init/1` it finds loaded, and at boot nothing has called into the module
+yet. Application boot and `kura_repo_worker:start/1` both start pools
+through this function. Kura adds no connection defaults; the pool module
+applies its own.
+
+An `init/1` that raises starts no pool. The failure is logged with secrets in
+the reason redacted, and returned as `{error, {init_failed, {Class, Redacted}}}`.
+""".
+-spec start_pool(module()) -> ok | {error, term()}.
+start_pool(Repo) ->
+    case resolve(Repo) of
+        {ok, Pool, Config} -> start_pool(Repo, Pool, Config);
+        {error, _} = Error -> Error
+    end.
+
+-doc false.
+-spec resolve(module()) -> {ok, atom(), map()} | {error, {init_failed, {atom(), term()}}}.
+resolve(Repo) ->
+    _ = code:ensure_loaded(Repo),
+    try kura_repo:config(Repo) of
+        Config -> {ok, pool_name(Repo, Config), Config}
+    catch
+        Class:Reason:Stack ->
+            Redacted = {Class, redacted(Reason, secrets(kura_repo:read_config(Repo)))},
+            ?LOG_ERROR(#{
+                msg => ~"kura: repo init failed",
+                repo => Repo,
+                reason => Redacted,
+                stacktrace => arities(Stack)
+            }),
+            {error, {init_failed, Redacted}}
     end.
 
 -doc false.
@@ -343,7 +387,9 @@ get_driver_module(RepoMod) ->
 %% Row loading
 %%----------------------------------------------------------------------
 
--spec load_row(module(), map()) -> map().
+-spec load_row(kura_dialect:table(), map()) -> map().
+load_row(Table, Row) when is_binary(Table) ->
+    Row;
 load_row(SchemaMod, Row) when is_atom(SchemaMod) ->
     case code:ensure_loaded(SchemaMod) of
         {module, SchemaMod} ->

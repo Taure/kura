@@ -411,6 +411,10 @@ The per-app form:
 ]}].
 ```
 
+Kura adds no connection defaults in either form: the settings go to the
+backend's pool as written, and the pool applies its own. kura_postgres
+needs `user`, and defaults `database` to it.
+
 The per-app form requires the consuming app to call `my_repo:start()`
 manually. The `{repos, #{...}}` form (above) is preferred for new
 projects - single-repo today, no rewrite when you add a second backend.

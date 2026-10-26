@@ -4,6 +4,11 @@
 
 -export([start/2, stop/1, pool_config/0, pool_config/1]).
 
+-deprecated([
+    {pool_config, 0, "use kura_repo:config/1 on the repo"},
+    {pool_config, 1, "use kura_repo:config/1"}
+]).
+
 -ifdef(TEST).
 -export([start_repo_pool/1]).
 -endif.
@@ -74,76 +79,25 @@ ensure_pools() ->
 
 -spec start_repo_pool(module()) -> ok.
 start_repo_pool(Repo) ->
-    case kura_db:start_pool(Repo, Repo, pool_config(Repo)) of
+    case kura_db:start_pool(Repo) of
         ok -> ok;
         {error, _Logged} -> ok
     end.
 
-%% Per-repo pool config. Multi-repo: read from the repos map. Single-repo
-%% legacy: pull the flat kura env keys.
--spec pool_config(module()) -> map().
-pool_config(RepoMod) ->
-    case application:get_env(kura, repos) of
-        {ok, Map} when is_map(Map), is_map_key(RepoMod, Map) ->
-            maps:get(RepoMod, Map);
-        _ ->
-            pool_config()
-    end.
-
-%% Legacy single-repo pool config.
+-doc "Deprecated. The legacy flat repo's config, as `pool_config/1` resolves it.".
 -spec pool_config() -> map().
 pool_config() ->
-    case application:get_env(kura, dialect) of
-        {ok, kura_dialect_pg} -> pg_pool_config();
-        _ -> generic_pool_config()
-    end.
+    pool_config(application:get_env(kura, repo, undefined)).
 
-%% Pass-through map of user-set kura env keys, minus bookkeeping.
-%% Backends pick the keys they understand from this map.
--spec generic_pool_config() -> map().
-generic_pool_config() ->
-    Excluded = [
-        repo,
-        repos,
-        backend,
-        dialect,
-        pool_module,
-        driver_module,
-        ensure_database,
-        migration_pool_ready_timeout,
-        migration_pool_ready_interval,
-        pg_types
-    ],
-    All = application:get_all_env(kura),
-    #{K => V || {K, V} <- All, not lists:member(K, Excluded)}.
-
-%% Postgres-shaped defaults (port 5432, user/database "postgres", etc.).
-%% Kept stable for back-compat with pre-2.4 single-repo configs.
--spec pg_pool_config() -> map().
-pg_pool_config() ->
-    Env = fun(Key, Default) -> application:get_env(kura, Key, Default) end,
-    Base = #{
-        host => Env(host, "localhost"),
-        port => Env(port, 5432),
-        database => Env(database, "postgres"),
-        user => Env(user, "postgres"),
-        password => Env(password, ""),
-        pool_size => Env(pool_size, 10),
-        decode_opts => [return_rows_as_maps, column_name_as_atom]
-    },
-    WithSocket =
-        case Env(socket_options, []) of
-            Opts when is_list(Opts), Opts =/= [] -> Base#{socket_options => Opts};
-            _ -> Base
-        end,
-    WithSSL =
-        case Env(ssl, false) of
-            true -> WithSocket#{ssl => true};
-            _ -> WithSocket
-        end,
-    case Env(ssl_options, []) of
-        SSLOpts when is_list(SSLOpts), SSLOpts =/= [] -> WithSSL#{ssl_options => SSLOpts};
-        _ -> WithSSL
+-doc """
+Deprecated. A repo's config as its pool is started with: `kura_repo:config/1`,
+`init/1` applied, without connection defaults.
+""".
+-spec pool_config(module()) -> map().
+pool_config(Repo) ->
+    case kura_db:resolve(Repo) of
+        {ok, _Pool, Config} -> Config;
+        {error, Reason} -> error(Reason)
     end.
 
 %% Configure pg_types defaults if any configured dialect is kura_dialect_pg.

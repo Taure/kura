@@ -20,6 +20,12 @@ identifier quoting `"foo"` vs `` `foo` ``, `RETURNING` vs lastrowid,
 `ON CONFLICT` vs `ON DUPLICATE KEY UPDATE`, `LIMIT/OFFSET` vs `FETCH
 FIRST`) all live in the dialect impl. The AST stays the same.
 
+Many-to-many join tables are read and written through the same callbacks:
+`to_sql/1` for the join read, `delete_all/1` and `insert_all/3` for the
+rows `put_assoc` and `cast_assoc` replace. They are called on the dialect
+directly, without the attribute tenant condition, since a join table has no
+tenant column; a prefix tenant still qualifies the table.
+
 ## Bound values
 
 `kura_query_compiler:to_sql_cached/2` compiles a query's shape once, with
@@ -44,7 +50,14 @@ callbacks directly.
 
 -include("kura.hrl").
 
--export_type([sql/0, params/0, counter/0]).
+-export_type([sql/0, params/0, counter/0, table/0]).
+
+-doc """
+The table a statement targets: a schema module, whose `table/0` names it, or
+a table name as an atom or a binary. A query's `from` takes the same forms.
+A many-to-many `join_through` given as a binary reaches the dialect as one.
+""".
+-type table() :: atom() | module() | binary().
 
 -doc "Compiled SQL bytes. Implementations are free to return iodata or a binary.".
 -type sql() :: iodata().
@@ -69,7 +82,7 @@ Returns the next free counter so callers can chain sub-compilations.
 -callback to_sql_from(#kura_query{}, counter()) -> {sql(), params(), counter()}.
 
 -doc "Compile a single-row INSERT (no options).".
--callback insert(atom() | module(), [atom()], map()) -> {sql(), params()}.
+-callback insert(table(), [atom()], map()) -> {sql(), params()}.
 
 -doc """
 Compile a single-row INSERT with options (e.g. `on_conflict`).
@@ -79,13 +92,13 @@ must then only apply where each field of the existing row equals the
 incoming one. A dialect that cannot express that must raise, never drop the
 guard: it is what keeps an upsert inside its tenant.
 """.
--callback insert(atom() | module(), [atom()], map(), map()) -> {sql(), params()}.
+-callback insert(table(), [atom()], map(), map()) -> {sql(), params()}.
 
 -doc "Compile an UPDATE-by-primary-key. The key is one clause per column (single-key is a one-element list).".
--callback update(atom() | module(), [atom()], map(), [{atom(), term()}]) -> {sql(), params()}.
+-callback update(table(), [atom()], map(), [{atom(), term()}]) -> {sql(), params()}.
 
 -doc "Compile a DELETE-by-primary-key. The key is one clause per column (single-key is a one-element list).".
--callback delete(atom() | module(), [{atom(), term()}]) -> {sql(), params()}.
+-callback delete(table(), [{atom(), term()}]) -> {sql(), params()}.
 
 -doc "Compile a bulk UPDATE (`UPDATE ... WHERE ...`) from a query AST and a SET map.".
 -callback update_all(#kura_query{}, map()) -> {sql(), params()}.
@@ -94,10 +107,10 @@ guard: it is what keeps an upsert inside its tenant.
 -callback delete_all(#kura_query{}) -> {sql(), params()}.
 
 -doc "Compile a bulk INSERT (multi-row).".
--callback insert_all(atom() | module(), [atom()], [map()]) -> {sql(), params()}.
+-callback insert_all(table(), [atom()], [map()]) -> {sql(), params()}.
 
 -doc "Compile a bulk INSERT with options (`returning`, and `on_conflict` as for `insert/4`, guard included).".
--callback insert_all(atom() | module(), [atom()], [map()], map()) -> {sql(), params()}.
+-callback insert_all(table(), [atom()], [map()], map()) -> {sql(), params()}.
 
 -doc "Optional. SQL bytes for a kura column type, used by `kura_migrator` DDL.".
 -callback column_type(kura_types:kura_type()) -> binary().
