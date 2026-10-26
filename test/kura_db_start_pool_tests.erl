@@ -421,9 +421,9 @@ boot_logs_a_raising_init_and_carries_on_test() ->
     [#{level := error, msg := {report, Report}}] = Events,
     ?assertMatch(
         #{
-            msg := ~"kura: repo init failed",
+            msg := ~"kura: pool did not start",
             repo := kura_db_raising_init_repo,
-            reason := {error, {bad_config, redacted}}
+            reason := {init_failed, {error, {bad_config, redacted}}}
         },
         Report
     ),
@@ -469,6 +469,22 @@ a_raising_init_with_an_untagged_reason_is_redacted_whole_test() ->
         end)
     end),
     ?assertEqual({error, {init_failed, {throw, redacted}}}, Result).
+
+a_raising_init_with_an_untagged_tuple_is_redacted_whole_test() ->
+    {Result, _Events} = with_captured_logs_and_result(fun() ->
+        with_pool_answer({ok, self()}, kura_db_raising_init_repo, #{raise => untagged}, fun() ->
+            kura_repo_worker:start(kura_db_raising_init_repo)
+        end)
+    end),
+    ?assertEqual({error, {init_failed, {error, redacted}}}, Result).
+
+a_raising_init_with_an_empty_tuple_is_redacted_whole_test() ->
+    {Result, _Events} = with_captured_logs_and_result(fun() ->
+        with_pool_answer({ok, self()}, kura_db_raising_init_repo, #{raise => empty}, fun() ->
+            kura_repo_worker:start(kura_db_raising_init_repo)
+        end)
+    end),
+    ?assertEqual({error, {init_failed, {exit, redacted}}}, Result).
 
 a_raising_init_logs_no_arguments_from_the_stack_test() ->
     Config = #{raise => function_clause, password => ~"s3cret"},

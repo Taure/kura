@@ -246,14 +246,9 @@ resolve(Repo) ->
         Config -> {ok, pool_name(Repo, Config), Config}
     catch
         Class:Reason:Stack ->
-            Redacted = {Class, shape(Reason)},
-            ?LOG_ERROR(#{
-                msg => ~"kura: repo init failed",
-                repo => Repo,
-                reason => Redacted,
-                stacktrace => arities(Stack)
-            }),
-            {error, {init_failed, Redacted}}
+            Failed = {init_failed, {Class, shape(Reason)}},
+            ok = not_started(Repo, undefined, #{reason => Failed, stacktrace => arities(Stack)}),
+            {error, Failed}
     end.
 
 -doc false.
@@ -281,10 +276,12 @@ start_pool(Repo, Pool, Config) ->
 %% holds: only its tag is kept.
 -spec shape(term()) -> term().
 shape(Reason) when is_atom(Reason) -> Reason;
-shape(Reason) when tuple_size(Reason) > 0, is_atom(element(1, Reason)) ->
-    {element(1, Reason), redacted};
-shape(_Reason) ->
-    redacted.
+shape(Reason) when is_tuple(Reason) -> tagged(tuple_to_list(Reason));
+shape(_Reason) -> redacted.
+
+-spec tagged([term()]) -> {atom(), redacted} | redacted.
+tagged([Tag | _]) when is_atom(Tag) -> {Tag, redacted};
+tagged(_Untagged) -> redacted.
 
 -spec not_started(module(), module(), map()) -> ok.
 not_started(Repo, PoolMod, Report) ->

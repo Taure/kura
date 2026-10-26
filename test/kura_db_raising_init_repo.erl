@@ -9,6 +9,10 @@ init(#{raise := function_clause} = Config) ->
     unmatched(Config);
 init(#{raise := invalid_config} = Config) ->
     error({invalid_config, Config});
+init(#{raise := untagged}) ->
+    error({~"s3cret", oops});
+init(#{raise := empty}) ->
+    exit({});
 init(#{raise := thrown}) ->
     throw([~"s3cret"]);
 init(#{raise := fetched_secret}) ->
