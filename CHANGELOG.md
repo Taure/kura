@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `kura_repo_worker:start/1` returns `{error, Reason}` when the pool does
+  not start, where it logged the failure and returned `ok` (#192). A test
+  setup written as `ok = kura_repo_worker:start(my_repo)` now stops at the
+  failure. Secrets in `Reason` are replaced by `redacted`. Application boot
+  still logs a pool that did not start and carries on.
+- `kura_repo_worker:start/1` hands the repo's config to its `pool_module`
+  as it is, the way application boot does, instead of building a
+  Postgres-shaped config with defaults for host, port and user (#193). A
+  `kura_sqlite` repo started this way gets its own defaults, `:memory:`
+  among them, where it raised `badkey`. A Postgres repo that left out
+  `username` and relied on the `postgres` default must now set it: the
+  pool refuses to start and `start/1` returns the error.
 - The query cache keys on a query's shape, with bound values replaced by
   markers, instead of on the whole query term (#163). `get(User, Id)` now
   holds one entry however many ids it is called with, where it held one

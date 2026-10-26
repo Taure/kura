@@ -195,7 +195,7 @@ get_pool_module(RepoMod) ->
     end.
 
 -doc false.
--spec start_pool(module(), atom(), map()) -> ok.
+-spec start_pool(module(), atom(), map()) -> ok | {error, term()}.
 start_pool(Repo, Pool, Config) ->
     PoolMod = get_pool_module(Repo),
     Secrets = secrets(Config),
@@ -205,7 +205,9 @@ start_pool(Repo, Pool, Config) ->
         {error, {already_started, _Pid}} ->
             ok;
         {error, Reason} ->
-            not_started(Repo, PoolMod, #{reason => redacted(Reason, Secrets)})
+            Redacted = redacted(Reason, Secrets),
+            ok = not_started(Repo, PoolMod, #{reason => Redacted}),
+            {error, Redacted}
     catch
         Class:Reason:Stack ->
             Redacted = {Class, redacted(Reason, Secrets)},

@@ -6,7 +6,7 @@ All functions take a repo module as the first argument and execute against
 its connection pool.
 
 ```erlang
-kura_repo_worker:start(MyRepo),
+ok = kura_repo_worker:start(MyRepo),
 {ok, Users} = kura_repo_worker:all(MyRepo, kura_query:from(my_user)),
 {ok, User} = kura_repo_worker:get(MyRepo, my_user, 1),
 {ok, Inserted} = kura_repo_worker:insert(MyRepo, Changeset).
@@ -67,30 +67,17 @@ kura_repo_worker:start(MyRepo),
 %% Pool management
 %%----------------------------------------------------------------------
 
--doc "Start the connection pool for the given repo module.".
--spec start(module()) -> ok.
+-doc """
+Start the connection pool for the given repo module.
+
+The repo's config goes to its `pool_module` as it is, and the pool module
+maps it onto its own options. Returns `{error, Reason}` when the pool does
+not start, with any secret in `Reason` replaced by `redacted`.
+""".
+-spec start(module()) -> ok | {error, term()}.
 start(RepoMod) ->
     Config = kura_repo:config(RepoMod),
-    PgoConfig = #{
-        host => text(hostname, Config, ~"localhost"),
-        port => maps:get(port, Config, 5432),
-        database => text(database, Config, undefined),
-        user => text(username, Config, ~"postgres"),
-        password => text(password, Config, <<>>),
-        pool_size => maps:get(pool_size, Config, 10),
-        decode_opts => [return_rows_as_maps, column_name_as_atom]
-    },
-    kura_db:start_pool(RepoMod, maps:get(pool, Config, RepoMod), PgoConfig).
-
-%% Raises without the config in the stacktrace: it holds the password.
--spec text(atom(), map(), binary() | undefined) -> string().
-text(Key, Config, Default) ->
-    case maps:get(Key, Config, Default) of
-        Binary when is_binary(Binary) -> binary_to_list(Binary);
-        List when is_list(List) -> List;
-        undefined -> error({missing_repo_config, Key});
-        _Other -> error({invalid_repo_config, Key})
-    end.
+    kura_db:start_pool(RepoMod, maps:get(pool, Config, RepoMod), Config).
 
 -doc "Execute a query and return all matching rows.".
 -spec all(module(), #kura_query{}) -> {ok, [map()]} | {error, term()}.
