@@ -56,6 +56,13 @@ pool_start_failure_keeps_an_empty_password_untouched_test() ->
     Logged = logged_report({error, {bad_value, [], ~""}}, #{password => ""}),
     ?assertEqual(nomatch, string:find(Logged, "redacted")).
 
+start_repo_pool_passes_the_repo_config_to_the_pool_module_test() ->
+    Received = with_pool_answer({ok, self()}, #{database => ~"db"}, fun() ->
+        ?assertEqual(ok, kura_app:start_repo_pool(kura_db_failing_repo)),
+        get({?MODULE, pool_config})
+    end),
+    ?assertEqual(#{database => ~"db", pool_module => ?MODULE}, Received).
+
 pool_already_started_is_not_logged_test() ->
     Events = with_captured_logs(fun() ->
         with_pool_answer({error, {already_started, self()}}, fun() ->
