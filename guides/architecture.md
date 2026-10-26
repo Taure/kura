@@ -140,10 +140,11 @@ type emitted in DDL.
 `down/0` callbacks (plus optional `safe/0` to acknowledge intentionally
 unsafe operations during rolling deployments). `kura_migrator` discovers
 migration modules, maintains a `schema_migrations` table, and applies
-pending migrations in order. All migrations run inside a single
-transaction. On Postgres, the transaction is guarded by an advisory
-lock so concurrent nodes do not race; on SQLite the single-writer
-transaction handles serialisation. The advisory-lock SQL is gated on
+pending migrations in order. Pending migrations run inside a single
+transaction, split only around a migration that opts out of one with
+`transaction() -> false`. On Postgres, every step is guarded by an
+advisory lock, polled rather than waited on, so concurrent nodes do not
+race; on SQLite the single-writer transaction handles serialisation. The advisory-lock SQL is gated on
 the configured pool declaring the `advisory_locks` capability. The
 applied-version set is read inside the lock, so two nodes booting
 together cannot both decide the same migration is pending, and

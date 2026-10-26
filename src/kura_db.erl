@@ -10,6 +10,7 @@ for pool lookup, sandbox support, telemetry, and type loading.
 
 -export([
     query/3,
+    query_on/4,
     transaction/2,
     transaction_ok/2,
     in_transaction/1,
@@ -75,8 +76,28 @@ query(RepoMod, SQL, Params) ->
                 PoolMod = get_pool_module(RepoMod),
                 DriverMod:query(PoolMod, Pool, SQL, Params, #{decode_opts => ?DECODE_OPTS})
         end,
-    T1 = erlang:monotonic_time(),
-    DurationNative = T1 - T0,
+    observed(RepoMod, SQL, Params, T0, Result).
+
+-doc """
+Run `SQL` on `Conn`, a connection the caller checked out of `RepoMod`'s
+pool itself, through the repo's driver.
+
+Unlike `query/3` it neither looks for a sandbox connection nor routes to
+a transaction the process is in: the statement runs on `Conn`, in
+whatever transaction state `Conn` is. Telemetry is the same as for
+`query/3`. `kura_migrator` uses it to run a non-transactional migration
+and hold its session-level advisory lock on one connection.
+""".
+-spec query_on(module(), kura_pool:conn(), iodata(), [term()]) -> map() | {error, term()}.
+query_on(RepoMod, Conn, SQL, Params) ->
+    DriverMod = get_driver_module(RepoMod),
+    T0 = erlang:monotonic_time(),
+    Result = DriverMod:query_on(Conn, SQL, Params, #{decode_opts => ?DECODE_OPTS}),
+    observed(RepoMod, SQL, Params, T0, Result).
+
+-spec observed(module(), iodata(), [term()], integer(), Result) -> Result.
+observed(RepoMod, SQL, Params, T0, Result) ->
+    DurationNative = erlang:monotonic_time() - T0,
     DurationUs = erlang:convert_time_unit(DurationNative, native, microsecond),
     emit_telemetry(RepoMod, SQL, Params, Result, DurationNative, DurationUs),
     Result.

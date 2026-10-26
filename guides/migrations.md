@@ -111,6 +111,15 @@ The index name is auto-generated via `kura_migration:index_name/2`. If you need 
 {create_index, ~"my_custom_idx", ~"users", [email], [unique]}.
 ```
 
+`concurrently => true` (`concurrently` in the list form) builds the index
+without blocking writes to the table, and only works in a
+[non-transactional migration](#non-transactional-migrations):
+
+```erlang
+{create_index, ~"users", [email], #{concurrently => true}}.
+%% Generates: CREATE INDEX CONCURRENTLY "users_email_index" ON "users" ("email")
+```
+
 ### Drop Index
 
 ```erlang
@@ -130,8 +139,9 @@ The index name is auto-generated via `kura_migration:index_name/2`. If you need 
 {ok, AppliedVersions} = kura_migrator:migrate(my_repo).
 ```
 
-All pending migrations run inside a single transaction. On Postgres, the
-transaction is guarded by `pg_advisory_xact_lock` so concurrent nodes never
+All pending migrations run inside a single transaction, unless one of them
+is [non-transactional](#non-transactional-migrations). On Postgres, the
+transaction holds a transaction-level advisory lock so concurrent nodes never
 run migrations in parallel. SQLite (single-writer) relies on its serial
 write-transaction semantics. The migrator gates the advisory-lock SQL on
 the configured pool declaring the `advisory_locks` capability — backends
@@ -139,6 +149,91 @@ that don't declare it skip it. If any migration fails, the entire batch
 rolls back and `{error, Reason}` is returned. The `schema_migrations` table
 is updated row-by-row inside the same transaction, so partial progress is
 impossible.
+
+The lock is polled: the migrator tries `pg_try_advisory_xact_lock`, and a
+transaction that misses it ends and a new one tries again
+`migration_lock_retry_interval` milliseconds later (`kura` app env, default
+100). Waiting inside a blocking `pg_advisory_xact_lock` would keep a
+transaction open that a `CREATE INDEX CONCURRENTLY` on the node holding the
+lock has to wait for, and the two would deadlock. A node still running an
+older kura waits the blocking way, so run a concurrent-index migration once
+every node is upgraded.
+
+## Non-Transactional Migrations
+
+Some statements refuse to run inside a transaction: `CREATE INDEX
+CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, `ALTER TYPE ... ADD VALUE` on older
+Postgres versions. A migration opts out of the transaction by exporting
+`transaction/0` returning `false`:
+
+```erlang
+-module(m20250102120000_index_users_email).
+-behaviour(kura_migration).
+-export([up/0, down/0, transaction/0]).
+
+transaction() -> false.
+
+up() ->
+    [{create_index, ~"users", [email], #{concurrently => true}}].
+
+down() ->
+    [{execute, ~"DROP INDEX CONCURRENTLY \"users_email_index\""}].
+```
+
+What changes for such a migration:
+
+- **Each statement commits on its own.** The statements run one at a time on
+  a connection checked out for the migration, outside any transaction.
+- **The version is recorded last.** It is written to `schema_migrations` only
+  after the last statement succeeds. If a statement fails, the statements
+  before it stay committed, the version is not recorded, and the migration
+  stays pending; `migrate/1` returns `{error, {migration_failed, Version,
+  Reason}}` and the error log gives `committed_statements`. Fix the cause and
+  undo or account for what was committed before migrating again. A failed
+  `CREATE INDEX CONCURRENTLY` leaves an invalid index behind that a retry
+  trips over, so drop it first. The simplest rule: one statement per
+  non-transactional migration.
+- **The run is split around it.** Pending migrations are chosen once, under
+  the lock. Transactional migrations before the non-transactional one run in
+  one transaction and commit; the ones after it run in further transactions.
+  If the non-transactional migration fails, the earlier ones stay applied and
+  the later ones do not run.
+- **The lock is still held.** The migration's connection takes the
+  session-level lock (`pg_try_advisory_lock`, polled the same way) before it
+  re-reads `schema_migrations`, and releases it after recording the version,
+  so no other node runs it at the same time. The lock is released between the
+  steps of a run, so another node booting meanwhile may apply the next step
+  itself, but every step re-reads `schema_migrations` under the lock: each
+  migration runs once, in order.
+- **Rollback** runs `down/0` the same way, and deletes the version last.
+
+`concurrently => true` in a migration that is still transactional is refused
+with `{error, {concurrently_in_transaction, Version, Module}}` before any
+migration in the run executes, rather than left for Postgres to reject
+part-way.
+
+A long index build runs under the driver's statement timeout like any other
+migration statement. With `kura_postgres` that is the pool's `timeout`
+option (minato's default is 15 seconds), so raise it for the node that
+migrates a large table.
+
+### On SQLite
+
+SQLite has no concurrent index build and no advisory locks.
+`concurrently => true` compiles to a plain `CREATE INDEX` there, because the
+SQLite pool does not declare the `concurrent_indexes` capability, so one
+migration serves both backends. It is still refused in a transactional
+migration, on SQLite too, so a migration that passes there passes on
+Postgres.
+
+A non-transactional migration on SQLite runs each statement in autocommit on
+one pinned connection and takes no lock: run one migrator per database.
+Because every statement runs on the same connection, a `PRAGMA` holds for the
+statements after it, which makes the documented table rebuild possible:
+`PRAGMA foreign_keys = OFF`, rebuild the referenced table, `PRAGMA
+foreign_key_check`, `PRAGMA foreign_keys = ON`. Turn foreign keys back on in
+the same migration: the statements run on the connection directly, so the
+pool does not notice the change when the connection is checked in.
 
 By default, `migrate/1` also calls `ensure_database/1` first, creating the
 configured database if it does not yet exist. To disable, set

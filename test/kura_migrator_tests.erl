@@ -817,3 +817,100 @@ check_alter_ops_with_suppression_test() ->
     ?assertEqual(1, length(Warnings)),
     [W] = Warnings,
     ?assertEqual(phone, maps:get(target, W)).
+
+%%----------------------------------------------------------------------
+%% Non-transactional migrations and concurrent indexes
+%%----------------------------------------------------------------------
+
+-define(PG_POOL_REPO, kura_migrator_tests_pg_pool_repo).
+-define(LITE_POOL_REPO, kura_migrator_tests_lite_pool_repo).
+
+concurrent_index_compile_test_() ->
+    {setup, fun setup_pool_repos/0, fun cleanup_pool_repos/1, [
+        fun concurrently_map_form_on_a_capable_pool/0,
+        fun concurrently_list_form_on_a_capable_pool/0,
+        fun concurrently_false_is_a_plain_index/0,
+        fun concurrently_on_a_pool_without_the_capability_is_plain/0
+    ]}.
+
+setup_pool_repos() ->
+    Previous = application:get_env(kura, repos),
+    application:set_env(kura, repos, #{
+        ?PG_POOL_REPO => #{pool_module => kura_pool_minato, dialect => kura_dialect_pg},
+        ?LITE_POOL_REPO => #{pool_module => ?MODULE, dialect => kura_dialect_pg}
+    }),
+    Previous.
+
+cleanup_pool_repos({ok, Previous}) ->
+    application:set_env(kura, repos, Previous);
+cleanup_pool_repos(undefined) ->
+    application:unset_env(kura, repos).
+
+concurrently_map_form_on_a_capable_pool() ->
+    ?assertEqual(
+        ~"CREATE UNIQUE INDEX CONCURRENTLY \"users_email_index\" ON \"users\" (\"email\") WHERE email IS NOT NULL",
+        kura_migrator:compile_operation(
+            ?PG_POOL_REPO,
+            {create_index, ~"users", [email], #{
+                unique => true, concurrently => true, where => ~"email IS NOT NULL"
+            }}
+        )
+    ).
+
+concurrently_list_form_on_a_capable_pool() ->
+    ?assertEqual(
+        ~"CREATE INDEX CONCURRENTLY \"by_email\" ON \"users\" (\"email\")",
+        kura_migrator:compile_operation(
+            ?PG_POOL_REPO, {create_index, ~"by_email", ~"users", [email], [concurrently]}
+        )
+    ).
+
+concurrently_false_is_a_plain_index() ->
+    ?assertEqual(
+        ~"CREATE INDEX \"users_email_index\" ON \"users\" (\"email\")",
+        kura_migrator:compile_operation(
+            ?PG_POOL_REPO, {create_index, ~"users", [email], #{concurrently => false}}
+        )
+    ).
+
+concurrently_on_a_pool_without_the_capability_is_plain() ->
+    ?assertEqual(
+        ~"CREATE INDEX \"users_email_index\" ON \"users\" (\"email\")",
+        kura_migrator:compile_operation(
+            ?LITE_POOL_REPO, {create_index, ~"users", [email], #{concurrently => true}}
+        )
+    ),
+    ?assertEqual(
+        ~"CREATE UNIQUE INDEX \"by_email\" ON \"users\" (\"email\")",
+        kura_migrator:compile_operation(
+            ?LITE_POOL_REPO, {create_index, ~"by_email", ~"users", [email], [unique, concurrently]}
+        )
+    ).
+
+transactional_test() ->
+    ?assertNot(kura_migrator:transactional(m20250301110000_nontx_index_items)),
+    ?assert(kura_migrator:transactional(m20250301120000_nontx_add_note)),
+    ?assert(kura_migrator:transactional(m20250301100000_nontx_create_items)).
+
+concurrent_index_test() ->
+    ?assert(kura_migrator:concurrent_index({create_index, ~"t", [a], #{concurrently => true}})),
+    ?assertNot(kura_migrator:concurrent_index({create_index, ~"t", [a], #{concurrently => false}})),
+    ?assertNot(kura_migrator:concurrent_index({create_index, ~"t", [a], #{unique => true}})),
+    ?assert(kura_migrator:concurrent_index({create_index, ~"i", ~"t", [a], [concurrently]})),
+    ?assertNot(kura_migrator:concurrent_index({create_index, ~"i", ~"t", [a], [unique]})),
+    ?assertNot(kura_migrator:concurrent_index({drop_index, ~"i"})).
+
+split_transactional_test() ->
+    Tx1 = {1, m20250301100000_nontx_create_items},
+    NonTx = {2, m20250301110000_nontx_index_items},
+    Tx2 = {3, m20250301120000_nontx_add_note},
+    ?assertEqual({[Tx1], [NonTx, Tx2]}, kura_migrator:split_transactional([Tx1, NonTx, Tx2])),
+    ?assertEqual({[], [NonTx, Tx2]}, kura_migrator:split_transactional([NonTx, Tx2])),
+    ?assertEqual({[Tx1, Tx2], []}, kura_migrator:split_transactional([Tx1, Tx2])),
+    ?assertEqual({[], []}, kura_migrator:split_transactional([])).
+
+still_todo_test() ->
+    Migrations = [{1, a}, {2, b}, {3, c}],
+    ?assertEqual([{1, a}, {3, c}], kura_migrator:still_todo(up, Migrations, [2])),
+    ?assertEqual([{2, b}], kura_migrator:still_todo(down, Migrations, [2])),
+    ?assertEqual([], kura_migrator:still_todo(down, Migrations, [])).

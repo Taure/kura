@@ -58,6 +58,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still take a schema module or an atom. `kura_dialect_pg` returns a
   binary table name as it is; a dialect that resolves the table itself
   rather than delegating to it must do the same.
+- The migrator takes its advisory lock with `pg_try_advisory_xact_lock`,
+  retried in a fresh transaction every `migration_lock_retry_interval`
+  milliseconds (default 100), instead of blocking in
+  `pg_advisory_xact_lock` (#139). A node waiting inside a statement, or
+  inside one long transaction, is a transaction that `CREATE INDEX
+  CONCURRENTLY` on the lock holder waits for, and the two deadlocked. A
+  node still on an older kura waits the blocking way: run a
+  concurrent-index migration once every node is upgraded.
 - `kura_repo_worker:start/1` returns `{error, Reason}` when the pool does
   not start, where it logged the failure and returned `ok` (#192). A test
   setup written as `ok = kura_repo_worker:start(my_repo)` now stops at the
@@ -203,6 +211,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `kura_migration:index_name/2`, which it wraps.
 
 ### Added
+
+- Non-transactional migrations (#139). A migration exporting
+  `transaction() -> false` runs outside a transaction, statement by
+  statement, on one connection holding the session-level advisory lock.
+  Its version is recorded only after its last statement succeeds: a
+  failure part-way leaves the earlier statements committed and the
+  migration pending, and the error log says how many statements were
+  committed. Transactional migrations before it in the run commit first,
+  and those after it run in further transactions, each under the lock.
+- `{create_index, ...}` takes `concurrently => true` (or `concurrently`
+  in the list form) and emits `CREATE INDEX CONCURRENTLY` (#139). It is
+  refused in a migration that is still transactional, with
+  `{concurrently_in_transaction, Version, Module}`, before anything in
+  the run executes. On a pool that does not declare the new standard
+  `concurrent_indexes` capability (SQLite) it compiles to a plain
+  `CREATE INDEX`.
+- `kura_db:query_on/4` runs a statement on a connection the caller
+  checked out, with the same telemetry as `kura_db:query/3`.
 
 - `kura_schema:is_schema/1` and `kura_schema:encrypted_fields/1`, both
   memoised. `is_schema/1` replaces three hand-rolled copies of the same
