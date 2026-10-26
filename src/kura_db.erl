@@ -39,8 +39,11 @@ for pool lookup, sandbox support, telemetry, and type loading.
 
 -define(DECODE_OPTS, [return_rows_as_maps, column_name_as_atom]).
 
-%% `key` is the TLS private key in ssl options.
--define(IS_SECRET_KEY(Key), (Key =:= password orelse Key =:= key)).
+%% `key` is the TLS private key in ssl options; `encryption` holds the
+%% field-encryption keys and `keyring` names where they come from.
+-define(IS_SECRET_KEY(Key),
+    (Key =:= password orelse Key =:= key orelse Key =:= encryption orelse Key =:= keyring)
+).
 
 -define(REPO_KEYS, [
     backend,

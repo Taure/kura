@@ -192,6 +192,23 @@ a_tls_private_key_under_a_map_key_is_redacted_test() ->
         {boom, #{key => redacted}}, logged_reason({error, {boom, #{key => ~"PRIVKEY"}}}, Config)
     ).
 
+an_encryption_keyring_in_a_pool_error_is_redacted_test() ->
+    Config = #{database => ~"db"},
+    Echoed = #{encryption => #{keys => [{1, ~"S0VZS0VZ"}]}, keyring => kura_keyring_env},
+    ?assertEqual(
+        {boom, #{encryption => redacted, keyring => redacted}},
+        logged_reason({error, {boom, Echoed}}, Config)
+    ).
+
+an_encryption_option_in_a_pool_error_list_is_redacted_test() ->
+    ?assertEqual(
+        {boom, [{encryption, redacted}, {database, ~"db"}]},
+        logged_reason(
+            {error, {boom, [{encryption, #{keys => [{1, ~"S0VZ"}]}}, {database, ~"db"}]}},
+            #{database => ~"db"}
+        )
+    ).
+
 a_non_ascii_binary_password_as_code_points_is_redacted_test() ->
     ?assertEqual(
         {boom, redacted}, logged_reason({error, {boom, [112, 228]}}, #{password => ~"pä"})

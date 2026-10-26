@@ -106,7 +106,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Starting a pool hands the pool module the connection settings only.
   The repo's own settings, the `encryption` keyring among them, were
   passed along with them, and a pool module that echoed its options in
-  an error put the keys in the log. A password given as an improper list
+  an error put the keys in the log. A pool error that echoes an
+  `encryption` or `keyring` key, in a map or a key-value list, now has its
+  value replaced by `redacted`, like `password`. A password given as an improper list
   no longer raises with the password in the stack trace.
 - Attribute tenancy (`{attribute, {Field, Value}}`) leaked reads. Only
   the top level of a query was filtered, so a union, CTE or `in`/`exists`
