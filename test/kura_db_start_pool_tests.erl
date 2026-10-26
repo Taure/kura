@@ -366,6 +366,33 @@ with_flat_env(Flat, Run) ->
         erase({?MODULE, pool_config})
     end.
 
+deprecated_pool_config_returns_the_resolved_config_test() ->
+    with_pool_answer({ok, self()}, kura_db_init_repo, #{database => ~"db"}, fun() ->
+        ?assertEqual(
+            #{database => ~"from_init", pool => kura_db_init_pool, pool_module => ?MODULE},
+            kura_app:pool_config(kura_db_init_repo)
+        )
+    end).
+
+deprecated_pool_config_raises_a_raising_init_redacted_test() ->
+    Config = #{password => ~"s3cret"},
+    {Raised, _Events} = with_captured_logs_and_result(fun() ->
+        with_pool_answer({ok, self()}, kura_db_raising_init_repo, Config, fun() ->
+            try kura_app:pool_config(kura_db_raising_init_repo) of
+                Returned -> {returned, Returned}
+            catch
+                error:Reason -> Reason
+            end
+        end)
+    end),
+    ?assertMatch({init_failed, {error, {bad_config, redacted, _}}}, Raised).
+
+deprecated_pool_config_reads_the_legacy_flat_repo_test() ->
+    Flat = [{repo, kura_db_failing_repo}, {pool_module, ?MODULE}, {database, ~"flat_db"}],
+    with_flat_env(Flat, fun() ->
+        ?assertEqual(#{database => ~"flat_db", pool_module => ?MODULE}, kura_app:pool_config())
+    end).
+
 boot_logs_a_raising_init_and_carries_on_test() ->
     Config = #{database => ~"db", password => ~"s3cret"},
     Events = with_captured_logs(fun() ->

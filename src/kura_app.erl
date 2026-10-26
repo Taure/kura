@@ -2,7 +2,12 @@
 -moduledoc false.
 -behaviour(application).
 
--export([start/2, stop/1]).
+-export([start/2, stop/1, pool_config/0, pool_config/1]).
+
+-deprecated([
+    {pool_config, 0, "use kura_repo:config/1 on the repo"},
+    {pool_config, 1, "use kura_repo:config/1"}
+]).
 
 -ifdef(TEST).
 -export([start_repo_pool/1]).
@@ -77,6 +82,22 @@ start_repo_pool(Repo) ->
     case kura_db:start_pool(Repo) of
         ok -> ok;
         {error, _Logged} -> ok
+    end.
+
+-doc "Deprecated. The legacy flat repo's config, as `pool_config/1` resolves it.".
+-spec pool_config() -> map().
+pool_config() ->
+    pool_config(application:get_env(kura, repo, undefined)).
+
+-doc """
+Deprecated. A repo's config as its pool is started with: `kura_repo:config/1`,
+`init/1` applied, without connection defaults.
+""".
+-spec pool_config(module()) -> map().
+pool_config(Repo) ->
+    case kura_db:resolve(Repo) of
+        {ok, _Pool, Config} -> Config;
+        {error, Reason} -> error(Reason)
     end.
 
 %% Configure pg_types defaults if any configured dialect is kura_dialect_pg.

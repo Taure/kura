@@ -169,3 +169,27 @@ join_rows_sql_qualifies_with_the_prefix_tenant_test() ->
 join_rows(Dialect, JoinThrough, Keys, OwnerTuples) ->
     {SQL, Params} = kura_preloader:join_rows_sql(Dialect, JoinThrough, Keys, OwnerTuples),
     {iolist_to_binary(SQL), Params}.
+
+%%----------------------------------------------------------------------
+%% quote_table_bin/1, deprecated
+%%----------------------------------------------------------------------
+
+quote_table_bin_doubles_embedded_quotes_test() ->
+    ?assertEqual(~"\"posts\"\" -- \"", kura_preloader:quote_table_bin(~"posts\" -- ")).
+
+quote_table_bin_is_bare_without_a_prefix_tenant_test() ->
+    ?assertEqual(~"\"posts_tags\"", kura_preloader:quote_table_bin(~"posts_tags")),
+    ?assertEqual(
+        ~"\"posts_tags\"",
+        kura_tenant:with_tenant({attribute, {org_id, 1}}, fun() ->
+            kura_preloader:quote_table_bin(~"posts_tags")
+        end)
+    ).
+
+quote_table_bin_qualifies_with_the_prefix_tenant_test() ->
+    ?assertEqual(
+        ~"\"tenant_a\".\"posts_tags\"",
+        kura_tenant:with_tenant({prefix, ~"tenant_a"}, fun() ->
+            kura_preloader:quote_table_bin(~"posts_tags")
+        end)
+    ).

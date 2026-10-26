@@ -4,8 +4,11 @@
 
 -export([
     preload/4,
-    do_preload/4
+    do_preload/4,
+    quote_table_bin/1
 ]).
+
+-deprecated([{quote_table_bin, 1, "the dialect quotes and qualifies tables"}]).
 
 -ifdef(TEST).
 -export([
@@ -249,6 +252,23 @@ join_rows_sql(Dialect, JoinThrough, {OwnerCols, RelatedCols}, OwnerTuples) ->
         select = OwnerCols ++ RelatedCols,
         wheres = [{OwnerCols, in, OwnerTuples}]
     }).
+
+-doc """
+Deprecated. A table name quoted as a PostgreSQL identifier, qualified with
+the prefix tenant's schema when one is set. The dialect does this now.
+""".
+-spec quote_table_bin(binary()) -> binary().
+quote_table_bin(Table) ->
+    case kura_tenant:get_tenant() of
+        {prefix, Prefix} ->
+            <<(quote_ident_bin(Prefix))/binary, $., (quote_ident_bin(Table))/binary>>;
+        _ ->
+            quote_ident_bin(Table)
+    end.
+
+-spec quote_ident_bin(binary()) -> binary().
+quote_ident_bin(Name) ->
+    <<$", (binary:replace(Name, ~"\"", ~"\"\"", [global]))/binary, $">>.
 
 %%----------------------------------------------------------------------
 %% Has many through
