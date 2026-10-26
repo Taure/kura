@@ -14,13 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   setup written as `ok = kura_repo_worker:start(my_repo)` now stops at the
   failure. Secrets in `Reason` are replaced by `redacted`. Application boot
   still logs a pool that did not start and carries on.
-- `kura_repo_worker:start/1` hands the repo's config to its `pool_module`
-  as it is, the way application boot does, instead of building a
-  Postgres-shaped config with defaults for host, port and user (#193). A
-  `kura_sqlite` repo started this way gets its own defaults, `:memory:`
-  among them, where it raised `badkey`. A Postgres repo that left out
-  `username` and relied on the `postgres` default must now set it: the
-  pool refuses to start and `start/1` returns the error. A missing
+- `kura_repo_worker:start/1` hands the connection settings in the repo's
+  config to its `pool_module`, the way application boot does, instead of
+  building a Postgres-shaped config with defaults for host, port and user
+  (#193). A `kura_sqlite` repo started this way gets its own defaults,
+  `:memory:` among them, where it raised
+  `{missing_repo_config, database}`. A Postgres repo that left out
+  `username` and relied on the `postgres` default must now set it. With
+  kura_postgres from this release on, the pool refuses to start with
+  `{missing_option, user}` and `start/1` returns the error. A missing
   `database` no longer raises `missing_repo_config`: minato connects to
   the database named after the user, as libpq does.
 - The query cache keys on a query's shape, with bound values replaced by

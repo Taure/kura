@@ -255,6 +255,7 @@ repo_worker_start_keeps_the_repo_settings_from_the_pool_module_test() ->
         backend => kura_backend_postgres,
         dialect => kura_dialect_pg,
         driver_module => kura_driver_minato,
+        pool => other_pool,
         read_only => true,
         replicas => [other_repo],
         uuid_version => 7,
@@ -275,7 +276,7 @@ an_improper_list_password_is_not_raised_with_the_password_test() ->
         catch
             Class:Error:Stack -> {Class, Error, Stack}
         end,
-    ?assertMatch({returned, _}, Raised).
+    ?assertEqual({returned, {boom, redacted}}, Raised).
 
 repo_worker_start_names_the_pool_from_the_config_test() ->
     with_pool_answer({ok, self()}, #{pool => other_pool}, fun() ->

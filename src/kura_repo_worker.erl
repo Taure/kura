@@ -70,8 +70,8 @@ ok = kura_repo_worker:start(MyRepo),
 -doc """
 Start the connection pool for the given repo module.
 
-The repo's config goes to its `pool_module` as it is, and the pool module
-maps it onto its own options. Returns `{error, Reason}` when the pool does
+The connection settings in the repo's config go to its `pool_module`,
+which maps them onto its own options; kura's own settings are kept back. Returns `{error, Reason}` when the pool does
 not start, with any secret in `Reason` replaced by `redacted`. A pool module
 that raises instead makes this raise
 `{pool_start_failed, RepoMod, {Class, Redacted}}`.

@@ -40,8 +40,6 @@ for pool lookup, sandbox support, telemetry, and type loading.
 %% `key` is the TLS private key in ssl options.
 -define(IS_SECRET_KEY(Key), (Key =:= password orelse Key =:= key)).
 
-%% A repo's own settings, the encryption keyring among them, are not the
-%% pool's to see.
 -define(REPO_KEYS, [
     backend,
     dialect,
