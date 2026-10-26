@@ -17,23 +17,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the repo at boot while its queries went to `X`, and connection settings
   set in `init/1` were missing from the pool boot started. Boot still logs
   a pool that did not start and carries on; `start/1` returns the error.
-- The legacy flat single-repo form (`{repo, _}` with connection keys at
-  the kura env level) no longer gets Postgres defaults at boot (#197).
+- **Breaking:** the legacy flat single-repo form (`{repo, _}` with
+  connection keys at the kura env level) no longer gets Postgres defaults
+  at boot (#197). Which version this ships in is the owner's call at
+  release. It pairs with kura_postgres#31, already on kura_postgres
+  `next`, which makes the pool refuse to start without a user.
+
   Boot filled in `host` `"localhost"`, `port` 5432, `user` and `database`
   `"postgres"`, an empty `password` and `pool_size` 10 that `start/1` did
   not, so the same config could start at boot and fail through
   `start/1`. Both now hand the pool module the settings as configured,
   and the pool module applies its own defaults, which is what `start/1`
-  has done since #193. Kura no longer supplies a superuser login
-  nobody configured. With kura_postgres, `host`, `port` and `pool_size`
-  keep the same defaults and `database` defaults to the user's name, as
-  libpq does. A config that relied on the `postgres` user must set
-  `user`: without it the pool refuses to start with
-  `{missing_option, user}`, which boot logs, rather than starting
-  connections that cannot log in. One that relied on the `postgres`
-  database with another user must set `database`. The flat form no
-  longer passes a `repos` map in the kura env to the pool along with the
-  connection settings.
+  has done since #193. Kura no longer supplies a superuser login nobody
+  configured. With kura_postgres, `host`, `port` and `pool_size` keep the
+  same defaults. The flat form also no longer passes a `repos` map in the
+  kura env to the pool along with the connection settings.
+
+  **Upgrading:**
+  - A config with no `user` must set one. Without it the pool refuses to
+    start with `{missing_option, user}`, which boot logs, rather than
+    starting connections that cannot log in.
+  - A config that sets `user` but not `database` now connects to the
+    database named after the user, as libpq does, not to `postgres`. It
+    may start cleanly against the wrong database, or fail when no
+    database of that name exists. Set `database` explicitly.
+- A repo `init/1` that raises no longer stops kura's application start.
+  The pool is not started and the failure is logged with secrets in the
+  reason redacted; `kura_repo_worker:start/1` returns
+  `{error, {init_failed, {Class, Redacted}}}`. `init/1` runs during
+  kura's own start, before the consuming application, so it must not
+  call that application's processes.
 - The many_to_many join-table SQL, the preload read and the `put_assoc` /
   `cast_assoc` DELETE and INSERT, is compiled by the repo's dialect
   (`to_sql/1`, `delete_all/1`, `insert_all/3`) instead of written by hand
@@ -163,15 +176,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not, or left invalid by a failed `CREATE INDEX CONCURRENTLY`, which
   PostgreSQL ignores, for `ON CONFLICT` too.
 
-### Removed
-
-- `kura_app:pool_config/0` and `kura_app:pool_config/1`, the boot-only
-  config reader that #197 replaces with `kura_db:start_pool/1`. They were
-  not documented (`kura_app` is hidden from the docs).
-- `kura_preloader:quote_table_bin/1`, which quoted a join table for the
-  hand-written many_to_many SQL that #153 replaces.
-
 ### Deprecated
+
+- `kura_app:pool_config/0` and `kura_app:pool_config/1`. Use
+  `kura_repo:config/1`. They now return the config the pool is started
+  with, `init/1` applied and without the legacy Postgres defaults (#197).
+- `kura_preloader:quote_table_bin/1`. The dialect quotes and qualifies
+  join tables now (#153).
 
 - `kura_schema_verify:declared_index_name/2`. Call
   `kura_migration:index_name/2`, which it wraps.

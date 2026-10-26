@@ -106,6 +106,7 @@ Under the schema prefix strategy, the dialect qualifies each table with the tena
 ### What is not scoped
 
 - `query/3` with raw SQL, and `{fragment, SQL, Params}` conditions. kura cannot see into SQL text; add the tenant condition yourself.
+- Many-to-many join tables. The join rows are read, deleted and inserted without the tenant condition, and an insert does not stamp the tenant, so a join table with its own `NOT NULL` tenant column makes every `put_assoc` or `cast_assoc` on the association fail. The rows a join links are read and checked under the tenant; keep the tenant column on those tables, not on the join table.
 - Joins between two tenant tables. Both carry the tenant field, so the unqualified condition is ambiguous and the query fails. A join to a table without the field works, and that table is not scoped, which is right for global lookup tables.
 
 ## When to Use Which
