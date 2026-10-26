@@ -364,7 +364,9 @@ get_driver_module(RepoMod) ->
 %% Row loading
 %%----------------------------------------------------------------------
 
--spec load_row(module(), map()) -> map().
+-spec load_row(kura_dialect:table(), map()) -> map().
+load_row(Table, Row) when is_binary(Table) ->
+    Row;
 load_row(SchemaMod, Row) when is_atom(SchemaMod) ->
     case code:ensure_loaded(SchemaMod) of
         {module, SchemaMod} ->

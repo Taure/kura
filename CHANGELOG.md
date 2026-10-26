@@ -34,6 +34,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   database with another user must set `database`. The flat form no
   longer passes a `repos` map in the kura env to the pool along with the
   connection settings.
+- The many_to_many join-table SQL, the preload read and the `put_assoc` /
+  `cast_assoc` DELETE and INSERT, is compiled by the repo's dialect
+  (`to_sql/1`, `delete_all/1`, `insert_all/3`) instead of written by hand
+  with Postgres `$N` placeholders and quoting (#153). A dialect with other
+  placeholders or identifier quoting gets its own SQL for join tables; on
+  kura_sqlite the join table now uses `?N`. The join read runs through
+  `kura_db:query/3` rather than `kura_repo_worker:pgo_query/3`. Join-table
+  SQL is still qualified by a prefix tenant and not scoped by an attribute
+  tenant.
+- A table may be named by a binary where a dialect takes one: the new
+  `kura_dialect:table()` type, `atom() | module() | binary()`, covers the
+  table argument of `insert`, `update`, `delete` and `insert_all`, and a
+  query's `from` (#153). A `join_through` given as a binary reaches the
+  dialect that way. `kura_dialect_pg` returns a binary table name as it
+  is; a dialect that resolves the table itself rather than delegating to
+  it must do the same.
 - `kura_repo_worker:start/1` returns `{error, Reason}` when the pool does
   not start, where it logged the failure and returned `ok` (#192). A test
   setup written as `ok = kura_repo_worker:start(my_repo)` now stops at the
@@ -152,6 +168,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `kura_app:pool_config/0` and `kura_app:pool_config/1`, the boot-only
   config reader that #197 replaces with `kura_db:start_pool/1`. They were
   not documented (`kura_app` is hidden from the docs).
+- `kura_preloader:quote_table_bin/1`, which quoted a join table for the
+  hand-written many_to_many SQL that #153 replaces.
 
 ### Deprecated
 

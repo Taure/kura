@@ -114,43 +114,58 @@ reverse_maps_with_acc_test() ->
     ).
 
 %%----------------------------------------------------------------------
-%% join_bins
+%% join_rows_sql: the many_to_many join-table read, through the dialect
 %%----------------------------------------------------------------------
 
-join_bins_empty_test() ->
-    ?assertEqual(<<>>, kura_preloader:join_bins([], <<", ">>)).
-
-join_bins_single_test() ->
-    ?assertEqual(<<"hello">>, kura_preloader:join_bins([<<"hello">>], <<", ">>)).
-
-join_bins_multiple_test() ->
+join_rows_sql_reads_a_single_key_test() ->
     ?assertEqual(
-        <<"a, b, c">>,
-        kura_preloader:join_bins([<<"a">>, <<"b">>, <<"c">>], <<", ">>)
+        {~"SELECT \"post_id\", \"tag_id\" FROM \"posts_tags\" WHERE \"post_id\" IN ($1, $2)", [1, 2]},
+        join_rows(kura_dialect_pg, ~"posts_tags", {[post_id], [tag_id]}, [{1}, {2}])
     ).
 
-quote_ident_bin_doubles_embedded_quotes_test() ->
+join_rows_sql_reads_a_composite_key_as_row_values_test() ->
     ?assertEqual(
-        <<"\"posts\"\" -- \"">>,
-        kura_preloader:quote_ident_bin(<<"posts\" -- ">>)
+        {
+            ~"SELECT \"org_id\", \"post_id\", \"tag_id\" FROM \"posts_tags\" WHERE (\"org_id\", \"post_id\") IN (($1, $2), ($3, $4))",
+            [o, 1, o, 2]
+        },
+        join_rows(kura_dialect_pg, ~"posts_tags", {[org_id, post_id], [tag_id]}, [{o, 1}, {o, 2}])
     ).
 
-quote_ident_bin_wraps_plain_name_test() ->
-    ?assertEqual(<<"\"posts_tags\"">>, kura_preloader:quote_ident_bin(<<"posts_tags">>)).
-
-quote_table_bin_is_bare_without_a_prefix_tenant_test() ->
-    ?assertEqual(~"\"posts_tags\"", kura_preloader:quote_table_bin(~"posts_tags")),
+join_rows_sql_uses_the_dialect_placeholders_test() ->
     ?assertEqual(
-        ~"\"posts_tags\"",
+        {
+            ~"SELECT \"org_id\", \"post_id\", \"tag_id\" FROM \"posts_tags\" WHERE (\"org_id\", \"post_id\") IN ((?1, ?2), (?3, ?4))",
+            [o, 1, o, 2]
+        },
+        join_rows(
+            kura_test_sqlite_dialect, ~"posts_tags", {[org_id, post_id], [tag_id]}, [{o, 1}, {o, 2}]
+        )
+    ).
+
+join_rows_sql_quotes_the_join_table_test() ->
+    {SQL, _} = join_rows(kura_dialect_pg, ~"posts\" -- ", {[post_id], [tag_id]}, [{1}]),
+    ?assertNotEqual(nomatch, binary:match(SQL, ~"FROM \"posts\"\" -- \" WHERE")).
+
+join_rows_sql_names_a_join_schema_by_its_table_test() ->
+    {SQL, _} = join_rows(kura_dialect_pg, kura_test_tag_schema, {[post_id], [tag_id]}, [{1}]),
+    ?assertNotEqual(nomatch, binary:match(SQL, ~"FROM \"tags\" WHERE")).
+
+join_rows_sql_is_bare_without_a_prefix_tenant_test() ->
+    Expected = join_rows(kura_dialect_pg, ~"posts_tags", {[post_id], [tag_id]}, [{1}]),
+    ?assertEqual(
+        Expected,
         kura_tenant:with_tenant({attribute, {org_id, 1}}, fun() ->
-            kura_preloader:quote_table_bin(~"posts_tags")
+            join_rows(kura_dialect_pg, ~"posts_tags", {[post_id], [tag_id]}, [{1}])
         end)
     ).
 
-quote_table_bin_qualifies_with_the_prefix_tenant_test() ->
-    ?assertEqual(
-        ~"\"tenant_a\".\"posts_tags\"",
-        kura_tenant:with_tenant({prefix, ~"tenant_a"}, fun() ->
-            kura_preloader:quote_table_bin(~"posts_tags")
-        end)
-    ).
+join_rows_sql_qualifies_with_the_prefix_tenant_test() ->
+    {SQL, _} = kura_tenant:with_tenant({prefix, ~"tenant_a"}, fun() ->
+        join_rows(kura_dialect_pg, ~"posts_tags", {[post_id], [tag_id]}, [{1}])
+    end),
+    ?assertNotEqual(nomatch, binary:match(SQL, ~"FROM \"tenant_a\".\"posts_tags\" WHERE")).
+
+join_rows(Dialect, JoinThrough, Keys, OwnerTuples) ->
+    {SQL, Params} = kura_preloader:join_rows_sql(Dialect, JoinThrough, Keys, OwnerTuples),
+    {iolist_to_binary(SQL), Params}.

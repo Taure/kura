@@ -82,7 +82,7 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
 %% INSERT
 %%----------------------------------------------------------------------
 
--spec insert(atom() | module(), [atom()], map()) -> {iodata(), [term()]}.
+-spec insert(kura_dialect:table(), [atom()], map()) -> {iodata(), [term()]}.
 insert(SchemaOrTable, Fields, Data) ->
     Table = resolve_table(SchemaOrTable),
     {Cols, Placeholders, Params, _} = build_insert_parts(Fields, Data, 1),
@@ -97,7 +97,7 @@ insert(SchemaOrTable, Fields, Data) ->
     ]),
     {SQL, Params}.
 
--spec insert(atom() | module(), [atom()], map(), map()) -> {iodata(), [term()]}.
+-spec insert(kura_dialect:table(), [atom()], map(), map()) -> {iodata(), [term()]}.
 insert(SchemaOrTable, Fields, Data, #{on_conflict := OnConflict0}) ->
     Table = resolve_table(SchemaOrTable),
     {OnConflict, Guard} = conflict_guard(OnConflict0),
@@ -123,7 +123,7 @@ insert(SchemaOrTable, Fields, Data, _Opts) ->
 %% UPDATE
 %%----------------------------------------------------------------------
 
--spec update(atom() | module(), [atom()], map(), [{atom(), term()}]) -> {iodata(), [term()]}.
+-spec update(kura_dialect:table(), [atom()], map(), [{atom(), term()}]) -> {iodata(), [term()]}.
 update(SchemaOrTable, Fields, Changes, KeyClauses) ->
     Table = resolve_table(SchemaOrTable),
     {Sets, Params, Counter} = build_set_parts(Fields, Changes, 1),
@@ -180,7 +180,7 @@ row_placeholders(N, Counter, Acc) ->
 %% DELETE
 %%----------------------------------------------------------------------
 
--spec delete(atom() | module(), [{atom(), term()}]) -> {iodata(), [term()]}.
+-spec delete(kura_dialect:table(), [{atom(), term()}]) -> {iodata(), [term()]}.
 delete(SchemaOrTable, KeyClauses) ->
     Table = resolve_table(SchemaOrTable),
     {KeyConds, Params, _} = key_where(KeyClauses, 1),
@@ -233,7 +233,7 @@ delete_all(#kura_query{from = From, wheres = Wheres, prefix = QPrefix}) ->
 %% INSERT ALL (bulk)
 %%----------------------------------------------------------------------
 
--spec insert_all(atom() | module(), [atom()], [map()]) -> {iodata(), [term()]}.
+-spec insert_all(kura_dialect:table(), [atom()], [map()]) -> {iodata(), [term()]}.
 insert_all(SchemaOrTable, Fields, Rows) ->
     Table = resolve_table(SchemaOrTable),
     Cols = [quote_ident(atom_to_binary(F, utf8)) || F <- Fields],
@@ -248,7 +248,7 @@ insert_all(SchemaOrTable, Fields, Rows) ->
     ]),
     {SQL, AllParams}.
 
--spec insert_all(atom() | module(), [atom()], [map()], map()) -> {iodata(), [term()]}.
+-spec insert_all(kura_dialect:table(), [atom()], [map()], map()) -> {iodata(), [term()]}.
 insert_all(SchemaOrTable, Fields, Rows, Opts) ->
     {BaseSQL, Params} = insert_all(SchemaOrTable, Fields, Rows),
     SQL = [
@@ -652,6 +652,8 @@ compile_on_conflict_update(ConflictTarget, UpdateFields, Data, Counter) ->
     SQL = [ConflictTarget, ~" DO UPDATE SET ", join_comma(Sets)],
     {SQL, Params}.
 
+resolve_table(Table) when is_binary(Table) ->
+    Table;
 resolve_table(Mod) when is_atom(Mod) ->
     case code:ensure_loaded(Mod) of
         {module, Mod} ->

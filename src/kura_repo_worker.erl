@@ -52,8 +52,8 @@ ok = kura_repo_worker:start(MyRepo),
     generate_uuid/1,
     uuid_version/1,
     key_clauses/2,
-    key_conds/2,
-    quote_ident_bin/1,
+    join_delete_sql/3,
+    join_insert_sql/3,
     dump_field/2,
     join_error/3
 ]).
@@ -654,23 +654,9 @@ apply_prepare_funs(CS, []) ->
 apply_prepare_funs(CS, [Fun | Rest]) ->
     apply_prepare_funs(Fun(CS), Rest).
 
-%% One `col = $n` condition per key column, using the binary quoter.
-key_conds(KeyClauses, Start) ->
-    key_conds(KeyClauses, Start, [], []).
-
-key_conds([], Counter, Conds, Params) ->
-    {lists:reverse(Conds), lists:reverse(Params), Counter};
-key_conds([{Field, Value} | Rest], Counter, Conds, Params) ->
-    Cond = [quote_ident_bin(atom_to_binary(Field, utf8)), ~" = $", integer_to_binary(Counter)],
-    key_conds(Rest, Counter + 1, [Cond | Conds], [Value | Params]).
-
 %% The key column/value pairs from a record, in key order.
 key_pairs(SchemaMod, Data) ->
     [{K, maps:get(K, Data)} || K <- kura_schema:key(SchemaMod)].
-
-quote_ident_bin(Name) when is_binary(Name) ->
-    Escaped = binary:replace(Name, ~"\"", ~"\"\"", [global]),
-    <<$", Escaped/binary, $">>.
 
 -spec apply_clauses(#kura_query{}, [{atom(), term()}]) -> #kura_query{}.
 apply_clauses(Q, []) ->
@@ -825,30 +811,35 @@ linked(RepoMod, [_Written | Rest]) ->
 join_many_to_many(RepoMod, SchemaMod, AccRow, Assoc, Children) ->
     #kura_assoc{schema = RelSchema, join_through = JoinThrough} = Assoc,
     {OwnerCols, RelatedCols} = kura_schema:assoc_join_keys(Assoc),
-    OwnerValues = [maps:get(K, AccRow) || K <- kura_schema:key(SchemaMod)],
+    Owner = lists:zip(OwnerCols, [maps:get(K, AccRow) || K <- kura_schema:key(SchemaMod)]),
     RelKey = kura_schema:key(RelSchema),
-    JoinTable =
-        case JoinThrough of
-            B when is_binary(B) -> B;
-            M when is_atom(M) -> M:table()
-        end,
-    {OwnerConds, OwnerParams, _} = key_conds(lists:zip(OwnerCols, OwnerValues), 1),
-    DeleteSQL = iolist_to_binary([
-        ~"DELETE FROM ",
-        kura_preloader:quote_table_bin(JoinTable),
-        ~" WHERE ",
-        lists:join(~" AND ", OwnerConds)
-    ]),
+    Dialect = kura_query_compiler:dialect(RepoMod),
     Inserts = [
-        m2m_insert_sql(
-            JoinTable, OwnerCols ++ RelatedCols, OwnerValues ++ [maps:get(K, Child) || K <- RelKey]
+        join_insert_sql(
+            Dialect,
+            JoinThrough,
+            Owner ++ lists:zip(RelatedCols, [maps:get(K, Child) || K <- RelKey])
         )
      || Child <- Children
     ],
-    case join_writes(RepoMod, [{DeleteSQL, OwnerParams} | Inserts]) of
+    case join_writes(RepoMod, [join_delete_sql(Dialect, JoinThrough, Owner) | Inserts]) of
         ok -> {ok, Children};
         {error, PgError} -> {join_failed, PgError}
     end.
+
+%% Join-table writes go to the dialect unscoped: a join table has no tenant
+%% attribute, and the rows it links were checked under the tenant.
+-spec join_delete_sql(module(), binary() | module(), [{atom(), term()}]) ->
+    {iodata(), [term()]}.
+join_delete_sql(Dialect, JoinThrough, Owner) ->
+    Dialect:delete_all(#kura_query{
+        from = JoinThrough, wheres = [{Col, '=', Value} || {Col, Value} <- Owner]
+    }).
+
+-spec join_insert_sql(module(), binary() | module(), [{atom(), term()}]) ->
+    {iodata(), [term()]}.
+join_insert_sql(Dialect, JoinThrough, Row) ->
+    Dialect:insert_all(JoinThrough, [Col || {Col, _} <- Row], [maps:from_list(Row)]).
 
 join_writes(_RepoMod, []) ->
     ok;
@@ -857,23 +848,6 @@ join_writes(RepoMod, [{SQL, Params} | Rest]) ->
         {error, _} = Err -> Err;
         _ -> join_writes(RepoMod, Rest)
     end.
-
-m2m_insert_sql(JoinTable, Cols, Values) ->
-    ColSQL = lists:join(~", ", [quote_ident_bin(atom_to_binary(C, utf8)) || C <- Cols]),
-    Placeholders = lists:join(~", ", [
-        [~"$", integer_to_binary(N)]
-     || N <- lists:seq(1, length(Cols))
-    ]),
-    SQL = iolist_to_binary([
-        ~"INSERT INTO ",
-        kura_preloader:quote_table_bin(JoinTable),
-        ~" (",
-        ColSQL,
-        ~") VALUES (",
-        Placeholders,
-        ~")"
-    ]),
-    {SQL, Values}.
 
 delete_record(RepoMod, SchemaMod, Data) ->
     case kura_schema:run_before_delete(SchemaMod, Data) of
@@ -896,7 +870,7 @@ delete_record(RepoMod, SchemaMod, Data) ->
             end
     end.
 
--spec dump_set_map(atom() | module() | undefined, map()) ->
+-spec dump_set_map(kura_dialect:table() | undefined, map()) ->
     {ok, map()} | {error, {dump_failed, atom(), binary()}}.
 dump_set_map(From, Updates) when is_atom(From), From =/= undefined ->
     case is_schema_module(From) of

@@ -134,3 +134,7 @@ transaction(_) -> erlang:error(not_implemented).
 multi(_) -> erlang:error(not_implemented).
 preload(_, _, _) -> erlang:error(not_implemented).
 query(_, _) -> erlang:error(not_implemented).
+
+load_row_leaves_a_row_read_by_table_name_untouched_test() ->
+    Row = #{id => 1, title => ~"raw"},
+    ?assertEqual(Row, kura_db:load_row(~"kura_test_schema", Row)).

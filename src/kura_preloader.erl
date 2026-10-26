@@ -4,8 +4,7 @@
 
 -export([
     preload/4,
-    do_preload/4,
-    quote_table_bin/1
+    do_preload/4
 ]).
 
 -ifdef(TEST).
@@ -15,9 +14,8 @@
     set_field/3,
     group_by_tuple/3,
     reverse_maps/2,
-    join_bins/2,
     group_m2m_join/5,
-    quote_ident_bin/1
+    join_rows_sql/4
 ]).
 -endif.
 
@@ -217,20 +215,13 @@ preload_many_to_many(
         [] ->
             [set_field(Name, [], R) || R <- Records];
         _ ->
-            JoinTableBin = resolve_join_table(JoinThrough),
-            {InSQL, InParams} = composite_in_sql(OwnerCols, OwnerTuples),
-            SelectCols = join_bins(
-                [quote_ident_bin(atom_to_binary(C, utf8)) || C <- OwnerCols ++ RelatedCols], ~", "
+            {JoinSQL, JoinParams} = join_rows_sql(
+                kura_query_compiler:dialect(RepoMod),
+                JoinThrough,
+                {OwnerCols, RelatedCols},
+                OwnerTuples
             ),
-            JoinSQL = iolist_to_binary([
-                ~"SELECT ",
-                SelectCols,
-                ~" FROM ",
-                quote_table_bin(JoinTableBin),
-                ~" WHERE ",
-                InSQL
-            ]),
-            #{rows := JoinRows} = kura_repo_worker:pgo_query(RepoMod, JoinSQL, InParams),
+            #{rows := JoinRows} = kura_db:query(RepoMod, JoinSQL, JoinParams),
             RelTuples = lists:usort([fk_tuple(RelatedCols, JR) || JR <- JoinRows]),
             case RelTuples of
                 [] ->
@@ -248,42 +239,16 @@ preload_many_to_many(
             end
     end.
 
--spec composite_in_sql([atom()], [tuple()]) -> {iolist(), [term()]}.
-composite_in_sql(Cols, Tuples) ->
-    ColList = join_bins([quote_ident_bin(atom_to_binary(C, utf8)) || C <- Cols], ~", "),
-    {Groups, Params, _} = m2m_row_groups(Tuples, length(Cols), 1, [], []),
-    {[~"(", ColList, ~") IN (", join_bins(Groups, ~", "), ~")"], Params}.
-
--spec m2m_row_groups([tuple()], non_neg_integer(), pos_integer(), [binary()], [term()]) ->
-    {[binary()], [term()], pos_integer()}.
-m2m_row_groups([], _Arity, Counter, SQLs, Params) ->
-    {lists:reverse(SQLs), Params, Counter};
-m2m_row_groups([Tuple | Rest], Arity, Counter, SQLs, Params) ->
-    {Phs, Next} = m2m_placeholders(Arity, Counter, []),
-    Group = <<"(", (join_bins(Phs, ~", "))/binary, ")">>,
-    m2m_row_groups(Rest, Arity, Next, [Group | SQLs], Params ++ tuple_to_list(Tuple)).
-
--spec m2m_placeholders(non_neg_integer(), pos_integer(), [binary()]) ->
-    {[binary()], pos_integer()}.
-m2m_placeholders(0, Counter, Acc) ->
-    {lists:reverse(Acc), Counter};
-m2m_placeholders(N, Counter, Acc) ->
-    m2m_placeholders(N - 1, Counter + 1, [
-        iolist_to_binary([~"$", integer_to_binary(Counter)]) | Acc
-    ]).
-
-quote_ident_bin(Name) when is_binary(Name) ->
-    Escaped = binary:replace(Name, ~"\"", ~"\"\"", [global]),
-    <<$", Escaped/binary, $">>.
-
--spec quote_table_bin(binary()) -> binary().
-quote_table_bin(Table) ->
-    case kura_tenant:get_tenant() of
-        {prefix, Prefix} ->
-            <<(quote_ident_bin(Prefix))/binary, $., (quote_ident_bin(Table))/binary>>;
-        _ ->
-            quote_ident_bin(Table)
-    end.
+%% A join table has no tenant attribute to scope it by, so the read goes to the
+%% dialect unscoped; the related rows it names are read through the tenant.
+-spec join_rows_sql(module(), binary() | module(), {[atom()], [atom()]}, [tuple()]) ->
+    {iodata(), [term()]}.
+join_rows_sql(Dialect, JoinThrough, {OwnerCols, RelatedCols}, OwnerTuples) ->
+    Dialect:to_sql(#kura_query{
+        from = JoinThrough,
+        select = OwnerCols ++ RelatedCols,
+        wheres = [{OwnerCols, in, OwnerTuples}]
+    }).
 
 %%----------------------------------------------------------------------
 %% Has many through
@@ -366,11 +331,6 @@ apply_preload_opts(Q, Opts) ->
         #{} -> Q2
     end.
 
-resolve_join_table(Table) when is_binary(Table) ->
-    Table;
-resolve_join_table(Mod) when is_atom(Mod) ->
-    Mod:table().
-
 %%----------------------------------------------------------------------
 %% Internal: typed map access helpers for eqWAlizer
 %%----------------------------------------------------------------------
@@ -442,8 +402,3 @@ nest_preload(RepoMod, [R | Rest], AssocName, RelSchema, Nested, Acc) ->
 -spec reverse_maps([map()], [map()]) -> [map()].
 reverse_maps([], Acc) -> Acc;
 reverse_maps([H | T], Acc) -> reverse_maps(T, [H | Acc]).
-
--spec join_bins([binary()], binary()) -> binary().
-join_bins([], _Sep) -> <<>>;
-join_bins([H], _Sep) -> H;
-join_bins([H | T], Sep) -> <<H/binary, Sep/binary, (join_bins(T, Sep))/binary>>.
