@@ -74,7 +74,10 @@ ensure_pools() ->
 
 -spec start_repo_pool(module()) -> ok.
 start_repo_pool(Repo) ->
-    kura_db:start_pool(Repo, Repo, pool_config(Repo)).
+    case kura_db:start_pool(Repo, Repo, pool_config(Repo)) of
+        ok -> ok;
+        {error, _Logged} -> ok
+    end.
 
 %% Per-repo pool config. Multi-repo: read from the repos map. Single-repo
 %% legacy: pull the flat kura env keys.

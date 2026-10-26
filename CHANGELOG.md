@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `kura_repo_worker:start/1` returns `{error, Reason}` when the pool does
+  not start, where it logged the failure and returned `ok` (#192). A test
+  setup written as `ok = kura_repo_worker:start(my_repo)` now stops at the
+  failure. Secrets in `Reason` are replaced by `redacted`. Application boot
+  still logs a pool that did not start and carries on.
+- `kura_repo_worker:start/1` hands the connection settings in the repo's
+  config to its `pool_module`, the way application boot does, instead of
+  building a Postgres-shaped config with defaults for host, port and user
+  (#193). A `kura_sqlite` repo started this way gets its own defaults,
+  `:memory:` among them, where it raised
+  `{missing_repo_config, database}`. A Postgres repo that left out
+  `username` and relied on the `postgres` default must now set it. With
+  kura_postgres from this release on, the pool refuses to start with
+  `{missing_option, user}` and `start/1` returns the error. A missing
+  `database` no longer raises `missing_repo_config`: minato connects to
+  the database named after the user, as libpq does.
 - The query cache keys on a query's shape, with bound values replaced by
   markers, instead of on the whole query term (#163). `get(User, Id)` now
   holds one entry however many ids it is called with, where it held one
@@ -29,6 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Starting a pool hands the pool module the connection settings only.
+  The repo's own settings, the `encryption` keyring among them, were
+  passed along with them, and a pool module that echoed its options in
+  an error put the keys in the log. A password given as an improper list
+  no longer raises with the password in the stack trace.
 - Attribute tenancy (`{attribute, {Field, Value}}`) leaked reads. Only
   the top level of a query was filtered, so a union, CTE or `in`/`exists`
   subquery read other tenants' rows, and aggregates and streams were not

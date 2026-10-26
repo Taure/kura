@@ -56,6 +56,13 @@ pool_start_failure_keeps_an_empty_password_untouched_test() ->
     Logged = logged_report({error, {bad_value, [], ~""}}, #{password => ""}),
     ?assertEqual(nomatch, string:find(Logged, "redacted")).
 
+start_repo_pool_passes_the_repo_config_to_the_pool_module_test() ->
+    Received = with_pool_answer({ok, self()}, #{database => ~"db"}, fun() ->
+        ?assertEqual(ok, kura_app:start_repo_pool(kura_db_failing_repo)),
+        get({?MODULE, pool_config})
+    end),
+    ?assertEqual(#{database => ~"db"}, Received).
+
 pool_already_started_is_not_logged_test() ->
     Events = with_captured_logs(fun() ->
         with_pool_answer({error, {already_started, self()}}, fun() ->
@@ -71,7 +78,7 @@ pool_already_started_is_not_logged_test() ->
 repo_worker_start_failure_is_logged_test() ->
     Events = with_captured_logs(fun() ->
         with_pool_answer({error, econnrefused}, #{database => ~"db"}, fun() ->
-            ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo))
+            ?assertEqual({error, econnrefused}, kura_repo_worker:start(kura_db_failing_repo))
         end)
     end),
     ?assertMatch(
@@ -96,7 +103,10 @@ repo_worker_start_failure_hides_the_password_test() ->
         with_pool_answer(
             {error, {boom, Child}},
             #{database => ~"db", password => ~"s3cret"},
-            fun() -> ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)) end
+            fun() ->
+                {error, Reason} = kura_repo_worker:start(kura_db_failing_repo),
+                ?assertEqual(nomatch, string:find(io_lib:format("~0p", [Reason]), "s3cret"))
+            end
         )
     end),
     [#{msg := {report, Report}}] = Events,
@@ -109,7 +119,11 @@ repo_worker_start_failure_hides_a_non_ascii_password_test() ->
         with_pool_answer(
             {error, {boom, {state, ~"pä"}}},
             #{database => ~"db", password => ~"pä"},
-            fun() -> ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)) end
+            fun() ->
+                ?assertEqual(
+                    {error, {boom, {state, redacted}}}, kura_repo_worker:start(kura_db_failing_repo)
+                )
+            end
         )
     end),
     ?assertMatch([#{msg := {report, #{reason := {boom, {state, redacted}}}}}], Events).
@@ -206,26 +220,75 @@ repo_worker_start_accepts_a_charlist_password_test() ->
         with_pool_answer(
             {error, {boom, {state, ~"s3cret"}}},
             #{database => ~"db", password => "s3cret"},
-            fun() -> ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)) end
+            fun() ->
+                ?assertEqual(
+                    {error, {boom, {state, redacted}}}, kura_repo_worker:start(kura_db_failing_repo)
+                )
+            end
         )
     end),
     ?assertMatch([#{msg := {report, #{reason := {boom, {state, redacted}}}}}], Events).
 
-repo_worker_start_without_a_database_raises_without_the_config_test() ->
-    {Reason, Stack} =
-        with_pool_answer({ok, self()}, #{password => ~"s3cret"}, fun() ->
-            try kura_repo_worker:start(kura_db_failing_repo) of
-                Result -> {Result, []}
-            catch
-                error:R:S -> {R, S}
-            end
-        end),
-    ?assertEqual({missing_repo_config, database}, Reason),
-    ?assertEqual(nomatch, string:find(io_lib:format("~0p", [Stack]), "s3cret")).
+repo_worker_start_passes_the_repo_config_to_the_pool_module_test() ->
+    Config = #{
+        hostname => ~"db.internal",
+        username => ~"app",
+        password => ~"s3cret",
+        database => ~"app_db",
+        pool_size => 3
+    },
+    Received = with_pool_answer({ok, self()}, Config, fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        get({?MODULE, pool_config})
+    end),
+    ?assertEqual(Config, Received).
 
-start_pool(kura_db_failing_repo, Config) ->
+repo_worker_start_adds_no_postgres_defaults_test() ->
+    Received = with_pool_answer({ok, self()}, #{}, fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        get({?MODULE, pool_config})
+    end),
+    ?assertEqual(#{}, Received).
+
+repo_worker_start_keeps_the_repo_settings_from_the_pool_module_test() ->
+    Repo = #{
+        backend => kura_backend_postgres,
+        dialect => kura_dialect_pg,
+        driver_module => kura_driver_minato,
+        pool => other_pool,
+        read_only => true,
+        replicas => [other_repo],
+        uuid_version => 7,
+        encryption => #{keys => [{1, ~"S0VZ"}]},
+        keyring => kura_keyring_env
+    },
+    Received = with_pool_answer({ok, self()}, Repo#{database => ~"db"}, fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        get({?MODULE, pool_config})
+    end),
+    ?assertEqual(#{database => ~"db"}, Received).
+
+an_improper_list_password_is_not_raised_with_the_password_test() ->
+    Config = #{password => improper_list(x)},
+    Raised =
+        try logged_reason({error, {boom, improper_list(x)}}, Config) of
+            Reason -> {returned, Reason}
+        catch
+            Class:Error:Stack -> {Class, Error, Stack}
+        end,
+    ?assertEqual({returned, {boom, redacted}}, Raised).
+
+repo_worker_start_names_the_pool_from_the_config_test() ->
+    with_pool_answer({ok, self()}, #{pool => other_pool}, fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        ?assertEqual(other_pool, get({?MODULE, pool_name}))
+    end).
+
+start_pool(Pool, Config) ->
+    put({?MODULE, pool_name}, Pool),
+    put({?MODULE, pool_config}, Config),
     case get({?MODULE, pool_answer}) of
-        {raise, Reason} -> error(Reason, [kura_db_failing_repo, Config]);
+        {raise, Reason} -> error(Reason, [Pool, Config]);
         Answer -> Answer
     end.
 
@@ -246,13 +309,17 @@ with_pool_answer(Answer, Config, Run) ->
         Run()
     after
         erase({?MODULE, pool_answer}),
+        erase({?MODULE, pool_name}),
+        erase({?MODULE, pool_config}),
         application:unset_env(kura, repos)
     end.
 
 logged_report(Answer, Config) ->
     Events = with_captured_logs(fun() ->
         with_pool_answer(Answer, Config, fun() ->
-            ?assertEqual(ok, kura_db:start_pool(kura_db_failing_repo, kura_db_failing_repo, Config))
+            ?assertMatch(
+                {error, _}, kura_db:start_pool(kura_db_failing_repo, kura_db_failing_repo, Config)
+            )
         end)
     end),
     [#{msg := {report, Report}}] = Events,
@@ -261,7 +328,9 @@ logged_report(Answer, Config) ->
 logged_reason(Answer, Config) ->
     Events = with_captured_logs(fun() ->
         with_pool_answer(Answer, Config, fun() ->
-            ?assertEqual(ok, kura_db:start_pool(kura_db_failing_repo, kura_db_failing_repo, Config))
+            ?assertMatch(
+                {error, _}, kura_db:start_pool(kura_db_failing_repo, kura_db_failing_repo, Config)
+            )
         end)
     end),
     [#{msg := {report, #{reason := Reason}}}] = Events,

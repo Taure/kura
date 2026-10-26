@@ -40,6 +40,19 @@ for pool lookup, sandbox support, telemetry, and type loading.
 %% `key` is the TLS private key in ssl options.
 -define(IS_SECRET_KEY(Key), (Key =:= password orelse Key =:= key)).
 
+-define(REPO_KEYS, [
+    backend,
+    dialect,
+    pool,
+    pool_module,
+    driver_module,
+    read_only,
+    replicas,
+    uuid_version,
+    encryption,
+    keyring
+]).
+
 %%----------------------------------------------------------------------
 %% Query
 %%----------------------------------------------------------------------
@@ -195,17 +208,19 @@ get_pool_module(RepoMod) ->
     end.
 
 -doc false.
--spec start_pool(module(), atom(), map()) -> ok.
+-spec start_pool(module(), atom(), map()) -> ok | {error, term()}.
 start_pool(Repo, Pool, Config) ->
     PoolMod = get_pool_module(Repo),
     Secrets = secrets(Config),
-    try PoolMod:start_pool(Pool, Config) of
+    try PoolMod:start_pool(Pool, maps:without(?REPO_KEYS, Config)) of
         {ok, _Pid} ->
             ok;
         {error, {already_started, _Pid}} ->
             ok;
         {error, Reason} ->
-            not_started(Repo, PoolMod, #{reason => redacted(Reason, Secrets)})
+            Redacted = redacted(Reason, Secrets),
+            ok = not_started(Repo, PoolMod, #{reason => Redacted}),
+            {error, Redacted}
     catch
         Class:Reason:Stack ->
             Redacted = {Class, redacted(Reason, Secrets)},
@@ -271,9 +286,11 @@ forms(Password) ->
 
 -spec as_text(string()) -> binary() | undefined.
 as_text(Password) ->
-    case unicode:characters_to_binary(Password) of
+    try unicode:characters_to_binary(Password) of
         Binary when is_binary(Binary) -> Binary;
         _NotText -> undefined
+    catch
+        error:badarg -> undefined
     end.
 
 %% A password given as a binary reaches some pools as a list of its bytes,
