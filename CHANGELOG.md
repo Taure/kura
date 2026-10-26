@@ -41,12 +41,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     database named after the user, as libpq does, not to `postgres`. It
     may start cleanly against the wrong database, or fail when no
     database of that name exists. Set `database` explicitly.
-- A repo `init/1` that raises no longer stops kura's application start.
-  The pool is not started and the failure is logged with secrets in the
-  reason redacted; `kura_repo_worker:start/1` returns
-  `{error, {init_failed, {Class, Redacted}}}`. `init/1` runs during
-  kura's own start, before the consuming application, so it must not
-  call that application's processes.
+- A repo `init/1` that raises while its pool is started no longer stops
+  kura's application start. The pool is not started, and only the shape
+  of the reason is logged: an atom as it is, a tuple as
+  `{Tag, redacted}`, anything else as `redacted`, since `init/1` is the
+  consumer's code and its reason may hold a secret it fetched.
+  `kura_repo_worker:start/1` returns `{error, {init_failed, {Class,
+  Shape}}}`. This covers pool start only: `init/1` also runs on every
+  config lookup at query time, where a raise is neither caught nor
+  redacted. `init/1` runs during kura's own start, before the consuming
+  application, so it must not call that application's processes.
 - The many_to_many join-table SQL, the preload read and the `put_assoc` /
   `cast_assoc` DELETE and INSERT, is compiled by the repo's dialect
   (`to_sql/1`, `delete_all/1`, `insert_all/3`) instead of written by hand

@@ -78,7 +78,8 @@ its own options and defaults; kura's own settings are kept back. Returns
 not start, with any secret in `Reason` replaced by `redacted`. A pool module
 that raises instead makes this raise
 `{pool_start_failed, RepoMod, {Class, Redacted}}`. A repo `init/1` that raises
-returns `{error, {init_failed, {Class, Redacted}}}`.
+returns `{error, {init_failed, {Class, Shape}}}`, keeping only the shape of its
+reason; see `kura_db:start_pool/1`.
 """.
 -spec start(module()) -> ok | {error, term()}.
 start(RepoMod) ->

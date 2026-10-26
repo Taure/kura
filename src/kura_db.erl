@@ -223,8 +223,10 @@ yet. Application boot and `kura_repo_worker:start/1` both start pools
 through this function. Kura adds no connection defaults; the pool module
 applies its own.
 
-An `init/1` that raises starts no pool. The failure is logged with secrets in
-the reason redacted, and returned as `{error, {init_failed, {Class, Redacted}}}`.
+An `init/1` that raises starts no pool. Only the shape of its reason is kept:
+an atom as it is, a tuple as `{Tag, redacted}` when its first element is an
+atom, anything else as `redacted`. The failure is logged that way and returned
+as `{error, {init_failed, {Class, Shape}}}`.
 """.
 -spec start_pool(module()) -> ok | {error, term()}.
 start_pool(Repo) ->
@@ -241,7 +243,7 @@ resolve(Repo) ->
         Config -> {ok, pool_name(Repo, Config), Config}
     catch
         Class:Reason:Stack ->
-            Redacted = {Class, redacted(Reason, secrets(kura_repo:read_config(Repo)))},
+            Redacted = {Class, shape(Reason)},
             ?LOG_ERROR(#{
                 msg => ~"kura: repo init failed",
                 repo => Repo,
@@ -271,6 +273,15 @@ start_pool(Repo, Pool, Config) ->
             ok = not_started(Repo, PoolMod, #{reason => Redacted, stacktrace => arities(Stack)}),
             error({pool_start_failed, Repo, Redacted})
     end.
+
+%% init/1 is the consumer's code, so nothing is known about what its reason
+%% holds: only its tag is kept.
+-spec shape(term()) -> term().
+shape(Reason) when is_atom(Reason) -> Reason;
+shape(Reason) when tuple_size(Reason) > 0, is_atom(element(1, Reason)) ->
+    {element(1, Reason), redacted};
+shape(_Reason) ->
+    redacted.
 
 -spec not_started(module(), module(), map()) -> ok.
 not_started(Repo, PoolMod, Report) ->

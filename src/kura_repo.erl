@@ -100,7 +100,7 @@ migration_apps() -> [my_gdpr_extension].
 dependency's migrations run first. See `kura_migrator:migration_apps/1`.
 """.
 
--export([config/1, read_config/1, read_only/1, replica/1]).
+-export([config/1, read_only/1, replica/1]).
 
 -callback otp_app() -> atom().
 
@@ -110,8 +110,13 @@ Adjust the repo's config at runtime. Optional.
 It runs whenever kura reads the config, including during kura's own
 application start, when the pool is started. The consuming application has
 not started then, so `init/1` must not call processes it owns. One that raises
-does not stop kura: the pool is not started and the failure is logged, with
-secrets in the reason redacted.
+while the pool is started does not stop kura: the pool is not started, and
+only the shape of the reason is logged and returned (see
+`kura_db:start_pool/1`).
+
+`init/1` also runs on every config lookup at query time (`kura_db:get_pool/1`,
+`read_only/1`, the driver and dialect lookups). A raise there is not caught or
+redacted, so `init/1` should not raise with a secret in its reason.
 """.
 -callback init(Config :: map()) -> map().
 
@@ -155,7 +160,6 @@ replica(RepoMod) ->
         Replicas when is_list(Replicas) -> lists:nth(rand:uniform(length(Replicas)), Replicas)
     end.
 
--doc false.
 -spec read_config(module()) -> map().
 read_config(RepoMod) ->
     case application:get_env(kura, repos) of

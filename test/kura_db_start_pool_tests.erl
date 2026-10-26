@@ -385,7 +385,7 @@ deprecated_pool_config_raises_a_raising_init_redacted_test() ->
             end
         end)
     end),
-    ?assertMatch({init_failed, {error, {bad_config, redacted, _}}}, Raised).
+    ?assertEqual({init_failed, {error, {bad_config, redacted}}}, Raised).
 
 deprecated_pool_config_reads_the_legacy_flat_repo_test() ->
     Flat = [{repo, kura_db_failing_repo}, {pool_module, ?MODULE}, {database, ~"flat_db"}],
@@ -406,7 +406,7 @@ boot_logs_a_raising_init_and_carries_on_test() ->
         #{
             msg := ~"kura: repo init failed",
             repo := kura_db_raising_init_repo,
-            reason := {error, {bad_config, redacted, #{password := redacted}}}
+            reason := {error, {bad_config, redacted}}
         },
         Report
     ),
@@ -419,8 +419,39 @@ repo_worker_start_returns_a_raising_init_redacted_test() ->
             kura_repo_worker:start(kura_db_raising_init_repo)
         end)
     end),
-    ?assertMatch({error, {init_failed, {error, {bad_config, redacted, _}}}}, Result),
+    ?assertEqual({error, {init_failed, {error, {bad_config, redacted}}}}, Result),
     ?assertEqual(nomatch, string:find(io_lib:format("~p", [Result]), "s3cret")).
+
+a_raising_init_hides_the_encryption_keyring_test() ->
+    Config = #{raise => invalid_config, encryption => #{keys => [{1, ~"S0VZS0VZ"}]}},
+    {Result, Events} = with_captured_logs_and_result(fun() ->
+        with_pool_answer({ok, self()}, kura_db_raising_init_repo, Config, fun() ->
+            kura_repo_worker:start(kura_db_raising_init_repo)
+        end)
+    end),
+    ?assertEqual({error, {init_failed, {error, {invalid_config, redacted}}}}, Result),
+    [#{msg := {report, Report}}] = Events,
+    ?assertEqual(nomatch, string:find(io_lib:format("~p", [Report]), "S0VZS0VZ")).
+
+a_raising_init_hides_a_secret_it_fetched_itself_test() ->
+    {Result, Events} = with_captured_logs_and_result(fun() ->
+        with_pool_answer(
+            {ok, self()}, kura_db_raising_init_repo, #{raise => fetched_secret}, fun() ->
+                kura_repo_worker:start(kura_db_raising_init_repo)
+            end
+        )
+    end),
+    ?assertEqual({error, {init_failed, {error, {badmatch, redacted}}}}, Result),
+    [#{msg := {report, Report}}] = Events,
+    ?assertEqual(nomatch, string:find(io_lib:format("~p", [Report]), "supersecretvaultpw")).
+
+a_raising_init_with_an_untagged_reason_is_redacted_whole_test() ->
+    {Result, _Events} = with_captured_logs_and_result(fun() ->
+        with_pool_answer({ok, self()}, kura_db_raising_init_repo, #{raise => thrown}, fun() ->
+            kura_repo_worker:start(kura_db_raising_init_repo)
+        end)
+    end),
+    ?assertEqual({error, {init_failed, {throw, redacted}}}, Result).
 
 a_raising_init_logs_no_arguments_from_the_stack_test() ->
     Config = #{raise => function_clause, password => ~"s3cret"},
