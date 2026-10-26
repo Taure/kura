@@ -61,7 +61,7 @@ start_repo_pool_passes_the_repo_config_to_the_pool_module_test() ->
         ?assertEqual(ok, kura_app:start_repo_pool(kura_db_failing_repo)),
         get({?MODULE, pool_config})
     end),
-    ?assertEqual(#{database => ~"db", pool_module => ?MODULE}, Received).
+    ?assertEqual(#{database => ~"db"}, Received).
 
 pool_already_started_is_not_logged_test() ->
     Events = with_captured_logs(fun() ->
@@ -241,14 +241,41 @@ repo_worker_start_passes_the_repo_config_to_the_pool_module_test() ->
         ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
         get({?MODULE, pool_config})
     end),
-    ?assertEqual(Config#{pool_module => ?MODULE}, Received).
+    ?assertEqual(Config, Received).
 
 repo_worker_start_adds_no_postgres_defaults_test() ->
     Received = with_pool_answer({ok, self()}, #{}, fun() ->
         ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
         get({?MODULE, pool_config})
     end),
-    ?assertEqual(#{pool_module => ?MODULE}, Received).
+    ?assertEqual(#{}, Received).
+
+repo_worker_start_keeps_the_repo_settings_from_the_pool_module_test() ->
+    Repo = #{
+        backend => kura_backend_postgres,
+        dialect => kura_dialect_pg,
+        driver_module => kura_driver_minato,
+        read_only => true,
+        replicas => [other_repo],
+        uuid_version => 7,
+        encryption => #{keys => [{1, ~"S0VZ"}]},
+        keyring => kura_keyring_env
+    },
+    Received = with_pool_answer({ok, self()}, Repo#{database => ~"db"}, fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        get({?MODULE, pool_config})
+    end),
+    ?assertEqual(#{database => ~"db"}, Received).
+
+an_improper_list_password_is_not_raised_with_the_password_test() ->
+    Config = #{password => improper_list(x)},
+    Raised =
+        try logged_reason({error, {boom, improper_list(x)}}, Config) of
+            Reason -> {returned, Reason}
+        catch
+            Class:Error:Stack -> {Class, Error, Stack}
+        end,
+    ?assertMatch({returned, _}, Raised).
 
 repo_worker_start_names_the_pool_from_the_config_test() ->
     with_pool_answer({ok, self()}, #{pool => other_pool}, fun() ->
