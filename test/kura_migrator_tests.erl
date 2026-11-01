@@ -824,20 +824,27 @@ check_alter_ops_with_suppression_test() ->
 
 -define(PG_POOL_REPO, kura_migrator_tests_pg_pool_repo).
 -define(LITE_POOL_REPO, kura_migrator_tests_lite_pool_repo).
+-define(OLD_PG_POOL_REPO, kura_migrator_tests_old_pg_pool_repo).
+-define(NO_DIALECT_POOL_REPO, kura_migrator_tests_no_dialect_pool_repo).
 
 concurrent_index_compile_test_() ->
     {setup, fun setup_pool_repos/0, fun cleanup_pool_repos/1, [
         fun concurrently_map_form_on_a_capable_pool/0,
         fun concurrently_list_form_on_a_capable_pool/0,
         fun concurrently_false_is_a_plain_index/0,
-        fun concurrently_on_a_pool_without_the_capability_is_plain/0
+        fun concurrently_on_a_pool_without_the_capability_is_plain/0,
+        fun concurrently_on_a_postgres_pool_without_the_capability_is_refused/0,
+        fun concurrently_without_a_dialect_is_taken_as_postgres/0,
+        fun unsupported_concurrently_is_refused_while_planning/0
     ]}.
 
 setup_pool_repos() ->
     Previous = application:get_env(kura, repos),
     application:set_env(kura, repos, #{
         ?PG_POOL_REPO => #{pool_module => kura_pool_minato, dialect => kura_dialect_pg},
-        ?LITE_POOL_REPO => #{pool_module => ?MODULE, dialect => kura_dialect_pg}
+        ?LITE_POOL_REPO => #{pool_module => ?MODULE, dialect => kura_dialect_sqlite},
+        ?OLD_PG_POOL_REPO => #{pool_module => ?MODULE, dialect => kura_dialect_pg},
+        ?NO_DIALECT_POOL_REPO => #{pool_module => ?MODULE}
     }),
     Previous.
 
@@ -886,6 +893,43 @@ concurrently_on_a_pool_without_the_capability_is_plain() ->
             ?LITE_POOL_REPO, {create_index, ~"by_email", ~"users", [email], [unique, concurrently]}
         )
     ).
+
+concurrently_on_a_postgres_pool_without_the_capability_is_refused() ->
+    ?assertError(
+        {migration_aborted, {concurrent_indexes_unsupported, ?MODULE}},
+        kura_migrator:compile_operation(
+            ?OLD_PG_POOL_REPO, {create_index, ~"users", [email], #{concurrently => true}}
+        )
+    ),
+    ?assertEqual(
+        ~"CREATE INDEX \"users_email_index\" ON \"users\" (\"email\")",
+        kura_migrator:compile_operation(?OLD_PG_POOL_REPO, {create_index, ~"users", [email], #{}})
+    ).
+
+concurrently_without_a_dialect_is_taken_as_postgres() ->
+    {ok, Global} = application:get_env(kura, dialect),
+    application:unset_env(kura, dialect),
+    try
+        ?assertError(
+            {migration_aborted, {concurrent_indexes_unsupported, ?MODULE}},
+            kura_migrator:compile_operation(
+                ?NO_DIALECT_POOL_REPO, {create_index, ~"i", ~"users", [email], [concurrently]}
+            )
+        )
+    after
+        application:set_env(kura, dialect, Global)
+    end.
+
+unsupported_concurrently_is_refused_while_planning() ->
+    Index = {2, m20250301110000_nontx_index_items},
+    Note = {3, m20250301120000_nontx_add_note},
+    ?assertError(
+        {migration_aborted, {concurrent_indexes_unsupported, ?MODULE}},
+        kura_migrator:refuse_unsupported_concurrently(?OLD_PG_POOL_REPO, [Note, Index], up)
+    ),
+    ?assertEqual(ok, kura_migrator:refuse_unsupported_concurrently(?OLD_PG_POOL_REPO, [Note], up)),
+    ?assertEqual(ok, kura_migrator:refuse_unsupported_concurrently(?LITE_POOL_REPO, [Index], up)),
+    ?assertEqual(ok, kura_migrator:refuse_unsupported_concurrently(?PG_POOL_REPO, [Index], up)).
 
 runs_in_transaction_test() ->
     ?assertNot(kura_migrator:runs_in_transaction(m20250301110000_nontx_index_items)),

@@ -29,7 +29,8 @@ cares about:
 - `select_for_update_skip_locked` — `SELECT ... FOR UPDATE SKIP LOCKED`
 - `partial_indexes` — `CREATE INDEX ... WHERE`
 - `concurrent_indexes` — `CREATE INDEX CONCURRENTLY`; without it the
-  migrator compiles `concurrently => true` to a plain `CREATE INDEX`
+  migrator compiles `concurrently => true` to a plain `CREATE INDEX` for
+  a non-Postgres dialect and refuses it for Postgres
 - `window_functions` — `OVER (PARTITION BY ... ORDER BY ...)`
 - `full_text_search` — the `{Field, matches, Query}` where-condition
 - `vector` — pgvector `VECTOR(N)` columns (`{vector, N}` type)

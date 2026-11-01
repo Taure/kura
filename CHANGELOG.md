@@ -247,9 +247,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the list form) and emits `CREATE INDEX CONCURRENTLY` (#139). It is
   refused in a migration that is still transactional, with
   `{concurrently_in_transaction, Version, Module}`, before anything in
-  the run executes. On a pool that does not declare the new standard
-  `concurrent_indexes` capability (SQLite) it compiles to a plain
-  `CREATE INDEX`.
+  the run executes. On a non-Postgres pool that does not declare the new
+  standard `concurrent_indexes` capability (SQLite) it compiles to a
+  plain `CREATE INDEX`. A Postgres repo on a pool without it
+  (kura_postgres 1.1.3 and earlier) is refused with
+  `{concurrent_indexes_unsupported, PoolModule}` while the run is
+  planned; non-transactional migrations need kura_postgres 1.1.5 or
+  later.
 - `kura_db:query_on/4,5` runs a statement on a connection the caller
   checked out, with the same telemetry as `kura_db:query/3`. `/5` hands
   an options map to the driver's `query_on/4` (`timeout` for minato).

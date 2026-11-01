@@ -51,9 +51,12 @@ migration's `down/0` the same way.
 `{create_index, Table, Columns, #{concurrently => true}}` in a migration
 that is still transactional is refused with `{error,
 {concurrently_in_transaction, Version, Module}}` before anything in the
-run executes. On a backend whose pool does not declare the
+run executes. On a non-Postgres backend whose pool does not declare the
 `concurrent_indexes` capability (SQLite) the option compiles to a plain
-`CREATE INDEX`, so one migration serves both backends.
+`CREATE INDEX`, so one migration serves both backends. A Postgres repo
+(dialect `kura_dialect_pg`, or none configured) on a pool without it is
+refused with `{error, {concurrent_indexes_unsupported, PoolModule}}`
+while the run is planned, rather than given a build that blocks writes.
 
 A run with a non-transactional migration pending is refused with
 `{error, {non_transactional_in_transaction, Version, Module}}`, before
@@ -147,7 +150,8 @@ one.
     still_todo/3,
     lock_wait_step/4,
     release_session_lock/1,
-    run_non_transactional/3
+    run_non_transactional/3,
+    refuse_unsupported_concurrently/3
 ]).
 -endif.
 
@@ -1080,6 +1084,7 @@ run_plan(RepoMod, Dir, PlanFun) ->
         Todo = PlanFun(),
         refuse_non_transactional_when_enclosed(Enclosed, Todo),
         refuse_concurrently_in_transaction(Todo, Dir),
+        refuse_unsupported_concurrently(RepoMod, Todo, Dir),
         emit_migrate_start(RepoMod, Dir, length(Todo)),
         run_transactional_prefix(Todo, Dir, RepoMod)
     end),
@@ -1198,6 +1203,18 @@ refuse_concurrently_in_transaction([{Version, Module} | Rest], Dir) ->
             error({migration_aborted, {concurrently_in_transaction, Version, Module}});
         false ->
             refuse_concurrently_in_transaction(Rest, Dir)
+    end.
+
+%% Checked while planning so a migration is not refused part-way, after
+%% statements before its index build have committed.
+-spec refuse_unsupported_concurrently(module(), [migration()], up | down) -> ok.
+refuse_unsupported_concurrently(RepoMod, Todo, Dir) ->
+    case [M || {_, M} <- Todo, has_concurrent_index(get_migration_ops(M, Dir))] of
+        [] ->
+            ok;
+        [_ | _] ->
+            _ = concurrently(RepoMod, true),
+            ok
     end.
 
 -spec has_concurrent_index([kura_migration:operation()]) -> boolean().
@@ -1484,18 +1501,43 @@ compile_operation(_RepoMod, {drop_index, Name}) ->
 compile_operation(_RepoMod, {execute, SQL}) ->
     SQL.
 
-%% A pool without `concurrent_indexes` (SQLite) has no online index
-%% build, and a plain `CREATE INDEX` is what it would run anyway.
+%% A non-Postgres backend without `concurrent_indexes` (SQLite) has no
+%% online index build, and a plain `CREATE INDEX` is what it would run
+%% anyway. A Postgres pool without it (kura_postgres 1.1.3 and earlier)
+%% would take a lock blocking writes for the whole build, so it is refused.
 -spec concurrently(module(), boolean()) -> binary().
 concurrently(RepoMod, true) ->
     PoolMod = kura_db:get_pool_module(RepoMod),
     _ = code:ensure_loaded(PoolMod),
     case kura_capabilities:has(PoolMod, concurrent_indexes) of
         true -> ~"CONCURRENTLY ";
-        false -> <<>>
+        false -> plain_index_build(RepoMod, PoolMod)
     end;
 concurrently(_RepoMod, false) ->
     <<>>.
+
+-spec plain_index_build(module(), module()) -> binary().
+plain_index_build(RepoMod, PoolMod) ->
+    case postgres_ddl(RepoMod) of
+        false ->
+            <<>>;
+        true ->
+            ?LOG_ERROR(#{
+                msg => ~"kura: the pool cannot build an index concurrently",
+                repo => RepoMod,
+                pool_module => PoolMod,
+                hint => ~"upgrade kura_postgres to a release declaring concurrent_indexes"
+            }),
+            error({migration_aborted, {concurrent_indexes_unsupported, PoolMod}})
+    end.
+
+-spec postgres_ddl(module()) -> boolean().
+postgres_ddl(RepoMod) ->
+    case ddl_dialect(RepoMod) of
+        {ok, kura_dialect_pg} -> true;
+        {ok, _Other} -> false;
+        none -> true
+    end.
 
 -spec compile_column_def(module(), #kura_column{}) -> binary().
 compile_column_def(RepoMod, #kura_column{
