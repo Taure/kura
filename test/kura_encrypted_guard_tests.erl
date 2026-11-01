@@ -527,6 +527,11 @@ verdict_is_a_function_of_the_shape_test_() ->
                 {'and', {ssn, P}},
                 {exists, {ssn, P}},
                 {exists, {subquery, not_a_query}},
+                {id, '=', {subquery, Sub}},
+                {id, {subquery, Sub}},
+                {id, between, {subquery, Sub}},
+                {[id], not_in, {subquery, Sub}},
+                {fragment, ~"x = ?", [{subquery, Sub}]},
                 {ssn, nil},
                 {ssn, undefined},
                 {[id, name], in, [{1, {ssn, P}}]},
@@ -614,3 +619,28 @@ cached_compile_test_() ->
             ?assertEqual(Size, ets:info(kura_query_cache, size))
         end}
     ]}.
+
+%%----------------------------------------------------------------------
+%% A subquery in a value position is walked too.
+%%----------------------------------------------------------------------
+
+subquery_value_refused_test_() ->
+    Sub = correlated({ssn, ?PLAIN}),
+    [
+        {Name, ?_assertError(?WHERE_SSN, where_enc(Cond))}
+     || {Name, Cond} <- [
+            {"comparison", {id, '=', {subquery, Sub}}},
+            {"equality", {id, {subquery, Sub}}},
+            {"not_in", {id, not_in, {subquery, Sub}}},
+            {"row in", {[id], in, {subquery, Sub}}},
+            {"under not", {'not', {name, '>', {subquery, Sub}}}}
+        ]
+    ].
+
+subquery_value_is_not_a_cache_hit_test_() ->
+    Sub = correlated({ssn, ?PLAIN}),
+    {setup, fun compiler_setup/0, fun compiler_teardown/1, fun() ->
+        _ = kura_query_compiler:to_sql_cached(?REPO, where_enc({id, '=', 5})),
+        Raw = #kura_query{from = ?ENC, wheres = [{id, '=', {subquery, Sub}}]},
+        ?assertError(?WHERE_SSN, kura_query_compiler:to_sql_cached(?REPO, Raw))
+    end}.

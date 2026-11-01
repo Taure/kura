@@ -147,7 +147,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   database resolved the unqualified name to the outer column, binding the
   plaintext. The guard now walks subquery conditions (wheres, havings,
   union branches, nested subqueries) against the outer encrypted fields
-  they do not shadow. A bare-table source shadows nothing.
+  they do not shadow, including a `{subquery, Q}` given as the value of
+  any other condition, such as `{id, '=', {subquery, Q}}`. A bare-table
+  source shadows nothing.
 - A CTE bypassed the filter guard. A `from` or `join` naming a CTE over
   an encrypted schema had no encrypted fields in scope, so
   `where(from(enc_cte), {ssn, V})` bound the plaintext, as did a condition

@@ -210,16 +210,27 @@ refuse_encrypted_cond({Field, Op}, _Scope, _Reason) when
     is_atom(Field), ?KURA_IS_UNARY_OP(Op)
 ->
     ok;
-refuse_encrypted_cond({Field, _Value}, Scope, Reason) when is_atom(Field) ->
-    refuse_field(Field, Scope, Reason);
-refuse_encrypted_cond({Field, _Op, _Value}, Scope, Reason) when is_atom(Field) ->
-    refuse_field(Field, Scope, Reason);
-refuse_encrypted_cond({Fields, _Op, _Value}, Scope, Reason) when is_list(Fields) ->
-    refuse_fields(Fields, Scope, Reason);
+refuse_encrypted_cond({Field, Value}, Scope, Reason) when is_atom(Field) ->
+    refuse_field(Field, Scope, Reason),
+    refuse_value(Value, Scope);
+refuse_encrypted_cond({Field, _Op, Value}, Scope, Reason) when is_atom(Field) ->
+    refuse_field(Field, Scope, Reason),
+    refuse_value(Value, Scope);
+refuse_encrypted_cond({Fields, _Op, Value}, Scope, Reason) when is_list(Fields) ->
+    refuse_fields(Fields, Scope, Reason),
+    refuse_value(Value, Scope);
 refuse_encrypted_cond(_Cond, {[], _Ctes}, _Reason) ->
     ok;
 refuse_encrypted_cond(_Cond, _Scope, _Reason) ->
     erlang:error({kura, unrecognised_condition}).
+
+%% A subquery in a value position is checked like any other: its conditions
+%% can reach the outer query's encrypted fields. kura_query_shape keeps it
+%% in the shape for the same reason.
+refuse_value({subquery, #kura_query{} = Sub}, Scope) ->
+    refuse_encrypted_subquery(Sub, Scope);
+refuse_value(_Value, _Scope) ->
+    ok.
 
 refuse_encrypted_subquery(Sub, {Encrypted, Ctes}) ->
     refuse_encrypted_query(Sub, Encrypted, Ctes).
