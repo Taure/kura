@@ -84,6 +84,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `constraint` in what it logs, returns and emits as telemetry
   `error_reason` (#139). A failed `CREATE UNIQUE INDEX` put the
   duplicated key values, often personal data, in `detail`.
+- The `[kura, migrator, migrate, stop]` event carries the new
+  `applied_versions` metadata, and on an error its `applied_count` and
+  `applied_versions` give the migrations a split run committed before it
+  failed, which stay applied, where `applied_count` was always 0 (#139).
 - A migrator waiting for the advisory lock logs a warning every 30
   seconds with the time it has waited, where the wait was silent after
   its first info line (#139). The wait is still unbounded by default; the

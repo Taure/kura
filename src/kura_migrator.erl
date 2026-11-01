@@ -491,11 +491,17 @@ emit_migrate_start(RepoMod, Direction, PendingCount) ->
 
 -spec emit_migrate_stop(module(), integer(), up | down | fake, term()) -> ok.
 emit_migrate_stop(RepoMod, T0, Direction, Result) ->
+    emit_migrate_stop(RepoMod, T0, Direction, Result, []).
+
+%% `Committed` is what a split run committed before it failed: those
+%% versions stay applied, so an error does not mean nothing changed.
+-spec emit_migrate_stop(module(), integer(), up | down | fake, term(), [integer()]) -> ok.
+emit_migrate_stop(RepoMod, T0, Direction, Result, Committed) ->
     DurationNative = erlang:monotonic_time() - T0,
-    {ResultStatus, AppliedCount, ErrorReason} =
+    {ResultStatus, Applied, ErrorReason} =
         case Result of
-            {ok, Versions} when is_list(Versions) -> {ok, length(Versions), undefined};
-            {error, R} -> {error, 0, R}
+            {ok, Versions} when is_list(Versions) -> {ok, Versions, undefined};
+            {error, R} -> {error, Committed, R}
         end,
     telemetry_event(
         [kura, migrator, migrate, stop],
@@ -504,7 +510,8 @@ emit_migrate_stop(RepoMod, T0, Direction, Result) ->
             repo => RepoMod,
             direction => Direction,
             result => ResultStatus,
-            applied_count => AppliedCount,
+            applied_count => length(Applied),
+            applied_versions => Applied,
             error_reason => ErrorReason
         }
     ).
@@ -1119,20 +1126,20 @@ run_plan(RepoMod, Dir, PlanFun) ->
         emit_migrate_start(RepoMod, Dir, length(Todo)),
         run_transactional_prefix(Todo, Dir, RepoMod)
     end),
-    Result = continue_plan(First, Dir, RepoMod, []),
-    emit_migrate_stop(RepoMod, T0, Dir, Result),
+    {Result, Committed} = continue_plan(First, Dir, RepoMod, []),
+    emit_migrate_stop(RepoMod, T0, Dir, Result, Committed),
     Result.
 
 -spec continue_plan(
     {ok, {[integer()], [migration()]}} | {error, term()}, up | down, module(), [integer()]
-) -> {ok, [integer()]} | {error, term()}.
+) -> {{ok, [integer()]} | {error, term()}, [integer()]}.
 continue_plan({ok, {Versions, []}}, _Dir, _RepoMod, Done) ->
-    {ok, Done ++ Versions};
+    {{ok, Done ++ Versions}, Done ++ Versions};
 continue_plan({ok, {Versions, Todo}}, Dir, RepoMod, Done) ->
     continue_plan(next_step(Todo, Dir, RepoMod), Dir, RepoMod, Done ++ Versions);
 continue_plan({error, _} = Err, _Dir, RepoMod, Done) ->
     log_kept(RepoMod, Done),
-    Err.
+    {Err, Done}.
 
 -spec next_step([migration()], up | down, module()) ->
     {ok, {[integer()], [migration()]}} | {error, term()}.

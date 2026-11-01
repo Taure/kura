@@ -56,6 +56,8 @@ nontx_test_() ->
                 fun rollback_runs_down_outside_a_transaction/0},
             {"a failure part-way keeps earlier statements and leaves the version pending",
                 fun failure_part_way_leaves_version_unrecorded/0},
+            {"a split run that fails reports what it committed",
+                fun failed_split_run_reports_committed_versions/0},
             {"concurrently in a transactional migration is refused before anything runs",
                 fun concurrently_in_transactional_migration_is_refused/0},
             {"a raising non-transactional migration is an error",
@@ -181,6 +183,24 @@ failure_part_way_leaves_version_unrecorded() ->
         kura_migrator:status(?REPO)
     ),
     ?assertEqual(false, lock_held()).
+
+failed_split_run_reports_committed_versions() ->
+    declare([?FAIL_APP]),
+    Stop = [kura, migrator, migrate, stop],
+    Ref = telemetry_test:attach_event_handlers(self(), [Stop]),
+    try
+        {error, {migration_failed, ?FAIL_PARTIAL, _}} = kura_migrator:migrate(?REPO),
+        receive
+            {Stop, Ref, _Measurements, Metadata} ->
+                ?assertMatch(
+                    #{result := error, applied_count := 1, applied_versions := [?FAIL_ITEMS]},
+                    Metadata
+                )
+        after 1000 -> error(no_stop_event)
+        end
+    after
+        telemetry:detach(Ref)
+    end.
 
 concurrently_in_transactional_migration_is_refused() ->
     declare([?REFUSE_APP]),
