@@ -24,8 +24,8 @@ limits bound it regardless, both counted in words and both configurable:
   bigger than this is never interned.
 
 Both limits count the bytes of every off-heap binary an entry holds,
-such as its SQL text, which neither `erts_debug:flat_size/1` nor
-`ets:info(Tab, memory)` include.
+such as its SQL text. A term's flat size leaves those bytes out, and so
+does `ets:info(Tab, memory)`.
 
 An `in` list is one shape per list length, so a caller-supplied array
 of arbitrary length still interns an entry per length. The per-entry
