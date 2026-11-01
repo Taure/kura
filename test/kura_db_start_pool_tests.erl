@@ -1198,6 +1198,40 @@ exited(Monitor) ->
     after 5000 -> error(timeout)
     end.
 
+a_repo_on_its_own_pool_refused_another_fails_closed_test() ->
+    with_two_repos(fun() ->
+        application:set_env(kura, repos, #{
+            kura_db_owner_repo => #{pool => shared_pool, pool_module => ?MODULE},
+            kura_db_other_repo => #{pool => own_pool, pool_module => ?MODULE}
+        }),
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_other_repo)),
+        ok = moved_to(shared_pool),
+        _ = with_captured_logs(fun() ->
+            ?assertEqual(
+                {error, {pool_owned_by, kura_db_owner_repo}},
+                kura_repo_worker:start(kura_db_other_repo)
+            )
+        end),
+        ?assertError({pool_owned_by, kura_db_owner_repo}, kura_db:get_pool(kura_db_other_repo)),
+        ?assertError({pool_owned_by, kura_db_owner_repo}, kura_repo:read_only(kura_db_other_repo))
+    end).
+
+stop_pool_drops_the_refused_marker_test() ->
+    with_two_repos(fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        _ = with_captured_logs(fun() -> kura_repo_worker:start(kura_db_other_repo) end),
+        ?assertError({pool_owned_by, kura_db_owner_repo}, kura_db:get_pool(kura_db_other_repo)),
+        ?assertEqual(ok, kura_db:stop_pool(kura_db_other_repo)),
+        application:set_env(kura, repos, #{
+            kura_db_owner_repo => #{pool => shared_pool, pool_module => ?MODULE},
+            kura_db_other_repo => #{pool => free_pool, pool_module => ?MODULE}
+        }),
+        erase({?MODULE, pool_name}),
+        ?assertEqual(free_pool, kura_db:get_pool(kura_db_other_repo)),
+        ?assertEqual(undefined, get({?MODULE, pool_name}))
+    end).
+
 with_two_repos(Run) ->
     Shared = #{pool => shared_pool, pool_module => ?MODULE},
     with_pool_answer({ok, self()}, fun() ->
