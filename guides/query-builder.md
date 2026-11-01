@@ -226,8 +226,12 @@ nearest rows first; `desc` cannot use an HNSW or IVFFlat index.
 
 The query vector is a list of numbers. `distance/3` casts it and dumps it
 to pgvector's text form straight away, so the query holds a binary and
-binds it as one parameter. It raises on an unknown metric, an empty list
-or a list holding anything but numbers.
+binds it as one parameter. It raises on an unknown metric, an empty list,
+a list holding anything but numbers, or more than 16000 dimensions.
+
+A query embedding appears in telemetry and query-log params like any
+other bound value, and an embedding can be partly inverted back to the
+text it encodes, so treat those params as you would the text itself.
 
 `order_by/2` and `select_expr/2` check a distance against the schema:
 
