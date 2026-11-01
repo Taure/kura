@@ -293,6 +293,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   type seams all use it.
 - `kura_hkdf`, HKDF-SHA256 (RFC 5869) over `crypto:mac/4`, with the RFC
   test vectors. Not used yet; groundwork for per-column keys (#137).
+  `expand/3` refuses a PRK shorter than 32 bytes with
+  `{kura_hkdf, short_prk}`, and both functions raise
+  `{kura_hkdf, badarg}` on a non-binary key, salt or info or a
+  non-integer length, so no key material reaches a crash report.
 - A corpus of v1 ciphertexts under fixed test keys that every release
   must keep decrypting.
 - `kura_schema:is_schema/1` and `kura_schema:encrypted_fields/1`, both

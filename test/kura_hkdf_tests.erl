@@ -75,5 +75,42 @@ invalid_length_raises_test_() ->
      || L <- [0, -1, 8161]
     ].
 
+short_prk_raises_test_() ->
+    [
+        ?_assertError({kura_hkdf, short_prk}, kura_hkdf:expand(<<>>, <<>>, 32)),
+        ?_assertError({kura_hkdf, short_prk}, kura_hkdf:expand(binary:copy(<<1>>, 31), <<>>, 32)),
+        ?_assertEqual(32, byte_size(kura_hkdf:expand(binary:copy(<<1>>, 32), <<>>, 32)))
+    ].
+
+%% A function_clause would put the key material in the stacktrace.
+badarg_raises_without_key_material_test_() ->
+    Secret = binary:copy(<<16#5a>>, 32),
+    SecretList = binary_to_list(Secret),
+    Bad = ill_typed(SecretList),
+    Calls = [
+        {"extract, IKM not a binary", fun() -> kura_hkdf:extract(<<>>, Bad) end},
+        {"extract, salt not a binary", fun() -> kura_hkdf:extract(Bad, Secret) end},
+        {"expand, PRK not a binary", fun() -> kura_hkdf:expand(Bad, <<>>, 32) end},
+        {"expand, info not a binary", fun() -> kura_hkdf:expand(Secret, Bad, 32) end},
+        {"expand, length not an integer", fun() ->
+            kura_hkdf:expand(Secret, <<>>, ill_typed(Secret))
+        end}
+    ],
+    [{Name, fun() -> assert_badarg(Call, Secret) end} || {Name, Call} <- Calls].
+
+%% A value of a type the kura_hkdf specs do not allow.
+-spec ill_typed(term()) -> dynamic().
+ill_typed(Term) ->
+    Term.
+
+assert_badarg(Call, Secret) ->
+    try Call() of
+        V -> ?assertEqual(raised, V)
+    catch
+        error:Reason:Stack ->
+            ?assertEqual({kura_hkdf, badarg}, Reason),
+            ?assertEqual(nomatch, binary:match(term_to_binary(Stack), Secret))
+    end.
+
 hex(Hex) ->
     binary:decode_hex(iolist_to_binary(Hex)).
