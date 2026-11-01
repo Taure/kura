@@ -25,6 +25,12 @@ Unary conditions (`?KURA_IS_UNARY_OP`), select-expression fragments and
 anything not recognised also stay in the shape, so an unrecognised
 condition costs a cache entry per value set rather than correctness.
 
+Invariant: the encrypted filter guard's verdict
+(`kura_query:check_encrypted/1`) on a query equals its verdict on the
+query's shape. Every bound position above is one the guard never reads,
+so `kura_query_compiler:to_sql_cached/2` checks on a miss only. A new
+bound position, or a guard rule that reads a value, breaks that.
+
 A dialect is free to emit any SQL for a shape, but it must pass a bound
 value through to the parameter list untouched. `valid_template/2` checks
 the half of that a template can show: every marker appears exactly once,

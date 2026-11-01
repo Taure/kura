@@ -459,9 +459,15 @@ compile_paths() ->
     ].
 
 compiler_refuses_test_() ->
+    {setup, fun compiler_setup/0, fun compiler_teardown/1, [
+        {Name ++ " via " ++ Path, ?_assertError(Reason, Compile(Q))}
+     || {Name, Reason, Q} <- compiler_refused(), {Path, Compile} <- compile_paths()
+    ]}.
+
+compiler_refused() ->
     P = ?PLAIN,
     Plain = kura_query:from(kura_test_schema),
-    Queries = [
+    [
         {"raw record", ?WHERE_SSN, #kura_query{from = ?ENC, wheres = [{ssn, P}]}},
         {"record update after where", ?WHERE_SSN, (kura_query:where(Plain, {ssn, P}))#kura_query{
             from = ?ENC
@@ -480,11 +486,7 @@ compiler_refuses_test_() ->
         {"raw improper and", {kura, unrecognised_condition}, #kura_query{
             from = ?ENC, wheres = [{'and', [{id, 1} | ill_typed({ssn, P})]}]
         }}
-    ],
-    {setup, fun compiler_setup/0, fun compiler_teardown/1, [
-        {Name ++ " via " ++ Path, ?_assertError(Reason, Compile(Q))}
-     || {Name, Reason, Q} <- Queries, {Path, Compile} <- compile_paths()
-    ]}.
+    ].
 
 compiler_allows_test_() ->
     Queries = [
@@ -530,6 +532,14 @@ verdict_is_a_function_of_the_shape_test_() ->
                 {[id, name], in, [{1, {ssn, P}}]},
                 {[id, ssn], in, [{1}]}
             ],
+    AliasConds = [
+        {alias, P},
+        {alias, in, [P]},
+        {'not', {alias, '>', P}},
+        {alias, is_nil},
+        {name, {alias, P}}
+    ],
+    AliasCte = [{~"c", kura_query:select_expr(kura_query:from(?ENC), [{alias, ssn}])}],
     Queries =
         [#kura_query{from = ?ENC, wheres = [C]} || C <- Conds] ++
             [#kura_query{from = kura_test_schema, wheres = [C]} || C <- Conds] ++
@@ -539,11 +549,36 @@ verdict_is_a_function_of_the_shape_test_() ->
                     from = enc_cte, wheres = [C]
                 })
              || C <- Conds
-            ],
+            ] ++
+            [
+                #kura_query{
+                    from = kura_test_schema,
+                    joins = [{inner, ?ENC, {id, id}, undefined}],
+                    wheres = [C]
+                }
+             || C <- Conds
+            ] ++
+            [
+                #kura_query{
+                    from = enc_cte, ctes = [{~"enc_cte", kura_query:from(?ENC)}], wheres = [C]
+                }
+             || C <- Conds
+            ] ++
+            [#kura_query{from = c, ctes = AliasCte, wheres = [C]} || C <- AliasConds] ++
+            [Q || {_, _, Q} <- compiler_refused(), splits(Q)],
     [
         ?_assertEqual(verdict(Q), verdict(element(1, kura_query_shape:split(Q))))
      || Q <- Queries
     ].
+
+%% A query the split cannot take apart has no shape; to_sql_cached/2 sends
+%% it to to_sql/2, which checks it on every call.
+splits(Q) ->
+    try kura_query_shape:split(Q) of
+        _ -> true
+    catch
+        error:_ -> false
+    end.
 
 cached_compile_test_() ->
     P = ?PLAIN,
