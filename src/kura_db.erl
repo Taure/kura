@@ -282,7 +282,7 @@ legacy_defaults(Repo, #{dialect := kura_dialect_pg} = Config) ->
              || {Key, Aliases} <- [{user, [user, username]}, {database, [database]}],
                 not lists:any(fun(Alias) -> is_map_key(Alias, Config) end, Aliases)
             ],
-            {maps:merge(maps:from_list([{Key, "postgres"} || Key <- Filled]), Config), Filled};
+            {maps:merge(#{Key => "postgres" || Key <- Filled}, Config), Filled};
         false ->
             {Config, []}
     end;
