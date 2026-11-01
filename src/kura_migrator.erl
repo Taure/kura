@@ -71,8 +71,9 @@ milliseconds later (`kura` app env, default 100). `CREATE INDEX
 CONCURRENTLY` on the node holding the lock waits for every transaction
 that had a snapshot when it started: a waiter blocked inside a statement,
 or retrying inside one long transaction, would never end, and the two
-would deadlock. A node still on an older kura waits the blocking way, so
-run a concurrent-index migration once every node is on this version.
+would deadlock. A node still on an older kura waits the blocking way and
+ignores `transaction/0`, so deploy this version on every node before
+shipping the first non-transactional migration.
 
 A waiting migrator logs a warning every 30 seconds with the time it has
 waited. The wait is unbounded unless `migration_lock_timeout` (`kura` app

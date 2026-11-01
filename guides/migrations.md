@@ -155,9 +155,9 @@ transaction that misses it ends and a new one tries again
 `migration_lock_retry_interval` milliseconds later (`kura` app env, default
 100). Waiting inside a blocking `pg_advisory_xact_lock` would keep a
 transaction open that a `CREATE INDEX CONCURRENTLY` on the node holding the
-lock has to wait for, and the two would deadlock. A node still running an
-older kura waits the blocking way, so run a concurrent-index migration once
-every node is upgraded.
+lock has to wait for, and the two would deadlock. Nodes on an older kura
+wait the blocking way; see the
+[upgrade note](#upgrade-note-before-the-first-non-transactional-migration).
 
 A waiting migrator logs a warning every 30 seconds with the time it has
 waited. The wait has no limit unless `migration_lock_timeout` (`kura` app
@@ -185,7 +185,17 @@ down() ->
     [{execute, ~"DROP INDEX CONCURRENTLY \"users_email_index\""}].
 ```
 
-What changes for such a migration:
+### Upgrade note: before the first non-transactional migration
+
+Deploy a kura with non-transactional migrations on every node that runs the
+migrator before shipping the first `transaction() -> false` migration. A
+node still on an older kura waits for the advisory lock the blocking way,
+which deadlocks with a `CREATE INDEX CONCURRENTLY` on the node holding it.
+It also ignores `transaction/0` and `concurrently`, so if it is the node
+that runs the migration it builds the index with a plain `CREATE INDEX`
+inside a transaction, blocking writes to the table for the whole build.
+
+### What changes for such a migration
 
 - **Each statement commits on its own.** The statements run one at a time on
   a connection checked out for the migration, outside any transaction.

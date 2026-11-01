@@ -63,9 +63,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   milliseconds (default 100), instead of blocking in
   `pg_advisory_xact_lock` (#139). A node waiting inside a statement, or
   inside one long transaction, is a transaction that `CREATE INDEX
-  CONCURRENTLY` on the lock holder waits for, and the two deadlocked. A
-  node still on an older kura waits the blocking way: run a
-  concurrent-index migration once every node is upgraded.
+  CONCURRENTLY` on the lock holder waits for, and the two deadlocked.
+
+  **Upgrading:** deploy this kura on every node before shipping the
+  first `transaction() -> false` migration. A node still on an older
+  kura waits for the lock the blocking way, which deadlocks with a
+  concurrent index build on the node holding it, and it ignores
+  `transaction/0` and `concurrently`, so if it runs the migration itself
+  it builds the index with a plain `CREATE INDEX` that blocks writes to
+  the table.
 - A migrator waiting for the advisory lock logs a warning every 30
   seconds with the time it has waited, where the wait was silent after
   its first info line (#139). The wait is still unbounded by default; the
@@ -229,7 +235,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Inside `kura_db:transaction/2` or with a sandbox connection checked
   out, a run with one pending is refused with
   `{non_transactional_in_transaction, Version, Module}` before anything
-  executes.
+  executes. See the upgrade note under Changed before shipping one.
 - `{create_index, ...}` takes `concurrently => true` (or `concurrently`
   in the list form) and emits `CREATE INDEX CONCURRENTLY` (#139). It is
   refused in a migration that is still transactional, with
