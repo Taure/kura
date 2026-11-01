@@ -1,6 +1,7 @@
 services:
   postgres:
-    image: pgvector/pgvector:0.8.1-pg16
+    # pgvector >= 0.8.2 (CVE-2026-3172), pinned by digest
+    image: pgvector/pgvector:0.8.3-pg16@sha256:131dcf7ff6a900545df8e7e092c270aa8c6db2f2c818e408cb45ec21316b74e6
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: root

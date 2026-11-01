@@ -15,6 +15,7 @@ cannot create the `vector` extension the suite skips, or fails when the
 
 -export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
 -export([
+    server_runs_a_patched_pgvector/1,
     vector_round_trips_through_a_changeset/1,
     nearest_rows_come_first_for_each_metric/1,
     distance_binds_alongside_where_limit_and_offset/1,
@@ -31,6 +32,7 @@ cannot create the `vector` extension the suite skips, or fails when the
 
 all() ->
     [
+        server_runs_a_patched_pgvector,
         vector_round_trips_through_a_changeset,
         nearest_rows_come_first_for_each_metric,
         distance_binds_alongside_where_limit_and_offset,
@@ -86,6 +88,14 @@ end_per_testcase(_TC, _Config) ->
 %%----------------------------------------------------------------------
 %% Tests
 %%----------------------------------------------------------------------
+
+%% CVE-2026-3172: parallel HNSW builds overflow before pgvector 0.8.2.
+server_runs_a_patched_pgvector(_Config) ->
+    {ok, [#{extversion := Version}]} = kura_repo_worker:query(
+        ?REPO, ~"SELECT extversion FROM pg_extension WHERE extname = 'vector'", []
+    ),
+    Parts = [binary_to_integer(P) || P <- binary:split(Version, ~".", [global])],
+    ?assert(Parts >= [0, 8, 2], Version).
 
 vector_round_trips_through_a_changeset(_Config) ->
     #{id := Id} = insert(~"a", [1, 2.5, -3]),

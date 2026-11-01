@@ -243,6 +243,10 @@ supported either. The SQLite backend has no distance operators.
 
 ### Installing the extension
 
+Distance queries require pgvector >= 0.8.2 (CVE-2026-3172). Run `ALTER
+EXTENSION vector UPDATE` after upgrading the binary, since the server
+keeps the old extension version until then.
+
 kura does not create the extension, and a migration should not either.
 pgvector is not a trusted extension, so the role an app connects as
 usually cannot create it, on CloudNativePG and on managed Postgres alike.
