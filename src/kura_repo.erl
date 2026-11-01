@@ -103,13 +103,19 @@ dependency's migrations run first. See `kura_migrator:migration_apps/1`.
 """.
 
 -export([config/1, settings/1, read_only/1, replica/1]).
--export([started/2, refused/2, taken/3]).
 
--ifdef(TEST).
--export([forget/0]).
--endif.
+-export_type([settings/0]).
 
--define(SETTINGS, [dialect, pool, pool_module, driver_module, read_only, replicas, uuid_version]).
+-doc "Kura's own settings for a repo, as configured. See `settings/1`.".
+-type settings() :: #{
+    dialect => module(),
+    pool => atom(),
+    pool_module => module(),
+    driver_module => module(),
+    read_only => boolean(),
+    replicas => [module()],
+    uuid_version => v4 | v7
+}.
 
 -callback otp_app() -> atom().
 
@@ -159,37 +165,13 @@ pool again re-reads them. For a repo whose pool kura has not started, they
 come from `config/1` on each call. A repo refused a pool that another repo
 owns raises `{pool_owned_by, Owner}` until its own pool starts.
 """.
--spec settings(module()) -> map().
+-spec settings(module()) -> settings().
 settings(RepoMod) ->
-    case persistent_term:get({?MODULE, settings, RepoMod}, undefined) of
-        Settings when is_map(Settings) -> Settings;
+    case kura_repo_settings:lookup(RepoMod) of
+        #{} = Settings -> Settings;
         {pool_owned_by, Owner} -> error({pool_owned_by, Owner});
-        _NotStarted -> maps:with(?SETTINGS, config(RepoMod))
+        none -> kura_repo_settings:from_config(config(RepoMod))
     end.
-
--doc false.
--spec started(module(), map()) -> ok.
-started(RepoMod, Config) ->
-    persistent_term:put({?MODULE, settings, RepoMod}, maps:with(?SETTINGS, Config)).
-
--doc false.
--spec refused(module(), module()) -> ok.
-refused(RepoMod, Owner) ->
-    persistent_term:put({?MODULE, settings, RepoMod}, {pool_owned_by, Owner}).
-
--doc false.
--spec taken(module(), atom(), module()) -> ok.
-taken(RepoMod, Pool, Owner) ->
-    case persistent_term:get({?MODULE, settings, RepoMod}, undefined) of
-        #{pool := Pool} -> refused(RepoMod, Owner);
-        _Elsewhere -> ok
-    end.
-
--ifdef(TEST).
-forget() ->
-    _ = [persistent_term:erase(Key) || {{?MODULE, settings, _} = Key, _} <- persistent_term:get()],
-    ok.
--endif.
 
 -doc """
 Return `true` if the repo is configured `read_only => true`.

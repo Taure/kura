@@ -330,7 +330,7 @@ start_pool(Repo, Pool, Config) ->
     try PoolMod:start_pool(Pool, maps:without(?REPO_KEYS, Config)) of
         {ok, _Pid} ->
             ok = owned(Repo, Pool),
-            kura_repo:started(Repo, Config#{pool => Pool});
+            kura_repo_settings:started(Repo, Config#{pool => Pool});
         {error, {already_started, _Pid}} ->
             already_started(Repo, Pool, PoolMod, Config);
         {error, Reason} ->
@@ -349,12 +349,12 @@ already_started(Repo, Pool, PoolMod, Config) ->
     case owner(Pool) of
         Other when Other =/= undefined, Other =/= Repo ->
             Refused = {pool_owned_by, Other},
-            ok = kura_repo:refused(Repo, Other),
+            ok = kura_repo_settings:refused(Repo, Other),
             ok = not_started(Repo, PoolMod, #{reason => Refused, pool => Pool}),
             {error, Refused};
         _OwnedOrUnclaimed ->
             ok = owned(Repo, Pool),
-            kura_repo:started(Repo, Config#{pool => Pool})
+            kura_repo_settings:started(Repo, Config#{pool => Pool})
     end.
 
 %% A pool stopped outside kura can be started again by another repo; the
@@ -363,7 +363,7 @@ already_started(Repo, Pool, PoolMod, Config) ->
 owned(Repo, Pool) ->
     case owner(Pool) of
         Previous when Previous =/= undefined, Previous =/= Repo ->
-            kura_repo:taken(Previous, Pool, Repo);
+            kura_repo_settings:taken(Previous, Pool, Repo);
         _OwnedOrUnclaimed ->
             ok
     end,
@@ -382,7 +382,7 @@ forget_pools() ->
         persistent_term:erase(Key)
      || {{?MODULE, pool_owner, _} = Key, _} <- persistent_term:get()
     ],
-    kura_repo:forget().
+    kura_repo_settings:forget().
 -endif.
 
 %% init/1 is the consumer's code, so nothing is known about what its reason
