@@ -14,9 +14,15 @@
 -type stored() ::
     kura_repo:settings() | {pool_owned_by, module()} | {pool_not_started, atom()} | none.
 
+%% Only this module writes these terms, and only in the shapes matched here.
 -spec lookup(module()) -> stored().
 lookup(Repo) ->
-    stored(Repo).
+    case persistent_term:get({?MODULE, Repo}, none) of
+        Settings when is_map(Settings) -> Settings;
+        {pool_owned_by, Owner} when is_atom(Owner) -> {pool_owned_by, Owner};
+        {pool_not_started, Pool} when is_atom(Pool) -> {pool_not_started, Pool};
+        _None -> none
+    end.
 
 -spec from_config(map()) -> kura_repo:settings().
 from_config(Config) ->
@@ -38,11 +44,6 @@ not_started(Repo, Pool) ->
 forget(Repo) ->
     _ = persistent_term:erase({?MODULE, Repo}),
     ok.
-
-%% Only this module writes these terms.
--spec stored(module()) -> dynamic().
-stored(Repo) ->
-    persistent_term:get({?MODULE, Repo}, none).
 
 -ifdef(TEST).
 forget() ->

@@ -493,8 +493,8 @@ not_running(Repo, Pool) ->
 -spec owned(module(), atom(), module(), map()) -> claim().
 owned(Repo, Pool, PoolMod, Config) ->
     Previous = held(Repo),
-    ok = persistent_term:put({?MODULE, pool_owner, Pool}, Repo),
     ok = persistent_term:put({?MODULE, pool_held, Repo}, {Pool, PoolMod}),
+    ok = persistent_term:put({?MODULE, pool_owner, Pool}, Repo),
     ok = kura_repo_settings:started(Repo, Config#{pool => Pool}),
     case Previous of
         {PreviousPool, PreviousMod} when PreviousPool =/= Pool ->
