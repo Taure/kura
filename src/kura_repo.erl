@@ -64,10 +64,11 @@ the per-app form (`application:get_env(OtpApp, RepoModule)`). The
 form. New projects should prefer the map form.
 
 Optionally implement `init/1` to modify config at runtime - useful for reading
-secrets from files, environment variables, or external services. For a repo in
-the `{repos, ...}` map or the flat form it runs during kura's own application
-start, when kura starts the pool, before the application that owns the repo
-has started, so it must not call that application's processes:
+secrets from files, environment variables, or external services. It runs when
+kura starts the repo's pool, not per query. For a repo in the `{repos, ...}` map
+or the flat form that is during kura's own application start, before the
+application that owns the repo has started, so it must not call that
+application's processes:
 
 ```erlang
 -module(my_repo).
@@ -101,24 +102,33 @@ migration_apps() -> [my_gdpr_extension].
 dependency's migrations run first. See `kura_migrator:migration_apps/1`.
 """.
 
--export([config/1, read_only/1, replica/1]).
+-export([config/1, settings/1, read_only/1, replica/1]).
+-export([started/2]).
+
+-ifdef(TEST).
+-export([forget/0]).
+-endif.
+
+-define(SETTINGS, [dialect, pool, pool_module, driver_module, read_only, replicas, uuid_version]).
 
 -callback otp_app() -> atom().
 
 -doc """
 Adjust the repo's config at runtime. Optional.
 
-It runs whenever kura reads the config. For a repo in the `{repos, ...}` map
-or the flat form that includes kura's own application start, when the pool is
-started. The consuming application has not started then, so `init/1` must not
-call processes it owns. One that raises
+It runs when kura starts the repo's pool (`kura_db:start_pool/1`, used by
+application boot and `kura_repo_worker:start/1`), and on each call to
+`config/1`. For a repo in the `{repos, ...}` map or the flat form, pool start
+includes kura's own application start. The consuming application has not
+started then, so `init/1` must not call processes it owns. One that raises
 while the pool is started does not stop kura: the pool is not started, and
 only the shape of the reason is logged and returned (see
 `kura_db:start_pool/1`).
 
-`init/1` also runs on every config lookup at query time (`kura_db:get_pool/1`,
-`read_only/1`, the driver and dialect lookups). A raise there is not caught or
-redacted, so `init/1` should not raise with a secret in its reason.
+Queries read the repo's settings (`settings/1`) as they were when the pool
+started, so `init/1` does not run per query. For a repo whose pool kura did
+not start, they are read through `config/1` on each lookup, `init/1` included,
+and a raise there is neither caught nor redacted.
 """.
 -callback init(Config :: map()) -> map().
 
@@ -126,7 +136,10 @@ redacted, so `init/1` should not raise with a secret in its reason.
 
 -optional_callbacks([init/1, migration_apps/0]).
 
--doc "Read the repo configuration from application environment.".
+-doc """
+Read the repo configuration from application environment, with `init/1`
+applied. Each call reads it afresh and runs `init/1`.
+""".
 -spec config(module()) -> map().
 config(RepoMod) ->
     Config = read_config(RepoMod),
@@ -134,6 +147,34 @@ config(RepoMod) ->
         true -> RepoMod:init(Config);
         false -> Config
     end.
+
+-doc """
+Kura's own settings for the repo: `dialect`, `pool`, `pool_module`,
+`driver_module`, `read_only`, `replicas` and `uuid_version`, those it has.
+Connection settings and secrets are not among them.
+
+Once `kura_db:start_pool/1` has started the repo's pool, these are the
+settings it was started with, read without calling `init/1`; starting the
+pool again re-reads them. For a repo whose pool kura has not started, they
+come from `config/1` on each call.
+""".
+-spec settings(module()) -> map().
+settings(RepoMod) ->
+    case persistent_term:get({?MODULE, settings, RepoMod}, undefined) of
+        Settings when is_map(Settings) -> Settings;
+        _NotStarted -> maps:with(?SETTINGS, config(RepoMod))
+    end.
+
+-doc false.
+-spec started(module(), map()) -> ok.
+started(RepoMod, Config) ->
+    persistent_term:put({?MODULE, settings, RepoMod}, maps:with(?SETTINGS, Config)).
+
+-ifdef(TEST).
+forget() ->
+    _ = [persistent_term:erase(Key) || {{?MODULE, settings, _} = Key, _} <- persistent_term:get()],
+    ok.
+-endif.
 
 -doc """
 Return `true` if the repo is configured `read_only => true`.
@@ -144,7 +185,7 @@ Intended for a replica repo pointed at a read replica.
 """.
 -spec read_only(module()) -> boolean().
 read_only(RepoMod) ->
-    maps:get(read_only, config(RepoMod), false) =:= true.
+    maps:get(read_only, settings(RepoMod), false) =:= true.
 
 -doc """
 Pick a replica repo for `RepoMod` from its `replicas => [Repo]` config.
@@ -156,7 +197,7 @@ read-after-write consistency. There is no automatic write/read split.
 """.
 -spec replica(module()) -> module().
 replica(RepoMod) ->
-    case maps:get(replicas, config(RepoMod), []) of
+    case maps:get(replicas, settings(RepoMod), []) of
         [] -> RepoMod;
         [Only] -> Only;
         Replicas when is_list(Replicas) -> lists:nth(rand:uniform(length(Replicas)), Replicas)

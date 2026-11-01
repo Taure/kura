@@ -29,6 +29,7 @@ for pool lookup, sandbox support, telemetry, and type loading.
 -ifdef(TEST).
 -export([
     narrow_ok_error/1,
+    forget_pools/0,
     extract_result_status/1,
     extract_num_rows/1,
     emit_telemetry/6
@@ -200,7 +201,7 @@ transaction_ok(RepoMod, Fun) ->
 
 -spec get_pool(module()) -> atom().
 get_pool(RepoMod) ->
-    pool_name(RepoMod, kura_repo:config(RepoMod)).
+    pool_name(RepoMod, kura_repo:settings(RepoMod)).
 
 -spec pool_name(module(), map()) -> atom().
 pool_name(RepoMod, Config) ->
@@ -209,7 +210,7 @@ pool_name(RepoMod, Config) ->
 -doc "Resolve the `kura_pool` implementation module for a repo.".
 -spec get_pool_module(module()) -> module().
 get_pool_module(RepoMod) ->
-    pool_module(RepoMod, kura_repo:config(RepoMod)).
+    pool_module(RepoMod, kura_repo:settings(RepoMod)).
 
 -spec pool_module(module(), map()) -> module().
 pool_module(RepoMod, Config) ->
@@ -237,6 +238,11 @@ An `init/1` that raises starts no pool. Only the shape of its reason is kept:
 an atom as it is, a tuple as `{Tag, redacted}` when its first element is an
 atom, anything else as `redacted`. The failure is logged that way and returned
 as `{error, {init_failed, {Class, Shape}}}`.
+
+Once the pool runs, the repo's settings are kept (see `kura_repo:settings/1`)
+and queries read them from there, so `init/1` does not run per query. Starting
+the pool again, through `kura_repo_worker:start/1`, resolves the config anew
+and replaces them.
 """.
 -spec start_pool(module()) -> ok | {error, term()}.
 start_pool(Repo) ->
@@ -316,9 +322,9 @@ start_pool(Repo, Pool, Config) ->
     Secrets = secrets(Config),
     try PoolMod:start_pool(Pool, maps:without(?REPO_KEYS, Config)) of
         {ok, _Pid} ->
-            ok;
+            kura_repo:started(Repo, Config#{pool => Pool});
         {error, {already_started, _Pid}} ->
-            ok;
+            kura_repo:started(Repo, Config#{pool => Pool});
         {error, Reason} ->
             Redacted = redacted(Reason, Secrets),
             ok = not_started(Repo, PoolMod, #{reason => Redacted}),
@@ -329,6 +335,11 @@ start_pool(Repo, Pool, Config) ->
             ok = not_started(Repo, PoolMod, #{reason => Redacted, stacktrace => arities(Stack)}),
             error({pool_start_failed, Repo, Redacted})
     end.
+
+-ifdef(TEST).
+forget_pools() ->
+    kura_repo:forget().
+-endif.
 
 %% init/1 is the consumer's code, so nothing is known about what its reason
 %% holds: only its tag is kept.
@@ -446,8 +457,7 @@ redacted_value(_Key, Value, Secrets) -> redacted(Value, Secrets).
 -doc "Resolve the `kura_driver` implementation module for a repo.".
 -spec get_driver_module(module()) -> module().
 get_driver_module(RepoMod) ->
-    Config = kura_repo:config(RepoMod),
-    case maps:get(driver_module, Config, undefined) of
+    case maps:get(driver_module, kura_repo:settings(RepoMod), undefined) of
         M when is_atom(M), M =/= undefined -> M;
         _ -> error({no_driver_module_configured, RepoMod})
     end.

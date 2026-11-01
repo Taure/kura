@@ -1,7 +1,7 @@
 -module(kura_db_start_pool_tests).
 -include_lib("eunit/include/eunit.hrl").
 
--export([start_pool/2, log/2]).
+-export([start_pool/2, query/5, log/2]).
 
 %%----------------------------------------------------------------------
 %% start_repo_pool/1 reports a pool that did not start
@@ -642,6 +642,106 @@ boot_logs_and_carries_on_where_start_returns_the_error_test() ->
         Events
     ).
 
+%%----------------------------------------------------------------------
+%% Queries read the settings the pool was started with (#200)
+%%----------------------------------------------------------------------
+
+init_does_not_run_at_query_time_after_a_pool_start_test() ->
+    with_counting_repo(fun(Repo) ->
+        ?assertEqual(ok, kura_db:start_pool(Repo)),
+        ?assertEqual(counted_pool, kura_db:get_pool(Repo)),
+        ?assertEqual(?MODULE, kura_db:get_pool_module(Repo)),
+        ?assertEqual(?MODULE, kura_db:get_driver_module(Repo)),
+        ?assertEqual(kura_dialect_pg, kura_query_compiler:dialect(Repo)),
+        ?assertEqual(false, kura_repo:read_only(Repo)),
+        ?assertEqual(Repo, kura_repo:replica(Repo)),
+        ?assertEqual(v7, kura_repo_worker:uuid_version(Repo)),
+        ?assertEqual(#{rows => [], num_rows => 0}, kura_db:query(Repo, ~"SELECT 1", [])),
+        ?assertEqual(1, kura_db_counting_init_repo:calls())
+    end).
+
+a_raising_init_after_the_pool_start_does_not_reach_queries_test() ->
+    with_counting_repo(fun(Repo) ->
+        ?assertEqual(ok, kura_db:start_pool(Repo)),
+        ?assertError({init_called_again, 2}, kura_repo:config(Repo)),
+        ?assertEqual(#{rows => [], num_rows => 0}, kura_db:query(Repo, ~"SELECT 1", [])),
+        ?assertEqual(false, kura_db:in_transaction(Repo)),
+        ?assertEqual(false, kura_repo:read_only(Repo))
+    end).
+
+the_settings_hold_no_connection_settings_test() ->
+    with_pool_answer({ok, self()}, #{password => ~"s3cret", database => ~"db"}, fun() ->
+        ?assertEqual(ok, kura_db:start_pool(kura_db_failing_repo)),
+        ?assertEqual(
+            #{pool => kura_db_failing_repo, pool_module => ?MODULE},
+            kura_repo:settings(kura_db_failing_repo)
+        )
+    end).
+
+starting_the_pool_again_rereads_the_settings_test() ->
+    with_pool_answer({ok, self()}, #{read_only => false}, fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        application:set_env(kura, repos, #{
+            kura_db_failing_repo => #{read_only => true, pool_module => ?MODULE}
+        }),
+        ?assertEqual(false, kura_repo:read_only(kura_db_failing_repo)),
+        put({?MODULE, pool_answer}, {error, {already_started, self()}}),
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        ?assertEqual(true, kura_repo:read_only(kura_db_failing_repo))
+    end).
+
+a_failed_start_stores_no_settings_test() ->
+    with_pool_answer({error, econnrefused}, #{read_only => false}, fun() ->
+        _ = with_captured_logs(fun() -> kura_db:start_pool(kura_db_failing_repo) end),
+        application:set_env(kura, repos, #{kura_db_failing_repo => #{read_only => true}}),
+        ?assertEqual(true, kura_repo:read_only(kura_db_failing_repo))
+    end).
+
+a_repo_kura_did_not_start_reads_its_config_on_each_lookup_test() ->
+    kura_db:forget_pools(),
+    try
+        application:set_env(kura, repos, #{kura_db_unstarted_repo => #{read_only => false}}),
+        ?assertEqual(false, kura_repo:read_only(kura_db_unstarted_repo)),
+        application:set_env(kura, repos, #{kura_db_unstarted_repo => #{read_only => true}}),
+        ?assertEqual(true, kura_repo:read_only(kura_db_unstarted_repo)),
+        ?assertEqual(kura_db_unstarted_repo, kura_db:get_pool(kura_db_unstarted_repo))
+    after
+        application:unset_env(kura, repos)
+    end.
+
+a_repo_kura_did_not_start_runs_its_init_on_each_lookup_test() ->
+    kura_db:forget_pools(),
+    application:set_env(kura, repos, #{kura_db_init_repo => #{}}),
+    try
+        ?assertEqual(kura_db_init_pool, kura_db:get_pool(kura_db_init_repo)),
+        ok = kura_db_counting_init_repo:reset(),
+        application:set_env(kura, repos, #{kura_db_counting_init_repo => #{pool => counted_pool}}),
+        ?assertEqual(counted_pool, kura_db:get_pool(kura_db_counting_init_repo)),
+        ?assertError({init_called_again, 2}, kura_db:get_pool(kura_db_counting_init_repo))
+    after
+        ok = kura_db_counting_init_repo:reset(),
+        application:unset_env(kura, repos)
+    end.
+
+with_counting_repo(Run) ->
+    Repo = kura_db_counting_init_repo,
+    ok = kura_db_counting_init_repo:reset(),
+    Config = #{
+        pool => counted_pool,
+        driver_module => ?MODULE,
+        dialect => kura_dialect_pg,
+        read_only => false,
+        uuid_version => v7
+    },
+    try
+        with_pool_answer({ok, self()}, Repo, Config, fun() -> Run(Repo) end)
+    after
+        kura_db_counting_init_repo:reset()
+    end.
+
+query(?MODULE, counted_pool, _SQL, _Params, _Opts) ->
+    #{rows => [], num_rows => 0}.
+
 start_pool(Pool, Config) ->
     put({?MODULE, pool_name}, Pool),
     put({?MODULE, pool_config}, Config),
@@ -670,7 +770,8 @@ with_pool_answer(Answer, Repo, Config, Run) ->
         erase({?MODULE, pool_answer}),
         erase({?MODULE, pool_name}),
         erase({?MODULE, pool_config}),
-        application:unset_env(kura, repos)
+        application:unset_env(kura, repos),
+        kura_db:forget_pools()
     end.
 
 logged_report(Answer, Config) ->

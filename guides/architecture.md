@@ -194,6 +194,10 @@ argument.
   configured repo's pool through `kura_db:start_pool/1`, the same path
   `kura_repo_worker:start/1` takes: the config from `kura_repo:config/1`
   with the repo's `init/1` applied and the pool named by its `pool` key.
+  The repo's own settings (`dialect`, `pool`, `pool_module`,
+  `driver_module`, `read_only`, `replicas`, `uuid_version`) are kept in a
+  `persistent_term` when its pool starts, so queries do not run `init/1`
+  (`kura_repo:settings/1`).
   Kura adds no connection defaults, except the deprecated `user` and
   `database` fill for the flat single-repo form on Postgres. A pool that
   does not start is logged and boot carries on. `pg_types` defaults are seeded only when the active

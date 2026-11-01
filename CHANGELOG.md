@@ -35,11 +35,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{Tag, redacted}`, anything else as `redacted`, since `init/1` is the
   consumer's code and its reason may hold a secret it fetched.
   `kura_repo_worker:start/1` returns `{error, {init_failed, {Class,
-  Shape}}}`. This covers pool start only: `init/1` also runs on every
-  config lookup at query time, where a raise is neither caught nor
-  redacted. For a repo in the `repos` map or the flat form, `init/1` runs
-  during kura's own start, before the consuming application, so it must
-  not call that application's processes.
+  Shape}}}`. For a repo in the `repos` map or the flat form, `init/1`
+  runs during kura's own start, before the consuming application, so it
+  must not call that application's processes.
+- A repo's `init/1` no longer runs on every query (#200). The pool start
+  keeps the repo's own settings (`dialect`, `pool`, `pool_module`,
+  `driver_module`, `read_only`, `replicas`, `uuid_version`) in a
+  `persistent_term`, and the query-time lookups (`kura_db:get_pool/1`,
+  the pool and driver module, `kura_repo:read_only/1`, `replica/1`, the
+  dialect and the UUID version) read them from there. An `init/1` that
+  reads a file or a vault does it once per pool start, and one that
+  raises later no longer turns every query into that exception, with the
+  config in the crash report. Connection settings and secrets are not
+  kept. The settings change only when the pool is started again:
+  `kura_repo_worker:start/1` on a running pool re-reads them. A repo
+  whose pool kura did not start falls back to the old lookup, its config
+  read and `init/1` run on each call. `kura_repo:config/1` still reads
+  the config afresh each call.
 - The many_to_many join-table SQL, the preload read and the `put_assoc` /
   `cast_assoc` DELETE and INSERT, is compiled by the repo's dialect
   (`to_sql/1`, `delete_all/1`, `insert_all/3`) instead of written by hand
@@ -204,6 +216,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `kura_repo:settings/1` returns a repo's own settings as queries see
+  them, without connection settings or secrets (#200).
 - `kura_schema:is_schema/1` and `kura_schema:encrypted_fields/1`, both
   memoised. `is_schema/1` replaces three hand-rolled copies of the same
   `code:ensure_loaded/1` + `function_exported/3` check, whose negative

@@ -80,6 +80,10 @@ that raises instead makes this raise
 `{pool_start_failed, RepoMod, {Class, Redacted}}`. A repo `init/1` that raises
 returns `{error, {init_failed, {Class, Shape}}}`, keeping only the shape of its
 reason; see `kura_db:start_pool/1`.
+
+Queries then use the settings the pool was started with, without calling
+`init/1` again. Calling `start/1` again on a running pool returns `ok` and
+re-reads them.
 """.
 -spec start(module()) -> ok | {error, term()}.
 start(RepoMod) ->
@@ -1019,7 +1023,7 @@ maybe_generate_single_pk(RepoMod, SchemaMod, PK, Changes) ->
 
 -spec uuid_version(module()) -> v7 | v4.
 uuid_version(RepoMod) ->
-    case maps:get(uuid_version, kura_repo:config(RepoMod), v4) of
+    case maps:get(uuid_version, kura_repo:settings(RepoMod), v4) of
         v7 -> v7;
         _ -> v4
     end.
