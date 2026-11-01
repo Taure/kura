@@ -58,6 +58,13 @@ skips it.
 """.
 -spec to_sql(module(), #kura_query{}) -> {iodata(), [term()]}.
 to_sql(RepoMod, Query) ->
+    ok = kura_query:check_distances(Query),
+    compile(RepoMod, Query).
+
+%% A shape holds markers where the distance vectors were, so it is
+%% compiled without the distance checks; its query has passed them.
+-spec compile(module(), #kura_query{}) -> {iodata(), [term()]}.
+compile(RepoMod, Query) ->
     (dialect(RepoMod)):to_sql(scope(Query)).
 
 -doc """
@@ -92,13 +99,14 @@ repo config. Swapping a repo's dialect at runtime requires an explicit
 """.
 -spec to_sql_cached(module(), #kura_query{}) -> {iodata(), [term()]}.
 to_sql_cached(RepoMod, Query) ->
+    ok = kura_query:check_distances(Query),
     {Shape, Values} = kura_query_shape:split(Query),
     Key = {RepoMod, kura_tenant:get_tenant(), Shape},
     case kura_query_cache:get(Key) of
         {ok, {SQL, Template}} ->
             {SQL, kura_query_shape:bind(Template, Values)};
         {ok, uncacheable} ->
-            to_sql(RepoMod, Query);
+            compile(RepoMod, Query);
         miss ->
             case compile_shape(RepoMod, Shape, tuple_size(Values)) of
                 {ok, {SQL, Template} = Entry} ->
@@ -106,7 +114,7 @@ to_sql_cached(RepoMod, Query) ->
                     {SQL, kura_query_shape:bind(Template, Values)};
                 uncacheable ->
                     kura_query_cache:put(Key, uncacheable),
-                    to_sql(RepoMod, Query)
+                    compile(RepoMod, Query)
             end
     end.
 
@@ -116,7 +124,7 @@ to_sql_cached(RepoMod, Query) ->
 -spec compile_shape(module(), #kura_query{}, non_neg_integer()) ->
     {ok, {binary(), [term()]}} | uncacheable.
 compile_shape(RepoMod, Shape, Arity) ->
-    try to_sql(RepoMod, Shape) of
+    try compile(RepoMod, Shape) of
         {SQL, Template} ->
             case kura_query_shape:valid_template(Template, Arity) of
                 true -> {ok, {iolist_to_binary(SQL), Template}};

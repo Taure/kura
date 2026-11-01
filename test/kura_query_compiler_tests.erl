@@ -458,3 +458,59 @@ table_without_a_count_row_still_caches_test() ->
     after
         kura_query_cache:flush()
     end.
+
+%%----------------------------------------------------------------------
+%% A #kura_query{} written by hand skips the builder's distance checks,
+%% so both compile entry points run them before the shape is split.
+%%----------------------------------------------------------------------
+
+hand_built_distance_queries_raise_before_compiling_test_() ->
+    Iodata = {distance, embedding, l2, [~"[1,2,3]"]},
+    BadMetric = {distance, embedding, l1, ~"[1.0,2.0,3.0]"},
+    WrongDim = {distance, embedding, l2, ~"[1.0,2.0]"},
+    Vec = kura_test_vector_schema,
+    Cases = [
+        {#kura_query{from = Vec, order_bys = [{Iodata, asc}]}, {kura, {invalid_distance, Iodata}}},
+        {
+            #kura_query{from = Vec, select = {exprs, [{d, BadMetric}]}},
+            {kura, {invalid_distance, BadMetric}}
+        },
+        {
+            #kura_query{from = Vec, order_bys = [{WrongDim, asc}]},
+            {kura, {vector_dimension_mismatch, embedding, 3, 2}}
+        },
+        {
+            #kura_query{from = items, order_bys = [{WrongDim, asc}]},
+            {kura, {distance_requires_schema, items}}
+        },
+        {
+            #kura_query{
+                from = Vec, select = {exprs, [{r, {over, rank, #{order_by => [{WrongDim, asc}]}}}]}
+            },
+            {kura, {distance_not_supported_here, over}}
+        },
+        {
+            kura_query:with_cte(#kura_query{from = Vec}, ~"c", #kura_query{
+                from = Vec, order_bys = [{BadMetric, asc}]
+            }),
+            {kura, {invalid_distance, BadMetric}}
+        }
+    ],
+    {setup,
+        fun() ->
+            set_repo_dialect(kura_dialect_pg),
+            kura_query_cache:init(),
+            kura_query_cache:flush()
+        end,
+        fun(_) ->
+            kura_query_cache:flush(),
+            unset_repo()
+        end,
+        lists:append([
+            [
+                ?_assertError(Reason, kura_query_compiler:to_sql(?REPO, Q)),
+                ?_assertError(Reason, kura_query_compiler:to_sql_cached(?REPO, Q)),
+                ?_assertEqual(0, kura_query_cache:entry_count())
+            ]
+         || {Q, Reason} <- Cases
+        ])}.

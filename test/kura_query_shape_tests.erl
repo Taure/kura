@@ -65,10 +65,10 @@ queries(N) ->
             from = users, select = {exprs, [{id, id}, {score, {fragment, ~"? + ?", [V(1), V(2)]}}]}
         }},
         {"distance in select and order by", #kura_query{
-            from = items,
-            select = {exprs, [{dist, {distance, embedding, cosine, vec(V(1))}}]},
+            from = kura_test_vector_schema,
+            select = {exprs, [{dist, {distance, any_embedding, cosine, vec(V(1))}}]},
             wheres = [{id, V(2)}],
-            order_bys = [{id, asc}, {{distance, embedding, l2, vec(V(3))}, desc}],
+            order_bys = [{id, asc}, {{distance, any_embedding, l2, vec(V(3))}, desc}],
             limit = V(4)
         }},
         {"having fragment", #kura_query{

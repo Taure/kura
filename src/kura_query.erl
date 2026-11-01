@@ -21,6 +21,7 @@ Q3 = kura_query:limit(Q2, 10).
     select_expr/2,
     over/2,
     distance/3,
+    check_distances/1,
     where/2,
     join/4, join/5,
     order_by/2,
@@ -187,6 +188,31 @@ vector_text(Floats) ->
     case kura_types:dump(vector, Floats) of
         {ok, Text} when is_binary(Text) -> Text
     end.
+
+-doc """
+Run the builder's distance checks on a whole query, its CTEs and its
+combinations. `kura_query_compiler` calls this before it compiles, so a
+`#kura_query{}` written by hand raises the same errors as the builder.
+""".
+-spec check_distances(#kura_query{}) -> ok.
+check_distances(#kura_query{select = Select, order_bys = [], ctes = [], combinations = []}) when
+    is_list(Select)
+->
+    ok;
+check_distances(#kura_query{
+    from = From, select = Select, order_bys = Orders, ctes = Ctes, combinations = Combinations
+}) ->
+    Exprs = select_exprs(Select),
+    _ = [reject_window_distances(Fn, Spec) || {_Alias, {over, Fn, Spec}} <- Exprs],
+    Distances =
+        [D || {_Alias, {distance, _, _, _} = D} <- Exprs] ++
+            [D || {{distance, _, _, _} = D, _Dir} <- Orders],
+    check_distances(From, Distances),
+    _ = [check_distances(Q) || {_Name, #kura_query{} = Q} <- Ctes ++ Combinations],
+    ok.
+
+select_exprs({exprs, Exprs}) when is_list(Exprs) -> Exprs;
+select_exprs(_Select) -> [].
 
 check_distances(_From, []) ->
     ok;
