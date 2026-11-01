@@ -437,10 +437,11 @@ dropped.
 """.
 -spec stop_pool(module()) -> ok.
 stop_pool(Repo) ->
-    case held(Repo) of
-        {Pool, PoolMod} -> locked(Pool, fun() -> stopped(Repo, Pool, PoolMod) end);
-        none -> ok
-    end,
+    ok =
+        case held(Repo) of
+            {Pool, PoolMod} -> locked(Pool, fun() -> stopped(Repo, Pool, PoolMod) end);
+            none -> ok
+        end,
     kura_repo_settings:forget(Repo).
 
 -spec stopped(module(), atom(), module()) -> ok.
