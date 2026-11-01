@@ -58,6 +58,8 @@ Q3 = kura_query:limit(Q2, 10).
 -type order() :: {atom() | distance(), asc | desc}.
 
 -define(IS_METRIC(M), (M =:= l2 orelse M =:= cosine orelse M =:= inner_product)).
+%% pgvector's VECTOR_MAX_DIM.
+-define(MAX_DIMENSIONS, 16000).
 
 -doc "Start a query from the given schema module or table atom.".
 -spec from(atom() | module()) -> #kura_query{}.
@@ -143,16 +145,37 @@ selected.
 """.
 -spec distance(atom(), distance_metric(), [number()]) -> distance().
 distance(Field, Metric, Vector) when is_atom(Field), ?IS_METRIC(Metric) ->
-    case kura_types:cast(vector, Vector) of
-        {ok, [_ | _] = Floats} ->
-            {distance, Field, Metric, vector_text(Floats)};
-        {ok, _} ->
-            erlang:error({kura, {invalid_vector, Field, ~"is empty"}});
-        {error, Reason} ->
-            erlang:error({kura, {invalid_vector, Field, Reason}})
+    case length_upto(Vector, ?MAX_DIMENSIONS) of
+        {ok, 0} -> invalid_vector(Field, ~"is empty");
+        {ok, _} -> {distance, Field, Metric, cast_vector(Field, Vector)};
+        too_long -> invalid_vector(Field, ~"has more than 16000 dimensions");
+        improper -> invalid_vector(Field, ~"is not a list of numbers")
     end;
 distance(Field, Metric, _Vector) when is_atom(Field) ->
     erlang:error({kura, {invalid_distance_metric, Metric}}).
+
+%% Stops at Max, so an oversized list costs Max steps, not its length.
+length_upto(List, Max) ->
+    length_upto(List, Max, 0).
+
+length_upto([], _Max, N) -> {ok, N};
+length_upto([_ | _], Max, Max) -> too_long;
+length_upto([_ | Rest], Max, N) -> length_upto(Rest, Max, N + 1);
+length_upto(_NotAList, _Max, _N) -> improper.
+
+%% float/1 raises badarg on an integer beyond the double range.
+cast_vector(Field, Vector) ->
+    try kura_types:cast(vector, Vector) of
+        {ok, Floats} when is_list(Floats) -> vector_text(Floats);
+        {ok, _} -> invalid_vector(Field, ~"is not a list of numbers");
+        {error, Reason} -> invalid_vector(Field, Reason)
+    catch
+        error:badarg -> invalid_vector(Field, ~"has an element outside the float range")
+    end.
+
+-spec invalid_vector(atom(), binary()) -> no_return().
+invalid_vector(Field, Reason) ->
+    erlang:error({kura, {invalid_vector, Field, Reason}}).
 
 vector_text(Floats) ->
     case kura_types:dump(vector, Floats) of
@@ -188,7 +211,11 @@ check_distance(_Types, Distance) ->
     erlang:error({kura, {invalid_distance, Distance}}).
 
 dimension(Text) ->
-    length(binary:matches(Text, ~",")) + 1.
+    count_commas(Text, 1).
+
+count_commas(<<$,, Rest/binary>>, N) -> count_commas(Rest, N + 1);
+count_commas(<<_, Rest/binary>>, N) -> count_commas(Rest, N);
+count_commas(<<>>, N) -> N.
 
 reject_distances(Clause, Terms) ->
     case lists:any(fun is_distance/1, Terms) of

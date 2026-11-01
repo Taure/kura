@@ -309,3 +309,38 @@ bad_metric_distance() -> {distance, embedding, l1, ~"[1.0,2.0,3.0]"}.
 %% a distance.
 -spec untyped_distance() -> dynamic().
 untyped_distance() -> kura_query:distance(embedding, cosine, [1, 2, 3]).
+
+%% pgvector's limit. A larger vector used to be cast and dumped in full
+%% before the server rejected it.
+distance_caps_the_dimension_at_16000_test_() ->
+    [
+        ?_assertMatch(
+            {distance, any_embedding, l2, _},
+            kura_query:distance(any_embedding, l2, lists:duplicate(16000, 1.0))
+        ),
+        ?_assertError(
+            {kura, {invalid_vector, any_embedding, _}},
+            kura_query:distance(any_embedding, l2, lists:duplicate(16001, 1.0))
+        ),
+        ?_assertError(
+            {kura, {invalid_vector, any_embedding, _}},
+            kura_query:distance(any_embedding, l2, lists:duplicate(2000000, 1.0))
+        )
+    ].
+
+distance_rejects_an_improper_list_test() ->
+    ?assertError(
+        {kura, {invalid_vector, embedding, _}},
+        kura_query:distance(embedding, l2, improper_vector())
+    ).
+
+distance_rejects_an_element_beyond_the_float_range_test() ->
+    ?assertError(
+        {kura, {invalid_vector, embedding, _}}, kura_query:distance(embedding, l2, [1 bsl 2000])
+    ).
+
+-spec improper_vector() -> dynamic().
+improper_vector() -> [1.0, 2.0 | not_a_list()].
+
+-spec not_a_list() -> dynamic().
+not_a_list() -> 3.0.
