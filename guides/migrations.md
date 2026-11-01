@@ -315,8 +315,11 @@ Because every statement runs on the same connection, a `PRAGMA` holds for the
 statements after it, which makes the documented table rebuild possible:
 `PRAGMA foreign_keys = OFF`, rebuild the referenced table, `PRAGMA
 foreign_key_check`, `PRAGMA foreign_keys = ON`. Turn foreign keys back on in
-the same migration: the statements run on the connection directly, so the
-pool does not notice the change when the connection is checked in.
+the same migration. From the next kura_sqlite release (kura_sqlite#26) the
+pool also turns foreign keys back on whenever a connection is checked in, so
+a migration that fails between `OFF` and `ON` does not hand the next caller a
+connection without them. On an earlier kura_sqlite it does not, and that
+connection keeps foreign keys off.
 
 By default, `migrate/1` also calls `ensure_database/1` first, creating the
 configured database if it does not yet exist. To disable, set
