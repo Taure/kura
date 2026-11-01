@@ -735,3 +735,27 @@ ordering_and_aggregates_compiled_test_() ->
         {Path, ?_assertError(Reason, Compile(Q))}
      || {Reason, Q} <- Raw, {Path, Compile} <- compile_paths()
     ]}.
+
+%% update and delete add the attribute tenant to the key clauses directly,
+%% not through where/2, and must refuse an encrypted tenant field the same way.
+tenant_attribute_on_an_encrypted_field_in_writes_test_() ->
+    Data = #{id => 1, name => ~"a", ssn => ~"x"},
+    Tenant = {attribute, {ssn, ?PLAIN}},
+    {setup, fun compiler_setup/0, fun compiler_teardown/1, [
+        {"update",
+            ?_assertError(
+                ?WHERE_SSN,
+                kura_tenant:with_tenant(Tenant, fun() ->
+                    kura_repo_worker:update(
+                        ?REPO, kura_changeset:cast(?ENC, Data, #{name => ~"b"}, [name])
+                    )
+                end)
+            )},
+        {"delete",
+            ?_assertError(
+                ?WHERE_SSN,
+                kura_tenant:with_tenant(Tenant, fun() ->
+                    kura_repo_worker:delete(?REPO, kura_changeset:cast(?ENC, Data, #{}, []))
+                end)
+            )}
+    ]}.

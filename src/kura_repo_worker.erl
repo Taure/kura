@@ -567,7 +567,7 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
                 0 ->
                     {ok, Data};
                 _ ->
-                    KeyClauses = tenant_key_clauses(key_pairs(SchemaMod, Data)),
+                    KeyClauses = tenant_key_clauses(SchemaMod, key_pairs(SchemaMod, Data)),
                     Changes1 = maybe_add_timestamps(SchemaMod, pin_tenant(Changes), update),
                     case dump_changes(SchemaMod, Changes1) of
                         {error, DumpErr} ->
@@ -856,7 +856,7 @@ delete_record(RepoMod, SchemaMod, Data) ->
         {error, _} = Err ->
             Err;
         ok ->
-            KeyClauses = tenant_key_clauses(key_pairs(SchemaMod, Data)),
+            KeyClauses = tenant_key_clauses(SchemaMod, key_pairs(SchemaMod, Data)),
             {SQL, Params} = kura_query_compiler:delete(RepoMod, SchemaMod, KeyClauses),
             case kura_db:query(RepoMod, SQL, Params) of
                 #{command := delete, rows := [Row]} ->
@@ -1156,10 +1156,16 @@ maybe_apply_tenant_prefix(Query) ->
             Query
     end.
 
-tenant_key_clauses(KeyClauses) ->
+%% The tenant clause binds its value like a where/2 condition does, so an
+%% encrypted tenant field is refused with the same reason.
+tenant_key_clauses(SchemaMod, KeyClauses) ->
     case kura_tenant:get_tenant() of
-        {attribute, {Field, Value}} -> KeyClauses ++ [{Field, Value}];
-        _ -> KeyClauses
+        {attribute, {Field, Value}} ->
+            lists:member(Field, kura_schema:encrypted_fields(SchemaMod)) andalso
+                erlang:error({kura, {encrypted_field_in_where, Field}}),
+            KeyClauses ++ [{Field, Value}];
+        _ ->
+            KeyClauses
     end.
 
 pin_tenant(Changes) ->

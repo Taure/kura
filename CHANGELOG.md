@@ -148,6 +148,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{kura, {unsupported_encrypted_type, Mod, Field}}` for it, and
   `kura_types:to_pg_type/1` raises `{kura_crypto, unsupported_encrypted_type}`
   instead of returning `BYTEA[]`, so no migration is generated for it.
+- An attribute tenant on an encrypted field was refused on queries but not
+  on `update` and `delete`, which add the tenant to the key clauses
+  directly and bound its plaintext. They now raise
+  `{kura, {encrypted_field_in_where, Field}}` too.
 - A correlated subquery bypassed the filter guard. In
   `{exists, {subquery, Sub}}` or `{Field, in, {subquery, Sub}}` on a query
   over an encrypted schema, a condition in `Sub` naming an outer encrypted
