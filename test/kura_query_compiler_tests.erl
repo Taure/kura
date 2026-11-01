@@ -514,3 +514,29 @@ hand_built_distance_queries_raise_before_compiling_test_() ->
             ]
          || {Q, Reason} <- Cases
         ])}.
+
+%% Pins the accounting: a binary counts only over 64 bytes, as
+%% `Bytes div WordSize + 1', wherever it sits in the key or the result,
+%% inside maps and at any list position; every other term counts 0.
+binary_count_is_exact_for_key_result_and_maps_test() ->
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        W = erlang:system_info(wordsize),
+        Big = binary:copy(~"b", 1024),
+        AtLimit = binary:copy(~"s", 64),
+        JustOver = binary:copy(~"o", 65),
+        Sql = binary:copy(~"q", 200),
+        Key = {?REPO, Big, #{m => Big}, [AtLimit, 7, JustOver]},
+        ok = kura_query_cache:put(Key, {Sql, []}),
+        Expected = 2 * (1024 div W + 1) + (65 div W + 1) + (200 div W + 1),
+        ?assertEqual(Expected, binary_count()),
+        ok = kura_query_cache:put({?REPO, undefined, small}, {~"SELECT 1", [a, 1]}),
+        ?assertEqual(Expected, binary_count())
+    after
+        kura_query_cache:flush()
+    end.
+
+binary_count() ->
+    [{_, Words}] = ets:lookup(kura_query_cache, '$kura_binary_words'),
+    Words.
