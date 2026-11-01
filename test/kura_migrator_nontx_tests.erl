@@ -562,7 +562,12 @@ column_exists(Table, Column) ->
 
 lock_held() ->
     #{rows := [#{held := Held}]} = query(
-        ~"SELECT count(*) > 0 AS held FROM pg_locks WHERE locktype = 'advisory' AND objid::bigint = $1",
+        ~"""
+        SELECT count(*) > 0 AS held FROM pg_locks
+        WHERE locktype = 'advisory' AND objid::bigint = $1
+          AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+          AND classid = 0 AND objsubid = 1
+        """,
         [?LOCK_KEY]
     ),
     Held.
