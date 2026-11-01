@@ -202,7 +202,7 @@ positional_exports(#kura_query{select = MainSelect}, #kura_query{select = Branch
             [
                 N
              || {N, B} <- lists:zip(Names, BranchNames, trim),
-                lists:member(B, Exports) orelse lists:member(?ANY_COLUMN, Exports)
+                ciphertext_column(B, Exports)
             ];
         _ ->
             [?ANY_COLUMN]
@@ -223,18 +223,12 @@ names(Names, Count) ->
     end.
 
 ciphertext_aliases({exprs, Exprs}, Encrypted) ->
-    [Alias || {Alias, Expr} <- Exprs, ciphertext_expr(Expr, Encrypted)];
-ciphertext_aliases(Fields, Encrypted) ->
-    [Agg || {Agg, _} = Expr <- Fields, ciphertext_expr(Expr, Encrypted)].
+    [Alias || {Alias, Field} <- Exprs, is_atom(Field), ciphertext_column(Field, Encrypted)];
+ciphertext_aliases(_Fields, _Encrypted) ->
+    [].
 
-ciphertext_expr(Field, Encrypted) when is_atom(Field) ->
-    lists:member(Field, Encrypted) orelse lists:member(?ANY_COLUMN, Encrypted);
-ciphertext_expr({Agg, Field}, Encrypted) when Agg =:= min; Agg =:= max ->
-    lists:member(Field, Encrypted);
-ciphertext_expr({over, Fn, _Spec}, Encrypted) ->
-    ciphertext_expr(Fn, Encrypted);
-ciphertext_expr(_Expr, _Encrypted) ->
-    false.
+ciphertext_column(Field, Encrypted) ->
+    lists:member(Field, Encrypted) orelse lists:member(?ANY_COLUMN, Encrypted).
 
 %% Explicit recursion rather than lists:foreach/2, so an improper list raises
 %% a reason of its own instead of a function_clause carrying the values.
@@ -424,7 +418,7 @@ refuse_fields(_Improper, _Scope, _Reason) ->
     erlang:error({kura, unrecognised_condition}).
 
 refuse_field(Field, {Encrypted, _Ctes}, Reason) ->
-    case lists:member(Field, Encrypted) orelse lists:member(?ANY_COLUMN, Encrypted) of
+    case ciphertext_column(Field, Encrypted) of
         true -> erlang:error({kura, {Reason, Field}});
         false -> ok
     end.

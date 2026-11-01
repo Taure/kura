@@ -757,6 +757,13 @@ ordering_and_aggregates_compiled_test_() ->
         {?ORDER_SSN, #kura_query{
             from = kura_test_schema,
             wheres = [{exists, {subquery, #kura_query{from = ?ENC, order_bys = [{ssn, asc}]}}}]
+        }},
+        {?AGG_SSN, #kura_query{
+            from = ~"c",
+            ctes = [
+                {~"c", #kura_query{from = ?ENC, select = {exprs, [{m, {over, {max, ssn}, #{}}}]}}}
+            ],
+            wheres = [{m, ?PLAIN}]
         }}
     ],
     {setup, fun compiler_setup/0, fun compiler_teardown/1, [
