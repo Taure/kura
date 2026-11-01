@@ -128,10 +128,27 @@ field_names(Mod) ->
         [F#kura_field.name || F <- Mod:fields()]
     end).
 
--doc "Return map of field name to kura type for a schema module.".
+-doc """
+Return map of field name to kura type for a schema module.
+
+The first call for a module also checks its encrypted fields, and raises
+`{kura, Reason}` if one is used where it cannot work:
+
+- `{unsupported_encrypted_type, Mod, Field}` - a type tagged `encrypted`
+  that is not `{encrypted, Inner}`;
+- `{encrypted_primary_key, Mod, Field}`;
+- `{encrypted_association_key, Mod, Assoc, Field}` - a foreign key,
+  referenced key or join-table key of an association;
+- `{encrypted_embed_field, Mod, Embed, Field}` - an encrypted field in an
+  embedded schema, at any depth.
+
+A key is matched by equality and an embed is stored as one JSON document,
+so none of these can hold a ciphertext.
+""".
 -spec field_types(module()) -> #{atom() => kura_types:kura_type()}.
 field_types(Mod) ->
     cache({kura_schema, field_types, Mod}, fun() ->
+        validate_encryption(Mod),
         Base = field_types_map(Mod:fields(), #{}),
         embed_types_map(embeds(Mod), Base)
     end).
@@ -390,6 +407,91 @@ indexes(Mod) ->
             false -> []
         end
     end).
+
+%%----------------------------------------------------------------------
+%% Internal: encrypted field placement
+%%
+%% Reads fields/0 of the schemas involved directly rather than through
+%% field_types/1, so two schemas that refer to each other do not recurse.
+%%----------------------------------------------------------------------
+
+validate_encryption(Mod) ->
+    Fields = Mod:fields(),
+    Unsupported = [
+        F
+     || #kura_field{name = F, type = T} <- Fields, kura_types:encryption(T) =:= unsupported
+    ],
+    refuse(unsupported_encrypted_type, Mod, Unsupported),
+    Encrypted = declared_encrypted(Mod),
+    refuse(encrypted_primary_key, Mod, [F || F <- key_names(Mod), lists:member(F, Encrypted)]),
+    case
+        [
+            {Name, F}
+         || #kura_assoc{name = Name} = A <- associations(Mod),
+            F <- encrypted_assoc_keys(Encrypted, A)
+        ]
+    of
+        [] -> ok;
+        [{Name, F} | _] -> error({kura, {encrypted_association_key, Mod, Name, F}})
+    end,
+    validate_embeds(Mod, embeds(Mod), [Mod]).
+
+refuse(_Reason, _Mod, []) -> ok;
+refuse(Reason, Mod, [F | _]) -> error({kura, {Reason, Mod, F}}).
+
+encrypted_assoc_keys(Encrypted, #kura_assoc{type = belongs_to} = A) ->
+    Referenced =
+        case assoc_target_key(A) of
+            undefined -> [];
+            Cols -> [C || C <- Cols, lists:member(C, declared_encrypted(assoc_target(A)))]
+        end,
+    [F || F <- assoc_fields(A), lists:member(F, Encrypted)] ++ Referenced;
+encrypted_assoc_keys(_Encrypted, #kura_assoc{type = Type} = A) when
+    Type =:= has_many; Type =:= has_one
+->
+    TargetEncrypted = declared_encrypted(assoc_target(A)),
+    [F || F <- assoc_fields(A), lists:member(F, TargetEncrypted)];
+encrypted_assoc_keys(
+    _Encrypted,
+    #kura_assoc{
+        type = many_to_many, join_through = Through, join_keys = {_, _}
+    } = A
+) when is_atom(Through) ->
+    {Owner, Related} = assoc_join_keys(A),
+    ThroughEncrypted = declared_encrypted(Through),
+    [F || F <- Owner ++ Related, lists:member(F, ThroughEncrypted)];
+encrypted_assoc_keys(_Encrypted, #kura_assoc{}) ->
+    [].
+
+validate_embeds(_Mod, [], _Seen) ->
+    ok;
+validate_embeds(Mod, [#kura_embed{name = Name, schema = Embedded} | Rest], Seen) ->
+    case declared_encrypted(Embedded) of
+        [] -> ok;
+        [F | _] -> error({kura, {encrypted_embed_field, Mod, Name, F}})
+    end,
+    case lists:member(Embedded, Seen) of
+        true -> ok;
+        false -> validate_embeds(Mod, embeds(Embedded), [Embedded | Seen])
+    end,
+    validate_embeds(Mod, Rest, Seen).
+
+declared_encrypted(Mod) ->
+    case code:ensure_loaded(Mod) of
+        {module, Mod} ->
+            case erlang:function_exported(Mod, fields, 0) of
+                true ->
+                    [
+                        F
+                     || #kura_field{name = F, type = T} <- Mod:fields(),
+                        kura_types:encryption(T) =/= none
+                    ];
+                false ->
+                    []
+            end;
+        _ ->
+            []
+    end.
 
 %%----------------------------------------------------------------------
 %% Internal: recursive map builders
