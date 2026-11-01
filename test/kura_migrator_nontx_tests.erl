@@ -50,6 +50,10 @@ nontx_test_() ->
             {"two migrators run each migration once", {timeout, 30, fun concurrent_migrators/0}},
             {"a non-transactional step waits for the lock another session holds",
                 {timeout, 30, fun waits_for_a_held_lock/0}},
+            {"a non-transactional plan is refused inside the sandbox",
+                {timeout, 10, fun refused_in_sandbox/0}},
+            {"a non-transactional plan is refused inside an outer transaction",
+                {timeout, 10, fun refused_in_outer_transaction/0}},
             {"query_on runs on the given connection", fun query_on_uses_the_connection/0}
         ]}}.
 
@@ -195,6 +199,34 @@ waits_for_a_held_lock() ->
     after
         kura_pool_minato:checkin(?POOL, Token)
     end.
+
+refused_in_sandbox() ->
+    declare([?OK_APP]),
+    ok = kura_sandbox:checkout(?REPO),
+    Result =
+        try
+            kura_migrator:migrate(?REPO)
+        after
+            kura_sandbox:checkin(?REPO)
+        end,
+    ?assertEqual(
+        {error, {non_transactional_in_transaction, ?INDEX, m20250301110000_nontx_index_items}},
+        Result
+    ),
+    ?assertEqual([], applied_versions()),
+    ?assertNot(table_exists(~"nontx_items")),
+    ?assertEqual(false, lock_held()).
+
+refused_in_outer_transaction() ->
+    declare([?OK_APP]),
+    Result = kura_db:transaction(?REPO, fun() -> kura_migrator:migrate(?REPO) end),
+    ?assertEqual(
+        {error, {non_transactional_in_transaction, ?INDEX, m20250301110000_nontx_index_items}},
+        Result
+    ),
+    ?assertEqual([], applied_versions()),
+    ?assertNot(table_exists(~"nontx_items")),
+    ?assertEqual(false, lock_held()).
 
 query_on_uses_the_connection() ->
     {ok, Conn, Token} = kura_pool_minato:checkout(?POOL, #{}),

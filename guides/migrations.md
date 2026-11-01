@@ -212,6 +212,13 @@ with `{error, {concurrently_in_transaction, Version, Module}}` before any
 migration in the run executes, rather than left for Postgres to reject
 part-way.
 
+A run with a non-transactional migration pending is refused with `{error,
+{non_transactional_in_transaction, Version, Module}}`, before anything in it
+executes, when the caller is inside `kura_db:transaction/2` or holds a
+`kura_sandbox` connection for the repo's pool. The enclosing transaction would
+keep the lock held while the migration waited for it on a connection of its
+own. Migrate before checking out the sandbox in a test setup.
+
 A long index build runs under the driver's statement timeout like any other
 migration statement. With `kura_postgres` that is the pool's `timeout`
 option (minato's default is 15 seconds), so raise it for the node that

@@ -220,6 +220,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migration pending, and the error log says how many statements were
   committed. Transactional migrations before it in the run commit first,
   and those after it run in further transactions, each under the lock.
+  Inside `kura_db:transaction/2` or with a sandbox connection checked
+  out, a run with one pending is refused with
+  `{non_transactional_in_transaction, Version, Module}` before anything
+  executes.
 - `{create_index, ...}` takes `concurrently => true` (or `concurrently`
   in the list form) and emits `CREATE INDEX CONCURRENTLY` (#139). It is
   refused in a migration that is still transactional, with

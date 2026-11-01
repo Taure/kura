@@ -55,6 +55,13 @@ run executes. On a backend whose pool does not declare the
 `concurrent_indexes` capability (SQLite) the option compiles to a plain
 `CREATE INDEX`, so one migration serves both backends.
 
+A run with a non-transactional migration pending is refused with
+`{error, {non_transactional_in_transaction, Version, Module}}`, before
+anything in it executes, when the caller is inside
+`kura_db:transaction/2` or holds a `m:kura_sandbox` connection for the
+repo's pool. The enclosing transaction would keep the first step's
+lock held while the migration waited for it on another connection.
+
 ## The advisory lock
 
 The lock is taken with `pg_try_advisory_xact_lock` or
@@ -1015,8 +1022,10 @@ migration_error(Class, Reason, Stack) ->
     {ok, [integer()]} | {error, term()}.
 run_plan(RepoMod, Dir, PlanFun) ->
     T0 = erlang:monotonic_time(),
+    Enclosed = enclosing_transaction(RepoMod),
     First = locked_step(RepoMod, fun() ->
         Todo = PlanFun(),
+        refuse_non_transactional_when_enclosed(Enclosed, Todo),
         refuse_concurrently_in_transaction(Todo, Dir),
         emit_migrate_start(RepoMod, Dir, length(Todo)),
         run_transactional_prefix(Todo, Dir, RepoMod)
@@ -1094,6 +1103,31 @@ transactional(Module) ->
     case erlang:function_exported(Module, transaction, 0) of
         true -> Module:transaction() =/= false;
         false -> true
+    end.
+
+%% A transaction the caller is in, or a sandbox connection, would keep
+%% the first step's transaction-level lock held while the
+%% non-transactional migration polls for it on a connection of its own.
+-spec enclosing_transaction(module()) -> boolean().
+enclosing_transaction(RepoMod) ->
+    kura_db:in_transaction(RepoMod) orelse
+        kura_sandbox:get_conn(kura_db:get_pool(RepoMod)) =/= not_found.
+
+-spec refuse_non_transactional_when_enclosed(boolean(), [migration()]) -> ok.
+refuse_non_transactional_when_enclosed(false, _Todo) ->
+    ok;
+refuse_non_transactional_when_enclosed(true, Todo) ->
+    case [M || {_, Module} = M <- Todo, not transactional(Module)] of
+        [] ->
+            ok;
+        [{Version, Module} | _] ->
+            ?LOG_ERROR(#{
+                msg => ~"kura: a non-transactional migration cannot run inside a transaction",
+                version => Version,
+                module => Module,
+                hint => ~"run the migrator outside kura_db:transaction/2 and the sandbox"
+            }),
+            error({migration_aborted, {non_transactional_in_transaction, Version, Module}})
     end.
 
 -spec refuse_concurrently_in_transaction([migration()], up | down) -> ok.
