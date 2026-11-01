@@ -83,8 +83,14 @@ encryption_test_() ->
         ?_assertEqual(none, kura_types:encryption(string)),
         ?_assertEqual(none, kura_types:encryption({array, string})),
         ?_assertEqual(none, kura_types:encryption({array, {array, string}})),
-        ?_assertEqual(unsupported, kura_types:encryption({array, {encrypted, string}})),
-        ?_assertEqual(unsupported, kura_types:encryption({array, {array, {encrypted, string}}})),
+        ?_assertEqual(
+            {ok, #{inner => string, array => 1}},
+            kura_types:encryption({array, {encrypted, string}})
+        ),
+        ?_assertEqual(
+            {ok, #{inner => string, array => 2}},
+            kura_types:encryption({array, {array, {encrypted, string}}})
+        ),
         ?_assertEqual(unsupported, kura_types:encryption({array, V2})),
         ?_assertEqual(none, kura_types:encryption({embed, embeds_one, kura_test_address})),
         ?_assertError(
@@ -125,52 +131,47 @@ options_form_fails_closed_test_() ->
             )}
     ]}.
 
-%% An array of an encrypted type dumps each element encrypted, but nothing
-%% that asks "is this field encrypted" recognised it: the audit trail stored
-%% the plaintext elements and the filter guard bound them. Schema load
-%% refuses it until arrays of ciphertexts are designed for.
-array_of_encrypted_fails_closed_test_() ->
-    [
-        {"schema load",
-            ?_assertError(
-                {kura, {unsupported_encrypted_type, kura_test_enc_array_schema, tags}},
-                kura_schema:field_types(kura_test_enc_array_schema)
-            )},
-        {"nested array",
-            ?_assertError(
-                {kura, {unsupported_encrypted_type, kura_test_enc_nested_array_schema, grid}},
-                kura_schema:field_types(kura_test_enc_nested_array_schema)
-            )},
+%% An array of an encrypted type is encrypted element by element. Every
+%% "is this field encrypted" check must see it: before, the audit trail
+%% stored its elements in plaintext and the filter guard let them be bound.
+array_of_encrypted_is_encrypted_test_() ->
+    Arr = kura_test_enc_array_schema,
+    {setup, fun setup_keys/0, fun teardown_keys/1, [
+        {"schema load", ?_assertMatch(#{tags := _}, kura_schema:field_types(Arr))},
+        {"encrypted_fields", ?_assertEqual([tags], kura_schema:encrypted_fields(Arr))},
+        {"nested",
+            ?_assertEqual([grid], kura_schema:encrypted_fields(kura_test_enc_nested_array_schema))},
         {"query guard",
             ?_assertError(
-                {kura, {unsupported_encrypted_type, kura_test_enc_array_schema, tags}},
-                kura_query:where(kura_query:from(kura_test_enc_array_schema), {tags, [~"x"]})
+                {kura, {encrypted_field_in_where, tags}},
+                kura_query:where(kura_query:from(Arr), {tags, [~"x"]})
             )},
-        {"to_pg_type, so no DDL is generated for it",
-            ?_assertError(
-                {kura_crypto, unsupported_encrypted_type},
-                kura_types:to_pg_type({array, {encrypted, string}})
+        {"audit",
+            ?_assertMatch(
+                {undefined, #{tags := ~"[encrypted]"}, undefined},
+                kura_audit:build_audit_data(Arr, insert, #{id => 1, tags => [~"123-45-6789"]})
             )},
-        {"to_pg_type, nested",
-            ?_assertError(
-                {kura_crypto, unsupported_encrypted_type},
-                kura_types:to_pg_type({array, {array, {encrypted, string}}})
+        {"column type",
+            ?_assertEqual(~"BYTEA[]", kura_types:to_pg_type({array, {encrypted, string}}))},
+        {"nested column type",
+            ?_assertEqual(
+                ~"BYTEA[][]", kura_types:to_pg_type({array, {array, {encrypted, string}}})
             )},
         {"migration column type",
+            ?_assertEqual(~"BYTEA[]", kura_dialect_pg:column_type({array, {encrypted, string}}))},
+        {"an array of the options form is refused",
             ?_assertError(
                 {kura_crypto, unsupported_encrypted_type},
-                kura_dialect_pg:column_type({array, {encrypted, string}})
+                kura_types:to_pg_type({array, kura_test_enc_v2_schema:v2_type()})
             )},
-        {"a plain array still maps",
-            ?_assertEqual(~"VARCHAR(255)[][]", kura_types:to_pg_type({array, {array, string}}))},
-        {"audit",
-            ?_assertError(
-                {kura, {unsupported_encrypted_type, kura_test_enc_array_schema, tags}},
-                kura_audit:build_audit_data(
-                    kura_test_enc_array_schema, insert, #{id => 1, tags => [~"123-45-6789"]}
-                )
-            )}
-    ].
+        {"elements round-trip encrypted", fun() ->
+            T = {array, {array, {encrypted, string}}},
+            V = [[~"123-45-6789", ~"b"], [~"c", ~"d"]],
+            {ok, Dumped} = kura_types:dump(T, V),
+            ?assertEqual(nomatch, binary:match(term_to_binary(Dumped), ~"123-45-6789")),
+            ?assertEqual({ok, V}, kura_types:load(T, Dumped))
+        end}
+    ]}.
 
 setup_keys() ->
     application:set_env(kura, encryption, #{

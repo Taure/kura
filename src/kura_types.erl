@@ -40,7 +40,7 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
     | {custom, module()}.
 
 -type encryption() :: none | {ok, encryption_spec()} | unsupported.
--type encryption_spec() :: #{inner := kura_type()}.
+-type encryption_spec() :: #{inner := kura_type(), array => pos_integer()}.
 
 %% Any tuple tagged `encrypted`, whatever its arity, so a form this release
 %% does not support is still treated as encrypted and fails closed.
@@ -482,14 +482,16 @@ encrypted" goes through here: the query guard, audit redaction, schema
 validation and the cast, dump and load seams.
 
 Returns `{ok, #{inner => Inner}}` for `{encrypted, Inner}`, `unsupported` for any other
-tuple tagged `encrypted` (such as a future `{encrypted, Inner, Opts}`) and for
-an array of an encrypted type at any depth, and `none` for every other type.
+tuple tagged `encrypted` (such as a future `{encrypted, Inner, Opts}`), and
+`none` for every other type. An array of an encrypted type is encrypted
+element by element and stored as `BYTEA[]`; it returns the element's spec
+with `array => Depth`, or `unsupported` if the element type is.
 An `unsupported` type is still encrypted: it is redacted and refused in
 filters, a schema that declares one raises when it is first read, and cast,
 dump and load raise on a tagged one rather than handle it as plaintext.
 
 The spec is a map so that later encryption options can be added as keys
-without changing the return shape; only `inner` exists today.
+without changing the return shape; only `inner` and `array` exist today.
 """.
 -spec encryption(kura_type() | {encrypted, kura_type(), term()}) -> encryption().
 encryption({encrypted, Inner}) -> {ok, #{inner => Inner}};
@@ -497,11 +499,11 @@ encryption(Type) when ?IS_ENCRYPTED_TAG(Type) -> unsupported;
 encryption({array, Inner}) -> array_encryption(encryption(Inner));
 encryption(_Type) -> none.
 
-array_encryption(none) -> none;
-array_encryption(_) -> unsupported.
+array_encryption({ok, Spec}) -> {ok, Spec#{array => maps:get(array, Spec, 0) + 1}};
+array_encryption(Encryption) -> Encryption.
 
-array_pg_type(none, Inner) -> <<(to_pg_type(Inner))/binary, "[]">>;
-array_pg_type(_, _Inner) -> erlang:error({kura_crypto, unsupported_encrypted_type}).
+array_pg_type(unsupported, _Inner) -> erlang:error({kura_crypto, unsupported_encrypted_type});
+array_pg_type(_, Inner) -> <<(to_pg_type(Inner))/binary, "[]">>.
 
 encrypted_pg_type({ok, #{}}) -> ~"BYTEA";
 encrypted_pg_type(_) -> erlang:error({kura_crypto, unsupported_encrypted_type}).

@@ -258,10 +258,11 @@ an encrypted field, partitioning or ordering a window by one, and `sum`,
 `avg`, `min` or `max` of one raise too; `count` works. A raw `{fragment,
 SQL, Params}` is not inspected. The check runs again when a query is
 compiled, so a `#kura_query{}` record built by hand is covered too. Primary
-keys, association keys and fields of embedded schemas cannot be encrypted,
-and neither can the elements of an array: `kura_schema` raises when it
-first reads such a schema. `NULL` stays `NULL` (unencrypted), so presence
-still leaks.
+keys, association keys and fields of embedded schemas cannot be encrypted:
+`kura_schema` raises when it first reads such a schema. An `{array,
+{encrypted, Inner}}` field encrypts each element, is stored as `BYTEA[]`,
+and is an encrypted field for all of the above. `NULL` stays `NULL`
+(unencrypted), so presence still leaks.
 Schema introspection (`rebar3 kura gen_schemas`) cannot detect that a
 `BYTEA` column was encrypted - annotate it by hand. The audit trail
 redacts encrypted fields to `[encrypted]` (it keeps the "changed" signal

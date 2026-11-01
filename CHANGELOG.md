@@ -144,10 +144,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An `{array, {encrypted, Inner}}` field, at any array depth, was not
   recognised as encrypted: `kura_types:encryption/1` returned `none`, so
   the audit trail stored its elements in plaintext and the filter guard
-  let a condition bind them. Schema load now raises
-  `{kura, {unsupported_encrypted_type, Mod, Field}}` for it, and
-  `kura_types:to_pg_type/1` raises `{kura_crypto, unsupported_encrypted_type}`
-  instead of returning `BYTEA[]`, so no migration is generated for it.
+  let a condition bind them. It is now recognised as encrypted
+  (`{ok, #{inner => Inner, array => Depth}}`), so it is redacted, refused
+  in filters, ordering and aggregates, and refused as a key or embed field
+  like any other encrypted field. Its storage is unchanged: each element
+  encrypted, in a `BYTEA[]` column.
 - An attribute tenant on an encrypted field was refused on queries but not
   on `update` and `delete`, which add the tenant to the key clauses
   directly and bound its plaintext. They now raise
