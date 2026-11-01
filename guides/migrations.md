@@ -243,6 +243,13 @@ executes, when the caller is inside `kura_db:transaction/2` or holds a
 keep the lock held while the migration waited for it on a connection of its
 own. Migrate before checking out the sandbox in a test setup.
 
+A non-transactional migration holds a session-level lock and runs its
+statements one by one on the same connection, so it needs that connection to
+be one server session throughout. A pooler that hands a client a different
+server connection per transaction, such as PgBouncer in transaction mode, is
+not supported for non-transactional migrations: migrate through a direct
+connection, or a pooler in session mode.
+
 ### Long index builds
 
 A statement in a migration runs under the repo pool's read timeout. With

@@ -68,6 +68,7 @@ nontx_test_() ->
             {"a non-transactional plan is refused inside an outer transaction",
                 {timeout, 10, fun refused_in_outer_transaction/0}},
             {"a raising unlock is logged, not raised", fun raising_unlock_is_kept_quiet/0},
+            {"only an unlock answering true releases", fun unlock_answer_decides_release/0},
             {"query_on runs on the given connection", fun query_on_uses_the_connection/0},
             {"query_on/5 hands its options to the driver", fun query_on_passes_options/0}
         ]}}.
@@ -341,7 +342,23 @@ raising_unlock_is_kept_quiet() ->
     ?assertError(
         function_clause, kura_db:query_on(?REPO, not_a_connection, ~"SELECT 1", [])
     ),
-    ?assertEqual(ok, kura_migrator:release_session_lock({conn, ?REPO, not_a_connection})).
+    ?assertEqual(
+        not_released, kura_migrator:release_session_lock({conn, ?REPO, not_a_connection})
+    ).
+
+unlock_answer_decides_release() ->
+    {ok, Conn, Token} = kura_pool_minato:checkout(?POOL, #{}),
+    Target = {conn, ?REPO, Conn},
+    try
+        ?assertEqual(not_released, kura_migrator:release_session_lock(Target)),
+        #{rows := [#{locked := true}]} = kura_driver_minato:query_on(
+            Conn, ~"SELECT pg_try_advisory_lock($1) AS locked", [?LOCK_KEY], decode()
+        ),
+        ?assertEqual(released, kura_migrator:release_session_lock(Target)),
+        ?assertEqual(false, lock_held())
+    after
+        kura_pool_minato:checkin(?POOL, Token)
+    end.
 
 query_on_uses_the_connection() ->
     {ok, Conn, Token} = kura_pool_minato:checkout(?POOL, #{}),

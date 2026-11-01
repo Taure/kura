@@ -1264,7 +1264,7 @@ session_locked(Migration, Dir, PoolMod, Target) ->
                 try
                     apply_non_transactional(Migration, Dir, Target)
                 after
-                    release_session_lock(Target)
+                    _ = release_session_lock(Target)
                 end;
             false ->
                 apply_non_transactional(Migration, Dir, Target)
@@ -1276,21 +1276,24 @@ session_locked(Migration, Dir, PoolMod, Target) ->
 %% Never raises, so a failed unlock cannot turn a recorded migration into
 %% an error. A connection that has gone takes its session lock with it,
 %% and the pool unlocks every advisory lock when the connection is
-%% checked in.
--spec release_session_lock(conn_target()) -> ok.
+%% checked in. Anything but `true` from the unlock means this session did
+%% not hold the lock it was releasing, which is worth a warning too.
+-spec release_session_lock(conn_target()) -> released | not_released.
 release_session_lock(Target) ->
     try run_sql(Target, ~"SELECT pg_advisory_unlock($1) AS unlocked", [?MIGRATION_LOCK_KEY]) of
-        _ -> ok
+        #{rows := [#{unlocked := true}]} -> released;
+        Other -> not_released(Target, #{answer => Other})
     catch
-        Class:Reason ->
-            ?LOG_WARNING(#{
-                msg => ~"kura: could not release the migration lock; checkin releases it",
-                repo => target_repo(Target),
-                class => Class,
-                reason => Reason
-            }),
-            ok
+        Class:Reason -> not_released(Target, #{class => Class, reason => Reason})
     end.
+
+-spec not_released(conn_target(), map()) -> not_released.
+not_released(Target, Why) ->
+    ?LOG_WARNING(Why#{
+        msg => ~"kura: could not release the migration lock; checkin releases it",
+        repo => target_repo(Target)
+    }),
+    not_released.
 
 -spec apply_non_transactional(migration(), up | down, conn_target()) ->
     {ok, [integer()]} | {error, term()}.
