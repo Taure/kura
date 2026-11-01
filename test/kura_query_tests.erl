@@ -243,7 +243,7 @@ preformatted_vector() -> ~"[1,2,3]".
 -spec hand_built_distance() -> dynamic().
 hand_built_distance() -> {distance, embedding, l2, [1]}.
 
-%% Thresholds land in PR2. Until then a distance outside order_by and
+%% Distance thresholds are planned in #122. Until then a distance outside order_by and
 %% select_expr would leave its vector in the cache key and crash the
 %% dialect, so the builder refuses it.
 distance_outside_order_by_and_select_raises_test_() ->
