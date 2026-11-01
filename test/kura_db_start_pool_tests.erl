@@ -509,6 +509,16 @@ deprecated_pool_config_logs_nothing_on_a_raising_init_test() ->
     end),
     ?assertEqual([], Events).
 
+deprecated_pool_config_without_a_repo_is_empty_test() ->
+    with_flat_env([{pool_module, ?MODULE}], fun() ->
+        ?assertEqual(#{}, kura_app:pool_config())
+    end).
+
+deprecated_pool_config_of_an_unknown_repo_is_empty_test() ->
+    with_flat_env([{repo, kura_db_failing_repo}, {database, ~"flat_db"}], fun() ->
+        ?assertEqual(#{}, kura_app:pool_config(kura_db_no_such_repo))
+    end).
+
 deprecated_pool_config_reads_the_legacy_flat_repo_test() ->
     Flat = [{repo, kura_db_failing_repo}, {pool_module, ?MODULE}, {database, ~"flat_db"}],
     with_flat_env(Flat, fun() ->

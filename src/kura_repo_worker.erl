@@ -831,14 +831,14 @@ join_many_to_many(RepoMod, SchemaMod, AccRow, Assoc, Children) ->
 
 %% Join-table writes go to the dialect unscoped: a join table has no tenant
 %% attribute, and the rows it links were checked under the tenant.
--spec join_delete_sql(module(), binary() | module(), [{atom(), term()}]) ->
+-spec join_delete_sql(module(), kura_dialect:table(), [{atom(), term()}]) ->
     {iodata(), [term()]}.
 join_delete_sql(Dialect, JoinThrough, Owner) ->
     Dialect:delete_all(#kura_query{
         from = JoinThrough, wheres = [{Col, '=', Value} || {Col, Value} <- Owner]
     }).
 
--spec join_insert_sql(module(), binary() | module(), [{atom(), term()}]) ->
+-spec join_insert_sql(module(), kura_dialect:table(), [{atom(), term()}]) ->
     {iodata(), [term()]}.
 join_insert_sql(Dialect, JoinThrough, Row) ->
     Dialect:insert_all(JoinThrough, [Col || {Col, _} <- Row], [maps:from_list(Row)]).

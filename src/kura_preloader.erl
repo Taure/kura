@@ -244,7 +244,7 @@ preload_many_to_many(
 
 %% A join table has no tenant attribute to scope it by, so the read goes to the
 %% dialect unscoped; the related rows it names are read through the tenant.
--spec join_rows_sql(module(), binary() | module(), {[atom()], [atom()]}, [tuple()]) ->
+-spec join_rows_sql(module(), kura_dialect:table(), {[atom()], [atom()]}, [tuple()]) ->
     {iodata(), [term()]}.
 join_rows_sql(Dialect, JoinThrough, {OwnerCols, RelatedCols}, OwnerTuples) ->
     Dialect:to_sql(#kura_query{

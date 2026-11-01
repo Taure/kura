@@ -87,7 +87,10 @@ start_repo_pool(Repo) ->
 -doc "Deprecated. The legacy flat repo's config, as `pool_config/1` resolves it.".
 -spec pool_config() -> map().
 pool_config() ->
-    pool_config(application:get_env(kura, repo, undefined)).
+    case application:get_env(kura, repo) of
+        {ok, Repo} when is_atom(Repo) -> resolved_config(Repo);
+        _ -> #{}
+    end.
 
 -doc """
 Deprecated. A repo's config as its pool is started with: `kura_repo:config/1`,
@@ -96,6 +99,10 @@ no other connection defaults.
 """.
 -spec pool_config(module()) -> map().
 pool_config(Repo) ->
+    resolved_config(Repo).
+
+-spec resolved_config(module()) -> map().
+resolved_config(Repo) ->
     case kura_db:resolve(Repo) of
         {ok, _Pool, Config} -> Config;
         {error, Reason} -> error(Reason)
