@@ -252,7 +252,8 @@ implementing the `kura_keyring` behaviour and setting `{kura, [{keyring, my_keyr
 unique constraint (each write has a random nonce, so equal plaintexts
 produce different ciphertexts). `kura_query:where/2` and `having/2` raise
 on any condition that compares an encrypted field to a value, however it is
-nested; `{Field, is_nil}` and `{Field, is_not_nil}` still work. A raw
+nested, including inside a subquery or over a CTE that selects an encrypted
+field; `{Field, is_nil}` and `{Field, is_not_nil}` still work. A raw
 `{fragment, SQL, Params}` is not inspected. Primary keys, association keys
 and fields of embedded schemas cannot be encrypted, and neither can the
 elements of an array: `kura_schema` raises when it first reads such a

@@ -256,3 +256,147 @@ correlated_subquery_allowed_test_() ->
 
 where_enc(Cond) ->
     kura_query:where(kura_query:from(?ENC), Cond).
+
+%%----------------------------------------------------------------------
+%% CTEs: a source named after a CTE reads the CTE's columns.
+%%----------------------------------------------------------------------
+
+enc_cte(Q) ->
+    kura_query:with_cte(Q, ~"enc_cte", kura_query:from(?ENC)).
+
+cte_refused_test_() ->
+    P = ?PLAIN,
+    Plain = kura_query:from(kura_test_schema),
+    [
+        {"where after with_cte",
+            ?_assertError(
+                ?WHERE_SSN, kura_query:where(enc_cte(kura_query:from(enc_cte)), {ssn, P})
+            )},
+        {"where before with_cte",
+            ?_assertError(
+                ?WHERE_SSN, enc_cte(kura_query:where(kura_query:from(enc_cte), {'not', {ssn, P}}))
+            )},
+        {"having before with_cte",
+            ?_assertError(
+                {kura, {encrypted_field_in_having, ssn}},
+                enc_cte(kura_query:having(kura_query:from(enc_cte), {ssn, P}))
+            )},
+        {"join to a CTE, then where",
+            ?_assertError(
+                ?WHERE_SSN,
+                kura_query:where(
+                    kura_query:join(enc_cte(Plain), inner, enc_cte, {id, id}), {ssn, P}
+                )
+            )},
+        {"where, join to a CTE, then with_cte",
+            ?_assertError(
+                ?WHERE_SSN,
+                enc_cte(
+                    kura_query:join(kura_query:where(Plain, {ssn, P}), inner, enc_cte, {id, id})
+                )
+            )},
+        {"a schema whose table is named like the CTE",
+            ?_assertError(
+                ?WHERE_SSN,
+                kura_query:where(
+                    kura_query:with_cte(Plain, ~"users", kura_query:from(?ENC)), {ssn, P}
+                )
+            )},
+        {"two CTEs of one name",
+            ?_assertError(
+                ?WHERE_SSN,
+                kura_query:where(
+                    kura_query:with_cte(
+                        kura_query:with_cte(kura_query:from(c), ~"c", Plain),
+                        ~"c",
+                        kura_query:from(?ENC)
+                    ),
+                    {ssn, P}
+                )
+            )},
+        {"an alias of an encrypted field",
+            ?_assertError(
+                {kura, {encrypted_field_in_where, alias}},
+                kura_query:where(
+                    kura_query:with_cte(
+                        kura_query:from(c),
+                        ~"c",
+                        kura_query:select_expr(kura_query:from(?ENC), [{alias, ssn}])
+                    ),
+                    {alias, P}
+                )
+            )},
+        {"max of an encrypted field",
+            ?_assertError(
+                {kura, {encrypted_field_in_where, max}},
+                kura_query:where(
+                    kura_query:with_cte(
+                        kura_query:from(c), ~"c", kura_query:max(kura_query:from(?ENC), ssn)
+                    ),
+                    {max, P}
+                )
+            )},
+        {"a CTE reading another CTE",
+            ?_assertError(
+                ?WHERE_SSN,
+                kura_query:where(
+                    kura_query:with_cte(
+                        enc_cte(kura_query:from(c2)), ~"c2", kura_query:from(enc_cte)
+                    ),
+                    {ssn, P}
+                )
+            )},
+        {"a CTE body filtering an earlier CTE",
+            ?_assertError(
+                ?WHERE_SSN,
+                kura_query:with_cte(
+                    enc_cte(Plain), ~"c2", kura_query:where(kura_query:from(enc_cte), {ssn, P})
+                )
+            )},
+        {"a subquery reading the outer query's CTE",
+            ?_assertError(
+                ?WHERE_SSN,
+                kura_query:where(
+                    enc_cte(Plain),
+                    {exists, {subquery, kura_query:where(kura_query:from(enc_cte), {ssn, P})}}
+                )
+            )}
+    ].
+
+cte_allowed_test_() ->
+    P = ?PLAIN,
+    Plain = kura_query:from(kura_test_schema),
+    [
+        {"a plain field of an encrypted CTE",
+            ?_assertMatch(
+                #kura_query{}, kura_query:where(enc_cte(kura_query:from(enc_cte)), {name, P})
+            )},
+        {"is_nil on an encrypted CTE field",
+            ?_assertMatch(
+                #kura_query{}, kura_query:where(enc_cte(kura_query:from(enc_cte)), {ssn, is_nil})
+            )},
+        {"a CTE over a plain schema",
+            ?_assertMatch(
+                #kura_query{},
+                kura_query:where(kura_query:with_cte(kura_query:from(c), ~"c", Plain), {email, P})
+            )},
+        {"an alias of a plain field",
+            ?_assertMatch(
+                #kura_query{},
+                kura_query:where(
+                    kura_query:with_cte(
+                        kura_query:from(c),
+                        ~"c",
+                        kura_query:select_expr(kura_query:from(?ENC), [{alias, name}])
+                    ),
+                    {alias, P}
+                )
+            )},
+        {"a self-referencing CTE terminates",
+            ?_assertMatch(
+                #kura_query{},
+                kura_query:where(
+                    kura_query:with_cte(kura_query:from(r), ~"r", kura_query:from(r)), {id, 1}
+                )
+            )}
+    ].

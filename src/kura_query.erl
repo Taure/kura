@@ -117,87 +117,148 @@ not checked.
 """.
 -spec where(#kura_query{}, term()) -> #kura_query{}.
 where(Q = #kura_query{wheres = W}, Condition) ->
-    refuse_encrypted(encrypted_in_scope(Q), [Condition], encrypted_field_in_where),
+    refuse_encrypted(guard_scope(Q, [], []), [Condition], encrypted_field_in_where),
     Q#kura_query{wheres = W ++ [Condition]}.
 
-encrypted_in_scope(Q) ->
-    lists:append([encrypted_fields(S) || S <- sources(Q)]).
+%% The encrypted field names a condition of Q can reach, and the CTEs it can
+%% read from: its own, then those of the queries it is nested in.
+guard_scope(#kura_query{ctes = Own} = Q, OuterEncrypted, OuterCtes) ->
+    Ctes = Own ++ OuterCtes,
+    {encrypted_in_scope(Q, Ctes) ++ unshadowed(OuterEncrypted, Q, Ctes), Ctes}.
+
+encrypted_in_scope(Q, Ctes) ->
+    lists:append([encrypted_fields(S) ++ cte_encrypted(S, Ctes) || S <- sources(Q)]).
 
 encrypted_fields(Source) when is_atom(Source), Source =/= undefined ->
     kura_schema:encrypted_fields(Source);
 encrypted_fields(_Source) ->
     [].
 
-refuse_encrypted([], _Conditions, _Reason) ->
+%% A source whose name, or whose schema's table name, is a CTE name reads
+%% from that CTE: the database resolves a CTE before a table. Every CTE of
+%% that name counts, and so does the schema's own encryption. A CTE is
+%% dropped from the scope it is resolved in, so a self-reference ends.
+cte_encrypted(_Source, []) ->
+    [];
+cte_encrypted(Source, Ctes) ->
+    Names = source_names(Source),
+    lists:append([
+        cte_exports(Body, [C || {N, _} = C <- Ctes, N =/= Name])
+     || {Name, Body} <- Ctes, lists:member(Name, Names)
+    ]).
+
+source_names(Source) when is_binary(Source) ->
+    [Source];
+source_names(Source) when is_atom(Source) ->
+    case kura_schema:is_schema(Source) of
+        true -> [atom_to_binary(Source), Source:table()];
+        false -> [atom_to_binary(Source)]
+    end;
+source_names(_Source) ->
+    [].
+
+%% The column names of a CTE that may hold ciphertext: every encrypted field
+%% of its sources, and each alias it selects one under.
+cte_exports(#kura_query{ctes = Own, select = Select} = Body, OuterCtes) ->
+    Encrypted = encrypted_in_scope(Body, Own ++ OuterCtes),
+    Encrypted ++ ciphertext_aliases(Select, Encrypted).
+
+ciphertext_aliases({exprs, Exprs}, Encrypted) ->
+    [Alias || {Alias, Expr} <- Exprs, ciphertext_expr(Expr, Encrypted)];
+ciphertext_aliases(Fields, Encrypted) ->
+    [Agg || {Agg, _} = Expr <- Fields, ciphertext_expr(Expr, Encrypted)].
+
+ciphertext_expr(Field, Encrypted) when is_atom(Field) ->
+    lists:member(Field, Encrypted);
+ciphertext_expr({Agg, Field}, Encrypted) when Agg =:= min; Agg =:= max ->
+    lists:member(Field, Encrypted);
+ciphertext_expr({over, Fn, _Spec}, Encrypted) ->
+    ciphertext_expr(Fn, Encrypted);
+ciphertext_expr(_Expr, _Encrypted) ->
+    false.
+
+refuse_encrypted({[], []}, _Conditions, _Reason) ->
     ok;
-refuse_encrypted(Encrypted, Conditions, Reason) ->
-    lists:foreach(fun(C) -> refuse_encrypted_cond(C, Encrypted, Reason) end, Conditions).
+refuse_encrypted(Scope, Conditions, Reason) ->
+    lists:foreach(fun(C) -> refuse_encrypted_cond(C, Scope, Reason) end, Conditions).
 
 %% An allow-list over the condition grammar kura_dialect_pg compiles. Every
 %% form that names a field is checked; a shape not listed here is refused
 %% rather than passed, so a new form cannot slip a value past the check.
-refuse_encrypted_cond({Op, Conds}, Encrypted, Reason) when
+refuse_encrypted_cond({Op, Conds}, Scope, Reason) when
     (Op =:= 'and' orelse Op =:= 'or'), is_list(Conds)
 ->
-    refuse_encrypted(Encrypted, Conds, Reason);
-refuse_encrypted_cond({'not', Cond}, Encrypted, Reason) ->
-    refuse_encrypted_cond(Cond, Encrypted, Reason);
-refuse_encrypted_cond({fragment, _SQL, _Params}, _Encrypted, _Reason) ->
+    refuse_encrypted(Scope, Conds, Reason);
+refuse_encrypted_cond({'not', Cond}, Scope, Reason) ->
+    refuse_encrypted_cond(Cond, Scope, Reason);
+refuse_encrypted_cond({fragment, _SQL, _Params}, _Scope, _Reason) ->
     ok;
-refuse_encrypted_cond({Exists, {subquery, #kura_query{} = Sub}}, Encrypted, _Reason) when
+refuse_encrypted_cond({Exists, {subquery, #kura_query{} = Sub}}, Scope, _Reason) when
     Exists =:= exists; Exists =:= not_exists
 ->
-    refuse_encrypted_query(Sub, Encrypted);
-refuse_encrypted_cond({Field, in, {subquery, #kura_query{} = Sub}}, Encrypted, Reason) when
+    refuse_encrypted_subquery(Sub, Scope);
+refuse_encrypted_cond({Field, in, {subquery, #kura_query{} = Sub}}, Scope, Reason) when
     is_atom(Field)
 ->
-    refuse_field(Field, Encrypted, Reason),
-    refuse_encrypted_query(Sub, Encrypted);
-refuse_encrypted_cond({Field, Op}, _Encrypted, _Reason) when
+    refuse_field(Field, Scope, Reason),
+    refuse_encrypted_subquery(Sub, Scope);
+refuse_encrypted_cond({Field, Op}, _Scope, _Reason) when
     is_atom(Field), ?KURA_IS_UNARY_OP(Op)
 ->
     ok;
-refuse_encrypted_cond({Field, _Value}, Encrypted, Reason) when is_atom(Field) ->
-    refuse_field(Field, Encrypted, Reason);
-refuse_encrypted_cond({Field, _Op, _Value}, Encrypted, Reason) when is_atom(Field) ->
-    refuse_field(Field, Encrypted, Reason);
-refuse_encrypted_cond({Fields, _Op, _Value}, Encrypted, Reason) when is_list(Fields) ->
-    lists:foreach(fun(F) -> refuse_field(F, Encrypted, Reason) end, Fields);
-refuse_encrypted_cond(_Cond, _Encrypted, _Reason) ->
+refuse_encrypted_cond({Field, _Value}, Scope, Reason) when is_atom(Field) ->
+    refuse_field(Field, Scope, Reason);
+refuse_encrypted_cond({Field, _Op, _Value}, Scope, Reason) when is_atom(Field) ->
+    refuse_field(Field, Scope, Reason);
+refuse_encrypted_cond({Fields, _Op, _Value}, Scope, Reason) when is_list(Fields) ->
+    lists:foreach(fun(F) -> refuse_field(F, Scope, Reason) end, Fields);
+refuse_encrypted_cond(_Cond, _Scope, _Reason) ->
     erlang:error({kura, unrecognised_condition}).
 
-%% A subquery's conditions see the outer query's columns too: the dialect
-%% emits unqualified names, so the database resolves one the subquery's own
-%% sources lack to the outer column. Outer encrypted fields the subquery does
-%% not shadow are checked with its own.
+refuse_encrypted_subquery(Sub, {Encrypted, Ctes}) ->
+    refuse_encrypted_query(Sub, Encrypted, Ctes).
+
+%% Walk every condition of Q: its wheres and havings, the bodies of its CTEs
+%% and its union branches, each with the outer scope it can see. A subquery's
+%% conditions see the outer query's columns too: the dialect emits
+%% unqualified names, so the database resolves one the subquery's own sources
+%% lack to the outer column.
 refuse_encrypted_query(
-    #kura_query{wheres = W, havings = H, combinations = C} = Q, OuterEncrypted
+    #kura_query{wheres = W, havings = H, ctes = Own, combinations = C} = Q,
+    OuterEncrypted,
+    OuterCtes
 ) ->
-    Encrypted = encrypted_in_scope(Q) ++ unshadowed(OuterEncrypted, Q),
-    refuse_encrypted(Encrypted, W, encrypted_field_in_where),
-    refuse_encrypted(Encrypted, H, encrypted_field_in_having),
-    lists:foreach(fun({_Kind, B}) -> refuse_encrypted_query(B, OuterEncrypted) end, C).
+    {_, Ctes} = Scope = guard_scope(Q, OuterEncrypted, OuterCtes),
+    refuse_encrypted(Scope, W, encrypted_field_in_where),
+    refuse_encrypted(Scope, H, encrypted_field_in_having),
+    lists:foreach(
+        fun({_, Body}) -> refuse_encrypted_query(Body, OuterEncrypted, Ctes) end, Own ++ C
+    ).
 
 %% Only a column the subquery's schemas declare shadows an outer one. A bare
-%% table's columns are unknown, so it shadows nothing.
-unshadowed([], _Q) ->
+%% table's or a CTE's columns are not known here, so it shadows nothing.
+unshadowed([], _Q, _Ctes) ->
     [];
-unshadowed(OuterEncrypted, Q) ->
-    Defined = lists:append([columns(S) || S <- sources(Q)]),
+unshadowed(OuterEncrypted, Q, Ctes) ->
+    Defined = lists:append([columns(S, Ctes) || S <- sources(Q)]),
     [F || F <- OuterEncrypted, not lists:member(F, Defined)].
 
 sources(#kura_query{from = From, joins = Joins}) ->
     [From | [T || {_, T, _, _} <- Joins]].
 
-columns(Source) when is_atom(Source) ->
-    case kura_schema:is_schema(Source) of
+columns(Source, Ctes) when is_atom(Source) ->
+    Names = source_names(Source),
+    case
+        kura_schema:is_schema(Source) andalso
+            [N || {N, _} <- Ctes, lists:member(N, Names)] =:= []
+    of
         true -> kura_schema:non_virtual_fields(Source);
         false -> []
     end;
-columns(_Source) ->
+columns(_Source, _Ctes) ->
     [].
 
-refuse_field(Field, Encrypted, Reason) ->
+refuse_field(Field, {Encrypted, _Ctes}, Reason) ->
     case lists:member(Field, Encrypted) of
         true -> erlang:error({kura, {Reason, Field}});
         false -> ok
@@ -226,11 +287,8 @@ join(Q, Type, Table, On) ->
 -spec join(
     #kura_query{}, inner | left | right | full, atom(), {atom(), atom()}, atom() | undefined
 ) -> #kura_query{}.
-join(Q = #kura_query{joins = J, wheres = W, havings = H}, Type, Table, On, As) ->
-    Encrypted = encrypted_fields(Table),
-    refuse_encrypted(Encrypted, W, encrypted_field_in_where),
-    refuse_encrypted(Encrypted, H, encrypted_field_in_having),
-    Q#kura_query{joins = J ++ [{Type, Table, On, As}]}.
+join(Q = #kura_query{joins = J}, Type, Table, On, As) ->
+    recheck_encrypted(Q#kura_query{joins = J ++ [{Type, Table, On, As}]}).
 
 -doc "Set ORDER BY clauses as `[{field, asc | desc}]`.".
 -spec order_by(#kura_query{}, [{atom(), asc | desc}]) -> #kura_query{}.
@@ -248,7 +306,7 @@ compares an encrypted field to a value raises
 """.
 -spec having(#kura_query{}, term()) -> #kura_query{}.
 having(Q = #kura_query{havings = H}, Condition) ->
-    refuse_encrypted(encrypted_in_scope(Q), [Condition], encrypted_field_in_having),
+    refuse_encrypted(guard_scope(Q, [], []), [Condition], encrypted_field_in_having),
     Q#kura_query{havings = H ++ [Condition]}.
 
 -spec limit(#kura_query{}, non_neg_integer()) -> #kura_query{}.
@@ -280,10 +338,26 @@ prefix(Q, Schema) ->
 preload(Q = #kura_query{preloads = P}, Assocs) ->
     Q#kura_query{preloads = P ++ Assocs}.
 
--doc "Add a Common Table Expression (WITH clause).".
+-doc """
+Add a Common Table Expression (WITH clause).
+
+A query, subquery or CTE that reads `Name` (by its name, or by a schema whose
+table is named `Name`) gets the CTE's encrypted fields in its filter guard
+scope: every encrypted field of `CteQuery`'s sources, and every alias it
+selects one under. The conditions already in the query, and the bodies of
+its CTEs, are checked again, so the order of `where/2` and `with_cte/3` does
+not matter. A name used by more than one CTE, or by a CTE and a schema, gets
+the encrypted fields of all of them.
+""".
 -spec with_cte(#kura_query{}, binary(), #kura_query{}) -> #kura_query{}.
 with_cte(Q = #kura_query{ctes = CTEs}, Name, CteQuery) ->
-    Q#kura_query{ctes = CTEs ++ [{Name, CteQuery}]}.
+    recheck_encrypted(Q#kura_query{ctes = CTEs ++ [{Name, CteQuery}]}).
+
+%% A join or a CTE can bring encrypted fields into the scope of conditions
+%% already added, so the whole query is walked again.
+recheck_encrypted(Q) ->
+    refuse_encrypted_query(Q, [], []),
+    Q.
 
 -doc "Combine queries with UNION (removes duplicates).".
 -spec union(#kura_query{}, #kura_query{}) -> #kura_query{}.

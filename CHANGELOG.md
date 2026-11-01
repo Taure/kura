@@ -146,6 +146,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plaintext. The guard now walks subquery conditions (wheres, havings,
   union branches, nested subqueries) against the outer encrypted fields
   they do not shadow. A bare-table source shadows nothing.
+- A CTE bypassed the filter guard. A `from` or `join` naming a CTE over
+  an encrypted schema had no encrypted fields in scope, so
+  `where(from(enc_cte), {ssn, V})` bound the plaintext, as did a condition
+  added before `with_cte/3`. A source now gets the encrypted fields of
+  every CTE its name, or its schema's table name, resolves to, including
+  aliases a CTE selects an encrypted field under, and `with_cte/3` and
+  `join/4,5` re-check the conditions already in the query, its CTE bodies
+  and its union branches. A name shared by several CTEs, or by a CTE and a
+  schema, gets the encrypted fields of all of them.
 - Starting a pool hands the pool module the connection settings only.
   The repo's own settings, the `encryption` keyring among them, were
   passed along with them, and a pool module that echoed its options in
