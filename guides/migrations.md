@@ -328,14 +328,28 @@ DROP INDEX CONCURRENTLY IF EXISTS "users_email_index";
 An invalid index is not used for reads but is still maintained on every
 write, so do not leave one behind.
 
+If the node dies after the build succeeded but before the version was
+recorded, the index is `VALID` and the migration still pending, and a re-run
+fails because the index already exists. Check that the index is the one the
+migration builds and is valid, then record the version without running it
+again with `fake/2`, which stamps the pending migrations up to and including
+that version (use `fake/3` on a repo fed by more than one application):
+
+```erlang
+{ok, [20250102120000]} = kura_migrator:fake(my_repo, 20250102120000).
+```
+
+Only do this when every pending migration up to that version is in the
+database already; `kura_migrator:status/1` lists them.
+
 ### On SQLite
 
 SQLite has no concurrent index build and no advisory locks.
 `concurrently => true` compiles to a plain `CREATE INDEX` there, because the
 SQLite pool does not declare the `concurrent_indexes` capability and the
-repo's dialect is not Postgres, so one migration serves both backends. It is still refused in a transactional
-migration, on SQLite too, so a migration that passes there passes on
-Postgres.
+repo's dialect is not Postgres, so one migration serves both backends. It is
+still refused in a transactional migration, on SQLite too, so a migration
+that passes there passes on Postgres.
 
 A non-transactional migration on SQLite runs each statement in autocommit on
 one pinned connection and takes no lock: run one migrator per database.
