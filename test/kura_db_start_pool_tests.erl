@@ -145,7 +145,11 @@ a_raised_start_is_logged_and_fails_without_the_password_test() ->
     {Events, Raised} =
         with_pool_answer({raise, {bad_opts, ~"s3cret"}}, Config, fun() ->
             Run = fun() ->
-                try kura_db:start_pool(kura_db_failing_repo, kura_db_failing_repo, Config) of
+                try
+                    kura_db:start_pool(kura_db_failing_repo, kura_db_failing_repo, Config#{
+                        pool_module => ?MODULE
+                    })
+                of
                     Result -> {returned, Result}
                 catch
                     Class:Reason:Stack -> {Class, Reason, Stack}
@@ -333,6 +337,18 @@ boot_applies_the_init_of_a_repo_not_yet_loaded_test() ->
         ?assertEqual(ok, kura_app:start_repo_pool(kura_db_init_repo)),
         ?assertEqual(#{database => ~"from_init"}, get({?MODULE, pool_config}))
     end).
+
+start_pool_runs_the_repo_init_once_test() ->
+    ok = kura_db_counting_init_repo:reset(),
+    try
+        with_pool_answer({ok, self()}, kura_db_counting_init_repo, #{database => ~"db"}, fun() ->
+            ?assertEqual(ok, kura_db:start_pool(kura_db_counting_init_repo)),
+            ?assertEqual(#{database => ~"db"}, get({?MODULE, pool_config}))
+        end),
+        ?assertEqual(1, kura_db_counting_init_repo:calls())
+    after
+        kura_db_counting_init_repo:reset()
+    end.
 
 repo_worker_start_applies_the_repo_init_test() ->
     with_pool_answer({ok, self()}, kura_db_init_repo, #{database => ~"db"}, fun() ->
@@ -562,7 +578,10 @@ logged_report(Answer, Config) ->
     Events = with_captured_logs(fun() ->
         with_pool_answer(Answer, Config, fun() ->
             ?assertMatch(
-                {error, _}, kura_db:start_pool(kura_db_failing_repo, kura_db_failing_repo, Config)
+                {error, _},
+                kura_db:start_pool(kura_db_failing_repo, kura_db_failing_repo, Config#{
+                    pool_module => ?MODULE
+                })
             )
         end)
     end),
@@ -573,7 +592,10 @@ logged_reason(Answer, Config) ->
     Events = with_captured_logs(fun() ->
         with_pool_answer(Answer, Config, fun() ->
             ?assertMatch(
-                {error, _}, kura_db:start_pool(kura_db_failing_repo, kura_db_failing_repo, Config)
+                {error, _},
+                kura_db:start_pool(kura_db_failing_repo, kura_db_failing_repo, Config#{
+                    pool_module => ?MODULE
+                })
             )
         end)
     end),

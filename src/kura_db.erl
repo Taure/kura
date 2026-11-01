@@ -209,7 +209,10 @@ pool_name(RepoMod, Config) ->
 -doc "Resolve the `kura_pool` implementation module for a repo.".
 -spec get_pool_module(module()) -> module().
 get_pool_module(RepoMod) ->
-    Config = kura_repo:config(RepoMod),
+    pool_module(RepoMod, kura_repo:config(RepoMod)).
+
+-spec pool_module(module(), map()) -> module().
+pool_module(RepoMod, Config) ->
     case maps:get(pool_module, Config, undefined) of
         M when is_atom(M), M =/= undefined -> M;
         _ -> error({no_pool_module_configured, RepoMod})
@@ -254,7 +257,7 @@ resolve(Repo) ->
 -doc false.
 -spec start_pool(module(), atom(), map()) -> ok | {error, term()}.
 start_pool(Repo, Pool, Config) ->
-    PoolMod = get_pool_module(Repo),
+    PoolMod = pool_module(Repo, Config),
     Secrets = secrets(Config),
     try PoolMod:start_pool(Pool, maps:without(?REPO_KEYS, Config)) of
         {ok, _Pid} ->
