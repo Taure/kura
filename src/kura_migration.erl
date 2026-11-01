@@ -42,7 +42,7 @@ up() ->
     [{create_index, <<"users">>, [email], #{concurrently => true}}].
 
 down() ->
-    [{drop_index, <<"users_email_index">>}].
+    [{execute, <<"DROP INDEX CONCURRENTLY \"users_email_index\"">>}].
 ```
 
 Each statement then commits on its own. The version is recorded only

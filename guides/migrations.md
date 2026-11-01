@@ -153,10 +153,10 @@ impossible.
 The lock is polled: the migrator tries `pg_try_advisory_xact_lock`, and a
 transaction that misses it ends and a new one tries again
 `migration_lock_retry_interval` milliseconds later (`kura` app env, default
-100; anything below 10 is taken as 10). Waiting inside a blocking `pg_advisory_xact_lock` would keep a
-transaction open that a `CREATE INDEX CONCURRENTLY` on the node holding the
-lock has to wait for, and the two would deadlock. Nodes on an older kura
-wait the blocking way; see the
+100; anything below 10 is taken as 10). Waiting inside a blocking
+`pg_advisory_xact_lock` would keep a transaction open that a `CREATE INDEX
+CONCURRENTLY` on the node holding the lock has to wait for, and the two
+would deadlock. Nodes on an older kura wait the blocking way; see the
 [upgrade note](#upgrade-note-before-the-first-non-transactional-migration).
 
 Inside `kura_db:transaction/2`, or with a sandbox connection checked out, the
@@ -227,10 +227,9 @@ releases the advisory lock of a connection whose unlock failed.
   Reason}}` and the error log gives `committed_statements`. Fix the cause and
   undo or account for what was committed before migrating again. A failed
   `CREATE INDEX CONCURRENTLY` leaves an invalid index behind that a retry
-  trips over, so drop it first (see
-  [Recovering from a failed concurrent build](#recovering-from-a-failed-concurrent-build)).
-  The simplest rule: one statement per
-  non-transactional migration.
+  trips over, so drop it first (see [Recovering from a failed concurrent
+  build](#recovering-from-a-failed-concurrent-build)). The simplest rule:
+  one statement per non-transactional migration.
 - **The run is split around it.** Pending migrations are chosen once, under
   the lock. Transactional migrations before the non-transactional one run in
   one transaction and commit; the ones after it run in further transactions.

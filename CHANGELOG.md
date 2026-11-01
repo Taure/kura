@@ -93,7 +93,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its first info line (#139). The wait is still unbounded by default; the
   new `migration_lock_timeout` app env (milliseconds, default `infinity`)
   ends it with `{error, migration_lock_timeout}` from `migrate/1`,
-  `rollback/1,2,3`, `fake/1,2` and `ensure_schema_migrations/1`. Any
+  `rollback/1,2,3`, `fake/1,2,3` and `ensure_schema_migrations/1`. Any
   role able to connect can hold the shared lock key and stall deploys,
   so set a finite timeout in production. `migration_lock_retry_interval`
   below 10 ms is taken as 10, where 0 busy-looped.
