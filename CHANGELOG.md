@@ -17,30 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the repo at boot while its queries went to `X`, and connection settings
   set in `init/1` were missing from the pool boot started. Boot still logs
   a pool that did not start and carries on; `start/1` returns the error.
-- **Breaking:** the legacy flat single-repo form (`{repo, _}` with
-  connection keys at the kura env level) no longer gets Postgres defaults
-  at boot (#197). Which version this ships in is the owner's call at
-  release. It pairs with kura_postgres#31, already on kura_postgres
-  `next`, which makes the pool refuse to start without a user.
-
-  Boot filled in `host` `"localhost"`, `port` 5432, `user` and `database`
-  `"postgres"`, an empty `password` and `pool_size` 10 that `start/1` did
-  not, so the same config could start at boot and fail through
-  `start/1`. Both now hand the pool module the settings as configured,
-  and the pool module applies its own defaults, which is what `start/1`
-  has done since #193. Kura no longer supplies a superuser login nobody
-  configured. With kura_postgres, `host`, `port` and `pool_size` keep the
-  same defaults. The flat form also no longer passes a `repos` map in the
-  kura env to the pool along with the connection settings.
-
-  **Upgrading:**
-  - A config with no `user` must set one. Without it the pool refuses to
-    start with `{missing_option, user}`, which boot logs, rather than
-    starting connections that cannot log in.
-  - A config that sets `user` but not `database` now connects to the
-    database named after the user, as libpq does, not to `postgres`. It
-    may start cleanly against the wrong database, or fail when no
-    database of that name exists. Set `database` explicitly.
+- The legacy flat single-repo form (`{repo, _}` with connection keys at
+  the kura env level) takes its `host`, `port`, `password` and
+  `pool_size` defaults from the pool module instead of from kura at boot
+  (#197). Boot filled in `host` `"localhost"`, `port` 5432, an empty
+  `password` and `pool_size` 10 that `start/1` did not, so the same
+  config could start at boot and fail through `start/1`. Both now hand
+  the pool module the settings as configured, as `start/1` has done since
+  #193, and kura_postgres applies the same `host`, `port` and `pool_size`
+  defaults. The `user` and `database` defaults stay for now; see
+  Deprecated. The flat form also no longer passes a `repos` map in the
+  kura env to the pool along with the connection settings. Requires the
+  kura_postgres release containing kura_postgres#31.
 - A repo `init/1` that raises while its pool is started no longer stops
   kura's application start. The pool is not started, and only the shape
   of the reason is logged: an atom as it is, a tuple as
@@ -49,8 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `kura_repo_worker:start/1` returns `{error, {init_failed, {Class,
   Shape}}}`. This covers pool start only: `init/1` also runs on every
   config lookup at query time, where a raise is neither caught nor
-  redacted. `init/1` runs during kura's own start, before the consuming
-  application, so it must not call that application's processes.
+  redacted. For a repo in the `repos` map or the flat form, `init/1` runs
+  during kura's own start, before the consuming application, so it must
+  not call that application's processes.
 - The many_to_many join-table SQL, the preload read and the `put_assoc` /
   `cast_assoc` DELETE and INSERT, is compiled by the repo's dialect
   (`to_sql/1`, `delete_all/1`, `insert_all/3`) instead of written by hand
@@ -60,13 +49,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `kura_db:query/3` rather than `kura_repo_worker:pgo_query/3`. Join-table
   SQL is still qualified by a prefix tenant and not scoped by an attribute
   tenant.
-- A table may be named by a binary where a dialect takes one: the new
+- The dialect callbacks accept a table named by a binary: the new
   `kura_dialect:table()` type, `atom() | module() | binary()`, covers the
-  table argument of `insert`, `update`, `delete` and `insert_all`, and a
-  query's `from` (#153). A `join_through` given as a binary reaches the
-  dialect that way. `kura_dialect_pg` returns a binary table name as it
-  is; a dialect that resolves the table itself rather than delegating to
-  it must do the same.
+  table argument of `insert`, `update`, `delete` and `insert_all`, and
+  the `from` of the join-table query handed to `to_sql/1` and
+  `delete_all/1` (#153). A `join_through` given as a binary reaches the
+  dialect that way. `kura_query:from/1` and the repo's query functions
+  still take a schema module or an atom. `kura_dialect_pg` returns a
+  binary table name as it is; a dialect that resolves the table itself
+  rather than delegating to it must do the same.
 - `kura_repo_worker:start/1` returns `{error, Reason}` when the pool does
   not start, where it logged the failure and returned `ok` (#192). A test
   setup written as `ok = kura_repo_worker:start(my_repo)` now stops at the
@@ -77,12 +68,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   building a Postgres-shaped config with defaults for host, port and user
   (#193). A `kura_sqlite` repo started this way gets its own defaults,
   `:memory:` among them, where it raised
-  `{missing_repo_config, database}`. A Postgres repo that left out
-  `username` and relied on the `postgres` default must now set it. With
-  kura_postgres from this release on, the pool refuses to start with
-  `{missing_option, user}` and `start/1` returns the error. A missing
-  `database` no longer raises `missing_repo_config`: minato connects to
-  the database named after the user, as libpq does.
+  `{missing_repo_config, database}`. A Postgres repo in the `repos` map
+  or the per-app form that left out `username` and relied on the
+  `postgres` default must now set it. With kura_postgres from this
+  release on, the pool refuses to start with `{missing_option, user}` and
+  `start/1` returns the error. A missing `database` no longer raises
+  `missing_repo_config`: minato connects to the database named after the
+  user, as libpq does. The flat form on Postgres keeps its `user` and
+  `database` defaults for now; see Deprecated.
 - The query cache keys on a query's shape, with bound values replaced by
   markers, instead of on the whole query term (#163). `get(User, Id)` now
   holds one entry however many ids it is called with, where it held one
@@ -107,9 +100,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The repo's own settings, the `encryption` keyring among them, were
   passed along with them, and a pool module that echoed its options in
   an error put the keys in the log. A pool error that echoes an
-  `encryption` or `keyring` key, in a map or a key-value list, now has its
-  value replaced by `redacted`, like `password`. A password given as an improper list
-  no longer raises with the password in the stack trace.
+  `encryption` or `keyring` key, in a map or a key-value list, now has
+  its value replaced by `redacted`, like `password`. A password given as
+  an improper list no longer raises with the password in the stack trace.
 - Attribute tenancy (`{attribute, {Field, Value}}`) leaked reads. Only
   the top level of a query was filtered, so a union, CTE or `in`/`exists`
   subquery read other tenants' rows, and aggregates and streams were not
@@ -184,12 +177,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Deprecated
 
+- The `user` and `database` defaults of the legacy flat single-repo form
+  on Postgres (#197). When the kura env sets `{repo, Repo}`, has no
+  `repos` map and the dialect is `kura_dialect_pg`, a `user` (when no
+  `username` is set either) or `database` the config leaves out is still
+  set to `"postgres"` when the pool starts, at boot and through
+  `kura_repo_worker:start/1` alike, and a warning names the keys filled.
+  Kura 3.0 removes the fill, so set both keys. A repo in the `repos` map
+  or the per-app form gets no fill: kura_postgres needs its `user`, and
+  without `database` it connects to the database named after the user,
+  as libpq does.
 - `kura_app:pool_config/0` and `kura_app:pool_config/1`. Use
-  `kura_repo:config/1`. They now return the config the pool is started
-  with, `init/1` applied and without the legacy Postgres defaults (#197).
+  `kura_repo:config/1`. They now return the repo's whole config as its
+  pool is started, `dialect` and `pool_module` included, with the flat
+  form's deprecated `user` and `database` fill and no other defaults
+  (#197). Both now apply the repo's `init/1`, and raise
+  `{init_failed, {Class, Shape}}` when it raises, with only the shape of
+  the reason kept. `pool_config/1` of a repo configured nowhere returns
+  `#{}`, where it returned the flat kura env, with Postgres defaults on
+  that dialect, and `pool_config/0` returns `#{}` when the kura env has
+  no `repo`.
 - `kura_preloader:quote_table_bin/1`. The dialect quotes and qualifies
   join tables now (#153).
-
 - `kura_schema_verify:declared_index_name/2`. Call
   `kura_migration:index_name/2`, which it wraps.
 

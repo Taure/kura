@@ -54,7 +54,8 @@ callbacks directly.
 
 -doc """
 The table a statement targets: a schema module, whose `table/0` names it, or
-a table name as an atom or a binary. A query's `from` takes the same forms.
+a table name as an atom or a binary. The `from` of a query handed to a dialect
+takes the same forms; `kura_query:from/1` takes a schema module or an atom.
 A many-to-many `join_through` given as a binary reaches the dialect as one.
 """.
 -type table() :: atom() | module() | binary().
