@@ -1,7 +1,7 @@
 -module(kura_repo_settings).
 -moduledoc false.
 
--export([lookup/1, from_config/1, started/2, refused/2, taken/3]).
+-export([lookup/1, from_config/1, started/2, refused/2, forget/1]).
 
 -ifdef(TEST).
 -export([forget/0]).
@@ -29,12 +29,10 @@ started(Repo, Config) ->
 refused(Repo, Owner) ->
     persistent_term:put({?MODULE, Repo}, {pool_owned_by, Owner}).
 
--spec taken(module(), atom(), module()) -> ok.
-taken(Repo, Pool, Owner) ->
-    case stored(Repo) of
-        #{pool := Pool} -> refused(Repo, Owner);
-        _Elsewhere -> ok
-    end.
+-spec forget(module()) -> ok.
+forget(Repo) ->
+    _ = persistent_term:erase({?MODULE, Repo}),
+    ok.
 
 %% Only this module writes these terms.
 -spec stored(module()) -> dynamic().

@@ -1,7 +1,7 @@
 -module(kura_db_start_pool_tests).
 -include_lib("eunit/include/eunit.hrl").
 
--export([start_pool/2, query/5, log/2]).
+-export([start_pool/2, stop_pool/1, query/5, log/2]).
 
 %%----------------------------------------------------------------------
 %% start_repo_pool/1 reports a pool that did not start
@@ -819,12 +819,74 @@ a_running_pool_kura_did_not_start_goes_to_the_first_repo_test() ->
         end)
     end).
 
-a_repo_whose_pool_another_repo_restarted_no_longer_reaches_it_test() ->
+a_pool_module_answering_ok_for_a_running_name_does_not_move_the_owner_test() ->
     with_two_repos(fun() ->
         ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        erase({?MODULE, pool_name}),
+        _ = with_captured_logs(fun() ->
+            ?assertEqual(
+                {error, {pool_owned_by, kura_db_owner_repo}},
+                kura_repo_worker:start(kura_db_other_repo)
+            )
+        end),
+        ?assertEqual(undefined, get({?MODULE, pool_name})),
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        ?assertEqual(shared_pool, kura_db:get_pool(kura_db_owner_repo)),
+        ?assertError({pool_owned_by, kura_db_owner_repo}, kura_db:get_pool(kura_db_other_repo))
+    end).
+
+a_pool_stopped_outside_kura_stays_owned_test() ->
+    with_two_repos(fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        ok = stop_pool(shared_pool),
+        _ = with_captured_logs(fun() ->
+            ?assertEqual(
+                {error, {pool_owned_by, kura_db_owner_repo}},
+                kura_repo_worker:start(kura_db_other_repo)
+            )
+        end),
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo))
+    end).
+
+stop_pool_stops_the_pool_and_releases_it_test() ->
+    with_two_repos(fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        ?assertEqual(ok, kura_db:stop_pool(kura_db_owner_repo)),
+        ?assertEqual(shared_pool, get({?MODULE, stopped})),
         ?assertEqual(ok, kura_repo_worker:start(kura_db_other_repo)),
-        ?assertEqual(shared_pool, kura_db:get_pool(kura_db_other_repo)),
-        ?assertError({pool_owned_by, kura_db_other_repo}, kura_db:get_pool(kura_db_owner_repo))
+        ?assertEqual(shared_pool, kura_db:get_pool(kura_db_other_repo))
+    end).
+
+stop_pool_drops_the_stored_settings_test() ->
+    with_pool_answer({ok, self()}, #{read_only => false}, fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        application:set_env(kura, repos, #{
+            kura_db_failing_repo => #{read_only => true, pool_module => ?MODULE}
+        }),
+        ?assertEqual(false, kura_repo:read_only(kura_db_failing_repo)),
+        ?assertEqual(ok, kura_db:stop_pool(kura_db_failing_repo)),
+        ?assertEqual(true, kura_repo:read_only(kura_db_failing_repo))
+    end).
+
+stop_pool_of_a_repo_kura_did_not_start_stops_nothing_test() ->
+    with_pool_answer({ok, self()}, fun() ->
+        ?assertEqual(ok, kura_db:stop_pool(kura_db_failing_repo)),
+        ?assertEqual(undefined, get({?MODULE, stopped}))
+    end).
+
+stop_pool_of_a_refused_repo_leaves_the_owner_pool_running_test() ->
+    with_two_repos(fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        _ = with_captured_logs(fun() -> kura_repo_worker:start(kura_db_other_repo) end),
+        ?assertEqual(ok, kura_db:stop_pool(kura_db_other_repo)),
+        ?assertEqual(undefined, get({?MODULE, stopped})),
+        ?assertEqual(shared_pool, kura_db:get_pool(kura_db_owner_repo)),
+        _ = with_captured_logs(fun() ->
+            ?assertEqual(
+                {error, {pool_owned_by, kura_db_owner_repo}},
+                kura_repo_worker:start(kura_db_other_repo)
+            )
+        end)
     end).
 
 a_refused_repo_reaches_its_own_pool_once_started_test() ->
@@ -848,6 +910,10 @@ with_two_repos(Run) ->
         }),
         Run()
     end).
+
+stop_pool(Pool) ->
+    put({?MODULE, stopped}, Pool),
+    ok.
 
 start_pool(Pool, Config) ->
     put({?MODULE, pool_name}, Pool),
@@ -877,6 +943,7 @@ with_pool_answer(Answer, Repo, Config, Run) ->
         erase({?MODULE, pool_answer}),
         erase({?MODULE, pool_name}),
         erase({?MODULE, pool_config}),
+        erase({?MODULE, stopped}),
         application:unset_env(kura, repos),
         kura_db:forget_pools()
     end.

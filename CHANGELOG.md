@@ -57,9 +57,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `kura_repo_worker:start/1` returns
   `{error, {pool_owned_by, Owner}}`, boot logs it as a pool that did not
   start, and the refused repo's queries raise `{pool_owned_by, Owner}`.
-  The repo that started a pool can start it again and gets `ok`. A pool
-  already running that kura did not start goes to the first repo that
-  starts it.
+  The check is made before the pool module is called, so it holds for a
+  pool module that answers `{ok, Pid}` for a name already running, as
+  `kura_pool_minato` did. The repo that started a pool can start it
+  again and gets `ok`. A pool already running that kura did not start
+  goes to the first repo that starts it. A pool stays owned until
+  `kura_db:stop_pool/1` releases it, also when it was stopped outside
+  kura.
 - The many_to_many join-table SQL, the preload read and the `put_assoc` /
   `cast_assoc` DELETE and INSERT, is compiled by the repo's dialect
   (`to_sql/1`, `delete_all/1`, `insert_all/3`) instead of written by hand
@@ -226,6 +230,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `kura_repo:settings/1` returns a repo's own settings as queries see
   them, without connection settings or secrets (#200).
+- `kura_db:stop_pool/1` stops a repo's pool through its pool module,
+  releases the pool name and drops the repo's stored settings (#201).
+- The `kura_pool` contract states that `start_pool/2` on a name already
+  running returns `{error, {already_started, Pid}}`.
 - `kura_schema:is_schema/1` and `kura_schema:encrypted_fields/1`, both
   memoised. `is_schema/1` replaces three hand-rolled copies of the same
   `code:ensure_loaded/1` + `function_exported/3` check, whose negative
