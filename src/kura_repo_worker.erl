@@ -1183,6 +1183,7 @@ pin_tenant(Changes) ->
     end.
 
 guard_upsert(SchemaMod, #{on_conflict := OnConflict} = Opts) ->
+    refuse_encrypted_conflict_guard(SchemaMod, OnConflict),
     case kura_tenant:get_tenant() of
         {attribute, {Field, _Value}} ->
             Opts#{on_conflict => guarded(OnConflict, SchemaMod, Field)};
@@ -1194,9 +1195,22 @@ guard_upsert(_SchemaMod, Opts) ->
 
 guarded({_Target, nothing} = OnConflict, _SchemaMod, _Field) ->
     OnConflict;
+guarded({_Target, nothing, _Opts} = OnConflict, _SchemaMod, _Field) ->
+    OnConflict;
 guarded(OnConflict, SchemaMod, Field) ->
     refuse_encrypted_tenant(SchemaMod, Field),
     guarded(OnConflict, Field).
+
+refuse_encrypted_conflict_guard(SchemaMod, {_Target, Action, #{guard := Fields}}) when
+    Action =/= nothing, is_list(Fields)
+->
+    Encrypted = kura_schema:encrypted_fields(SchemaMod),
+    case [F || F <- Fields, lists:member(F, Encrypted)] of
+        [] -> ok;
+        [Field | _] -> erlang:error({kura, {encrypted_field_in_conflict_guard, Field}})
+    end;
+refuse_encrypted_conflict_guard(_SchemaMod, _OnConflict) ->
+    ok.
 
 guarded({Target, Action}, Field) ->
     {Target, Action, #{guard => [Field]}};

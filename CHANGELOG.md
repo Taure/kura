@@ -159,6 +159,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ciphertexts with different nonces, so it silently never updated. It now
   raises `{kura, {encrypted_field_in_where, Field}}`, from the same check
   update and delete use.
+- A caller-supplied conflict guard on an encrypted field,
+  `{Target, Action, #{guard => [Field]}}`, never updated for the same
+  reason. It now raises
+  `{kura, {encrypted_field_in_conflict_guard, Field}}`. A `nothing` action
+  compiles no guard and is not refused, with or without options.
 - A correlated subquery bypassed the filter guard. In
   `{exists, {subquery, Sub}}` or `{Field, in, {subquery, Sub}}` on a query
   over an encrypted schema, a condition in `Sub` naming an outer encrypted

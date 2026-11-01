@@ -794,35 +794,114 @@ tenant_attribute_on_an_encrypted_field_in_upserts_test_() ->
     Tenant = {attribute, {ssn, ?PLAIN}},
     Upsert = #{on_conflict => {[id], replace_all}},
     Row = #{id => 1, name => ~"a"},
-    {setup,
-        fun() ->
-            compiler_setup(),
-            application:set_env(kura, encryption, #{
-                active => 1, keys => [{1, base64:encode(crypto:strong_rand_bytes(32))}]
-            })
-        end,
-        fun(X) ->
-            application:unset_env(kura, encryption),
-            compiler_teardown(X)
-        end,
+    {setup, fun keyed_compiler_setup/0, fun keyed_compiler_teardown/1, [
+        {"insert",
+            ?_assertError(
+                ?WHERE_SSN,
+                kura_tenant:with_tenant(Tenant, fun() ->
+                    kura_repo_worker:insert(
+                        ?REPO, kura_changeset:cast(?ENC, #{}, Row, [id, name]), Upsert
+                    )
+                end)
+            )},
+        {"insert_all",
+            ?_assertError(
+                ?WHERE_SSN,
+                kura_tenant:with_tenant(Tenant, fun() ->
+                    kura_repo_worker:insert_all(?REPO, ?ENC, [Row], Upsert)
+                end)
+            )}
+    ]}.
+
+keyed_compiler_setup() ->
+    compiler_setup(),
+    application:set_env(kura, encryption, #{
+        active => 1, keys => [{1, base64:encode(crypto:strong_rand_bytes(32))}]
+    }).
+
+keyed_compiler_teardown(X) ->
+    application:unset_env(kura, encryption),
+    compiler_teardown(X).
+
+upsert_reason(Fun) ->
+    try Fun() of
+        _ -> ok
+    catch
+        error:Reason -> Reason
+    end.
+
+%% DO NOTHING compiles no conflict guard, so there is nothing to refuse.
+tenant_attribute_on_an_encrypted_field_in_do_nothing_upserts_test_() ->
+    Tenant = {attribute, {ssn, ?PLAIN}},
+    Row = #{id => 1, name => ~"a"},
+    {setup, fun keyed_compiler_setup/0, fun keyed_compiler_teardown/1, [
+        ?_assertNotEqual(
+            ?WHERE_SSN,
+            upsert_reason(fun() ->
+                kura_tenant:with_tenant(Tenant, fun() ->
+                    kura_repo_worker:insert_all(?REPO, ?ENC, [Row], #{on_conflict => OnConflict})
+                end)
+            end)
+        )
+     || OnConflict <- [{[id], nothing}, {[id], nothing, #{guard => [name]}}]
+    ]}.
+
+-define(GUARD_SSN, {kura, {encrypted_field_in_conflict_guard, ssn}}).
+
+%% A conflict guard compares the stored ciphertext with the new row's, which
+%% never match, so an upsert guarded on an encrypted field never updates.
+user_conflict_guard_on_encrypted_field_test_() ->
+    Row = #{id => 1, name => ~"a"},
+    Guarded = [
+        {"replace_all", {[id], replace_all, #{guard => [ssn]}}},
+        {"encrypted field not first", {[id], replace_all, #{guard => [name, ssn]}}},
+        {"replace", {[id], {replace, [name]}, #{guard => [id, ssn]}}}
+    ],
+    {setup, fun compiler_setup/0, fun compiler_teardown/1,
         [
-            {"insert",
+            {
+                Name ++ ", insert",
                 ?_assertError(
-                    ?WHERE_SSN,
-                    kura_tenant:with_tenant(Tenant, fun() ->
-                        kura_repo_worker:insert(
-                            ?REPO, kura_changeset:cast(?ENC, #{}, Row, [id, name]), Upsert
-                        )
-                    end)
-                )},
-            {"insert_all",
-                ?_assertError(
-                    ?WHERE_SSN,
-                    kura_tenant:with_tenant(Tenant, fun() ->
-                        kura_repo_worker:insert_all(?REPO, ?ENC, [Row], Upsert)
-                    end)
-                )}
-        ]}.
+                    ?GUARD_SSN,
+                    kura_repo_worker:insert(
+                        ?REPO,
+                        kura_changeset:cast(?ENC, #{}, Row, [id, name]),
+                        #{on_conflict => OnConflict}
+                    )
+                )
+            }
+         || {Name, OnConflict} <- Guarded
+        ] ++
+            [
+                {
+                    Name ++ ", insert_all",
+                    ?_assertError(
+                        ?GUARD_SSN,
+                        kura_repo_worker:insert_all(?REPO, ?ENC, [Row], #{on_conflict => OnConflict})
+                    )
+                }
+             || {Name, OnConflict} <- Guarded
+            ] ++
+            [
+                {"do nothing",
+                    ?_assertNotEqual(
+                        ?GUARD_SSN,
+                        upsert_reason(fun() ->
+                            kura_repo_worker:insert_all(?REPO, ?ENC, [Row], #{
+                                on_conflict => {[id], nothing, #{guard => [ssn]}}
+                            })
+                        end)
+                    )},
+                {"plain field",
+                    ?_assertNotEqual(
+                        ?GUARD_SSN,
+                        upsert_reason(fun() ->
+                            kura_repo_worker:insert_all(?REPO, ?ENC, [Row], #{
+                                on_conflict => {[id], replace_all, #{guard => [name]}}
+                            })
+                        end)
+                    )}
+            ]}.
 
 %%----------------------------------------------------------------------
 %% A CTE whose body is a union exports the ciphertext columns of every
