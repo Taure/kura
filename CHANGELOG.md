@@ -133,6 +133,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   encrypted fields, a condition shape the guard does not recognise raises
   `{kura, unrecognised_condition}`. `{fragment, SQL, Params}` is still not
   inspected.
+- An `{array, {encrypted, Inner}}` field, at any array depth, was not
+  recognised as encrypted: `kura_types:encryption/1` returned `none`, so
+  the audit trail stored its elements in plaintext and the filter guard
+  let a condition bind them. Schema load now raises
+  `{kura, {unsupported_encrypted_type, Mod, Field}}` for it.
 - Starting a pool hands the pool module the connection settings only.
   The repo's own settings, the `encryption` keyring among them, were
   passed along with them, and a pool module that echoed its options in

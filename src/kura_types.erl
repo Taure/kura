@@ -481,15 +481,20 @@ encrypted" goes through here: the query guard, audit redaction, schema
 validation and the cast, dump and load seams.
 
 Returns `{ok, Inner}` for `{encrypted, Inner}`, `unsupported` for any other
-tuple tagged `encrypted` (such as a future `{encrypted, Inner, Opts}`), and
-`none` for every other type. An `unsupported` type is still encrypted: it is
-redacted and refused in filters, and cast, dump and load raise on it rather
-than handle it as plaintext.
+tuple tagged `encrypted` (such as a future `{encrypted, Inner, Opts}`) and for
+an array of an encrypted type at any depth, and `none` for every other type.
+An `unsupported` type is still encrypted: it is redacted and refused in
+filters, a schema that declares one raises when it is first read, and cast,
+dump and load raise on a tagged one rather than handle it as plaintext.
 """.
 -spec encryption(kura_type() | {encrypted, kura_type(), term()}) -> encryption().
 encryption({encrypted, Inner}) -> {ok, Inner};
 encryption(Type) when ?IS_ENCRYPTED_TAG(Type) -> unsupported;
+encryption({array, Inner}) -> array_encryption(encryption(Inner));
 encryption(_Type) -> none.
+
+array_encryption(none) -> none;
+array_encryption(_) -> unsupported.
 
 encrypted_pg_type({ok, _Inner}) -> ~"BYTEA";
 encrypted_pg_type(_) -> erlang:error({kura_crypto, unsupported_encrypted_type}).

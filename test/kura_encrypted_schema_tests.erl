@@ -69,6 +69,10 @@ encryption_test_() ->
         ?_assertEqual(unsupported, kura_types:encryption(V2)),
         ?_assertEqual(none, kura_types:encryption(string)),
         ?_assertEqual(none, kura_types:encryption({array, string})),
+        ?_assertEqual(none, kura_types:encryption({array, {array, string}})),
+        ?_assertEqual(unsupported, kura_types:encryption({array, {encrypted, string}})),
+        ?_assertEqual(unsupported, kura_types:encryption({array, {array, {encrypted, string}}})),
+        ?_assertEqual(unsupported, kura_types:encryption({array, V2})),
         ?_assertEqual(none, kura_types:encryption({embed, embeds_one, kura_test_address})),
         ?_assertError(
             {kura_crypto, malformed_frame}, kura_types:load({encrypted, string}, 42)
@@ -107,6 +111,36 @@ options_form_fails_closed_test_() ->
                 )
             )}
     ]}.
+
+%% An array of an encrypted type dumps each element encrypted, but nothing
+%% that asks "is this field encrypted" recognised it: the audit trail stored
+%% the plaintext elements and the filter guard bound them. Schema load
+%% refuses it until arrays of ciphertexts are designed for.
+array_of_encrypted_fails_closed_test_() ->
+    [
+        {"schema load",
+            ?_assertError(
+                {kura, {unsupported_encrypted_type, kura_test_enc_array_schema, tags}},
+                kura_schema:field_types(kura_test_enc_array_schema)
+            )},
+        {"nested array",
+            ?_assertError(
+                {kura, {unsupported_encrypted_type, kura_test_enc_nested_array_schema, grid}},
+                kura_schema:field_types(kura_test_enc_nested_array_schema)
+            )},
+        {"query guard",
+            ?_assertError(
+                {kura, {unsupported_encrypted_type, kura_test_enc_array_schema, tags}},
+                kura_query:where(kura_query:from(kura_test_enc_array_schema), {tags, [~"x"]})
+            )},
+        {"audit",
+            ?_assertError(
+                {kura, {unsupported_encrypted_type, kura_test_enc_array_schema, tags}},
+                kura_audit:build_audit_data(
+                    kura_test_enc_array_schema, insert, #{id => 1, tags => [~"123-45-6789"]}
+                )
+            )}
+    ].
 
 setup_keys() ->
     application:set_env(kura, encryption, #{

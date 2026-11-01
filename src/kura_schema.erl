@@ -135,7 +135,7 @@ The first call for a module also checks its encrypted fields, and raises
 `{kura, Reason}` if one is used where it cannot work:
 
 - `{unsupported_encrypted_type, Mod, Field}` - a type tagged `encrypted`
-  that is not `{encrypted, Inner}`;
+  that is not `{encrypted, Inner}`, or an array of an encrypted type;
 - `{encrypted_primary_key, Mod, Field}`;
 - `{encrypted_association_key, Mod, Assoc, Field}` - a foreign key,
   referenced key or join-table key of an association;
