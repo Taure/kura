@@ -85,6 +85,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new `migration_lock_timeout` app env (milliseconds, default `infinity`)
   ends it with `{error, migration_lock_timeout}` from `migrate/1`,
   `rollback/1,2,3`, `fake/1,2` and `ensure_schema_migrations/1`.
+- Inside `kura_db:transaction/2` or with a sandbox connection checked
+  out, the migrator tries the advisory lock once and returns `{error,
+  migration_lock_busy}` when another session holds it, where it polled
+  inside the enclosing transaction (#139).
 - `kura_repo_worker:start/1` returns `{error, Reason}` when the pool does
   not start, where it logged the failure and returned `ok` (#192). A test
   setup written as `ok = kura_repo_worker:start(my_repo)` now stops at the

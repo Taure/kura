@@ -63,6 +63,8 @@ nontx_test_() ->
                 {timeout, 30, fun session_lock_wait_times_out/0}},
             {"an unreadable schema_migrations runs nothing again",
                 {timeout, 30, fun unreadable_schema_migrations_runs_nothing/0}},
+            {"a busy lock is tried once inside a transaction or the sandbox",
+                {timeout, 10, fun busy_lock_is_tried_once_when_enclosed/0}},
             {"a non-transactional plan is refused inside the sandbox",
                 {timeout, 10, fun refused_in_sandbox/0}},
             {"a non-transactional plan is refused inside an outer transaction",
@@ -309,6 +311,35 @@ unreadable_schema_migrations_runs_nothing() ->
 side_effects() ->
     #{rows := [#{n := N}]} = query(~"SELECT count(*)::int AS n FROM nontx_side_effects", []),
     N.
+
+busy_lock_is_tried_once_when_enclosed() ->
+    declare([?OK_APP]),
+    ok = kura_migrator:ensure_schema_migrations(?REPO),
+    {ok, Conn, Token} = kura_pool_minato:checkout(?POOL, #{}),
+    try
+        #{rows := [#{locked := true}]} = kura_driver_minato:query_on(
+            Conn, ~"SELECT pg_try_advisory_lock($1) AS locked", [?LOCK_KEY], decode()
+        ),
+        ok = kura_sandbox:checkout(?REPO),
+        try
+            ?assertEqual(
+                {error, migration_lock_busy}, kura_migrator:ensure_schema_migrations(?REPO)
+            ),
+            ?assertEqual({error, migration_lock_busy}, kura_migrator:migrate(?REPO))
+        after
+            kura_sandbox:checkin(?REPO)
+        end,
+        ?assertEqual(
+            {error, migration_lock_busy},
+            kura_db:transaction(?REPO, fun() -> kura_migrator:migrate(?REPO) end)
+        ),
+        ?assertEqual([], applied_versions())
+    after
+        _ = kura_driver_minato:query_on(
+            Conn, ~"SELECT pg_advisory_unlock($1)", [?LOCK_KEY], decode()
+        ),
+        kura_pool_minato:checkin(?POOL, Token)
+    end.
 
 refused_in_sandbox() ->
     declare([?OK_APP]),

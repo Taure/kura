@@ -78,6 +78,10 @@ would deadlock. A node still on an older kura waits the blocking way and
 ignores `transactional/0`, so deploy this version on every node before
 shipping the first non-transactional migration.
 
+Inside `kura_db:transaction/2` or with a sandbox connection checked
+out, the lock is tried once and a miss returns `{error,
+migration_lock_busy}`: retrying would keep that one transaction open.
+
 A waiting migrator logs a warning every 30 seconds with the time it has
 waited. The wait is unbounded unless `migration_lock_timeout` (`kura` app
 env, milliseconds, default `infinity`) is set; past it the operation
@@ -951,8 +955,22 @@ in_migration_lock(RepoMod, Fun, Wait) ->
         {locked, Result} ->
             Result;
         busy ->
-            in_migration_lock(RepoMod, Fun, wait_for_lock(RepoMod, Wait))
+            in_migration_lock_again(RepoMod, Fun, Wait, enclosing_transaction(RepoMod))
     end.
+
+%% Inside a transaction the caller opened, or the sandbox's, every try
+%% would run in that one open transaction, which is the wait that stalls
+%% a `CREATE INDEX CONCURRENTLY` on the node holding the lock. Try once.
+-spec in_migration_lock_again(module(), fun(() -> Result), lock_wait(), boolean()) -> Result.
+in_migration_lock_again(RepoMod, _Fun, _Wait, true) ->
+    ?LOG_ERROR(#{
+        msg => ~"kura: the migration lock is held elsewhere and this run is inside a transaction",
+        repo => RepoMod,
+        hint => ~"run the migrator outside kura_db:transaction/2 and the sandbox to wait for it"
+    }),
+    error({migration_aborted, migration_lock_busy});
+in_migration_lock_again(RepoMod, Fun, Wait, false) ->
+    in_migration_lock(RepoMod, Fun, wait_for_lock(RepoMod, Wait)).
 
 %% SQLite and other single-writer backends declare no `advisory_locks`
 %% and rely on their own write serialisation.

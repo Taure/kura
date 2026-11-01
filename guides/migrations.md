@@ -159,6 +159,10 @@ lock has to wait for, and the two would deadlock. Nodes on an older kura
 wait the blocking way; see the
 [upgrade note](#upgrade-note-before-the-first-non-transactional-migration).
 
+Inside `kura_db:transaction/2`, or with a sandbox connection checked out, the
+lock is tried once and a miss returns `{error, migration_lock_busy}`, since
+every retry would run inside that one open transaction.
+
 A waiting migrator logs a warning every 30 seconds with the time it has
 waited. The wait has no limit unless `migration_lock_timeout` (`kura` app
 env, milliseconds, default `infinity`) is set, after which the operation
