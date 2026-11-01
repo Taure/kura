@@ -146,6 +146,23 @@ array_of_encrypted_fails_closed_test_() ->
                 {kura, {unsupported_encrypted_type, kura_test_enc_array_schema, tags}},
                 kura_query:where(kura_query:from(kura_test_enc_array_schema), {tags, [~"x"]})
             )},
+        {"to_pg_type, so no DDL is generated for it",
+            ?_assertError(
+                {kura_crypto, unsupported_encrypted_type},
+                kura_types:to_pg_type({array, {encrypted, string}})
+            )},
+        {"to_pg_type, nested",
+            ?_assertError(
+                {kura_crypto, unsupported_encrypted_type},
+                kura_types:to_pg_type({array, {array, {encrypted, string}}})
+            )},
+        {"migration column type",
+            ?_assertError(
+                {kura_crypto, unsupported_encrypted_type},
+                kura_dialect_pg:column_type({array, {encrypted, string}})
+            )},
+        {"a plain array still maps",
+            ?_assertEqual(~"VARCHAR(255)[][]", kura_types:to_pg_type({array, {array, string}}))},
         {"audit",
             ?_assertError(
                 {kura, {unsupported_encrypted_type, kura_test_enc_array_schema, tags}},

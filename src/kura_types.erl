@@ -73,7 +73,7 @@ to_pg_type(naive_datetime) -> ~"TIMESTAMP";
 to_pg_type(uuid) -> ~"UUID";
 to_pg_type(jsonb) -> ~"JSONB";
 to_pg_type({enum, _}) -> ~"VARCHAR(255)";
-to_pg_type({array, Inner}) -> <<(to_pg_type(Inner))/binary, "[]">>;
+to_pg_type({array, Inner} = Type) -> array_pg_type(encryption(Type), Inner);
 to_pg_type(Type) when ?IS_ENCRYPTED_TAG(Type) -> encrypted_pg_type(encryption(Type));
 to_pg_type(vector) -> ~"VECTOR";
 to_pg_type({vector, N}) -> <<"VECTOR(", (integer_to_binary(N))/binary, ")">>;
@@ -499,6 +499,9 @@ encryption(_Type) -> none.
 
 array_encryption(none) -> none;
 array_encryption(_) -> unsupported.
+
+array_pg_type(none, Inner) -> <<(to_pg_type(Inner))/binary, "[]">>;
+array_pg_type(_, _Inner) -> erlang:error({kura_crypto, unsupported_encrypted_type}).
 
 encrypted_pg_type({ok, #{}}) -> ~"BYTEA";
 encrypted_pg_type(_) -> erlang:error({kura_crypto, unsupported_encrypted_type}).

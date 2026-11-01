@@ -137,7 +137,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recognised as encrypted: `kura_types:encryption/1` returned `none`, so
   the audit trail stored its elements in plaintext and the filter guard
   let a condition bind them. Schema load now raises
-  `{kura, {unsupported_encrypted_type, Mod, Field}}` for it.
+  `{kura, {unsupported_encrypted_type, Mod, Field}}` for it, and
+  `kura_types:to_pg_type/1` raises `{kura_crypto, unsupported_encrypted_type}`
+  instead of returning `BYTEA[]`, so no migration is generated for it.
 - A correlated subquery bypassed the filter guard. In
   `{exists, {subquery, Sub}}` or `{Field, in, {subquery, Sub}}` on a query
   over an encrypted schema, a condition in `Sub` naming an outer encrypted
