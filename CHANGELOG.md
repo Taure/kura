@@ -238,7 +238,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the distance is built, and the query must be `from/1` a schema in which
   the field is a `vector` or `{vector, N}` of matching dimension. A
   distance in `where/2`, `having/2`, `group_by/2` or `over/2` raises
-  `{kura, {distance_not_supported_here, Clause}}`. The
+  `{kura, {distance_not_supported_here, Clause}}`. A vector over 16000
+  dimensions raises, and the compiler applies the same checks to a
+  `#kura_query{}` written by hand. Requires pgvector >= 0.8.2
+  (CVE-2026-3172). The
   query builder guide covers search-time settings (`SET LOCAL
   hnsw.ef_search` in a transaction) and leaves `CREATE EXTENSION` to the
   cluster bootstrap.
