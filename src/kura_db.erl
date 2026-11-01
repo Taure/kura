@@ -246,7 +246,8 @@ the pool again, through `kura_repo_worker:start/1`, resolves the config anew
 and replaces them.
 
 The repo that starts a pool owns it until `stop_pool/1`, or until the repo
-starts on another pool name, which releases the one it had. A repo whose config
+starts on another pool name: the pool it had is then stopped and released,
+after the new one is started. A repo whose config
 names a pool another repo owns is refused with `{error, {pool_owned_by, Owner}}`
 before the pool module is called, so the answer does not depend on how the
 pool module reports a name that is already running. The refusal is logged as a
@@ -336,19 +337,46 @@ legacy_defaults_filled(Repo, Filled) ->
 -spec start_pool(module(), atom(), map()) -> ok | {error, term()}.
 start_pool(Repo, Pool, Config) ->
     PoolMod = pool_module(Repo, Config),
-    locked(Pool, fun() -> claimed(Repo, Pool, PoolMod, Config) end).
+    case locked(Pool, fun() -> claimed(Repo, Pool, PoolMod, Config) end) of
+        ok -> ok;
+        {error, Reason} -> {error, Reason};
+        {moved_from, Previous, PreviousMod} -> retire(Repo, Previous, PreviousMod)
+    end.
+
+-type claim() :: ok | {error, term()} | {moved_from, atom(), module()}.
 
 %% Two repos starting one pool name at once must not both see it unowned.
 %% Only pool start and stop take the lock; queries never do. The requester
 %% is the caller, as global grants a lock again to the same requester.
--spec locked(atom(), fun(() -> ok | {error, term()})) -> ok | {error, term()}.
+-spec locked(atom(), fun(() -> claim())) -> claim().
 locked(Pool, Run) ->
     case global:trans({{kura_pool_start, Pool}, self()}, Run, [node()]) of
-        ok -> ok;
-        {error, Reason} -> {error, Reason}
+        ok ->
+            ok;
+        {error, Reason} ->
+            {error, Reason};
+        {moved_from, Previous, PreviousMod} when is_atom(Previous), is_atom(PreviousMod) ->
+            {moved_from, Previous, PreviousMod}
     end.
 
--spec claimed(module(), atom(), module(), map()) -> ok | {error, term()}.
+%% A repo that moved to another pool name owns the pool it left until that
+%% pool is stopped, so no other repo can adopt it while it still runs with
+%% this repo's credentials. Its lock is taken after the new pool's is let go.
+-spec retire(module(), atom(), module()) -> ok.
+retire(Repo, Pool, PoolMod) ->
+    ok = locked(Pool, fun() -> retired(Repo, Pool, PoolMod) end).
+
+-spec retired(module(), atom(), module()) -> ok.
+retired(Repo, Pool, PoolMod) ->
+    case {owner(Pool), held(Repo)} of
+        {Repo, {Held, _HeldMod}} when Held =/= Pool ->
+            ok = PoolMod:stop_pool(Pool),
+            released(Repo, Pool);
+        _MovedBackOrNotOwned ->
+            ok
+    end.
+
+-spec claimed(module(), atom(), module(), map()) -> claim().
 claimed(Repo, Pool, PoolMod, Config) ->
     case owner(Pool) of
         Other when Other =/= undefined, Other =/= Repo ->
@@ -360,7 +388,7 @@ claimed(Repo, Pool, PoolMod, Config) ->
             pool_started(Repo, Pool, PoolMod, Config)
     end.
 
--spec pool_started(module(), atom(), module(), map()) -> ok | {error, term()}.
+-spec pool_started(module(), atom(), module(), map()) -> claim().
 pool_started(Repo, Pool, PoolMod, Config) ->
     Secrets = secrets(Config),
     try PoolMod:start_pool(Pool, maps:without(?REPO_KEYS, Config)) of
@@ -390,16 +418,19 @@ not_running(Repo, Pool) ->
         _SamePoolOrNone -> ok
     end.
 
-%% A repo owns one pool: the one it started last.
--spec owned(module(), atom(), module(), map()) -> ok.
+%% A repo holds the pool it started last; one it held before is retired.
+-spec owned(module(), atom(), module(), map()) -> claim().
 owned(Repo, Pool, PoolMod, Config) ->
-    case held(Repo) of
-        {Previous, _PreviousMod} when Previous =/= Pool -> ok = released(Repo, Previous);
-        _SamePoolOrNone -> ok
-    end,
+    Previous = held(Repo),
     ok = persistent_term:put({?MODULE, pool_owner, Pool}, Repo),
     ok = persistent_term:put({?MODULE, pool_held, Repo}, {Pool, PoolMod}),
-    kura_repo_settings:started(Repo, Config#{pool => Pool}).
+    ok = kura_repo_settings:started(Repo, Config#{pool => Pool}),
+    case Previous of
+        {PreviousPool, PreviousMod} when PreviousPool =/= Pool ->
+            {moved_from, PreviousPool, PreviousMod};
+        _SamePoolOrNone ->
+            ok
+    end.
 
 -spec released(module(), atom()) -> ok.
 released(Repo, Pool) ->
