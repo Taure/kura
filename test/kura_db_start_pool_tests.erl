@@ -364,12 +364,87 @@ boot_and_start_pass_the_same_legacy_flat_config_test() ->
         {pool_module, ?MODULE},
         {database, ~"flat_db"}
     ],
-    with_flat_env(Flat, fun() ->
-        ?assertEqual(ok, kura_app:start_repo_pool(kura_db_failing_repo)),
-        AtBoot = get({?MODULE, pool_config}),
-        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
-        ?assertEqual(AtBoot, get({?MODULE, pool_config})),
-        ?assertEqual(#{database => ~"flat_db"}, AtBoot)
+    Events = with_captured_logs(fun() ->
+        with_flat_env(Flat, fun() ->
+            ?assertEqual(ok, kura_app:start_repo_pool(kura_db_failing_repo)),
+            AtBoot = get({?MODULE, pool_config}),
+            ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+            ?assertEqual(AtBoot, get({?MODULE, pool_config})),
+            ?assertEqual(#{database => ~"flat_db", user => "postgres"}, AtBoot)
+        end)
+    end),
+    ?assertMatch([#{level := warning}, #{level := warning}], Events).
+
+legacy_flat_pg_config_gets_the_user_and_database_filled_test() ->
+    {Received, Events} = flat_pg_start([]),
+    ?assertEqual(#{user => "postgres", database => "postgres"}, Received),
+    ?assertMatch(
+        [
+            #{
+                level := warning,
+                msg :=
+                    {report, #{
+                        msg :=
+                            ~"kura: deprecated Postgres defaults filled in for the flat repo config",
+                        repo := kura_db_failing_repo,
+                        filled := [user, database]
+                    }}
+            }
+        ],
+        Events
+    ),
+    [#{msg := {report, #{action := Action}}}] = Events,
+    ?assertNotEqual(nomatch, string:find(Action, "kura 3.0")).
+
+legacy_flat_pg_config_with_a_user_gets_the_database_filled_test() ->
+    {Received, Events} = flat_pg_start([{user, ~"app"}]),
+    ?assertEqual(#{user => ~"app", database => "postgres"}, Received),
+    ?assertMatch([#{level := warning, msg := {report, #{filled := [database]}}}], Events).
+
+legacy_flat_pg_config_with_a_username_keeps_it_test() ->
+    {Received, Events} = flat_pg_start([{username, ~"app"}, {database, ~"app_db"}]),
+    ?assertEqual(#{username => ~"app", database => ~"app_db"}, Received),
+    ?assertEqual([], Events).
+
+legacy_flat_pg_config_with_a_user_and_database_is_not_filled_test() ->
+    {Received, Events} = flat_pg_start([{user, ~"app"}, {database, ~"app_db"}]),
+    ?assertEqual(#{user => ~"app", database => ~"app_db"}, Received),
+    ?assertEqual([], Events).
+
+legacy_flat_config_on_another_dialect_is_not_filled_test() ->
+    Flat = [
+        {repo, kura_db_failing_repo},
+        {dialect, kura_test_sqlite_dialect},
+        {pool_module, ?MODULE}
+    ],
+    Events = with_captured_logs(fun() ->
+        with_flat_env(Flat, fun() ->
+            ?assertEqual(ok, kura_db:start_pool(kura_db_failing_repo)),
+            ?assertEqual(#{}, get({?MODULE, pool_config}))
+        end)
+    end),
+    ?assertEqual([], Events).
+
+repos_map_pg_config_is_not_filled_test() ->
+    Flat = [
+        {repo, kura_db_failing_repo},
+        {repos, #{kura_db_failing_repo => #{dialect => kura_dialect_pg, pool_module => ?MODULE}}}
+    ],
+    Events = with_captured_logs(fun() ->
+        with_flat_env(Flat, fun() ->
+            ?assertEqual(ok, kura_db:start_pool(kura_db_failing_repo)),
+            ?assertEqual(#{}, get({?MODULE, pool_config}))
+        end)
+    end),
+    ?assertEqual([], Events).
+
+flat_pg_start(Settings) ->
+    Flat = [{repo, kura_db_failing_repo}, {dialect, kura_dialect_pg}, {pool_module, ?MODULE}],
+    with_captured_logs_and_result(fun() ->
+        with_flat_env(Flat ++ Settings, fun() ->
+            ok = kura_db:start_pool(kura_db_failing_repo),
+            get({?MODULE, pool_config})
+        end)
     end).
 
 legacy_flat_config_keeps_other_repos_from_the_pool_test() ->

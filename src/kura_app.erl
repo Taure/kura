@@ -91,7 +91,8 @@ pool_config() ->
 
 -doc """
 Deprecated. A repo's config as its pool is started with: `kura_repo:config/1`,
-`init/1` applied, without connection defaults.
+`init/1` applied, with the deprecated flat-form `user` and `database` fill and
+no other connection defaults.
 """.
 -spec pool_config(module()) -> map().
 pool_config(Repo) ->

@@ -226,8 +226,12 @@ the `pool` key, as `get_pool/1` does, so queries reach the pool started
 here. The repo module is loaded first: `kura_repo:config/1` only calls an
 `init/1` it finds loaded, and at boot nothing has called into the module
 yet. Application boot and `kura_repo_worker:start/1` both start pools
-through this function. Kura adds no connection defaults; the pool module
-applies its own.
+through this function. The pool module applies its own connection defaults.
+
+Deprecated: the legacy flat single-repo form (`{repo, Repo}` in the kura env,
+no `repos` map) on `kura_dialect_pg` still gets `user` and `database` set to
+`"postgres"` when it leaves them out, with a warning naming the keys filled.
+Kura 3.0 removes this.
 
 An `init/1` that raises starts no pool. Only the shape of its reason is kept:
 an atom as it is, a tuple as `{Tag, redacted}` when its first element is an
@@ -237,7 +241,8 @@ as `{error, {init_failed, {Class, Shape}}}`.
 -spec start_pool(module()) -> ok | {error, term()}.
 start_pool(Repo) ->
     case resolved(Repo) of
-        {ok, Pool, Config} ->
+        {ok, Pool, Config, Filled} ->
+            ok = legacy_defaults_filled(Repo, Filled),
             start_pool(Repo, Pool, Config);
         {error, Failed, Stack} ->
             ok = not_started(Repo, undefined, #{reason => Failed, stacktrace => arities(Stack)}),
@@ -248,20 +253,61 @@ start_pool(Repo) ->
 -spec resolve(module()) -> {ok, atom(), map()} | {error, init_failed()}.
 resolve(Repo) ->
     case resolved(Repo) of
-        {ok, _Pool, _Config} = Resolved -> Resolved;
+        {ok, Pool, Config, _Filled} -> {ok, Pool, Config};
         {error, Failed, _Stack} -> {error, Failed}
     end.
 
 -type init_failed() :: {init_failed, {error | exit | throw, atom() | {atom(), redacted}}}.
 
--spec resolved(module()) -> {ok, atom(), map()} | {error, init_failed(), erlang:stacktrace()}.
+-spec resolved(module()) ->
+    {ok, atom(), map(), [atom()]} | {error, init_failed(), erlang:stacktrace()}.
 resolved(Repo) ->
     _ = code:ensure_loaded(Repo),
     try kura_repo:config(Repo) of
-        Config -> {ok, pool_name(Repo, Config), Config}
+        Resolved ->
+            {Config, Filled} = legacy_defaults(Repo, Resolved),
+            {ok, pool_name(Repo, Config), Config, Filled}
     catch
         Class:Reason:Stack -> {error, {init_failed, {Class, shape(Reason)}}, Stack}
     end.
+
+%% Deprecated, removed in kura 3.0: the flat single-repo form on Postgres keeps
+%% the `user` and `database` kura filled in before 2.24.
+-spec legacy_defaults(module(), map()) -> {map(), [atom()]}.
+legacy_defaults(Repo, #{dialect := kura_dialect_pg} = Config) ->
+    case is_legacy_flat(Repo) of
+        true ->
+            Filled = [
+                Key
+             || {Key, Aliases} <- [{user, [user, username]}, {database, [database]}],
+                not lists:any(fun(Alias) -> is_map_key(Alias, Config) end, Aliases)
+            ],
+            {maps:merge(maps:from_list([{Key, "postgres"} || Key <- Filled]), Config), Filled};
+        false ->
+            {Config, []}
+    end;
+legacy_defaults(_Repo, Config) ->
+    {Config, []}.
+
+-spec is_legacy_flat(module()) -> boolean().
+is_legacy_flat(Repo) ->
+    case application:get_env(kura, repos) of
+        {ok, Repos} when is_map(Repos) -> false;
+        _ -> application:get_env(kura, repo) =:= {ok, Repo}
+    end.
+
+-spec legacy_defaults_filled(module(), [atom()]) -> ok.
+legacy_defaults_filled(_Repo, []) ->
+    ok;
+legacy_defaults_filled(Repo, Filled) ->
+    ?LOG_WARNING(#{
+        msg => ~"kura: deprecated Postgres defaults filled in for the flat repo config",
+        repo => Repo,
+        filled => Filled,
+        value => ~"postgres",
+        action => ~"set these keys explicitly; kura 3.0 removes this fill"
+    }),
+    ok.
 
 -doc false.
 -spec start_pool(module(), atom(), map()) -> ok | {error, term()}.
