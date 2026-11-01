@@ -484,22 +484,36 @@ the pool module, as for any pool that is not running.
 """.
 -spec stop_pool(module()) -> ok.
 stop_pool(Repo) ->
-    ok =
-        case held(Repo) of
-            {Pool, PoolMod} -> locked(Pool, fun() -> stopped(Repo, Pool, PoolMod) end);
-            none -> ok
-        end,
-    kura_repo_settings:forget(Repo).
+    case held(Repo) of
+        {Pool, PoolMod} -> ok = locked(Pool, fun() -> stopped(Repo, Pool, PoolMod) end);
+        none -> kura_repo_settings:forget(Repo)
+    end.
 
+%% A start of the same repo can move it to another pool while this runs; the
+%% pool it moved to stays held, so a later stop_pool/1 still reaches it.
 -spec stopped(module(), atom(), module()) -> ok.
 stopped(Repo, Pool, PoolMod) ->
-    case owner(Pool) of
-        Repo -> ok = PoolMod:stop_pool(Pool);
-        _NotOwned -> ok
-    end,
-    ok = released(Repo, Pool),
-    _ = persistent_term:erase({?MODULE, pool_held, Repo}),
-    ok.
+    case held(Repo) of
+        {Pool, PoolMod} ->
+            case owner(Pool) of
+                Repo -> ok = PoolMod:stop_pool(Pool);
+                _NotOwned -> ok
+            end,
+            ok = released(Repo, Pool),
+            unheld(Repo, Pool, PoolMod);
+        _Moved ->
+            ok
+    end.
+
+-spec unheld(module(), atom(), module()) -> ok.
+unheld(Repo, Pool, PoolMod) ->
+    case held(Repo) of
+        {Pool, PoolMod} ->
+            _ = persistent_term:erase({?MODULE, pool_held, Repo}),
+            kura_repo_settings:forget(Repo);
+        _Moved ->
+            ok
+    end.
 
 -ifdef(TEST).
 forget_pools() ->

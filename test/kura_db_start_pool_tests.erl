@@ -1043,6 +1043,20 @@ a_stopped_repo_cannot_query_the_pool_another_repo_started_test() ->
         ?assertError({pool_owned_by, kura_db_other_repo}, kura_db:get_pool(kura_db_owner_repo))
     end).
 
+a_stop_racing_a_move_leaves_the_new_pool_stoppable_test() ->
+    with_pool_answer({ok, self()}, #{pool => old_pool}, fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        application:set_env(kura, repos, #{
+            kura_db_failing_repo => #{pool => new_pool, pool_module => ?MODULE}
+        }),
+        put({?MODULE, stop_answer}, {start, kura_db_failing_repo}),
+        ?assertEqual(ok, kura_db:stop_pool(kura_db_failing_repo)),
+        ?assertEqual(new_pool, kura_db:get_pool(kura_db_failing_repo)),
+        erase({?MODULE, stopped}),
+        ?assertEqual(ok, kura_db:stop_pool(kura_db_failing_repo)),
+        ?assertEqual(new_pool, get({?MODULE, stopped}))
+    end).
+
 with_two_repos(Run) ->
     Shared = #{pool => shared_pool, pool_module => ?MODULE},
     with_pool_answer({ok, self()}, fun() ->
@@ -1054,8 +1068,13 @@ with_two_repos(Run) ->
 
 stop_pool(Pool) ->
     case get({?MODULE, stop_answer}) of
-        {raise, Reason} -> error(Reason);
-        undefined -> ok
+        {raise, Reason} ->
+            error(Reason);
+        {start, Repo} ->
+            erase({?MODULE, stop_answer}),
+            ok = kura_repo_worker:start(Repo);
+        undefined ->
+            ok
     end,
     put({?MODULE, stopped}, Pool),
     ok.
