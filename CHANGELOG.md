@@ -68,6 +68,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `application:set_env` or by `init/1` reading a flag, keeps
   accepting writes until `kura_repo_worker:start/1` is called again for
   it. Call `start/1` after changing it.
+- **Upgrading:** `replicas`, `uuid_version`, `dialect`, `pool`,
+  `pool_module` and `driver_module` are captured the same way (#200). A
+  test or a release task that changes them with `application:set_env`
+  on a started repo must call `kura_repo_worker:start/1` for that repo
+  afterwards; a repo whose pool kura did not start still reads them on
+  each call.
+- **Upgrading:** two repos can no longer share one pool by naming the
+  same `pool` (#201). The second repo's `kura_repo_worker:start/1`
+  returns `{error, {pool_owned_by, Owner}}` (boot logs it and carries
+  on), and its queries raise `{pool_owned_by, Owner}`. That includes a
+  repo kura never started that only names another repo's running pool,
+  such as a migration repo pointed at the application repo's pool. Give
+  each repo its own pool name.
 - A repo whose config names a pool another repo started is refused
   instead of sharing that pool, database and credentials (#201).
   `kura_repo_worker:start/1` returns
@@ -81,13 +94,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the pool and the pool module, since it keeps the connection settings
   it was started with. Changing a running repo's credentials takes
   `kura_db:stop_pool/1` and then `kura_repo_worker:start/1`; `start/1`
-  alone returns `ok` and leaves the pool as it is. A pool stays owned until
-  `kura_db:stop_pool/1` releases it, also when it was stopped outside
-  kura. A repo whose pool name another repo owns cannot query it either:
+  alone returns `ok` and leaves the pool as it is. A pool stays owned by
+  the repo that started it until `kura_db:stop_pool/1` releases it, or
+  until that repo starts on another pool name and the old pool has
+  stopped; a pool stopped outside kura stays owned. A repo whose pool name another repo owns cannot query it either:
   `kura_db:get_pool/1` raises `{pool_owned_by, Owner}`, which covers a
   repo kura never started and one stopped with `kura_db:stop_pool/1`
-  whose pool name another repo then started. A repo that only borrowed
-  another repo's running pool by naming it must get its own pool. A repo
+  whose pool name another repo then started. A repo
   that starts on another pool name keeps the pool it had
   until that pool is stopped, which happens right after the new one
   starts, so no other repo can adopt it while it runs with the first
