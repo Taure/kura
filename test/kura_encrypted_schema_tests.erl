@@ -75,7 +75,10 @@ placement_test_() ->
 encryption_test_() ->
     V2 = kura_test_enc_v2_schema:v2_type(),
     [
-        ?_assertEqual({ok, string}, kura_types:encryption({encrypted, string})),
+        ?_assertEqual({ok, #{inner => string}}, kura_types:encryption({encrypted, string})),
+        ?_assertEqual(
+            {ok, #{inner => {array, string}}}, kura_types:encryption({encrypted, {array, string}})
+        ),
         ?_assertEqual(unsupported, kura_types:encryption(V2)),
         ?_assertEqual(none, kura_types:encryption(string)),
         ?_assertEqual(none, kura_types:encryption({array, string})),

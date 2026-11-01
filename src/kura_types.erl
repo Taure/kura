@@ -12,7 +12,7 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
 
 -export([to_pg_type/1, from_pg_type/2, cast/2, dump/2, load/2, encryption/1]).
 
--export_type([kura_type/0, encryption/0]).
+-export_type([kura_type/0, encryption/0, encryption_spec/0]).
 
 -type kura_type() ::
     id
@@ -39,7 +39,8 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
     | {embed, embeds_one | embeds_many, module()}
     | {custom, module()}.
 
--type encryption() :: none | {ok, kura_type()} | unsupported.
+-type encryption() :: none | {ok, encryption_spec()} | unsupported.
+-type encryption_spec() :: #{inner := kura_type()}.
 
 %% Any tuple tagged `encrypted`, whatever its arity, so a form this release
 %% does not support is still treated as encrypted and fails closed.
@@ -480,15 +481,18 @@ Recognise an encrypted field type. Every check for "is this field
 encrypted" goes through here: the query guard, audit redaction, schema
 validation and the cast, dump and load seams.
 
-Returns `{ok, Inner}` for `{encrypted, Inner}`, `unsupported` for any other
+Returns `{ok, #{inner => Inner}}` for `{encrypted, Inner}`, `unsupported` for any other
 tuple tagged `encrypted` (such as a future `{encrypted, Inner, Opts}`) and for
 an array of an encrypted type at any depth, and `none` for every other type.
 An `unsupported` type is still encrypted: it is redacted and refused in
 filters, a schema that declares one raises when it is first read, and cast,
 dump and load raise on a tagged one rather than handle it as plaintext.
+
+The spec is a map so that later encryption options can be added as keys
+without changing the return shape; only `inner` exists today.
 """.
 -spec encryption(kura_type() | {encrypted, kura_type(), term()}) -> encryption().
-encryption({encrypted, Inner}) -> {ok, Inner};
+encryption({encrypted, Inner}) -> {ok, #{inner => Inner}};
 encryption(Type) when ?IS_ENCRYPTED_TAG(Type) -> unsupported;
 encryption({array, Inner}) -> array_encryption(encryption(Inner));
 encryption(_Type) -> none.
@@ -496,10 +500,10 @@ encryption(_Type) -> none.
 array_encryption(none) -> none;
 array_encryption(_) -> unsupported.
 
-encrypted_pg_type({ok, _Inner}) -> ~"BYTEA";
+encrypted_pg_type({ok, #{}}) -> ~"BYTEA";
 encrypted_pg_type(_) -> erlang:error({kura_crypto, unsupported_encrypted_type}).
 
-cast_encrypted({ok, Inner}, V) ->
+cast_encrypted({ok, #{inner := Inner}}, V) ->
     case encryptable_inner(Inner) of
         true ->
             cast(Inner, V);
@@ -509,7 +513,7 @@ cast_encrypted({ok, Inner}, V) ->
 cast_encrypted(_, _V) ->
     erlang:error({kura_crypto, unsupported_encrypted_type}).
 
-encryptable({ok, Inner}) ->
+encryptable({ok, #{inner := Inner}}) ->
     encryptable_inner(Inner) orelse erlang:error({kura_crypto, {not_encryptable, Inner}}),
     Inner;
 encryptable(_) ->
@@ -769,7 +773,7 @@ format_type(Type) when ?IS_ENCRYPTED_TAG(Type) ->
 format_type(T) when is_atom(T) ->
     atom_to_binary(T, utf8).
 
-format_encrypted({ok, Inner}) -> <<"encrypted_", (format_type(Inner))/binary>>;
+format_encrypted({ok, #{inner := Inner}}) -> <<"encrypted_", (format_type(Inner))/binary>>;
 format_encrypted(_) -> ~"encrypted".
 
 dump_embed_to_term(Mod, Map) ->

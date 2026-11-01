@@ -294,7 +294,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `kura_query:check_encrypted/1`, the filter guard over a whole query.
 - `kura_types:encryption/1`, the one place that recognises an encrypted
-  type. The filter guard, audit redaction, schema validation and the
+  type. It returns `none`, `unsupported` or `{ok, #{inner => Inner}}`; the
+  spec is a map so later options can be added as keys. The filter guard, audit redaction, schema validation and the
   type seams all use it.
 - `kura_hkdf`, HKDF-SHA256 (RFC 5869) over `crypto:mac/4`, with the RFC
   test vectors. Not used yet; groundwork for per-column keys (#137).
