@@ -344,3 +344,23 @@ improper_vector() -> [1.0, 2.0 | not_a_list()].
 
 -spec not_a_list() -> dynamic().
 not_a_list() -> 3.0.
+
+%% A window built by hand, not through over/2, still may not carry a
+%% distance.
+select_expr_rejects_a_distance_in_a_hand_built_window_test_() ->
+    D = kura_query:distance(embedding, cosine, [1, 2, 3]),
+    Q = kura_query:from(?VEC_SCHEMA),
+    [
+        ?_assertError(
+            {kura, {distance_not_supported_here, over}},
+            kura_query:select_expr(Q, [{r, {over, rank, #{order_by => [{D, asc}]}}}])
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, over}},
+            kura_query:select_expr(Q, [{r, {over, row_number, #{partition_by => [D]}}}])
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, over}},
+            kura_query:select_expr(Q, [{m, {over, {min, D}, #{}}}])
+        )
+    ].

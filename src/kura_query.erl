@@ -86,6 +86,7 @@ Q = kura_query:select_expr(kura_query:from(sales), [
 """.
 -spec select_expr(#kura_query{}, [term()]) -> #kura_query{}.
 select_expr(Q = #kura_query{from = From}, Exprs) ->
+    _ = [reject_window_distances(Fn, Spec) || {_Alias, {over, Fn, Spec}} <- Exprs],
     check_distances(From, [D || {_Alias, {distance, _, _, _} = D} <- Exprs]),
     Q#kura_query{select = {exprs, Exprs}}.
 
@@ -102,15 +103,20 @@ capability (PostgreSQL, or SQLite 3.25+).
 """.
 -spec over(window_fn(), window_spec()) -> {over, window_fn(), window_spec()}.
 over(WindowFn, Spec) when is_map(Spec) ->
-    reject_distances(over, window_fn_fields(WindowFn) ++ window_spec_fields(Spec)),
+    reject_window_distances(WindowFn, Spec),
     {over, WindowFn, Spec}.
+
+reject_window_distances(WindowFn, Spec) ->
+    reject_distances(over, window_fn_fields(WindowFn) ++ window_spec_fields(Spec)).
 
 window_fn_fields({_Agg, Field}) -> [Field];
 window_fn_fields(_Fn) -> [].
 
-window_spec_fields(Spec) ->
+window_spec_fields(Spec) when is_map(Spec) ->
     Orders = [Expr || {Expr, _Dir} <- maps:get(order_by, Spec, [])],
-    maps:get(partition_by, Spec, []) ++ Orders.
+    maps:get(partition_by, Spec, []) ++ Orders;
+window_spec_fields(_Spec) ->
+    [].
 
 -doc """
 Build a pgvector distance between the vector field `Field` and `Vector`,
