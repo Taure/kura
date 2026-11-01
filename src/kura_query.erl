@@ -189,11 +189,11 @@ vector_text(Floats) ->
         {ok, Text} when is_binary(Text) -> Text
     end.
 
--doc """
-Run the builder's distance checks on a whole query, its CTEs and its
-combinations. `kura_query_compiler` calls this before it compiles, so a
-`#kura_query{}` written by hand raises the same errors as the builder.
-""".
+%% Called by kura_query_compiler before it compiles. Checks the distance
+%% nodes of select expressions (windows included) and order_bys, in the
+%% query and in its CTEs and combinations, as order_by/2 and select_expr/2
+%% do. A hand-built where, having or group_by is not inspected.
+-doc false.
 -spec check_distances(#kura_query{}) -> ok.
 check_distances(#kura_query{select = Select, order_bys = [], ctes = [], combinations = []}) when
     is_list(Select)
