@@ -207,7 +207,10 @@ The pool `RepoMod`'s queries run on.
 Raises `{pool_owned_by, Owner}` when another repo owns that pool name: a repo
 kura has not started, or one stopped with `stop_pool/1`, reads its pool name
 from its config, and must not reach a pool started with another repo's
-credentials.
+credentials. A repo whose last start was refused raises
+`{pool_owned_by, Owner}` too, and one whose last start moved it to a pool that
+did not start raises `{pool_not_started, Pool}`, until a start succeeds or
+`stop_pool/1` drops that state.
 """.
 -spec get_pool(module()) -> atom().
 get_pool(RepoMod) ->
@@ -273,6 +276,11 @@ to the first repo that starts it, with a warning that names the repo, the pool
 and the pool module: that pool keeps the connection settings it was started
 with. A pool stopped outside kura stays owned;
 `stop_pool/1` releases it.
+
+Starts and stops of one pool name are serialised by a node-local `global`
+lock that waits without a limit: a pool module whose `start_pool/2` or
+`stop_pool/1` hangs holds up every other start or stop of that name. Queries
+never take the lock.
 
 A start that fails leaves the stored settings as they were when the repo's
 pool is the one it was started on before, or when only `init/1` failed. When
