@@ -177,7 +177,6 @@ length_upto(_NotAList, _Max, _N) -> improper.
 cast_vector(Field, Vector) ->
     try kura_types:cast(vector, Vector) of
         {ok, Floats} when is_list(Floats) -> vector_text(Floats);
-        {ok, _} -> invalid_vector(Field, ~"is not a list of numbers");
         {error, Reason} -> invalid_vector(Field, Reason)
     catch
         error:badarg -> invalid_vector(Field, ~"has an element outside the float range")
