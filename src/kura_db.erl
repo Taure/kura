@@ -479,12 +479,14 @@ adopted(Repo, Pool, PoolMod, false) ->
     ok.
 
 %% A repo moved to a pool that did not start must not keep querying the pool
-%% it was on before. A failed restart on the same pool keeps its settings.
+%% it was on before, nor report the reason an earlier start failed. A failed
+%% restart on the same pool keeps its settings.
 -spec not_running(module(), atom()) -> ok.
 not_running(Repo, Pool) ->
     case kura_repo_settings:lookup(Repo) of
-        #{pool := Running} when Running =/= Pool -> kura_repo_settings:not_started(Repo, Pool);
-        _SamePoolOrNone -> ok
+        #{pool := Pool} -> ok;
+        none -> ok;
+        _OtherPoolOrMarker -> kura_repo_settings:not_started(Repo, Pool)
     end.
 
 %% A repo holds the pool it started last; one it held before is retired.

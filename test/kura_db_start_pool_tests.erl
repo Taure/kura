@@ -1232,6 +1232,19 @@ stop_pool_drops_the_refused_marker_test() ->
         ?assertEqual(undefined, get({?MODULE, pool_name}))
     end).
 
+a_refused_repo_whose_own_pool_fails_to_start_reports_that_pool_test() ->
+    with_two_repos(fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        _ = with_captured_logs(fun() -> kura_repo_worker:start(kura_db_other_repo) end),
+        application:set_env(kura, repos, #{
+            kura_db_owner_repo => #{pool => shared_pool, pool_module => ?MODULE},
+            kura_db_other_repo => #{pool => own_pool, pool_module => ?MODULE}
+        }),
+        put({?MODULE, pool_answer}, {error, econnrefused}),
+        _ = with_captured_logs(fun() -> kura_repo_worker:start(kura_db_other_repo) end),
+        ?assertError({pool_not_started, own_pool}, kura_db:get_pool(kura_db_other_repo))
+    end).
+
 with_two_repos(Run) ->
     Shared = #{pool => shared_pool, pool_module => ?MODULE},
     with_pool_answer({ok, self()}, fun() ->
