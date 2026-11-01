@@ -54,7 +54,8 @@ nontx_test_() ->
                 {timeout, 10, fun refused_in_sandbox/0}},
             {"a non-transactional plan is refused inside an outer transaction",
                 {timeout, 10, fun refused_in_outer_transaction/0}},
-            {"query_on runs on the given connection", fun query_on_uses_the_connection/0}
+            {"query_on runs on the given connection", fun query_on_uses_the_connection/0},
+            {"query_on/5 hands its options to the driver", fun query_on_passes_options/0}
         ]}}.
 
 setup() ->
@@ -239,6 +240,21 @@ query_on_uses_the_connection() ->
         ),
         ?assertEqual(Pid, Same),
         ?assertMatch({error, _}, kura_db:query_on(?REPO, Conn, ~"SELECT * FROM nontx_none", []))
+    after
+        kura_pool_minato:checkin(?POOL, Token)
+    end.
+
+query_on_passes_options() ->
+    {ok, Conn, Token} = kura_pool_minato:checkout(?POOL, #{}),
+    try
+        ?assertMatch(
+            #{rows := [#{one := 1}]},
+            kura_db:query_on(?REPO, Conn, ~"SELECT 1 AS one", [], #{timeout => 5000})
+        ),
+        ?assertMatch(
+            {error, _},
+            kura_db:query_on(?REPO, Conn, ~"SELECT pg_sleep(2)", [], #{timeout => 50})
+        )
     after
         kura_pool_minato:checkin(?POOL, Token)
     end.

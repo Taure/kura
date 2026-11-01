@@ -231,8 +231,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the run executes. On a pool that does not declare the new standard
   `concurrent_indexes` capability (SQLite) it compiles to a plain
   `CREATE INDEX`.
-- `kura_db:query_on/4` runs a statement on a connection the caller
-  checked out, with the same telemetry as `kura_db:query/3`.
+- `kura_db:query_on/4,5` runs a statement on a connection the caller
+  checked out, with the same telemetry as `kura_db:query/3`. `/5` hands
+  an options map to the driver's `query_on/4` (`timeout` for minato).
 
 - `kura_schema:is_schema/1` and `kura_schema:encrypted_fields/1`, both
   memoised. `is_schema/1` replaces three hand-rolled copies of the same
