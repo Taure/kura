@@ -494,6 +494,12 @@ hand_built_distance_queries_raise_before_compiling_test_() ->
                 from = Vec, order_bys = [{BadMetric, asc}]
             }),
             {kura, {invalid_distance, BadMetric}}
+        },
+        {
+            kura_query:union(#kura_query{from = Vec}, #kura_query{
+                from = Vec, select = {exprs, [{d, BadMetric}]}
+            }),
+            {kura, {invalid_distance, BadMetric}}
         }
     ],
     {setup,
