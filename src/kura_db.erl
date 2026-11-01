@@ -260,7 +260,9 @@ and replaces them.
 
 The repo that starts a pool owns it until `stop_pool/1`, or until the repo
 starts on another pool name: the pool it had is then stopped and released,
-after the new one is started. A repo whose config
+after the new one is started. If that stop raises, the start still returns
+`ok`, the failure is logged with only the shape of its reason, and the old
+pool stays owned until `stop_pool/1` stops it. A repo whose config
 names a pool another repo owns is refused with `{error, {pool_owned_by, Owner}}`
 before the pool module is called, so the answer does not depend on how the
 pool module reports a name that is already running. The refusal is logged as a
@@ -384,14 +386,34 @@ retire(Repo, Pool, PoolMod) ->
 -spec retired(module(), atom(), module()) -> ok.
 retired(Repo, Pool, PoolMod) ->
     case {owner(Pool), held(Repo)} of
-        {Repo, {Pool, _MovedBack}} ->
-            ok;
-        {Repo, _HeldElsewhereOrStopped} ->
-            ok = PoolMod:stop_pool(Pool),
-            ok = released(Repo, Pool);
-        _NotOwned ->
+        {Repo, {Pool, _MovedBack}} -> no_longer_retiring(Repo, Pool);
+        {Repo, _HeldElsewhereOrStopped} -> stopped_previous(Repo, Pool, PoolMod);
+        _NotOwned -> no_longer_retiring(Repo, Pool)
+    end.
+
+%% The new pool is running, so a previous pool that will not stop is logged
+%% and stays owned and recorded for stop_pool/1 rather than failing the start.
+-spec stopped_previous(module(), atom(), module()) -> ok.
+stopped_previous(Repo, Pool, PoolMod) ->
+    try PoolMod:stop_pool(Pool) of
+        _Stopped ->
+            ok = released(Repo, Pool),
+            no_longer_retiring(Repo, Pool)
+    catch
+        Class:Reason:Stack ->
+            ?LOG_ERROR(#{
+                msg => ~"kura: previous pool did not stop",
+                repo => Repo,
+                pool => Pool,
+                pool_module => PoolMod,
+                reason => {Class, shape(Reason)},
+                stacktrace => arities(Stack)
+            }),
             ok
-    end,
+    end.
+
+-spec no_longer_retiring(module(), atom()) -> ok.
+no_longer_retiring(Repo, Pool) ->
     _ = persistent_term:erase({?MODULE, pool_retiring, Repo, Pool}),
     ok.
 

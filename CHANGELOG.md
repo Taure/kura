@@ -91,7 +91,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that starts on another pool name keeps the pool it had
   until that pool is stopped, which happens right after the new one
   starts, so no other repo can adopt it while it runs with the first
-  repo's credentials.
+  repo's credentials. If that stop raises, the start still returns `ok`,
+  the failure is logged with only the shape of its reason, and the old
+  pool stays owned until `kura_db:stop_pool/1` stops it.
 - The many_to_many join-table SQL, the preload read and the `put_assoc` /
   `cast_assoc` DELETE and INSERT, is compiled by the repo's dialect
   (`to_sql/1`, `delete_all/1`, `insert_all/3`) instead of written by hand

@@ -1033,22 +1033,42 @@ a_repo_started_on_a_new_pool_stops_and_releases_the_old_one_test() ->
         ?assertEqual(shared_pool, kura_db:get_pool(kura_db_other_repo))
     end).
 
-an_old_pool_that_does_not_stop_stays_owned_test() ->
+an_old_pool_that_does_not_stop_stays_owned_until_stop_pool_test() ->
     with_two_repos(fun() ->
         ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
-        application:set_env(kura, repos, #{
-            kura_db_owner_repo => #{pool => moved_pool, pool_module => ?MODULE},
-            kura_db_other_repo => #{pool => shared_pool, pool_module => ?MODULE}
-        }),
-        put({?MODULE, stop_answer}, {raise, stuck}),
-        ?assertError(stuck, kura_repo_worker:start(kura_db_owner_repo)),
+        ok = moved_to(moved_pool),
+        put({?MODULE, stop_answer}, {raise, {stuck, "s3cret"}}),
+        Events = with_captured_logs(fun() ->
+            ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo))
+        end),
+        ?assertMatch(
+            [
+                #{
+                    level := error,
+                    msg :=
+                        {report, #{
+                            msg := ~"kura: previous pool did not stop",
+                            repo := kura_db_owner_repo,
+                            pool := shared_pool,
+                            pool_module := ?MODULE,
+                            reason := {error, {stuck, redacted}},
+                            stacktrace := [{_, _, Arity, _} | _]
+                        }}
+                }
+            ] when is_integer(Arity),
+            Events
+        ),
+        ?assertEqual(nomatch, string:find(io_lib:format("~p", [Events]), "s3cret")),
+        ?assertEqual(moved_pool, kura_db:get_pool(kura_db_owner_repo)),
         erase({?MODULE, stop_answer}),
         _ = with_captured_logs(fun() ->
             ?assertEqual(
                 {error, {pool_owned_by, kura_db_owner_repo}},
                 kura_repo_worker:start(kura_db_other_repo)
             )
-        end)
+        end),
+        ?assertEqual(ok, kura_db:stop_pool(kura_db_owner_repo)),
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_other_repo))
     end).
 
 stop_pool_after_a_failed_move_stops_the_pool_the_repo_owns_test() ->
