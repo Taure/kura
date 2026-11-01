@@ -64,3 +64,21 @@ assert_checkin(Name, Token) ->
     after 1000 ->
         ?assert(false)
     end.
+
+%% The kura_pool contract: a name already running answers already_started.
+minato_pool_reports_a_running_name_as_already_started_test() ->
+    Name = kura_pool_tests_minato,
+    Opts = #{
+        hostname => <<"localhost">>,
+        port => 5555,
+        database => <<"kura_test">>,
+        username => <<"postgres">>,
+        password => <<"root">>,
+        pool_size => 1
+    },
+    {ok, Pid} = kura_pool_minato:start_pool(Name, Opts),
+    try
+        ?assertEqual({error, {already_started, Pid}}, kura_pool_minato:start_pool(Name, Opts))
+    after
+        kura_pool_minato:stop_pool(Name)
+    end.
