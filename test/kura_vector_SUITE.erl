@@ -5,8 +5,9 @@ pgvector distance queries against a live server.
 Needs a Postgres with the pgvector extension installed. CI runs the
 `pgvector/pgvector` image on port 5555. Point the suite elsewhere with
 `KURA_PGVECTOR_URL`, for example
-`postgres://postgres:postgres@localhost:5556/postgres`. The suite skips
-when the server cannot create the `vector` extension.
+`postgres://postgres:postgres@localhost:5556/postgres`. When the server
+cannot create the `vector` extension the suite skips, or fails when the
+`CI` environment variable is set.
 """.
 
 -include_lib("common_test/include/ct.hrl").
@@ -50,13 +51,18 @@ init_per_suite(Config) ->
             Config;
         {error, Reason} ->
             #{hostname := Host, port := Port} = repo_config(url()),
-            {skip,
-                lists:flatten(
-                    io_lib:format("pgvector is not available on ~s:~p: ~s", [
-                        Host, Port, reason(Reason)
-                    ])
-                )}
+            Message = lists:flatten(
+                io_lib:format("pgvector is not available on ~s:~p: ~s", [Host, Port, reason(Reason)])
+            ),
+            unavailable(os:getenv("CI"), Message)
     end.
+
+%% CI runs the pgvector image, so a missing extension there is a broken
+%% setup, not a reason to skip.
+unavailable(CI, Message) when CI =:= false; CI =:= "" ->
+    {skip, Message};
+unavailable(_CI, Message) ->
+    {fail, Message}.
 
 end_per_suite(_Config) ->
     _ = kura_repo_worker:query(?REPO, ~"DROP TABLE IF EXISTS kura_vector_items", []),
