@@ -376,3 +376,18 @@ update_all(_, _) -> {~"", []}.
 delete_all(_) -> {~"", []}.
 insert_all(_, _, _) -> {~"", []}.
 insert_all(_, _, _, _) -> {~"", []}.
+
+%% A select item or order entry that is not a 2-tuple is left in the
+%% shape untouched, as an unrecognised condition is, and binds nothing.
+non_pair_select_and_order_items_stay_in_the_shape_test() ->
+    Select = {exprs, [bare_item, {score, {fragment, ~"?", [5]}}]},
+    Orders = [{name, asc, nulls_last}, {id, desc}],
+    {Shape, Values} = kura_query_shape:split(
+        #kura_query{from = users, select = Select, order_bys = Orders}
+    ),
+    ?assertEqual({5}, Values),
+    ?assertEqual(
+        {exprs, [bare_item, {score, {fragment, ~"?", [{'$kura_param', 1}]}}]},
+        Shape#kura_query.select
+    ),
+    ?assertEqual(Orders, Shape#kura_query.order_bys).
