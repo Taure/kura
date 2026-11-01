@@ -241,9 +241,15 @@ text it encodes, so treat those params as you would the text itself.
 
 Not supported yet: a distance in `where` or `having` (a threshold), in
 `group_by/2` or in a window from `over/2`. Each raises `{kura,
-{distance_not_supported_here, Clause}}`. Keyset pagination over a
-distance with `kura_paginator`, which builds its own `ORDER BY`, is not
-supported either. The SQLite backend has no distance operators.
+{distance_not_supported_here, Clause}}`. The SQLite backend has no
+distance operators.
+
+`kura_paginator:cursor_paginate/3` replaces the query's `order_by` with
+its cursor field, so it cannot page through nearest neighbours. A
+distance in `order_by` raises `{kura, {distance_not_supported_here,
+cursor_paginate}}`; an `order_by` on the alias of a selected distance is
+replaced like any other ordering. `kura_paginator:paginate/3` keeps the
+ordering.
 
 ### Installing the extension
 
