@@ -201,12 +201,18 @@ nearest-neighbour search and in `select_expr/2` to return the distance.
 D = kura_query:distance(embedding, cosine, QueryVector),
 Q = kura_query:from(memory),
 Q1 = kura_query:select_expr(Q, [{id, id}, {content, content}, {dist, D}]),
-Q2 = kura_query:order_by(Q1, [{D, asc}]),
+Q2 = kura_query:order_by(Q1, [{dist, asc}]),
 Q3 = kura_query:limit(Q2, 10),
 {ok, Rows} = kura_repo_worker:all(my_repo, Q3).
 %% SELECT "id" AS "id", "content" AS "content", "embedding" <=> $1 AS "dist"
-%% FROM "memories" ORDER BY "embedding" <=> $2 ASC LIMIT $3
+%% FROM "memories" ORDER BY "dist" ASC LIMIT $2
 ```
+
+When the distance is selected, order by its alias as above. The vector
+is sent once, and Postgres matches the alias to the select expression,
+so an HNSW or IVFFlat index still serves the ordering. Ordering by `D`
+itself works too, and is the form to use when the distance is not
+selected; with both, the vector is sent twice.
 
 | Metric | Operator | Index opclass |
 |---|---|---|

@@ -134,8 +134,12 @@ Clause}}`.
 ```erlang
 D = kura_query:distance(embedding, cosine, QueryVector),
 Q = kura_query:select_expr(kura_query:from(memory), [{id, id}, {dist, D}]),
-Q1 = kura_query:limit(kura_query:order_by(Q, [{D, asc}]), 10).
+Q1 = kura_query:limit(kura_query:order_by(Q, [{dist, asc}]), 10).
 ```
+
+Ordering by the alias of a selected distance sends the vector once and
+still uses an index. Order by `D` itself when the distance is not
+selected.
 """.
 -spec distance(atom(), distance_metric(), [number()]) -> distance().
 distance(Field, Metric, Vector) when is_atom(Field), ?IS_METRIC(Metric) ->
