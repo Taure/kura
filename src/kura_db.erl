@@ -236,22 +236,31 @@ as `{error, {init_failed, {Class, Shape}}}`.
 """.
 -spec start_pool(module()) -> ok | {error, term()}.
 start_pool(Repo) ->
-    case resolve(Repo) of
-        {ok, Pool, Config} -> start_pool(Repo, Pool, Config);
-        {error, _} = Error -> Error
+    case resolved(Repo) of
+        {ok, Pool, Config} ->
+            start_pool(Repo, Pool, Config);
+        {error, Failed, Stack} ->
+            ok = not_started(Repo, undefined, #{reason => Failed, stacktrace => arities(Stack)}),
+            {error, Failed}
     end.
 
 -doc false.
--spec resolve(module()) -> {ok, atom(), map()} | {error, {init_failed, {atom(), term()}}}.
+-spec resolve(module()) -> {ok, atom(), map()} | {error, init_failed()}.
 resolve(Repo) ->
+    case resolved(Repo) of
+        {ok, _Pool, _Config} = Resolved -> Resolved;
+        {error, Failed, _Stack} -> {error, Failed}
+    end.
+
+-type init_failed() :: {init_failed, {error | exit | throw, atom() | {atom(), redacted}}}.
+
+-spec resolved(module()) -> {ok, atom(), map()} | {error, init_failed(), erlang:stacktrace()}.
+resolved(Repo) ->
     _ = code:ensure_loaded(Repo),
     try kura_repo:config(Repo) of
         Config -> {ok, pool_name(Repo, Config), Config}
     catch
-        Class:Reason:Stack ->
-            Failed = {init_failed, {Class, shape(Reason)}},
-            ok = not_started(Repo, undefined, #{reason => Failed, stacktrace => arities(Stack)}),
-            {error, Failed}
+        Class:Reason:Stack -> {error, {init_failed, {Class, shape(Reason)}}, Stack}
     end.
 
 -doc false.
@@ -277,7 +286,7 @@ start_pool(Repo, Pool, Config) ->
 
 %% init/1 is the consumer's code, so nothing is known about what its reason
 %% holds: only its tag is kept.
--spec shape(term()) -> term().
+-spec shape(term()) -> atom() | {atom(), redacted}.
 shape(Reason) when is_atom(Reason) -> Reason;
 shape(Reason) when is_tuple(Reason) -> tagged(tuple_to_list(Reason));
 shape(_Reason) -> redacted.

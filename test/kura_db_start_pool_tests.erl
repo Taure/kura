@@ -420,6 +420,20 @@ deprecated_pool_config_raises_a_raising_init_redacted_test() ->
     end),
     ?assertEqual({init_failed, {error, {bad_config, redacted}}}, Raised).
 
+deprecated_pool_config_logs_nothing_on_a_raising_init_test() ->
+    {_Raised, Events} = with_captured_logs_and_result(fun() ->
+        with_pool_answer(
+            {ok, self()}, kura_db_raising_init_repo, #{password => ~"s3cret"}, fun() ->
+                try
+                    kura_app:pool_config(kura_db_raising_init_repo)
+                catch
+                    error:Reason -> Reason
+                end
+            end
+        )
+    end),
+    ?assertEqual([], Events).
+
 deprecated_pool_config_reads_the_legacy_flat_repo_test() ->
     Flat = [{repo, kura_db_failing_repo}, {pool_module, ?MODULE}, {database, ~"flat_db"}],
     with_flat_env(Flat, fun() ->
