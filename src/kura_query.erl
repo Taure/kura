@@ -155,11 +155,14 @@ distance(Field, Metric, Vector) when is_atom(Field), ?IS_METRIC(Metric) ->
     case length_upto(Vector, ?MAX_DIMENSIONS) of
         {ok, 0} -> invalid_vector(Field, ~"is empty");
         {ok, _} -> {distance, Field, Metric, cast_vector(Field, Vector)};
-        too_long -> invalid_vector(Field, ~"has more than 16000 dimensions");
+        too_long -> invalid_vector(Field, too_many_dimensions());
         improper -> invalid_vector(Field, ~"is not a list of numbers")
     end;
 distance(Field, Metric, _Vector) when is_atom(Field) ->
     erlang:error({kura, {invalid_distance_metric, Metric}}).
+
+too_many_dimensions() ->
+    iolist_to_binary([~"has more than ", integer_to_binary(?MAX_DIMENSIONS), ~" dimensions"]).
 
 %% Stops at Max, so an oversized list costs Max steps, not its length.
 length_upto(List, Max) ->

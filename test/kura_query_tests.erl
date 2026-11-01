@@ -364,3 +364,9 @@ select_expr_rejects_a_distance_in_a_hand_built_window_test_() ->
             kura_query:select_expr(Q, [{m, {over, {min, D}, #{}}}])
         )
     ].
+
+too_many_dimensions_names_the_limit_test() ->
+    ?assertError(
+        {kura, {invalid_vector, any_embedding, ~"has more than 16000 dimensions"}},
+        kura_query:distance(any_embedding, l2, lists:duplicate(16001, 1.0))
+    ).
