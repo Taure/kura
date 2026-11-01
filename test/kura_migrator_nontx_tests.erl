@@ -60,6 +60,10 @@ nontx_test_() ->
                 fun concurrently_in_transactional_migration_is_refused/0},
             {"a raising non-transactional migration is an error",
                 fun raising_migration_is_an_error/0},
+            {"a non-transactional step skips what another node did meanwhile",
+                fun non_transactional_step_rereads_under_the_lock/0},
+            {"a pool without advisory_locks runs the step without the lock",
+                fun runs_without_a_lock_on_a_lockless_pool/0},
             {"two migrators run each migration once", {timeout, 30, fun concurrent_migrators/0}},
             {"a non-transactional step waits for the lock another session holds",
                 {timeout, 30, fun waits_for_a_held_lock/0}},
@@ -194,6 +198,30 @@ raising_migration_is_an_error() ->
         [{?RAISE, m20250304100000_nontx_raise, pending}], kura_migrator:status(?REPO)
     ),
     ?assertEqual(false, lock_held()).
+
+non_transactional_step_rereads_under_the_lock() ->
+    Side = {?SIDE, m20250305100000_nontx_side_effect},
+    ok = kura_migrator:ensure_schema_migrations(?REPO),
+    _ = query(~"INSERT INTO schema_migrations (version) VALUES ($1)", [?SIDE]),
+    ?assertEqual({ok, []}, kura_migrator:run_non_transactional(Side, up, ?REPO)),
+    ?assertNot(table_exists(~"nontx_side_effects")),
+    _ = query(~"DELETE FROM schema_migrations WHERE version = $1", [?SIDE]),
+    _ = query(~"CREATE TABLE nontx_side_effects (id serial PRIMARY KEY)", []),
+    ?assertEqual({ok, []}, kura_migrator:run_non_transactional(Side, down, ?REPO)),
+    ?assert(table_exists(~"nontx_side_effects")),
+    ?assertEqual(false, lock_held()).
+
+runs_without_a_lock_on_a_lockless_pool() ->
+    Side = {?SIDE, m20250305100000_nontx_side_effect},
+    ok = kura_migrator:ensure_schema_migrations(?REPO),
+    application:set_env(?BASE, ?REPO, (repo_config())#{pool_module => kura_nontx_nolock_pool}),
+    try
+        ?assertEqual({ok, [?SIDE]}, kura_migrator:run_non_transactional(Side, up, ?REPO))
+    after
+        application:set_env(?BASE, ?REPO, repo_config())
+    end,
+    ?assertEqual(1, side_effects()),
+    ?assertEqual([?SIDE], applied_versions()).
 
 concurrent_migrators() ->
     declare([?OK_APP]),
