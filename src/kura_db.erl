@@ -243,6 +243,13 @@ Once the pool runs, the repo's settings are kept (see `kura_repo:settings/1`)
 and queries read them from there, so `init/1` does not run per query. Starting
 the pool again, through `kura_repo_worker:start/1`, resolves the config anew
 and replaces them.
+
+The repo that starts a pool owns it. Another repo whose config names a pool
+already running for a different repo is refused with
+`{error, {pool_owned_by, Owner}}`, logged as a pool that did not start, and
+its queries raise `{pool_owned_by, Owner}` instead of running on that pool.
+The same repo starting its pool again gets `ok`. A pool already running that
+kura did not start is taken by the first repo that starts it.
 """.
 -spec start_pool(module()) -> ok | {error, term()}.
 start_pool(Repo) ->
@@ -322,9 +329,10 @@ start_pool(Repo, Pool, Config) ->
     Secrets = secrets(Config),
     try PoolMod:start_pool(Pool, maps:without(?REPO_KEYS, Config)) of
         {ok, _Pid} ->
+            ok = owned(Repo, Pool),
             kura_repo:started(Repo, Config#{pool => Pool});
         {error, {already_started, _Pid}} ->
-            kura_repo:started(Repo, Config#{pool => Pool});
+            already_started(Repo, Pool, PoolMod, Config);
         {error, Reason} ->
             Redacted = redacted(Reason, Secrets),
             ok = not_started(Repo, PoolMod, #{reason => Redacted}),
@@ -336,8 +344,44 @@ start_pool(Repo, Pool, Config) ->
             error({pool_start_failed, Repo, Redacted})
     end.
 
+-spec already_started(module(), atom(), module(), map()) -> ok | {error, term()}.
+already_started(Repo, Pool, PoolMod, Config) ->
+    case owner(Pool) of
+        Other when Other =/= undefined, Other =/= Repo ->
+            Refused = {pool_owned_by, Other},
+            ok = kura_repo:refused(Repo, Other),
+            ok = not_started(Repo, PoolMod, #{reason => Refused, pool => Pool}),
+            {error, Refused};
+        _OwnedOrUnclaimed ->
+            ok = owned(Repo, Pool),
+            kura_repo:started(Repo, Config#{pool => Pool})
+    end.
+
+%% A pool stopped outside kura can be started again by another repo; the
+%% repo that held it no longer reaches it.
+-spec owned(module(), atom()) -> ok.
+owned(Repo, Pool) ->
+    case owner(Pool) of
+        Previous when Previous =/= undefined, Previous =/= Repo ->
+            kura_repo:taken(Previous, Pool, Repo);
+        _OwnedOrUnclaimed ->
+            ok
+    end,
+    persistent_term:put({?MODULE, pool_owner, Pool}, Repo).
+
+-spec owner(atom()) -> module() | undefined.
+owner(Pool) ->
+    case persistent_term:get({?MODULE, pool_owner, Pool}, undefined) of
+        Repo when is_atom(Repo) -> Repo;
+        _Unclaimed -> undefined
+    end.
+
 -ifdef(TEST).
 forget_pools() ->
+    _ = [
+        persistent_term:erase(Key)
+     || {{?MODULE, pool_owner, _} = Key, _} <- persistent_term:get()
+    ],
     kura_repo:forget().
 -endif.
 

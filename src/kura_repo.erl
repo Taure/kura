@@ -103,7 +103,7 @@ dependency's migrations run first. See `kura_migrator:migration_apps/1`.
 """.
 
 -export([config/1, settings/1, read_only/1, replica/1]).
--export([started/2]).
+-export([started/2, refused/2, taken/3]).
 
 -ifdef(TEST).
 -export([forget/0]).
@@ -156,12 +156,14 @@ Connection settings and secrets are not among them.
 Once `kura_db:start_pool/1` has started the repo's pool, these are the
 settings it was started with, read without calling `init/1`; starting the
 pool again re-reads them. For a repo whose pool kura has not started, they
-come from `config/1` on each call.
+come from `config/1` on each call. A repo refused a pool that another repo
+owns raises `{pool_owned_by, Owner}` until its own pool starts.
 """.
 -spec settings(module()) -> map().
 settings(RepoMod) ->
     case persistent_term:get({?MODULE, settings, RepoMod}, undefined) of
         Settings when is_map(Settings) -> Settings;
+        {pool_owned_by, Owner} -> error({pool_owned_by, Owner});
         _NotStarted -> maps:with(?SETTINGS, config(RepoMod))
     end.
 
@@ -169,6 +171,19 @@ settings(RepoMod) ->
 -spec started(module(), map()) -> ok.
 started(RepoMod, Config) ->
     persistent_term:put({?MODULE, settings, RepoMod}, maps:with(?SETTINGS, Config)).
+
+-doc false.
+-spec refused(module(), module()) -> ok.
+refused(RepoMod, Owner) ->
+    persistent_term:put({?MODULE, settings, RepoMod}, {pool_owned_by, Owner}).
+
+-doc false.
+-spec taken(module(), atom(), module()) -> ok.
+taken(RepoMod, Pool, Owner) ->
+    case persistent_term:get({?MODULE, settings, RepoMod}, undefined) of
+        #{pool := Pool} -> refused(RepoMod, Owner);
+        _Elsewhere -> ok
+    end.
 
 -ifdef(TEST).
 forget() ->

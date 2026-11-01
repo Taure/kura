@@ -79,7 +79,8 @@ not start, with any secret in `Reason` replaced by `redacted`. A pool module
 that raises instead makes this raise
 `{pool_start_failed, RepoMod, {Class, Redacted}}`. A repo `init/1` that raises
 returns `{error, {init_failed, {Class, Shape}}}`, keeping only the shape of its
-reason; see `kura_db:start_pool/1`.
+reason; see `kura_db:start_pool/1`. A pool name another repo's running pool
+already has returns `{error, {pool_owned_by, Owner}}`.
 
 Queries then use the settings the pool was started with, without calling
 `init/1` again. Calling `start/1` again on a running pool returns `ok` and

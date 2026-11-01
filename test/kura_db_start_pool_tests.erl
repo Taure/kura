@@ -742,6 +742,113 @@ with_counting_repo(Run) ->
 query(?MODULE, counted_pool, _SQL, _Params, _Opts) ->
     #{rows => [], num_rows => 0}.
 
+%%----------------------------------------------------------------------
+%% A pool belongs to the repo that started it (#201)
+%%----------------------------------------------------------------------
+
+a_second_repo_naming_a_running_pool_is_refused_test() ->
+    with_two_repos(fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        put({?MODULE, pool_answer}, {error, {already_started, self()}}),
+        Events = with_captured_logs(fun() ->
+            ?assertEqual(
+                {error, {pool_owned_by, kura_db_owner_repo}},
+                kura_repo_worker:start(kura_db_other_repo)
+            )
+        end),
+        ?assertMatch(
+            [
+                #{
+                    level := error,
+                    msg :=
+                        {report, #{
+                            msg := ~"kura: pool did not start",
+                            repo := kura_db_other_repo,
+                            pool := shared_pool,
+                            reason := {pool_owned_by, kura_db_owner_repo}
+                        }}
+                }
+            ],
+            Events
+        ),
+        ?assertEqual(shared_pool, kura_db:get_pool(kura_db_owner_repo))
+    end).
+
+a_refused_repo_does_not_reach_the_pool_test() ->
+    with_two_repos(fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        put({?MODULE, pool_answer}, {error, {already_started, self()}}),
+        _ = with_captured_logs(fun() -> kura_repo_worker:start(kura_db_other_repo) end),
+        ?assertError({pool_owned_by, kura_db_owner_repo}, kura_db:get_pool(kura_db_other_repo)),
+        ?assertError(
+            {pool_owned_by, kura_db_owner_repo}, kura_db:query(kura_db_other_repo, ~"SELECT 1", [])
+        )
+    end).
+
+boot_logs_a_refused_pool_and_carries_on_test() ->
+    with_two_repos(fun() ->
+        ?assertEqual(ok, kura_app:start_repo_pool(kura_db_owner_repo)),
+        put({?MODULE, pool_answer}, {error, {already_started, self()}}),
+        Events = with_captured_logs(fun() ->
+            ?assertEqual(ok, kura_app:start_repo_pool(kura_db_other_repo))
+        end),
+        ?assertMatch(
+            [#{msg := {report, #{reason := {pool_owned_by, kura_db_owner_repo}}}}], Events
+        )
+    end).
+
+the_owner_starting_its_pool_again_is_ok_test() ->
+    with_two_repos(fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        put({?MODULE, pool_answer}, {error, {already_started, self()}}),
+        Events = with_captured_logs(fun() ->
+            ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo))
+        end),
+        ?assertEqual([], Events)
+    end).
+
+a_running_pool_kura_did_not_start_goes_to_the_first_repo_test() ->
+    with_two_repos(fun() ->
+        put({?MODULE, pool_answer}, {error, {already_started, self()}}),
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        _ = with_captured_logs(fun() ->
+            ?assertEqual(
+                {error, {pool_owned_by, kura_db_owner_repo}},
+                kura_repo_worker:start(kura_db_other_repo)
+            )
+        end)
+    end).
+
+a_repo_whose_pool_another_repo_restarted_no_longer_reaches_it_test() ->
+    with_two_repos(fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_other_repo)),
+        ?assertEqual(shared_pool, kura_db:get_pool(kura_db_other_repo)),
+        ?assertError({pool_owned_by, kura_db_other_repo}, kura_db:get_pool(kura_db_owner_repo))
+    end).
+
+a_refused_repo_reaches_its_own_pool_once_started_test() ->
+    with_two_repos(fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        put({?MODULE, pool_answer}, {error, {already_started, self()}}),
+        _ = with_captured_logs(fun() -> kura_repo_worker:start(kura_db_other_repo) end),
+        application:set_env(kura, repos, #{
+            kura_db_other_repo => #{pool => own_pool, pool_module => ?MODULE}
+        }),
+        put({?MODULE, pool_answer}, {ok, self()}),
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_other_repo)),
+        ?assertEqual(own_pool, kura_db:get_pool(kura_db_other_repo))
+    end).
+
+with_two_repos(Run) ->
+    Shared = #{pool => shared_pool, pool_module => ?MODULE},
+    with_pool_answer({ok, self()}, fun() ->
+        application:set_env(kura, repos, #{
+            kura_db_owner_repo => Shared, kura_db_other_repo => Shared
+        }),
+        Run()
+    end).
+
 start_pool(Pool, Config) ->
     put({?MODULE, pool_name}, Pool),
     put({?MODULE, pool_config}, Config),

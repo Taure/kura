@@ -52,6 +52,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose pool kura did not start falls back to the old lookup, its config
   read and `init/1` run on each call. `kura_repo:config/1` still reads
   the config afresh each call.
+- A repo whose config names a pool another repo started is refused
+  instead of sharing that pool, database and credentials (#201).
+  `kura_repo_worker:start/1` returns
+  `{error, {pool_owned_by, Owner}}`, boot logs it as a pool that did not
+  start, and the refused repo's queries raise `{pool_owned_by, Owner}`.
+  The repo that started a pool can start it again and gets `ok`. A pool
+  already running that kura did not start goes to the first repo that
+  starts it.
 - The many_to_many join-table SQL, the preload read and the `put_assoc` /
   `cast_assoc` DELETE and INSERT, is compiled by the repo's dialect
   (`to_sql/1`, `delete_all/1`, `insert_all/3`) instead of written by hand
