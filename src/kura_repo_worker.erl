@@ -84,7 +84,9 @@ already has returns `{error, {pool_owned_by, Owner}}`.
 
 Queries then use the settings the pool was started with, without calling
 `init/1` again. Calling `start/1` again on a running pool returns `ok` and
-re-reads them.
+re-reads them. When they changed, storing them replaces a `persistent_term`,
+which triggers a global garbage collection over every process, so refresh on
+a config change, not per request. Settings that are unchanged cost nothing.
 """.
 -spec start(module()) -> ok | {error, term()}.
 start(RepoMod) ->

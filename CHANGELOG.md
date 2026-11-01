@@ -56,6 +56,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whose pool kura did not start falls back to the old lookup, its config
   read and `init/1` run on each call. `kura_repo:config/1` still reads
   the config afresh each call.
+- A started repo's settings are a snapshot taken at pool start (#200).
+  Changing its `read_only`, `replicas`, `uuid_version`, `dialect`,
+  `pool`, `pool_module` or `driver_module` with `application:set_env`
+  no longer takes effect on the next query: queries keep the settings
+  stored at pool start until `kura_repo_worker:start/1` is called again.
+  A repo whose pool kura did not start still sees the change on its
+  next call.
 - A repo whose config names a pool another repo started is refused
   instead of sharing that pool, database and credentials (#201).
   `kura_repo_worker:start/1` returns
