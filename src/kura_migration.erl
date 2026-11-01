@@ -3,7 +3,8 @@
 Behaviour for defining database migrations.
 
 Implement `up/0` and `down/0` returning a list of DDL operations.
-Migration modules must be named `m<YYYYMMDDHHMMSS>_<name>`.
+Migration modules must be named `m<YYYYMMDDHHMMSS>_<name>`. `up/0` and
+`down/0` may be called more than once per run, so they must be pure.
 
 ```erlang
 -module(m20250101120000_create_users).

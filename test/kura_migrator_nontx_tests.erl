@@ -60,8 +60,8 @@ nontx_test_() ->
                 fun failed_split_run_reports_committed_versions/0},
             {"concurrently in a transactional migration is refused before anything runs",
                 fun concurrently_in_transactional_migration_is_refused/0},
-            {"a raising non-transactional migration is an error",
-                fun raising_migration_is_an_error/0},
+            {"a non-transactional up/0 that raises stops the run while planning",
+                fun raising_up_stops_the_run_while_planning/0},
             {"a non-transactional step skips what another node did meanwhile",
                 fun non_transactional_step_rereads_under_the_lock/0},
             {"a pool without advisory_locks runs the step without the lock",
@@ -211,7 +211,7 @@ concurrently_in_transactional_migration_is_refused() ->
     ?assertEqual([], applied_versions()),
     ?assertNot(table_exists(~"nontx_refuse_items")).
 
-raising_migration_is_an_error() ->
+raising_up_stops_the_run_while_planning() ->
     declare([?RAISE_APP]),
     ?assertEqual({error, nontx_test_boom}, kura_migrator:migrate(?REPO)),
     ?assertEqual(
