@@ -544,3 +544,15 @@ binary_count_is_exact_for_key_result_and_maps_test() ->
 binary_count() ->
     [{_, Words}] = ets:lookup(kura_query_cache, '$kura_binary_words'),
     Words.
+
+%% The entry ceiling counts the result as well as the key.
+large_result_is_never_interned_test() ->
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        Key = {?REPO, undefined, small_key},
+        ok = kura_query_cache:put(Key, {~"SELECT 1", lists:seq(1, 5000)}),
+        ?assertEqual(miss, kura_query_cache:get(Key))
+    after
+        kura_query_cache:flush()
+    end.
