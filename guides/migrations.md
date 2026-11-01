@@ -209,11 +209,11 @@ It also ignores `transactional/0` and `concurrently`, so if it is the node
 that runs the migration it builds the index with a plain `CREATE INDEX`
 inside a transaction, blocking writes to the table for the whole build.
 
-On Postgres this needs kura_postgres 1.1.5 or later. Earlier releases do not
+On Postgres use kura_postgres 1.1.5 or later. 1.1.3 and earlier do not
 declare the `concurrent_indexes` capability, and a migration with
 `concurrently => true` is refused on them with `{error,
 {concurrent_indexes_unsupported, PoolModule}}` before anything in the run
-executes. 1.1.5 also brings minato 1.1.3, whose session reset on checkin
+executes. 1.1.5 also brings minato 1.1.3's session reset on checkin, which
 releases the advisory lock of a connection whose unlock failed.
 
 ### What changes for such a migration
