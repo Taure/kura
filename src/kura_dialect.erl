@@ -41,6 +41,18 @@ not cached, and so is a shape the implementation raises on, but SQL that
 varies with a value's content cannot be. `nil` and `undefined` are never
 replaced by a marker, so an implementation may compile them specially.
 
+## Vector distance
+
+A `{distance, Field, Metric, Vector}` node from `kura_query:distance/3`
+can appear in a select expression and in `order_by`. `Vector` is a bound
+value like any other. `kura_dialect_pg` emits pgvector's `<->`, `<=>`
+and `<#>`. A dialect for a backend without vector distance must raise
+`{unsupported, vector_distance}` on such a node, and must never fall back
+to the PG spelling: in MySQL `<=>` is NULL-safe equality, so a query
+that should fail would instead return rows in a meaningless order. A
+dialect that delegates to `kura_dialect_pg` has to catch the node before
+it does.
+
 ## Public API entry point
 
 Consumers go through `kura_query_compiler`, which delegates to the
