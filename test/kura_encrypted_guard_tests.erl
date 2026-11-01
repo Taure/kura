@@ -4,6 +4,7 @@
 
 -define(ENC, kura_test_encrypted_schema).
 -define(PLAIN, ~"123-45-6789").
+-define(WHERE_SSN, {kura, {encrypted_field_in_where, ssn}}).
 
 %% Every condition form that binds a value to the encrypted field `ssn`.
 %% The first four are the bypasses the old first-element check let through.
@@ -154,3 +155,104 @@ tenant_attribute_on_an_encrypted_field_in_a_subquery_test() ->
         {kura, {encrypted_field_in_where, ssn}},
         kura_tenant:scope_query({attribute, {ssn, ?PLAIN}}, Q)
     ).
+
+%%----------------------------------------------------------------------
+%% Correlated subqueries: the dialect emits unqualified column names, so a
+%% name the subquery's own sources lack resolves to the outer query's column.
+%%----------------------------------------------------------------------
+
+correlated(Cond) ->
+    kura_query:where(kura_query:from(kura_test_schema), Cond).
+
+correlated_subquery_refused_test_() ->
+    P = ?PLAIN,
+    Sub = correlated({ssn, P}),
+    [
+        {"exists", ?_assertError(?WHERE_SSN, where_enc({exists, {subquery, Sub}}))},
+        {"not_exists", ?_assertError(?WHERE_SSN, where_enc({not_exists, {subquery, Sub}}))},
+        {"in", ?_assertError(?WHERE_SSN, where_enc({id, in, {subquery, Sub}}))},
+        {"under not and or",
+            ?_assertError(
+                ?WHERE_SSN, where_enc({'not', {'or', [{id, 1}, {exists, {subquery, Sub}}]}})
+            )},
+        {"in the subquery's having",
+            ?_assertError(
+                {kura, {encrypted_field_in_having, ssn}},
+                where_enc(
+                    {exists,
+                        {subquery, kura_query:having(kura_query:from(kura_test_schema), {ssn, P})}}
+                )
+            )},
+        {"two levels deep",
+            ?_assertError(
+                ?WHERE_SSN, where_enc({exists, {subquery, correlated({exists, {subquery, Sub}})}})
+            )},
+        {"in a union branch of the subquery",
+            ?_assertError(
+                ?WHERE_SSN,
+                where_enc(
+                    {exists, {subquery, kura_query:union(kura_query:from(kura_test_schema), Sub)}}
+                )
+            )},
+        {"over a bare table",
+            ?_assertError(
+                ?WHERE_SSN,
+                where_enc(
+                    {exists, {subquery, kura_query:where(kura_query:from(some_table), {ssn, P})}}
+                )
+            )},
+        {"in having",
+            ?_assertError(
+                ?WHERE_SSN, kura_query:having(kura_query:from(?ENC), {exists, {subquery, Sub}})
+            )},
+        {"via a joined encrypted schema",
+            ?_assertError(
+                ?WHERE_SSN,
+                kura_query:where(
+                    kura_query:join(kura_query:from(kura_test_schema), inner, ?ENC, {id, id}),
+                    {exists, {subquery, Sub}}
+                )
+            )},
+        {"added before joining an encrypted schema",
+            ?_assertError(
+                ?WHERE_SSN,
+                kura_query:join(correlated({exists, {subquery, Sub}}), inner, ?ENC, {id, id})
+            )},
+        {"through a virtual field of the subquery's schema",
+            ?_assertError(
+                {kura, {encrypted_field_in_where, secret}},
+                kura_query:where(
+                    kura_query:from(kura_test_enc_embedded),
+                    {exists,
+                        {subquery,
+                            kura_query:where(
+                                kura_query:from(kura_test_plain_ssn_schema), {secret, P}
+                            )}}
+                )
+            )}
+    ].
+
+correlated_subquery_allowed_test_() ->
+    P = ?PLAIN,
+    [
+        {"the subquery's own column shadows the outer one",
+            ?_assertMatch(
+                #kura_query{},
+                where_enc(
+                    {exists,
+                        {subquery,
+                            kura_query:where(kura_query:from(kura_test_plain_ssn_schema), {ssn, P})}}
+                )
+            )},
+        {"a plain outer field",
+            ?_assertMatch(
+                #kura_query{}, where_enc({exists, {subquery, correlated({name, P})}})
+            )},
+        {"is_nil on the outer field",
+            ?_assertMatch(
+                #kura_query{}, where_enc({exists, {subquery, correlated({ssn, is_nil})}})
+            )}
+    ].
+
+where_enc(Cond) ->
+    kura_query:where(kura_query:from(?ENC), Cond).

@@ -107,7 +107,10 @@ Encryption uses a random nonce, so a freshly encrypted value never equals the
 stored ciphertext: the condition cannot match, and it would ship the plaintext
 to the server as a bind parameter, into `pg_stat_statements`, the query log
 and telemetry. Fields of the `from` schema and of every joined schema are
-checked. `{Field, is_nil}` and `{Field, is_not_nil}` bind nothing and are
+checked. So are the conditions of an `in` or `exists` subquery, against the
+subquery's own schemas and against the outer query's encrypted fields that
+its schemas do not declare: the database resolves such a name to the outer
+column. `{Field, is_nil}` and `{Field, is_not_nil}` bind nothing and are
 allowed. A `{fragment, SQL, Params}` is not inspected: what it binds is the
 caller's responsibility. A query over a bare table name has no schema and is
 not checked.
@@ -117,8 +120,8 @@ where(Q = #kura_query{wheres = W}, Condition) ->
     refuse_encrypted(encrypted_in_scope(Q), [Condition], encrypted_field_in_where),
     Q#kura_query{wheres = W ++ [Condition]}.
 
-encrypted_in_scope(#kura_query{from = From, joins = Joins}) ->
-    encrypted_fields(From) ++ lists:append([encrypted_fields(T) || {_, T, _, _} <- Joins]).
+encrypted_in_scope(Q) ->
+    lists:append([encrypted_fields(S) || S <- sources(Q)]).
 
 encrypted_fields(Source) when is_atom(Source), Source =/= undefined ->
     kura_schema:encrypted_fields(Source);
@@ -141,10 +144,15 @@ refuse_encrypted_cond({'not', Cond}, Encrypted, Reason) ->
     refuse_encrypted_cond(Cond, Encrypted, Reason);
 refuse_encrypted_cond({fragment, _SQL, _Params}, _Encrypted, _Reason) ->
     ok;
-refuse_encrypted_cond({Exists, {subquery, _}}, _Encrypted, _Reason) when
+refuse_encrypted_cond({Exists, {subquery, #kura_query{} = Sub}}, Encrypted, _Reason) when
     Exists =:= exists; Exists =:= not_exists
 ->
-    ok;
+    refuse_encrypted_query(Sub, Encrypted);
+refuse_encrypted_cond({Field, in, {subquery, #kura_query{} = Sub}}, Encrypted, Reason) when
+    is_atom(Field)
+->
+    refuse_field(Field, Encrypted, Reason),
+    refuse_encrypted_query(Sub, Encrypted);
 refuse_encrypted_cond({Field, Op}, _Encrypted, _Reason) when
     is_atom(Field), ?KURA_IS_UNARY_OP(Op)
 ->
@@ -157,6 +165,37 @@ refuse_encrypted_cond({Fields, _Op, _Value}, Encrypted, Reason) when is_list(Fie
     lists:foreach(fun(F) -> refuse_field(F, Encrypted, Reason) end, Fields);
 refuse_encrypted_cond(_Cond, _Encrypted, _Reason) ->
     erlang:error({kura, unrecognised_condition}).
+
+%% A subquery's conditions see the outer query's columns too: the dialect
+%% emits unqualified names, so the database resolves one the subquery's own
+%% sources lack to the outer column. Outer encrypted fields the subquery does
+%% not shadow are checked with its own.
+refuse_encrypted_query(
+    #kura_query{wheres = W, havings = H, combinations = C} = Q, OuterEncrypted
+) ->
+    Encrypted = encrypted_in_scope(Q) ++ unshadowed(OuterEncrypted, Q),
+    refuse_encrypted(Encrypted, W, encrypted_field_in_where),
+    refuse_encrypted(Encrypted, H, encrypted_field_in_having),
+    lists:foreach(fun({_Kind, B}) -> refuse_encrypted_query(B, OuterEncrypted) end, C).
+
+%% Only a column the subquery's schemas declare shadows an outer one. A bare
+%% table's columns are unknown, so it shadows nothing.
+unshadowed([], _Q) ->
+    [];
+unshadowed(OuterEncrypted, Q) ->
+    Defined = lists:append([columns(S) || S <- sources(Q)]),
+    [F || F <- OuterEncrypted, not lists:member(F, Defined)].
+
+sources(#kura_query{from = From, joins = Joins}) ->
+    [From | [T || {_, T, _, _} <- Joins]].
+
+columns(Source) when is_atom(Source) ->
+    case kura_schema:is_schema(Source) of
+        true -> kura_schema:non_virtual_fields(Source);
+        false -> []
+    end;
+columns(_Source) ->
+    [].
 
 refuse_field(Field, Encrypted, Reason) ->
     case lists:member(Field, Encrypted) of

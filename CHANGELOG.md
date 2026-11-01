@@ -138,6 +138,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the audit trail stored its elements in plaintext and the filter guard
   let a condition bind them. Schema load now raises
   `{kura, {unsupported_encrypted_type, Mod, Field}}` for it.
+- A correlated subquery bypassed the filter guard. In
+  `{exists, {subquery, Sub}}` or `{Field, in, {subquery, Sub}}` on a query
+  over an encrypted schema, a condition in `Sub` naming an outer encrypted
+  field that `Sub`'s own schemas do not declare was not checked, and the
+  database resolved the unqualified name to the outer column, binding the
+  plaintext. The guard now walks subquery conditions (wheres, havings,
+  union branches, nested subqueries) against the outer encrypted fields
+  they do not shadow. A bare-table source shadows nothing.
 - Starting a pool hands the pool module the connection settings only.
   The repo's own settings, the `encryption` keyring among them, were
   passed along with them, and a pool module that echoed its options in
