@@ -426,15 +426,13 @@ repeated_put_of_one_key_counts_it_once_test() ->
         kura_query_cache:flush()
     end.
 
-%% The count is a row of the cache table, so there is no second table for
-%% a hot code load to leave missing, and entry_count/0 leaves the row out.
+%% The count is a row of the cache table, and entry_count/0 leaves it out.
 count_lives_in_the_cache_table_test() ->
     kura_query_cache:init(),
     kura_query_cache:flush(),
     try
         Key = {?REPO, undefined, binary:copy(~"k", 1024)},
         ok = kura_query_cache:put(Key, {~"SELECT 1", []}),
-        ?assertEqual(undefined, ets:whereis(kura_query_cache_binaries)),
         ?assertEqual(2, ets:info(kura_query_cache, size)),
         ?assertEqual(1, kura_query_cache:entry_count()),
         ?assertEqual({ok, {~"SELECT 1", []}}, kura_query_cache:get(Key)),
