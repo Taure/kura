@@ -64,6 +64,13 @@ queries(N) ->
         {"select fragment", #kura_query{
             from = users, select = {exprs, [{id, id}, {score, {fragment, ~"? + ?", [V(1), V(2)]}}]}
         }},
+        {"distance in select and order by", #kura_query{
+            from = items,
+            select = {exprs, [{dist, {distance, embedding, cosine, vec(V(1))}}]},
+            wheres = [{id, V(2)}],
+            order_bys = [{id, asc}, {{distance, embedding, l2, vec(V(3))}, desc}],
+            limit = V(4)
+        }},
         {"having fragment", #kura_query{
             from = users,
             group_bys = [role],
@@ -149,6 +156,54 @@ select_fragment_values_share_one_entry_test() ->
         ],
         ?assertEqual(1, ets:info(kura_query_cache, size))
     end).
+
+%% An embedding left in the shape would intern a cache entry per query
+%% vector, each holding an off-heap binary the memory cap does not see.
+distinct_query_vectors_share_one_entry_test() ->
+    with_pg(fun() ->
+        Build = fun(Seed) ->
+            Vec = [float(Seed + I) || I <- lists:seq(1, 1536)],
+            {distance, _, _, Text} = D = kura_query:distance(any_embedding, cosine, Vec),
+            Q0 = kura_query:select_expr(
+                kura_query:from(kura_test_vector_schema), [{id, id}, {dist, D}]
+            ),
+            {kura_query:limit(kura_query:order_by(Q0, [{D, asc}]), 10), Text}
+        end,
+        [
+            begin
+                {Q, Text} = Build(Seed),
+                {SQL, Params} = kura_query_compiler:to_sql_cached(?REPO, Q),
+                ?assertEqual(kura_query_compiler:to_sql(?REPO, Q), {SQL, Params}),
+                ?assertEqual([Text, Text, 10], Params)
+            end
+         || Seed <- [1, 2, 3]
+        ],
+        ?assertEqual(1, ets:info(kura_query_cache, size)),
+        [{Key, _}] = ets:tab2list(kura_query_cache),
+        ?assertEqual([], [B || B <- binaries(Key), byte_size(B) > 64])
+    end).
+
+distance_vectors_are_split_out_of_the_shape_test() ->
+    D = {distance, embedding, l2, ~"[1.0]"},
+    {Shape, Values} = kura_query_shape:split(
+        #kura_query{
+            from = items,
+            select = {exprs, [{dist, D}, {raw, {fragment, ~"?", [x]}}]},
+            order_bys = [{D, asc}, {id, desc}]
+        }
+    ),
+    ?assertEqual({~"[1.0]", x, ~"[1.0]"}, Values),
+    ?assertEqual(
+        {exprs, [
+            {dist, {distance, embedding, l2, {'$kura_param', 1}}},
+            {raw, {fragment, ~"?", [{'$kura_param', 2}]}}
+        ]},
+        Shape#kura_query.select
+    ),
+    ?assertEqual(
+        [{{distance, embedding, l2, {'$kura_param', 3}}, asc}, {id, desc}],
+        Shape#kura_query.order_bys
+    ).
 
 is_nil_is_part_of_the_shape_test() ->
     with_pg(fun() ->
@@ -283,6 +338,14 @@ valid_template_test_() ->
         ?_assertNot(kura_query_shape:valid_template([M(1), [M(1)]], 1)),
         ?_assertNot(kura_query_shape:valid_template([M(1), #{k => M(1)}], 1))
     ].
+
+vec(N) ->
+    iolist_to_binary([~"[", integer_to_binary(N), ~".0]"]).
+
+binaries(B) when is_binary(B) -> [B];
+binaries(T) when is_tuple(T) -> binaries(tuple_to_list(T));
+binaries(L) when is_list(L) -> lists:append([binaries(E) || E <- L]);
+binaries(_) -> [].
 
 sql(Q) ->
     {SQL, Params} = kura_query_compiler:to_sql(?REPO, Q),

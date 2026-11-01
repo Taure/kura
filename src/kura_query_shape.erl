@@ -18,6 +18,8 @@ subquery it contains:
 - both ends of a `between`;
 - the parameters of a condition fragment, in `wheres` or `havings`;
 - the parameters of a select-expression fragment;
+- the vector of a `kura_query:distance/3` node, in a select expression
+  or in `order_by`;
 - `limit` and `offset`.
 
 `nil` and `undefined` stay in the shape wherever they appear, so a
@@ -76,20 +78,22 @@ query(Q, Acc0) ->
     {Select, Acc1} = select(Q#kura_query.select, Acc0),
     {Wheres, Acc2} = conditions(Q#kura_query.wheres, Acc1),
     {Havings, Acc3} = conditions(Q#kura_query.havings, Acc2),
-    {Limit, Acc4} = value(Q#kura_query.limit, Acc3),
-    {Offset, Acc5} = value(Q#kura_query.offset, Acc4),
-    {Ctes, Acc6} = named_queries(Q#kura_query.ctes, Acc5),
-    {Combinations, Acc7} = named_queries(Q#kura_query.combinations, Acc6),
+    {OrderBys, Acc4} = orders(Q#kura_query.order_bys, Acc3),
+    {Limit, Acc5} = value(Q#kura_query.limit, Acc4),
+    {Offset, Acc6} = value(Q#kura_query.offset, Acc5),
+    {Ctes, Acc7} = named_queries(Q#kura_query.ctes, Acc6),
+    {Combinations, Acc8} = named_queries(Q#kura_query.combinations, Acc7),
     Shape = Q#kura_query{
         select = Select,
         wheres = Wheres,
         havings = Havings,
+        order_bys = OrderBys,
         limit = Limit,
         offset = Offset,
         ctes = Ctes,
         combinations = Combinations
     },
-    {Shape, Acc7}.
+    {Shape, Acc8}.
 
 -spec select(Select, acc()) -> {Select, acc()} when Select :: [term()] | {exprs, [term()]}.
 select({exprs, Exprs}, Acc0) when is_list(Exprs) ->
@@ -109,10 +113,24 @@ select_exprs([Expr | Rest], Acc0) ->
     {Shapes, Acc1} = select_exprs(Rest, Acc0),
     {[Expr | Shapes], Acc1}.
 
+-spec orders([term()], acc()) -> {[term()], acc()}.
+orders([], Acc) ->
+    {[], Acc};
+orders([{Expr, Dir} | Rest], Acc0) ->
+    {Shape, Acc1} = expr(Expr, Acc0),
+    {Shapes, Acc2} = orders(Rest, Acc1),
+    {[{Shape, Dir} | Shapes], Acc2};
+orders([Order | Rest], Acc0) ->
+    {Shapes, Acc1} = orders(Rest, Acc0),
+    {[Order | Shapes], Acc1}.
+
 -spec expr(term(), acc()) -> {term(), acc()}.
 expr({fragment, SQL, Params}, Acc0) when is_list(Params) ->
     {Markers, Acc1} = values(Params, Acc0),
     {{fragment, SQL, Markers}, Acc1};
+expr({distance, Field, Metric, Vector}, Acc0) ->
+    {Marker, Acc1} = value(Vector, Acc0),
+    {{distance, Field, Metric, Marker}, Acc1};
 expr(Expr, Acc) ->
     {Expr, Acc}.
 

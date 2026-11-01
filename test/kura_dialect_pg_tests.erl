@@ -1103,3 +1103,86 @@ binary_table_insert_all_test() ->
 binary_table_select_test() ->
     {SQL, []} = kura_dialect_pg:to_sql(#kura_query{from = ~"posts_tags"}),
     ?assertEqual(~"SELECT * FROM \"posts_tags\"", iolist_to_binary(SQL)).
+
+%%----------------------------------------------------------------------
+%% Vector distance
+%%----------------------------------------------------------------------
+
+-define(VEC_SCHEMA, kura_test_vector_schema).
+
+distance_operator_per_metric_test_() ->
+    [
+        ?_assertEqual(
+            {
+                <<"SELECT \"id\" AS \"id\", \"embedding\" ", Op/binary,
+                    " $1 AS \"dist\" FROM \"kura_vector_items\" ORDER BY \"embedding\" ", Op/binary,
+                    " $2 ASC">>,
+                [~"[1.0,2.0,3.0]", ~"[1.0,2.0,3.0]"]
+            },
+            begin
+                D = kura_query:distance(embedding, Metric, [1, 2, 3]),
+                Q = kura_query:select_expr(kura_query:from(?VEC_SCHEMA), [{id, id}, {dist, D}]),
+                kura_dialect_pg:to_sql(kura_query:order_by(Q, [{D, asc}]))
+            end
+        )
+     || {Metric, Op} <- [{l2, ~"<->"}, {cosine, ~"<=>"}, {inner_product, ~"<#>"}]
+    ].
+
+distance_order_by_mixes_with_fields_test() ->
+    D = kura_query:distance(embedding, cosine, [0.5, 0, 1]),
+    Q = kura_query:order_by(kura_query:from(?VEC_SCHEMA), [{id, desc}, {D, asc}, {content, asc}]),
+    ?assertEqual(
+        {
+            <<
+                "SELECT * FROM \"kura_vector_items\" ORDER BY \"id\" DESC, "
+                "\"embedding\" <=> $1 ASC, \"content\" ASC"
+            >>,
+            [~"[0.5,0.0,1.0]"]
+        },
+        kura_dialect_pg:to_sql(Q)
+    ).
+
+%% Each clause numbers its placeholders in SQL order: select, where,
+%% having, order by, limit, offset. The params must come out in that order.
+distance_params_are_numbered_between_having_and_limit_test() ->
+    D1 = kura_query:distance(embedding, l2, [1, 2, 3]),
+    D2 = kura_query:distance(any_embedding, inner_product, [4, 5]),
+    Q0 = kura_query:select_expr(kura_query:from(?VEC_SCHEMA), [{content, content}, {dist, D1}]),
+    Q1 = kura_query:where(Q0, {content, like, ~"a%"}),
+    Q2 = kura_query:where(Q1, {fragment, ~"id BETWEEN ? AND ?", [1, 99]}),
+    Q3 = kura_query:having(
+        kura_query:group_by(Q2, [content, embedding]), {fragment, ~"count(*) > ?", [0]}
+    ),
+    Q4 = kura_query:order_by(Q3, [{D2, asc}, {D1, desc}]),
+    Q5 = kura_query:offset(kura_query:limit(Q4, 10), 20),
+    ?assertEqual(
+        {
+            <<
+                "SELECT \"content\" AS \"content\", \"embedding\" <-> $1 AS \"dist\" "
+                "FROM \"kura_vector_items\" WHERE \"content\" LIKE $2 AND id BETWEEN $3 AND $4 "
+                "GROUP BY \"content\", \"embedding\" HAVING count(*) > $5 "
+                "ORDER BY \"any_embedding\" <#> $6 ASC, \"embedding\" <-> $7 DESC "
+                "LIMIT $8 OFFSET $9"
+            >>,
+            [~"[1.0,2.0,3.0]", ~"a%", 1, 99, 0, ~"[4.0,5.0]", ~"[1.0,2.0,3.0]", 10, 20]
+        },
+        kura_dialect_pg:to_sql(Q5)
+    ).
+
+distance_in_a_cte_continues_the_numbering_test() ->
+    D = kura_query:distance(embedding, cosine, [1, 2, 3]),
+    Nearest = kura_query:limit(kura_query:order_by(kura_query:from(?VEC_SCHEMA), [{D, asc}]), 5),
+    Q = kura_query:where(
+        kura_query:with_cte(kura_query:from(?VEC_SCHEMA), ~"nearest", Nearest), {id, 7}
+    ),
+    ?assertEqual(
+        {
+            <<
+                "WITH \"nearest\" AS (SELECT * FROM \"kura_vector_items\" "
+                "ORDER BY \"embedding\" <=> $1 ASC LIMIT $2) "
+                "SELECT * FROM \"kura_vector_items\" WHERE \"id\" = $3"
+            >>,
+            [~"[1.0,2.0,3.0]", 5, 7]
+        },
+        kura_dialect_pg:to_sql(Q)
+    ).

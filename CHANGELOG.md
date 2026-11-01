@@ -153,6 +153,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ORDER BY` carries bind parameters. The PG dialect dropped them, so an
+  order expression could not bind a value. Its placeholders are numbered
+  after `HAVING` and before `LIMIT`, in SQL order.
 - The compiled-query cache replaces select-expression fragment
   parameters with markers. They stayed in the shape, so every new value
   interned another entry.
@@ -226,6 +229,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flushes the compiled-query cache, for tools that reload schema modules
   in one VM. The cache never expired before, so a reloaded module kept
   answering with the old module's key and associations (#169).
+- `kura_query:distance(Field, Metric, Vector)` for pgvector
+  nearest-neighbour search (#122). Metrics are `l2`, `cosine` and
+  `inner_product`, emitted as `<->`, `<=>` and `<#>`; a smaller value is
+  nearer for all three. A distance goes in `order_by/2`, whose spec
+  widens from `{atom(), Dir}` to `{atom() | distance(), Dir}`, and in
+  `select_expr/2`. The vector is cast and dumped to text when
+  the distance is built, and the query must be `from/1` a schema in which
+  the field is a `vector` or `{vector, N}` of matching dimension. The
+  query builder guide covers search-time settings (`SET LOCAL
+  hnsw.ef_search` in a transaction) and leaves `CREATE EXTENSION` to the
+  cluster bootstrap.
 
 
 ### Added

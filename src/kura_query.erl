@@ -20,6 +20,7 @@ Q3 = kura_query:limit(Q2, 10).
     select/2,
     select_expr/2,
     over/2,
+    distance/3,
     where/2,
     join/4, join/5,
     order_by/2,
@@ -46,12 +47,17 @@ Q3 = kura_query:limit(Q2, 10).
     max/2
 ]).
 
--export_type([window_fn/0, window_spec/0]).
+-export_type([window_fn/0, window_spec/0, distance/0, distance_metric/0, order/0]).
 
 -type window_fn() ::
     {count | sum | avg | min | max, atom()} | row_number | rank | dense_rank.
 -type window_spec() ::
     #{partition_by => [atom()], order_by => [{atom(), asc | desc}]}.
+-type distance_metric() :: l2 | cosine | inner_product.
+-type distance() :: {distance, atom(), distance_metric(), binary()}.
+-type order() :: {atom() | distance(), asc | desc}.
+
+-define(IS_METRIC(M), (M =:= l2 orelse M =:= cosine orelse M =:= inner_product)).
 
 -doc "Start a query from the given schema module or table atom.".
 -spec from(atom() | module()) -> #kura_query{}.
@@ -65,8 +71,8 @@ select(Q, Fields) ->
 
 -doc """
 Set SELECT expressions with aliases. Each expression is `{Alias, Expr}`
-where `Expr` is a plain field atom, a `{fragment, SQL, Params}`, or a
-window expression from `over/2`.
+where `Expr` is a plain field atom, a `{fragment, SQL, Params}`, a
+window expression from `over/2`, or a vector distance from `distance/3`.
 
 ```erlang
 Q = kura_query:select_expr(kura_query:from(sales), [
@@ -77,7 +83,8 @@ Q = kura_query:select_expr(kura_query:from(sales), [
 ```
 """.
 -spec select_expr(#kura_query{}, [term()]) -> #kura_query{}.
-select_expr(Q, Exprs) ->
+select_expr(Q = #kura_query{from = From}, Exprs) ->
+    check_distances(From, [D || {_Alias, {distance, _, _, _} = D} <- Exprs]),
     Q#kura_query{select = {exprs, Exprs}}.
 
 -doc """
@@ -94,6 +101,76 @@ capability (PostgreSQL, or SQLite 3.25+).
 -spec over(window_fn(), window_spec()) -> {over, window_fn(), window_spec()}.
 over(WindowFn, Spec) when is_map(Spec) ->
     {over, WindowFn, Spec}.
+
+-doc """
+Build a pgvector distance between the vector field `Field` and `Vector`,
+for use in `order_by/2` and `select_expr/2`.
+
+`Metric` is `l2`, `cosine` or `inner_product`. For every metric a smaller
+value is nearer: `inner_product` is the negative inner product, as
+pgvector's `<#>` returns it. Order `asc` to get the nearest rows first;
+`desc` cannot use an approximate-nearest-neighbour index.
+
+`Vector` is a list of numbers. It is cast and dumped to pgvector's text
+form here, so only a binary enters the query. A list that is empty or
+holds anything but numbers raises.
+
+The query must be `from/1` a schema in which `Field` is a `vector` or
+`{vector, N}` field, and for `{vector, N}` the vector must have `N`
+elements. `order_by/2` and `select_expr/2` raise otherwise.
+
+```erlang
+D = kura_query:distance(embedding, cosine, QueryVector),
+Q = kura_query:select_expr(kura_query:from(memory), [{id, id}, {dist, D}]),
+Q1 = kura_query:limit(kura_query:order_by(Q, [{D, asc}]), 10).
+```
+""".
+-spec distance(atom(), distance_metric(), [number()]) -> distance().
+distance(Field, Metric, Vector) when is_atom(Field), ?IS_METRIC(Metric) ->
+    case kura_types:cast(vector, Vector) of
+        {ok, [_ | _] = Floats} ->
+            {distance, Field, Metric, vector_text(Floats)};
+        {ok, _} ->
+            erlang:error({kura, {invalid_vector, Field, ~"is empty"}});
+        {error, Reason} ->
+            erlang:error({kura, {invalid_vector, Field, Reason}})
+    end;
+distance(Field, Metric, _Vector) when is_atom(Field) ->
+    erlang:error({kura, {invalid_distance_metric, Metric}}).
+
+vector_text(Floats) ->
+    case kura_types:dump(vector, Floats) of
+        {ok, Text} when is_binary(Text) -> Text
+    end.
+
+check_distances(_From, []) ->
+    ok;
+check_distances(From, Distances) ->
+    case is_atom(From) andalso From =/= undefined andalso kura_schema:is_schema(From) of
+        true ->
+            Types = kura_schema:field_types(From),
+            lists:foreach(fun(D) -> check_distance(Types, D) end, Distances);
+        false ->
+            erlang:error({kura, {distance_requires_schema, From}})
+    end.
+
+check_distance(Types, {distance, Field, _Metric, Text}) when is_binary(Text) ->
+    case maps:get(Field, Types, undefined) of
+        vector ->
+            ok;
+        {vector, Dim} ->
+            case dimension(Text) of
+                Dim -> ok;
+                Got -> erlang:error({kura, {vector_dimension_mismatch, Field, Dim, Got}})
+            end;
+        _ ->
+            erlang:error({kura, {not_a_vector_field, Field}})
+    end;
+check_distance(_Types, Distance) ->
+    erlang:error({kura, {invalid_distance, Distance}}).
+
+dimension(Text) ->
+    length(binary:matches(Text, ~",")) + 1.
 
 -doc """
 Add a WHERE condition. Conditions: `{field, value}`, `{field, op, value}`,
@@ -161,9 +238,13 @@ join(Q, Type, Table, On) ->
 join(Q = #kura_query{joins = J}, Type, Table, On, As) ->
     Q#kura_query{joins = J ++ [{Type, Table, On, As}]}.
 
--doc "Set ORDER BY clauses as `[{field, asc | desc}]`.".
--spec order_by(#kura_query{}, [{atom(), asc | desc}]) -> #kura_query{}.
-order_by(Q, Orders) ->
+-doc """
+Set ORDER BY clauses as `[{Expr, asc | desc}]`, where `Expr` is a field
+atom or a vector distance from `distance/3`.
+""".
+-spec order_by(#kura_query{}, [order()]) -> #kura_query{}.
+order_by(Q = #kura_query{from = From}, Orders) ->
+    check_distances(From, [D || {{distance, _, _, _} = D, _Dir} <- Orders]),
     Q#kura_query{order_bys = Orders}.
 
 -spec group_by(#kura_query{}, [atom()]) -> #kura_query{}.

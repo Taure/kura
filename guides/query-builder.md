@@ -191,6 +191,81 @@ kura_query:min(Q, price).
 kura_query:max(Q, price).
 ```
 
+## Vector search (pgvector)
+
+`kura_query:distance/3` builds the distance between a `vector` or
+`{vector, N}` field and a query vector. Use it in `order_by/2` for a
+nearest-neighbour search and in `select_expr/2` to return the distance.
+
+```erlang
+D = kura_query:distance(embedding, cosine, QueryVector),
+Q = kura_query:from(memory),
+Q1 = kura_query:select_expr(Q, [{id, id}, {content, content}, {dist, D}]),
+Q2 = kura_query:order_by(Q1, [{D, asc}]),
+Q3 = kura_query:limit(Q2, 10),
+{ok, Rows} = kura_repo_worker:all(my_repo, Q3).
+%% SELECT "id" AS "id", "content" AS "content", "embedding" <=> $1 AS "dist"
+%% FROM "memories" ORDER BY "embedding" <=> $2 ASC LIMIT $3
+```
+
+| Metric | Operator | Index opclass |
+|---|---|---|
+| `l2` | `<->` | `vector_l2_ops` |
+| `cosine` | `<=>` | `vector_cosine_ops` |
+| `inner_product` | `<#>` | `vector_ip_ops` |
+
+For every metric a smaller value is nearer. `inner_product` is the
+negative inner product, as pgvector returns it. Order `asc` for the
+nearest rows first; `desc` cannot use an HNSW or IVFFlat index.
+
+The query vector is a list of numbers. `distance/3` casts it and dumps it
+to pgvector's text form straight away, so the query holds a binary and
+binds it as one parameter. It raises on an unknown metric, an empty list
+or a list holding anything but numbers.
+
+`order_by/2` and `select_expr/2` check a distance against the schema:
+
+- the query must be `from/1` a schema, not a table name;
+- the field must be a `vector` or `{vector, N}` field;
+- for `{vector, N}`, the query vector must have `N` elements.
+
+Not supported yet: a distance in `where` or `having` (a threshold), in a
+window `order_by` inside `over/2`, and keyset pagination over a distance
+with `kura_paginator`, which builds its own `ORDER BY`. The SQLite
+backend has no distance operators.
+
+### Installing the extension
+
+kura does not create the extension, and a migration should not either.
+pgvector is not a trusted extension, so the role an app connects as
+usually cannot create it, on CloudNativePG and on managed Postgres alike.
+Run `CREATE EXTENSION IF NOT EXISTS vector` as a superuser when the
+cluster or database is set up, for example in CNPG's
+`postInitApplicationSQL`.
+
+Until `create_index` takes an access method and an operator class, add
+an HNSW index with an `execute` step in a migration:
+
+```erlang
+{execute, ~"CREATE INDEX memories_embedding_cos_index ON memories USING hnsw (embedding vector_cosine_ops)"}
+```
+
+### Search-time settings
+
+HNSW recall depends on `hnsw.ef_search` (default 40). A filtered search,
+a `where` on a tenant or any other column, can return fewer rows than the
+`limit` unless `hnsw.iterative_scan` (pgvector 0.8+) is on. Set both with
+`SET LOCAL` inside a transaction, so they last until the transaction
+ends and never reach the next query that checks out the connection:
+
+```erlang
+kura_repo_worker:transaction(my_repo, fun() ->
+    {ok, _} = kura_repo_worker:query(my_repo, ~"SET LOCAL hnsw.ef_search = 100", []),
+    {ok, _} = kura_repo_worker:query(my_repo, ~"SET LOCAL hnsw.iterative_scan = relaxed_order", []),
+    kura_repo_worker:all(my_repo, Q3)
+end).
+```
+
 ## Preloading (in queries)
 
 See the [Associations](associations.md) guide for preloading details.
