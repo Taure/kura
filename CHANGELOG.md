@@ -50,6 +50,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   kura_sqlite returns for NULL, as `undefined`, and raises
   `{kura_crypto, malformed_frame}` for any other non-binary value. Both
   crashed with a `function_clause` in `format_type/1` before.
+- **Upgrading:** the encrypted-field checks above and under Security
+  refuse calls that used to be accepted. None of them could work on
+  ciphertext, and none reads or changes stored data. Look for:
+  - `order_by/2`, `group_by/2`, `distinct/2`, a window `partition_by` or
+    `order_by`, or `sum`, `avg`, `min` or `max` on an encrypted field or
+    a `select_expr/2` alias of one: sort, group or compute on the loaded
+    rows instead.
+  - A `join` `on` column, a primary key, or an association key that is
+    encrypted, including the owner-side `target_key` of a `has_many` or
+    `has_one`: key on a plain column. A schema with an encrypted key now
+    fails to load.
+  - An attribute tenant on an encrypted field: `update/2`, `delete/2` and
+    upserts now raise as queries did. Make the tenant column plain.
+  - A conflict guard (`#{guard => [Field]}`) naming an encrypted field:
+    drop it from the guard.
+  - A condition added before the `join/4,5` or `with_cte/3` that brings
+    an encrypted field into scope: it now raises at the join or CTE, not
+    only when added after it.
+  - `{subquery, Q}` as a comparison value, an `in`-list element or a
+    `between` bound: use `exists`, `not_exists` or a single-column `in`.
+  - `{encrypted, Inner}` with an `Inner` that cannot be encrypted, or any
+    other type tagged `encrypted`: the schema fails to load and
+    `to_pg_type/1` raises `{kura_crypto, unsupported_encrypted_type}`,
+    so no migration column is generated for it. `{array, {encrypted,
+    Inner}}` keeps its `BYTEA[]` column and data unchanged.
 - Application boot starts a repo's pool the way `kura_repo_worker:start/1`
   does, through `kura_db:start_pool/1`, from the config
   `kura_repo:config/1` returns (#197). Boot now applies the repo's
@@ -340,9 +365,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `kura_query:check_encrypted/1`, the filter guard over a whole query.
 - `kura_types:encryption/1`, the one place that recognises an encrypted
-  type. It returns `none`, `unsupported` or `{ok, #{inner => Inner}}`; the
-  spec is a map so later options can be added as keys. The filter guard, audit redaction, schema validation and the
-  type seams all use it.
+  type. It returns `none`, `unsupported` or `{ok, #{inner => Inner}}`,
+  with `array => Depth` for an array of an encrypted type; the spec is a
+  map so later options can be added as keys. The filter guard, audit
+  redaction, schema validation and the type seams all use it.
 - `kura_types:encryptable_inner/1`, whether a type can be the `Inner` of
   `{encrypted, Inner}`; schema validation uses it.
 - `kura_hkdf`, HKDF-SHA256 (RFC 5869) over `crypto:mac/4`, with the RFC
