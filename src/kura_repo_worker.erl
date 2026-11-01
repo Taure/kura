@@ -1159,7 +1159,7 @@ maybe_apply_tenant_prefix(Query) ->
 tenant_key_clauses(SchemaMod, KeyClauses) ->
     case kura_tenant:get_tenant() of
         {attribute, {Field, Value}} ->
-            refuse_encrypted_tenant(SchemaMod, Field),
+            ok = refuse_encrypted_tenant(SchemaMod, Field),
             KeyClauses ++ [{Field, Value}];
         _ ->
             KeyClauses
@@ -1183,7 +1183,7 @@ pin_tenant(Changes) ->
     end.
 
 guard_upsert(SchemaMod, #{on_conflict := OnConflict} = Opts) ->
-    refuse_encrypted_conflict_guard(SchemaMod, OnConflict),
+    ok = refuse_encrypted_conflict_guard(SchemaMod, OnConflict),
     case kura_tenant:get_tenant() of
         {attribute, {Field, _Value}} ->
             Opts#{on_conflict => guarded(OnConflict, SchemaMod, Field)};
@@ -1198,7 +1198,7 @@ guarded({_Target, nothing} = OnConflict, _SchemaMod, _Field) ->
 guarded({_Target, nothing, _Opts} = OnConflict, _SchemaMod, _Field) ->
     OnConflict;
 guarded(OnConflict, SchemaMod, Field) ->
-    refuse_encrypted_tenant(SchemaMod, Field),
+    ok = refuse_encrypted_tenant(SchemaMod, Field),
     guarded(OnConflict, Field).
 
 refuse_encrypted_conflict_guard(SchemaMod, {_Target, Action, #{guard := Fields}}) when

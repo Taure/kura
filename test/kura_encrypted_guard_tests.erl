@@ -986,6 +986,35 @@ upsert_reason(Fun) ->
         error:Reason -> Reason
     end.
 
+%% A plain tenant field on an encrypted schema is compiled as usual; with no
+%% pool configured the write gets as far as the driver lookup.
+tenant_attribute_on_a_plain_field_test_() ->
+    Tenant = {attribute, {name, ~"a"}},
+    Data = #{id => 1, name => ~"a"},
+    Writes = [
+        {"update", fun() ->
+            kura_repo_worker:update(?REPO, kura_changeset:cast(?ENC, Data, #{name => ~"b"}, [name]))
+        end},
+        {"delete", fun() ->
+            kura_repo_worker:delete(?REPO, kura_changeset:cast(?ENC, Data, #{}, []))
+        end},
+        {"upsert", fun() ->
+            kura_repo_worker:insert(
+                ?REPO,
+                kura_changeset:cast(?ENC, #{}, Data, [id, name]),
+                #{on_conflict => {id, replace_all}}
+            )
+        end}
+    ],
+    {setup, fun keyed_compiler_setup/0, fun keyed_compiler_teardown/1, [
+        {Name,
+            ?_assertMatch(
+                {no_driver_module_configured, ?REPO},
+                upsert_reason(fun() -> kura_tenant:with_tenant(Tenant, Write) end)
+            )}
+     || {Name, Write} <- Writes
+    ]}.
+
 %% DO NOTHING compiles no conflict guard, so there is nothing to refuse.
 tenant_attribute_on_an_encrypted_field_in_do_nothing_upserts_test_() ->
     Tenant = {attribute, {ssn, ?PLAIN}},
