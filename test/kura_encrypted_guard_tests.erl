@@ -5,6 +5,13 @@
 -define(ENC, kura_test_encrypted_schema).
 -define(PLAIN, ~"123-45-6789").
 -define(WHERE_SSN, {kura, {encrypted_field_in_where, ssn}}).
+-define(ORDER_SSN, {kura, {encrypted_field_in_order_by, ssn}}).
+-define(WINDOW_SSN, {kura, {encrypted_field_in_window, ssn}}).
+-define(AGG_SSN, {kura, {encrypted_field_in_aggregate, ssn}}).
+-define(GROUP_SSN, {kura, {encrypted_field_in_group_by, ssn}}).
+-define(DISTINCT_SSN, {kura, {encrypted_field_in_distinct, ssn}}).
+-define(JOIN_SSN, {kura, {encrypted_field_in_join, ssn}}).
+-define(GUARD_SSN, {kura, {encrypted_field_in_conflict_guard, ssn}}).
 
 %% Every condition form that binds a value to the encrypted field `ssn`.
 %% The first four are the bypasses the old first-element check let through.
@@ -620,6 +627,70 @@ cached_compile_test_() ->
         end}
     ]}.
 
+%% Every list walker checks each element, not just the first.
+encrypted_field_not_first_test_() ->
+    Enc = kura_query:from(?ENC),
+    P = ?PLAIN,
+    [
+        {"order_by", ?_assertError(?ORDER_SSN, kura_query:order_by(Enc, [{id, asc}, {ssn, desc}]))},
+        {"select aggregates",
+            ?_assertError(?AGG_SSN, kura_query:select(Enc, [id, {count, id}, {sum, ssn}]))},
+        {"window partition_by",
+            ?_assertError(
+                ?WINDOW_SSN,
+                kura_query:select_expr(Enc, [
+                    {n, name}, {r, kura_query:over(row_number, #{partition_by => [id, ssn]})}
+                ])
+            )},
+        {"window order_by",
+            ?_assertError(
+                ?WINDOW_SSN,
+                kura_query:select_expr(Enc, [
+                    {r, kura_query:over(row_number, #{order_by => [{id, asc}, {ssn, asc}]})}
+                ])
+            )},
+        {"select_expr aggregates",
+            ?_assertError(
+                ?AGG_SSN,
+                kura_query:select_expr(Enc, [
+                    {a, kura_query:over({count, id}, #{})}, {b, kura_query:over({sum, ssn}, #{})}
+                ])
+            )},
+        {"group_by", ?_assertError(?GROUP_SSN, kura_query:group_by(Enc, [id, name, ssn]))},
+        {"distinct on", ?_assertError(?DISTINCT_SSN, kura_query:distinct(Enc, [id, ssn]))},
+        {"row-value in",
+            ?_assertError(?WHERE_SSN, kura_query:where(Enc, {[id, name, ssn], in, [{1, ~"a", P}]}))},
+        {"a CTE reached through a binary from",
+            ?_assertError(
+                ?WHERE_SSN,
+                kura_query:where(
+                    kura_query:with_cte(#kura_query{from = ~"enc_cte"}, ~"enc_cte", Enc), {ssn, P}
+                )
+            )},
+        {"improper column list in row-value in",
+            ?_assertError(
+                {kura, unrecognised_condition},
+                kura_query:where(Enc, {[id | ill_typed(ssn)], in, [{1, P}]})
+            )}
+    ].
+
+%% An uncacheable shape is compiled from the query itself, values and all.
+uncacheable_miss_returns_the_query_sql_test() ->
+    application:set_env(kura, repos, #{?REPO => #{dialect => kura_query_shape_tests}}),
+    kura_query_cache:init(),
+    try
+        Q = fun(V) -> kura_query:where(kura_query:from(?ENC), {name, V}) end,
+        ?assertEqual(
+            kura_query_compiler:to_sql(?REPO, Q(~"a")),
+            kura_query_compiler:to_sql_cached(?REPO, Q(~"a"))
+        ),
+        ?assertMatch([{_, uncacheable}], ets:tab2list(kura_query_cache)),
+        {SQL, []} = kura_query_compiler:to_sql_cached(?REPO, Q(~"b")),
+        ?assertNotEqual(nomatch, binary:match(iolist_to_binary(SQL), ~"<<\"b\">>"))
+    after
+        compiler_teardown(ok)
+    end.
+
 %%----------------------------------------------------------------------
 %% The dialect compiles a subquery only under `exists`, `not_exists` and a
 %% single-column `in`. Anywhere else it would be bound as a value.
@@ -676,10 +747,6 @@ subquery_value_is_not_a_cache_hit_test_() ->
 %%----------------------------------------------------------------------
 %% Ordering, windowing and aggregating by an encrypted field.
 %%----------------------------------------------------------------------
-
--define(ORDER_SSN, {kura, {encrypted_field_in_order_by, ssn}}).
--define(WINDOW_SSN, {kura, {encrypted_field_in_window, ssn}}).
--define(AGG_SSN, {kura, {encrypted_field_in_aggregate, ssn}}).
 
 ordering_and_aggregates_refused_test_() ->
     Enc = kura_query:from(?ENC),
@@ -745,10 +812,6 @@ ordering_and_aggregates_allowed_test_() ->
             ])
         )
     ].
-
--define(GROUP_SSN, {kura, {encrypted_field_in_group_by, ssn}}).
--define(DISTINCT_SSN, {kura, {encrypted_field_in_distinct, ssn}}).
--define(JOIN_SSN, {kura, {encrypted_field_in_join, ssn}}).
 
 %% Grouping, DISTINCT ON and joining by an encrypted field compare
 %% ciphertexts, which differ for equal values; an output alias of an
@@ -932,8 +995,6 @@ tenant_attribute_on_an_encrypted_field_in_do_nothing_upserts_test_() ->
         )
      || OnConflict <- [{[id], nothing}, {[id], nothing, #{guard => [name]}}]
     ]}.
-
--define(GUARD_SSN, {kura, {encrypted_field_in_conflict_guard, ssn}}).
 
 %% A conflict guard compares the stored ciphertext with the new row's, which
 %% never match, so an upsert guarded on an encrypted field never updates.
