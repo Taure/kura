@@ -380,12 +380,15 @@ recheck_encrypted(Q) ->
     Q.
 
 -doc """
-Raise if any condition of `Query` compares an encrypted field to a value, with
-the reasons `where/2` and `having/2` raise, wherever the condition sits: in
-the query's wheres or havings, a subquery, a CTE body or a union branch.
+Raise if any condition of `Query` would bind an encrypted field's plaintext,
+with the reasons `where/2` and `having/2` raise, wherever the condition sits:
+in the query's wheres or havings, a subquery, a CTE body or a union branch.
 
-`kura_query_compiler` calls this on every query it compiles, so a
-`#kura_query{}` built or updated without `where/2` is checked too.
+The verdict depends only on the query's structure (sources, selects, CTEs and
+the shape of every condition), never on a bound value. `kura_query_compiler`
+relies on that: it calls this on every query it compiles, except a cache hit
+in `to_sql_cached/2`, whose shape already passed. So a `#kura_query{}` built
+or updated without `where/2` is checked too.
 """.
 -spec check_encrypted(#kura_query{}) -> ok.
 check_encrypted(Q) ->
