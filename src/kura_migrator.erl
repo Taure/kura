@@ -145,7 +145,8 @@ one.
     concurrent_index/1,
     split_transactional/1,
     still_todo/3,
-    lock_wait_step/4
+    lock_wait_step/4,
+    release_session_lock/1
 ]).
 -endif.
 
@@ -1254,12 +1255,24 @@ session_locked(Migration, Dir, PoolMod, Target) ->
         Class:Reason:Stack -> migration_error(Class, Reason, Stack)
     end.
 
-%% A connection that has gone takes its session lock with it, so an
-%% unlock that fails needs nothing more.
+%% Never raises, so a failed unlock cannot turn a recorded migration into
+%% an error. A connection that has gone takes its session lock with it,
+%% and the pool unlocks every advisory lock when the connection is
+%% checked in.
 -spec release_session_lock(conn_target()) -> ok.
 release_session_lock(Target) ->
-    _ = run_sql(Target, ~"SELECT pg_advisory_unlock($1) AS unlocked", [?MIGRATION_LOCK_KEY]),
-    ok.
+    try run_sql(Target, ~"SELECT pg_advisory_unlock($1) AS unlocked", [?MIGRATION_LOCK_KEY]) of
+        _ -> ok
+    catch
+        Class:Reason ->
+            ?LOG_WARNING(#{
+                msg => ~"kura: could not release the migration lock; checkin releases it",
+                repo => target_repo(Target),
+                class => Class,
+                reason => Reason
+            }),
+            ok
+    end.
 
 -spec apply_non_transactional(migration(), up | down, conn_target()) ->
     {ok, [integer()]} | {error, term()}.

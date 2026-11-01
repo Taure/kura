@@ -56,6 +56,7 @@ nontx_test_() ->
                 {timeout, 10, fun refused_in_sandbox/0}},
             {"a non-transactional plan is refused inside an outer transaction",
                 {timeout, 10, fun refused_in_outer_transaction/0}},
+            {"a raising unlock is logged, not raised", fun raising_unlock_is_kept_quiet/0},
             {"query_on runs on the given connection", fun query_on_uses_the_connection/0},
             {"query_on/5 hands its options to the driver", fun query_on_passes_options/0}
         ]}}.
@@ -252,6 +253,12 @@ refused_in_outer_transaction() ->
     ?assertEqual([], applied_versions()),
     ?assertNot(table_exists(~"nontx_items")),
     ?assertEqual(false, lock_held()).
+
+raising_unlock_is_kept_quiet() ->
+    ?assertError(
+        function_clause, kura_db:query_on(?REPO, not_a_connection, ~"SELECT 1", [])
+    ),
+    ?assertEqual(ok, kura_migrator:release_session_lock({conn, ?REPO, not_a_connection})).
 
 query_on_uses_the_connection() ->
     {ok, Conn, Token} = kura_pool_minato:checkout(?POOL, #{}),
