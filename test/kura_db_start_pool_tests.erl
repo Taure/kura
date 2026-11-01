@@ -984,12 +984,16 @@ a_refused_repo_reaches_its_own_pool_once_started_test() ->
 concurrent_starts_of_one_pool_name_leave_one_owner_test() ->
     Repos = [list_to_atom("kura_db_racing_repo_" ++ integer_to_list(N)) || N <- lists:seq(1, 5)],
     Config = #{pool => raced_pool, pool_module => ?MODULE, answer_after => 20},
+    kura_db:forget_pools(),
     application:set_env(kura, repos, #{Repo => Config || Repo <- Repos}),
     Self = self(),
     try
         _ = with_captured_logs(fun() ->
-            _ = [spawn(fun() -> Self ! {Repo, kura_repo_worker:start(Repo)} end) || Repo <- Repos],
-            put({?MODULE, raced}, [raced(Repo) || Repo <- Repos])
+            Racers = [
+                {Repo, spawn_monitor(fun() -> Self ! {Repo, kura_repo_worker:start(Repo)} end)}
+             || Repo <- Repos
+            ],
+            put({?MODULE, raced}, [raced(Repo, Monitor) || {Repo, {_Pid, Monitor}} <- Racers])
         end),
         Results = erase({?MODULE, raced}),
         [Owner] = [Repo || {Repo, ok} <- Results],
@@ -1002,9 +1006,13 @@ concurrent_starts_of_one_pool_name_leave_one_owner_test() ->
         kura_db:forget_pools()
     end.
 
-raced(Repo) ->
+raced(Repo, Monitor) ->
     receive
-        {Repo, Result} -> {Repo, Result}
+        {Repo, Result} ->
+            erlang:demonitor(Monitor, [flush]),
+            {Repo, Result};
+        {'DOWN', Monitor, process, _Pid, Reason} when Reason =/= normal ->
+            error({racer_crashed, Repo, Reason})
     after 5000 -> {Repo, timeout}
     end.
 
@@ -1139,6 +1147,7 @@ with_pool_answer(Answer, Config, Run) ->
     with_pool_answer(Answer, kura_db_failing_repo, Config, Run).
 
 with_pool_answer(Answer, Repo, Config, Run) ->
+    kura_db:forget_pools(),
     application:set_env(kura, repos, #{Repo => Config#{pool_module => ?MODULE}}),
     put({?MODULE, pool_answer}, Answer),
     try
@@ -1183,6 +1192,7 @@ logged_reason(Answer, Config) ->
 
 with_captured_logs(Run) ->
     Config = #{config => #{collector => self(), pid => self()}, level => all},
+    _ = logger:remove_handler(kura_db_start_pool_tests_capture),
     ok = logger:add_handler(kura_db_start_pool_tests_capture, ?MODULE, Config),
     Console = logger:get_handler_config(default),
     _ = logger:set_handler_config(default, level, none),
