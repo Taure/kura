@@ -90,8 +90,11 @@ Q = kura_query:select_expr(kura_query:from(sales), [
 """.
 -spec select_expr(#kura_query{}, [term()]) -> #kura_query{}.
 select_expr(Q, Exprs) ->
-    refuse_select({exprs, Exprs}, guard_scope(Q, [], [])),
-    Q#kura_query{select = {exprs, Exprs}}.
+    Selected = Q#kura_query{select = {exprs, Exprs}},
+    Scope = guard_scope(Selected, [], []),
+    refuse_select({exprs, Exprs}, Scope),
+    refuse_output(Selected, Scope),
+    Selected.
 
 -doc """
 Build a window-function expression for use inside `select_expr/2`.
@@ -141,7 +144,10 @@ guard_scope(#kura_query{ctes = Own} = Q, OuterEncrypted, OuterCtes) ->
     {encrypted_in_scope(Q, Ctes) ++ unshadowed(OuterEncrypted, Q, Ctes), Ctes}.
 
 encrypted_in_scope(Q, Ctes) ->
-    lists:append([encrypted_fields(S) ++ cte_encrypted(S, Ctes) || S <- sources(Q)]).
+    lists:append([source_encrypted(S, Ctes) || S <- sources(Q)]).
+
+source_encrypted(Source, Ctes) ->
+    encrypted_fields(Source) ++ cte_encrypted(Source, Ctes).
 
 encrypted_fields(Source) when is_atom(Source), Source =/= undefined ->
     kura_schema:encrypted_fields(Source);
@@ -322,18 +328,40 @@ refuse_aggregates(_, _Scope) ->
     ok.
 
 refuse_window(#{} = Spec, Scope) ->
-    refuse_window_fields(maps:get(partition_by, Spec, []), Scope),
-    refuse_window_fields(maps:get(order_by, Spec, []), Scope);
+    refuse_columns(maps:get(partition_by, Spec, []), Scope, encrypted_field_in_window),
+    refuse_columns(maps:get(order_by, Spec, []), Scope, encrypted_field_in_window);
 refuse_window(_Spec, _Scope) ->
     ok.
 
-refuse_window_fields([{Field, _Dir} | Rest], Scope) ->
-    refuse_field(Field, Scope, encrypted_field_in_window),
-    refuse_window_fields(Rest, Scope);
-refuse_window_fields([Field | Rest], Scope) ->
-    refuse_field(Field, Scope, encrypted_field_in_window),
-    refuse_window_fields(Rest, Scope);
-refuse_window_fields(_, _Scope) ->
+refuse_columns([{Field, _Dir} | Rest], Scope, Reason) ->
+    refuse_field(Field, Scope, Reason),
+    refuse_columns(Rest, Scope, Reason);
+refuse_columns([Field | Rest], Scope, Reason) ->
+    refuse_field(Field, Scope, Reason),
+    refuse_columns(Rest, Scope, Reason);
+refuse_columns(_, _Scope, _Reason) ->
+    ok.
+
+%% ORDER BY, GROUP BY and DISTINCT ON also resolve the query's own output
+%% aliases, so an alias of an encrypted field is ciphertext there too.
+output_scope(#kura_query{select = Select}, {Encrypted, Ctes}) ->
+    {Encrypted ++ ciphertext_aliases(Select, Encrypted), Ctes}.
+
+refuse_output(Q, Scope) ->
+    Output = output_scope(Q, Scope),
+    refuse_orders(Q#kura_query.order_bys, Output),
+    refuse_columns(Q#kura_query.group_bys, Output, encrypted_field_in_group_by),
+    refuse_columns(Q#kura_query.distinct, Output, encrypted_field_in_distinct).
+
+%% The dialect qualifies join columns: the left one with the source before
+%% the join, the right one with the joined table.
+refuse_joins([{_Type, Table, {Left, Right}, _As} | Rest], Previous, Ctes) ->
+    refuse_field(Left, {source_encrypted(Previous, Ctes), Ctes}, encrypted_field_in_join),
+    refuse_field(Right, {source_encrypted(Table, Ctes), Ctes}, encrypted_field_in_join),
+    refuse_joins(Rest, Table, Ctes);
+refuse_joins([_ | Rest], Previous, Ctes) ->
+    refuse_joins(Rest, Previous, Ctes);
+refuse_joins(_, _Previous, _Ctes) ->
     ok.
 
 %% kura_dialect_pg compiles a subquery only in the clauses above; in any
@@ -374,8 +402,9 @@ refuse_encrypted_query(
     {_, Ctes} = Scope = guard_scope(Q, OuterEncrypted, OuterCtes),
     refuse_each(W, Scope, encrypted_field_in_where),
     refuse_each(H, Scope, encrypted_field_in_having),
-    refuse_orders(Q#kura_query.order_bys, Scope),
+    refuse_output(Q, Scope),
     refuse_select(Q#kura_query.select, Scope),
+    refuse_joins(Q#kura_query.joins, Q#kura_query.from, Ctes),
     refuse_bodies(Own ++ C, OuterEncrypted, Ctes).
 
 refuse_bodies([], _OuterEncrypted, _Ctes) ->
@@ -430,6 +459,8 @@ joined schema's encrypted fields, as if added after the join.
 `On` is `{LeftCol, RightCol}` where LeftCol is on the previous table
 (FROM for the first join, or the last joined table) and RightCol is on
 the joined table. For chained joins, the left side automatically advances.
+A column of `On` that is encrypted on its side raises
+`{kura, {encrypted_field_in_join, Field}}`.
 
 ```erlang
 Q = kura_query:from(user_schema),
@@ -458,11 +489,17 @@ says nothing about the order of the values.
 """.
 -spec order_by(#kura_query{}, [{atom(), asc | desc}]) -> #kura_query{}.
 order_by(Q, Orders) ->
-    refuse_orders(Orders, guard_scope(Q, [], [])),
+    refuse_orders(Orders, output_scope(Q, guard_scope(Q, [], []))),
     Q#kura_query{order_bys = Orders}.
 
+-doc """
+Set GROUP BY fields. Grouping by an encrypted field raises
+`{kura, {encrypted_field_in_group_by, Field}}`: equal values encrypt to
+different ciphertexts, so each row would be its own group.
+""".
 -spec group_by(#kura_query{}, [atom()]) -> #kura_query{}.
 group_by(Q, Fields) ->
+    refuse_columns(Fields, output_scope(Q, guard_scope(Q, [], [])), encrypted_field_in_group_by),
     Q#kura_query{group_bys = Fields}.
 
 -doc """
@@ -487,8 +524,13 @@ offset(Q, N) ->
 distinct(Q) ->
     Q#kura_query{distinct = true}.
 
+-doc """
+Set DISTINCT ON fields. An encrypted field raises
+`{kura, {encrypted_field_in_distinct, Field}}`, as `group_by/2` does.
+""".
 -spec distinct(#kura_query{}, [atom()]) -> #kura_query{}.
 distinct(Q, Fields) ->
+    refuse_columns(Fields, output_scope(Q, guard_scope(Q, [], [])), encrypted_field_in_distinct),
     Q#kura_query{distinct = Fields}.
 
 -spec lock(#kura_query{}, binary()) -> #kura_query{}.
@@ -529,9 +571,10 @@ recheck_encrypted(Q) ->
 Raise if any condition of `Query` would bind an encrypted field's plaintext,
 with the reasons `where/2` and `having/2` raise, wherever the condition sits:
 in the query's wheres or havings, a subquery, a CTE body or a union branch.
-It also raises where `order_by/2`, `select/2` and `select_expr/2` would: on
-ordering, windowing or aggregating (`sum`, `avg`, `min`, `max`) by an
-encrypted field.
+It also raises where `order_by/2`, `group_by/2`, `distinct/2`, `join/5`,
+`select/2` and `select_expr/2` would: on ordering, grouping, DISTINCT ON,
+joining, windowing or aggregating (`sum`, `avg`, `min`, `max`) by an
+encrypted field or an alias of one.
 
 The verdict depends only on the query's structure (sources, selects, CTEs and
 the shape of every condition), never on a bound value. `kura_query_compiler`

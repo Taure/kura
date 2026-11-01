@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{kura, {encrypted_field_in_window, Field}}`. The result would be
   ordered or computed over ciphertexts. `count` is allowed. The compiler
   re-check covers these too.
+- `group_by/2`, `distinct/2` (DISTINCT ON) and a `join` `on` column on an
+  encrypted field raise `{kura, {encrypted_field_in_group_by, Field}}`,
+  `{kura, {encrypted_field_in_distinct, Field}}` and
+  `{kura, {encrypted_field_in_join, Field}}`: equal values encrypt to
+  different ciphertexts, so they never group or join. ORDER BY, GROUP BY
+  and DISTINCT ON on a `select_expr/2` alias of an encrypted field raise
+  too.
 - `kura_schema` refuses an encrypted primary key, association key
   (foreign key, referenced key or join-table key) or a field of an
   embedded schema, raising `{kura, {encrypted_primary_key, Mod, Field}}`,

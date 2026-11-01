@@ -253,16 +253,17 @@ unique constraint (each write has a random nonce, so equal plaintexts
 produce different ciphertexts). `kura_query:where/2` and `having/2` raise
 on any condition that compares an encrypted field to a value, however it is
 nested, including inside a subquery or over a CTE that selects an encrypted
-field; `{Field, is_nil}` and `{Field, is_not_nil}` still work. Ordering by
-an encrypted field, partitioning or ordering a window by one, and `sum`,
-`avg`, `min` or `max` of one raise too; `count` works. A raw `{fragment,
-SQL, Params}` is not inspected. The check runs again when a query is
-compiled, so a `#kura_query{}` record built by hand is covered too. Primary
-keys, association keys and fields of embedded schemas cannot be encrypted:
-`kura_schema` raises when it first reads such a schema. An `{array,
-{encrypted, Inner}}` field encrypts each element, is stored as `BYTEA[]`,
-and is an encrypted field for all of the above. `NULL` stays `NULL`
-(unencrypted), so presence still leaks.
+field; `{Field, is_nil}` and `{Field, is_not_nil}` still work. Ordering,
+grouping, `DISTINCT ON` or joining on an encrypted field (or on a
+`select_expr/2` alias of one), partitioning or ordering a window by one,
+and `sum`, `avg`, `min` or `max` of one raise too; `count` works. A raw
+`{fragment, SQL, Params}` is not inspected. The check runs again when a
+query is compiled, so a `#kura_query{}` record built by hand is covered
+too. Primary keys, association keys and fields of embedded schemas cannot
+be encrypted: `kura_schema` raises when it first reads such a schema. An
+`{array, {encrypted, Inner}}` field encrypts each element, is stored as
+`BYTEA[]`, and is an encrypted field for all of the above. `NULL` stays
+`NULL` (unencrypted), so presence still leaks.
 Schema introspection (`rebar3 kura gen_schemas`) cannot detect that a
 `BYTEA` column was encrypted - annotate it by hand. The audit trail
 redacts encrypted fields to `[encrypted]` (it keeps the "changed" signal

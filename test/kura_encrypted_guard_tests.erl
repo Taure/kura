@@ -746,6 +746,86 @@ ordering_and_aggregates_allowed_test_() ->
         )
     ].
 
+-define(GROUP_SSN, {kura, {encrypted_field_in_group_by, ssn}}).
+-define(DISTINCT_SSN, {kura, {encrypted_field_in_distinct, ssn}}).
+-define(JOIN_SSN, {kura, {encrypted_field_in_join, ssn}}).
+
+%% Grouping, DISTINCT ON and joining by an encrypted field compare
+%% ciphertexts, which differ for equal values; an output alias of an
+%% encrypted field is the same ciphertext under another name.
+grouping_distinct_and_joins_refused_test_() ->
+    Enc = kura_query:from(?ENC),
+    Users = kura_query:from(kura_test_schema),
+    Aliased = kura_query:select_expr(Enc, [{n, name}, {s, ssn}]),
+    Cte = kura_query:with_cte(#kura_query{from = ~"c"}, ~"c", Enc),
+    [
+        {"group_by", ?_assertError(?GROUP_SSN, kura_query:group_by(Enc, [id, ssn]))},
+        {"group_by a CTE column", ?_assertError(?GROUP_SSN, kura_query:group_by(Cte, [ssn]))},
+        {"distinct on", ?_assertError(?DISTINCT_SSN, kura_query:distinct(Enc, [name, ssn]))},
+        {"join, right column",
+            ?_assertError(?JOIN_SSN, kura_query:join(Users, inner, ?ENC, {id, ssn}))},
+        {"join, left column",
+            ?_assertError(?JOIN_SSN, kura_query:join(Enc, inner, kura_test_schema, {ssn, id}))},
+        {"second join, left column",
+            ?_assertError(
+                ?JOIN_SSN,
+                kura_query:join(
+                    kura_query:join(Users, inner, ?ENC, {id, id}),
+                    inner,
+                    kura_test_schema,
+                    {ssn, id}
+                )
+            )},
+        {"order_by an alias",
+            ?_assertError(
+                {kura, {encrypted_field_in_order_by, s}},
+                kura_query:order_by(Aliased, [{n, asc}, {s, asc}])
+            )},
+        {"alias after order_by",
+            ?_assertError(
+                {kura, {encrypted_field_in_order_by, s}},
+                kura_query:select_expr(kura_query:order_by(Enc, [{s, asc}]), [{s, ssn}])
+            )},
+        {"group_by an alias",
+            ?_assertError(
+                {kura, {encrypted_field_in_group_by, s}}, kura_query:group_by(Aliased, [n, s])
+            )},
+        {"distinct on an alias",
+            ?_assertError(
+                {kura, {encrypted_field_in_distinct, s}}, kura_query:distinct(Aliased, [s])
+            )}
+    ].
+
+grouping_distinct_and_joins_allowed_test_() ->
+    Enc = kura_query:from(?ENC),
+    [
+        ?_assertMatch(#kura_query{}, Q)
+     || Q <- [
+            kura_query:group_by(Enc, [id, name]),
+            kura_query:distinct(Enc, [name]),
+            kura_query:distinct(Enc),
+            kura_query:join(kura_query:from(kura_test_schema), inner, ?ENC, {id, id}),
+            kura_query:join(kura_query:from(kura_test_plain_ssn_schema), inner, ?ENC, {ssn, id}),
+            kura_query:order_by(kura_query:select_expr(Enc, [{s, name}]), [{s, asc}])
+        ]
+    ].
+
+grouping_distinct_and_joins_compiled_test_() ->
+    Raw = [
+        {?GROUP_SSN, #kura_query{from = ?ENC, group_bys = [ssn]}},
+        {?DISTINCT_SSN, #kura_query{from = ?ENC, distinct = [id, ssn]}},
+        {?JOIN_SSN, #kura_query{
+            from = kura_test_schema, joins = [{inner, ?ENC, {id, ssn}, undefined}]
+        }},
+        {{kura, {encrypted_field_in_order_by, s}}, #kura_query{
+            from = ?ENC, select = {exprs, [{s, ssn}]}, order_bys = [{s, desc}]
+        }}
+    ],
+    {setup, fun compiler_setup/0, fun compiler_teardown/1, [
+        {Path, ?_assertError(Reason, Compile(Q))}
+     || {Reason, Q} <- Raw, {Path, Compile} <- compile_paths()
+    ]}.
+
 ordering_and_aggregates_compiled_test_() ->
     Raw = [
         {?ORDER_SSN, #kura_query{from = ?ENC, order_bys = [{ssn, asc}]}},
