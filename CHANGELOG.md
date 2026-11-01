@@ -300,7 +300,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   spec is a map so later options can be added as keys. The filter guard, audit redaction, schema validation and the
   type seams all use it.
 - `kura_hkdf`, HKDF-SHA256 (RFC 5869) over `crypto:mac/4`, with the RFC
-  test vectors. Not used yet; groundwork for per-column keys (#137).
+  test vectors. Not used yet, and hidden from the docs until it is;
+  groundwork for per-column keys (#137).
   `expand/3` refuses a PRK shorter than 32 bytes with
   `{kura_hkdf, short_prk}`, and both functions raise
   `{kura_hkdf, badarg}` on a non-binary key, salt or info or a
