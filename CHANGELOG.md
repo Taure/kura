@@ -63,6 +63,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stored at pool start until `kura_repo_worker:start/1` is called again.
   A repo whose pool kura did not start still sees the change on its
   next call.
+- **Upgrading:** `read_only` is captured when the repo's pool starts
+  (#200). A started repo switched to `read_only => true` at runtime,
+  with `application:set_env` or by `init/1` reading a flag, keeps
+  accepting writes until `kura_repo_worker:start/1` is called again for
+  it. Call `start/1` after changing it.
 - A repo whose config names a pool another repo started is refused
   instead of sharing that pool, database and credentials (#201).
   `kura_repo_worker:start/1` returns
