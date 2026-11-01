@@ -589,17 +589,11 @@ unheld(Repo, Pool, PoolMod) ->
 
 -ifdef(TEST).
 forget_pools() ->
-    _ = [
-        persistent_term:erase(Key)
-     || {Key, _} <- persistent_term:get(),
-        is_pool_key(Key)
-    ],
+    All = persistent_term:get(),
+    _ = [persistent_term:erase(Key) || {{?MODULE, pool_owner, _} = Key, _} <- All],
+    _ = [persistent_term:erase(Key) || {{?MODULE, pool_held, _} = Key, _} <- All],
+    _ = [persistent_term:erase(Key) || {{?MODULE, pool_retiring, _, _} = Key, _} <- All],
     kura_repo_settings:forget().
-
-is_pool_key({?MODULE, pool_owner, _}) -> true;
-is_pool_key({?MODULE, pool_held, _}) -> true;
-is_pool_key({?MODULE, pool_retiring, _, _}) -> true;
-is_pool_key(_Other) -> false.
 -endif.
 
 %% init/1 is the consumer's code, so nothing is known about what its reason
