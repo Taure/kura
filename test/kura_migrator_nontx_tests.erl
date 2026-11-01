@@ -52,6 +52,8 @@ nontx_test_() ->
                 {timeout, 30, fun waits_for_a_held_lock/0}},
             {"migration_lock_timeout ends a wait for a held lock",
                 {timeout, 30, fun lock_wait_times_out/0}},
+            {"migration_lock_timeout ends a wait for the session lock",
+                {timeout, 30, fun session_lock_wait_times_out/0}},
             {"a non-transactional plan is refused inside the sandbox",
                 {timeout, 10, fun refused_in_sandbox/0}},
             {"a non-transactional plan is refused inside an outer transaction",
@@ -225,6 +227,30 @@ lock_wait_times_out() ->
         ),
         kura_pool_minato:checkin(?POOL, Token)
     end.
+
+session_lock_wait_times_out() ->
+    ok = kura_migrator:ensure_schema_migrations(?REPO),
+    {ok, Conn, Token} = kura_pool_minato:checkout(?POOL, #{}),
+    application:set_env(kura, migration_lock_timeout, 200),
+    try
+        #{rows := [#{locked := true}]} = kura_driver_minato:query_on(
+            Conn, ~"SELECT pg_try_advisory_lock($1) AS locked", [?LOCK_KEY], decode()
+        ),
+        ?assertEqual(
+            {error, migration_lock_timeout},
+            kura_migrator:run_non_transactional(
+                {?INDEX, m20250301110000_nontx_index_items}, up, ?REPO
+            )
+        ),
+        ?assertEqual([], applied_versions())
+    after
+        application:unset_env(kura, migration_lock_timeout),
+        _ = kura_driver_minato:query_on(
+            Conn, ~"SELECT pg_advisory_unlock($1)", [?LOCK_KEY], decode()
+        ),
+        kura_pool_minato:checkin(?POOL, Token)
+    end,
+    ?assertEqual(false, lock_held()).
 
 refused_in_sandbox() ->
     declare([?OK_APP]),

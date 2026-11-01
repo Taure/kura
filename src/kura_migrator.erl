@@ -146,7 +146,8 @@ one.
     split_transactional/1,
     still_todo/3,
     lock_wait_step/4,
-    release_session_lock/1
+    release_session_lock/1,
+    run_non_transactional/3
 ]).
 -endif.
 
