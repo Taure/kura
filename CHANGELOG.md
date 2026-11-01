@@ -74,7 +74,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   again and gets `ok`. A pool already running that kura did not start
   goes to the first repo that starts it. A pool stays owned until
   `kura_db:stop_pool/1` releases it, also when it was stopped outside
-  kura. A repo that starts on another pool name keeps the pool it had
+  kura. A repo whose pool name another repo owns cannot query it either:
+  `kura_db:get_pool/1` raises `{pool_owned_by, Owner}`, which covers a
+  repo kura never started and one stopped with `kura_db:stop_pool/1`
+  whose pool name another repo then started. A repo that only borrowed
+  another repo's running pool by naming it must get its own pool. A repo
+  that starts on another pool name keeps the pool it had
   until that pool is stopped, which happens right after the new one
   starts, so no other repo can adopt it while it runs with the first
   repo's credentials.

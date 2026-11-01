@@ -200,9 +200,21 @@ transaction_ok(RepoMod, Fun) ->
 %% Pool
 %%----------------------------------------------------------------------
 
+-doc """
+The pool `RepoMod`'s queries run on.
+
+Raises `{pool_owned_by, Owner}` when another repo owns that pool name: a repo
+kura has not started, or one stopped with `stop_pool/1`, reads its pool name
+from its config, and must not reach a pool started with another repo's
+credentials.
+""".
 -spec get_pool(module()) -> atom().
 get_pool(RepoMod) ->
-    pool_name(RepoMod, kura_repo:settings(RepoMod)).
+    Pool = pool_name(RepoMod, kura_repo:settings(RepoMod)),
+    case owner(Pool) of
+        Other when Other =/= undefined, Other =/= RepoMod -> error({pool_owned_by, Other});
+        _OwnedOrUnclaimed -> Pool
+    end.
 
 -spec pool_name(module(), map()) -> atom().
 pool_name(RepoMod, Config) ->
@@ -465,6 +477,10 @@ are dropped: its queries read its config on each call again, as for a repo
 kura has not started. A repo that does not own a running pool, one refused
 another repo's pool among them, stops nothing and only has its stored state
 dropped.
+
+A stopped repo should not keep issuing queries. If another repo starts the
+same pool name, they raise `{pool_owned_by, Owner}`; otherwise they fail in
+the pool module, as for any pool that is not running.
 """.
 -spec stop_pool(module()) -> ok.
 stop_pool(Repo) ->

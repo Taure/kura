@@ -1022,6 +1022,27 @@ stop_pool_after_a_failed_move_stops_the_pool_the_repo_owns_test() ->
         ?assertEqual(old_pool, get({?MODULE, stopped}))
     end).
 
+a_repo_kura_did_not_start_cannot_query_through_another_repos_pool_test() ->
+    with_two_repos(fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        ?assertError({pool_owned_by, kura_db_owner_repo}, kura_db:get_pool(kura_db_other_repo)),
+        ?assertError(
+            {pool_owned_by, kura_db_owner_repo}, kura_db:query(kura_db_other_repo, ~"SELECT 1", [])
+        ),
+        ?assertError(
+            {pool_owned_by, kura_db_owner_repo},
+            kura_db:transaction(kura_db_other_repo, fun() -> ok end)
+        )
+    end).
+
+a_stopped_repo_cannot_query_the_pool_another_repo_started_test() ->
+    with_two_repos(fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        ?assertEqual(ok, kura_db:stop_pool(kura_db_owner_repo)),
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_other_repo)),
+        ?assertError({pool_owned_by, kura_db_other_repo}, kura_db:get_pool(kura_db_owner_repo))
+    end).
+
 with_two_repos(Run) ->
     Shared = #{pool => shared_pool, pool_module => ?MODULE},
     with_pool_answer({ok, self()}, fun() ->
