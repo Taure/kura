@@ -1,6 +1,12 @@
 -module(kura_encrypted_schema_tests).
 -include_lib("eunit/include/eunit.hrl").
 
+%% kura_schema memoises in persistent_term, which outlives a module reload.
+%% Start and end with a clean memo so a run never sees a lookup computed by
+%% other code, such as a mutant in rebar3_mutate.
+forget_test_schemas_before_test() ->
+    forget_test_schemas().
+
 %%----------------------------------------------------------------------
 %% Placement: keys and embeds cannot be encrypted
 %%----------------------------------------------------------------------
@@ -194,3 +200,13 @@ setup_keys() ->
 
 teardown_keys(_) ->
     application:unset_env(kura, encryption).
+
+forget_test_schemas_after_test() ->
+    forget_test_schemas().
+
+forget_test_schemas() ->
+    _ = [
+        kura_schema:forget(M)
+     || {M, _} <- code:all_loaded(), lists:prefix("kura_test_", atom_to_list(M))
+    ],
+    ok.

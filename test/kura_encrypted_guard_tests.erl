@@ -53,6 +53,12 @@ allowed() ->
         {"plain field in subquery", {id, in, {subquery, Sub}}}
     ].
 
+%% kura_schema memoises in persistent_term, which outlives a module reload.
+%% Start and end with a clean memo so a run never sees a lookup computed by
+%% other code, such as a mutant in rebar3_mutate.
+forget_test_schemas_before_test() ->
+    forget_test_schemas().
+
 where_refuses_test_() ->
     [
         {Name,
@@ -1132,3 +1138,13 @@ union_cte_test_() ->
 
 assert_refused(Reason, Q, Cond) ->
     ?assertError(Reason, kura_query:where(Q, Cond)).
+
+forget_test_schemas_after_test() ->
+    forget_test_schemas().
+
+forget_test_schemas() ->
+    _ = [
+        kura_schema:forget(M)
+     || {M, _} <- code:all_loaded(), lists:prefix("kura_test_", atom_to_list(M))
+    ],
+    ok.
