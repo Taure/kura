@@ -155,6 +155,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `join/4,5` re-check the conditions already in the query, its CTE bodies
   and its union branches. A name shared by several CTEs, or by a CTE and a
   schema, gets the encrypted fields of all of them.
+- A `has_many` or `has_one` whose `#kura_ref{target_key = Cols}` names an
+  encrypted field of the owner was not refused. Preloading bound the
+  decrypted owner value in the child query, and writes copied it into the
+  child's foreign key in clear. Schema load now raises
+  `{kura, {encrypted_association_key, Mod, Assoc, Field}}`.
 - Starting a pool hands the pool module the connection settings only.
   The repo's own settings, the `encryption` keyring among them, were
   passed along with them, and a pool module that echoed its options in

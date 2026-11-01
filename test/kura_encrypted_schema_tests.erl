@@ -33,6 +33,16 @@ placement_test_() ->
                 {kura, {encrypted_association_key, kura_test_enc_ref_schema, owner, ssn}},
                 kura_schema:field_types(kura_test_enc_ref_schema)
             )},
+        {"encrypted has_many owner-side referenced key",
+            ?_assertError(
+                {kura, {encrypted_association_key, kura_test_enc_owner_key_schema, kids, email}},
+                kura_schema:field_types(kura_test_enc_owner_key_schema)
+            )},
+        {"encrypted has_one owner-side referenced key",
+            ?_assertError(
+                {kura, {encrypted_association_key, kura_test_enc_owner_key_one_schema, kid, email}},
+                kura_schema:field_types(kura_test_enc_owner_key_one_schema)
+            )},
         {"encrypted field in an embed",
             ?_assertError(
                 {kura, {encrypted_embed_field, kura_test_enc_embed_middle, inner, secret}},

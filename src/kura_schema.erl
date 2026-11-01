@@ -446,11 +446,16 @@ encrypted_assoc_keys(Encrypted, #kura_assoc{type = belongs_to} = A) ->
             Cols -> [C || C <- Cols, lists:member(C, declared_encrypted(assoc_target(A)))]
         end,
     [F || F <- assoc_fields(A), lists:member(F, Encrypted)] ++ Referenced;
-encrypted_assoc_keys(_Encrypted, #kura_assoc{type = Type} = A) when
+encrypted_assoc_keys(Encrypted, #kura_assoc{type = Type} = A) when
     Type =:= has_many; Type =:= has_one
 ->
     TargetEncrypted = declared_encrypted(assoc_target(A)),
-    [F || F <- assoc_fields(A), lists:member(F, TargetEncrypted)];
+    OwnerKey =
+        case assoc_target_key(A) of
+            undefined -> [];
+            Cols -> [C || C <- Cols, lists:member(C, Encrypted)]
+        end,
+    [F || F <- assoc_fields(A), lists:member(F, TargetEncrypted)] ++ OwnerKey;
 encrypted_assoc_keys(
     _Encrypted,
     #kura_assoc{
