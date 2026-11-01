@@ -153,9 +153,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `ORDER BY` carries bind parameters. The PG dialect dropped them, so an
-  order expression could not bind a value. Its placeholders are numbered
-  after `HAVING` and before `LIMIT`, in SQL order.
 - The compiled-query cache replaces select-expression fragment
   parameters with markers. They stayed in the shape, so every new value
   interned another entry.
@@ -234,7 +231,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `inner_product`, emitted as `<->`, `<=>` and `<#>`; a smaller value is
   nearer for all three. A distance goes in `order_by/2`, whose spec
   widens from `{atom(), Dir}` to `{atom() | distance(), Dir}`, and in
-  `select_expr/2`. The vector is cast and dumped to text when
+  `select_expr/2`. `ORDER BY` now carries bind parameters, numbered
+  after `HAVING` and before `LIMIT`. The vector is cast and dumped to text when
   the distance is built, and the query must be `from/1` a schema in which
   the field is a `vector` or `{vector, N}` of matching dimension. A
   distance in `where/2`, `having/2`, `group_by/2` or `over/2` raises
