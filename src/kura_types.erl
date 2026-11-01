@@ -10,7 +10,7 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
 - `load/2` - convert driver results back to Erlang terms
 """.
 
--export([to_pg_type/1, from_pg_type/2, cast/2, dump/2, load/2, encryption/1]).
+-export([to_pg_type/1, from_pg_type/2, cast/2, dump/2, load/2, encryption/1, encryptable_inner/1]).
 
 -export_type([kura_type/0, encryption/0, encryption_spec/0]).
 
@@ -47,7 +47,7 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
 -define(IS_ENCRYPTED_TAG(T), (is_tuple(T) andalso element(1, T) =:= encrypted)).
 
 -ifdef(TEST).
--export([encryptable_inner/1, encode_inner/2, decode_inner/2]).
+-export([encode_inner/2, decode_inner/2]).
 -endif.
 
 %%----------------------------------------------------------------------

@@ -103,6 +103,15 @@ encryption_test_() ->
         )
     ].
 
+%% An inner type that cannot be encrypted fails when the schema is first read,
+%% not at the first write.
+unencryptable_inner_type_test() ->
+    kura_schema:forget(kura_test_enc_float_schema),
+    ?assertError(
+        {kura, {unsupported_encrypted_type, kura_test_enc_float_schema, amounts}},
+        kura_schema:field_types(kura_test_enc_float_schema)
+    ).
+
 %% The options form is not supported yet. Every seam must treat it as
 %% encrypted and raise rather than handle the value as plaintext.
 options_form_fails_closed_test_() ->

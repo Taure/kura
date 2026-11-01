@@ -135,7 +135,8 @@ The first call for a module also checks its encrypted fields, and raises
 `{kura, Reason}` if one is used where it cannot work:
 
 - `{unsupported_encrypted_type, Mod, Field}` - a type tagged `encrypted`
-  that is not `{encrypted, Inner}`, or an array of one;
+  that is not `{encrypted, Inner}`, an `Inner` that cannot be encrypted
+  (see `kura_types:encryptable_inner/1`), or an array of either;
 - `{encrypted_primary_key, Mod, Field}`;
 - `{encrypted_association_key, Mod, Assoc, Field}` - a foreign key,
   referenced key or join-table key of an association;
@@ -415,12 +416,16 @@ indexes(Mod) ->
 %% field_types/1, so two schemas that refer to each other do not recurse.
 %%----------------------------------------------------------------------
 
+encryptable(Type) ->
+    case kura_types:encryption(Type) of
+        none -> true;
+        unsupported -> false;
+        {ok, #{inner := Inner}} -> kura_types:encryptable_inner(Inner)
+    end.
+
 validate_encryption(Mod) ->
     Fields = Mod:fields(),
-    Unsupported = [
-        F
-     || #kura_field{name = F, type = T} <- Fields, kura_types:encryption(T) =:= unsupported
-    ],
+    Unsupported = [F || #kura_field{name = F, type = T} <- Fields, not encryptable(T)],
     refuse(unsupported_encrypted_type, Mod, Unsupported),
     Encrypted = declared_encrypted(Mod),
     refuse(encrypted_primary_key, Mod, [F || F <- key_names(Mod), lists:member(F, Encrypted)]),

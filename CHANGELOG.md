@@ -41,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{kura_crypto, unsupported_encrypted_type}`. Before, such a type was
   not redacted by the audit trail, not refused by the filter guard, and
   loaded as its raw ciphertext.
+- An `{encrypted, Inner}` field whose `Inner` cannot be encrypted, such as
+  `{encrypted, float}`, raises
+  `{kura, {unsupported_encrypted_type, Mod, Field}}` when the schema is
+  first read, instead of `{kura_crypto, {not_encryptable, Inner}}` at the
+  first write.
 - `kura_types:load/2` on an encrypted type loads `undefined`, which
   kura_sqlite returns for NULL, as `undefined`, and raises
   `{kura_crypto, malformed_frame}` for any other non-binary value. Both
@@ -338,6 +343,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   type. It returns `none`, `unsupported` or `{ok, #{inner => Inner}}`; the
   spec is a map so later options can be added as keys. The filter guard, audit redaction, schema validation and the
   type seams all use it.
+- `kura_types:encryptable_inner/1`, whether a type can be the `Inner` of
+  `{encrypted, Inner}`; schema validation uses it.
 - `kura_hkdf`, HKDF-SHA256 (RFC 5869) over `crypto:mac/4`, with the RFC
   test vectors. Not used yet, and hidden from the docs until it is;
   groundwork for per-column keys (#137).
