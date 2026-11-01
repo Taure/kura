@@ -99,18 +99,42 @@ served to the next - a cross-tenant read.
 The dialect is deliberately *not* in the key: it is resolved from boot-time
 repo config. Swapping a repo's dialect at runtime requires an explicit
 `kura_query_cache:flush/0`.
+
+The encrypted filter guard (`kura_query:check_encrypted/1`) runs on a miss,
+before anything is stored, and on every call that compiles directly. A hit
+skips it: the guard reads the sources, joins, selects, CTEs, combinations and
+the structure of every condition and subquery, all of which the shape keeps,
+and never a bound value, which is all the shape replaces. A hit therefore
+means a query of the same shape already passed. A query the shape split
+cannot take apart, such as one with an improper condition list, goes through
+`to_sql/2`, so it is checked and never cached.
 """.
 -spec to_sql_cached(module(), #kura_query{}) -> {iodata(), [term()]}.
 to_sql_cached(RepoMod, Query) ->
-    ok = kura_query:check_encrypted(Query),
-    {Shape, Values} = kura_query_shape:split(Query),
+    case split(Query) of
+        {ok, Shape, Values} -> cached(RepoMod, Query, Shape, Values);
+        malformed -> to_sql(RepoMod, Query)
+    end.
+
+%% A split crash would carry the query's values in its stacktrace.
+-spec split(#kura_query{}) -> {ok, #kura_query{}, tuple()} | malformed.
+split(Query) ->
+    try kura_query_shape:split(Query) of
+        {Shape, Values} -> {ok, Shape, Values}
+    catch
+        error:_ -> malformed
+    end.
+
+-spec cached(module(), #kura_query{}, #kura_query{}, tuple()) -> {iodata(), [term()]}.
+cached(RepoMod, Query, Shape, Values) ->
     Key = {RepoMod, kura_tenant:get_tenant(), Shape},
     case kura_query_cache:get(Key) of
         {ok, {SQL, Template}} ->
             {SQL, kura_query_shape:bind(Template, Values)};
         {ok, uncacheable} ->
-            compile_query(RepoMod, Query);
+            to_sql(RepoMod, Query);
         miss ->
+            ok = kura_query:check_encrypted(Query),
             case compile_shape(RepoMod, Shape, tuple_size(Values)) of
                 {ok, {SQL, Template} = Entry} ->
                     kura_query_cache:put(Key, Entry),

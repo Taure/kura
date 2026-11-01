@@ -171,9 +171,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `to_sql/2`, `to_sql_cached/2`, `to_sql_from/3`, `update_all/3` and
   `delete_all/2` now run `kura_query:check_encrypted/1` over the whole
   query (wheres, havings, subqueries, CTE bodies, union branches) before
-  compiling. This adds about 70 ns per compiled query, also for schemas
-  without encrypted fields: a shortcut for those would skip a raw subquery,
-  CTE or union branch over an encrypted schema.
+  compiling. `to_sql_cached/2` runs it on a cache miss only: the guard
+  reads nothing the shape key replaces, so a hit means a query of the
+  same shape already passed. A query the shape split cannot take apart
+  goes through `to_sql/2` and is never cached. A hit costs what it did
+  before the guard (cached get-by-id in `kura_query_cache_bench`: 0.76 us
+  before, 0.98 us with the guard on every call, 0.74 us on a miss only;
+  filtered page: 3.00, 3.46, 3.12 us). The other entry points pay about
+  70 ns per call.
 - Starting a pool hands the pool module the connection settings only.
   The repo's own settings, the `encryption` keyring among them, were
   passed along with them, and a pool module that echoed its options in

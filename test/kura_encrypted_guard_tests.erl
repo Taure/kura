@@ -496,3 +496,86 @@ compiler_allows_test_() ->
         {Path, fun() -> [Compile(Q) || Q <- Queries] end}
      || {Path, Compile} <- compile_paths()
     ]}.
+
+%%----------------------------------------------------------------------
+%% to_sql_cached/2 runs the guard on a miss only. That is sound because the
+%% guard's verdict is a function of the query's shape: it never reads a
+%% bound value, which is all the shape replaces.
+%%----------------------------------------------------------------------
+
+verdict(Q) ->
+    try kura_query:check_encrypted(Q) of
+        ok -> ok
+    catch
+        error:Reason -> Reason
+    end.
+
+verdict_is_a_function_of_the_shape_test_() ->
+    P = ?PLAIN,
+    Sub = correlated({ssn, P}),
+    Conds =
+        [C || {_, C} <- refused() ++ allowed()] ++
+            [
+                {exists, {subquery, Sub}},
+                {id, in, {subquery, Sub}},
+                {name, {ssn, P}},
+                {name, in, [{ssn, P}, {'and', [{ssn, P}]}]},
+                {name, between, {{ssn, P}, {exists, {subquery, Sub}}}},
+                {fragment, ~"x = ?", [{ssn, P}]},
+                {'and', {ssn, P}},
+                {exists, {ssn, P}},
+                {exists, {subquery, not_a_query}},
+                {ssn, nil},
+                {ssn, undefined},
+                {[id, name], in, [{1, {ssn, P}}]},
+                {[id, ssn], in, [{1}]}
+            ],
+    Queries =
+        [#kura_query{from = ?ENC, wheres = [C]} || C <- Conds] ++
+            [#kura_query{from = kura_test_schema, wheres = [C]} || C <- Conds] ++
+            [#kura_query{from = ?ENC, havings = [C]} || C <- Conds] ++
+            [
+                kura_query:union(enc_cte(kura_query:from(kura_test_schema)), #kura_query{
+                    from = enc_cte, wheres = [C]
+                })
+             || C <- Conds
+            ],
+    [
+        ?_assertEqual(verdict(Q), verdict(element(1, kura_query_shape:split(Q))))
+     || Q <- Queries
+    ].
+
+cached_compile_test_() ->
+    P = ?PLAIN,
+    Raw = #kura_query{from = ?ENC, wheres = [{ssn, P}]},
+    {foreach, fun compiler_setup/0, fun compiler_teardown/1, [
+        {"an encrypted condition raises on the first and on every later call", fun() ->
+            Before = ets:info(kura_query_cache, size),
+            ?assertError(?WHERE_SSN, kura_query_compiler:to_sql_cached(?REPO, Raw)),
+            ?assertError(?WHERE_SSN, kura_query_compiler:to_sql_cached(?REPO, Raw)),
+            ?assertEqual(Before, ets:info(kura_query_cache, size))
+        end},
+        {"an uncacheable entry still checks", fun() ->
+            {Shape, _} = kura_query_shape:split(Raw),
+            kura_query_cache:put({?REPO, kura_tenant:get_tenant(), Shape}, uncacheable),
+            ?assertError(?WHERE_SSN, kura_query_compiler:to_sql_cached(?REPO, Raw)),
+            ?assertError(?WHERE_SSN, kura_query_compiler:to_sql_cached(?REPO, Raw))
+        end},
+        {"a query the shape split cannot take apart is checked, without the plaintext", fun() ->
+            Q = #kura_query{from = ?ENC, wheres = [{'and', [{id, 1} | ill_typed({ssn, P})]}]},
+            try kura_query_compiler:to_sql_cached(?REPO, Q) of
+                R -> ?assertEqual(raised, R)
+            catch
+                error:Reason:Stack ->
+                    ?assertEqual({kura, unrecognised_condition}, Reason),
+                    ?assertEqual(nomatch, binary:match(term_to_binary(Stack), P))
+            end
+        end},
+        {"a hit binds the new values", fun() ->
+            Q = fun(V) -> kura_query:where(kura_query:from(?ENC), {name, V}) end,
+            {SQL, [~"a"]} = kura_query_compiler:to_sql_cached(?REPO, Q(~"a")),
+            Size = ets:info(kura_query_cache, size),
+            ?assertMatch({SQL, [~"b"]}, kura_query_compiler:to_sql_cached(?REPO, Q(~"b"))),
+            ?assertEqual(Size, ets:info(kura_query_cache, size))
+        end}
+    ]}.
