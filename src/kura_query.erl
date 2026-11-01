@@ -126,7 +126,8 @@ its schemas do not declare: the database resolves such a name to the outer
 column. `{Field, is_nil}` and `{Field, is_not_nil}` bind nothing and are
 allowed. A `{fragment, SQL, Params}` is not inspected: what it binds is the
 caller's responsibility. A query over a bare table name has no schema and is
-not checked.
+not checked. A `{subquery, Q}` anywhere but `exists`, `not_exists` or a
+single-column `in` raises `{kura, unrecognised_condition}`.
 """.
 -spec where(#kura_query{}, term()) -> #kura_query{}.
 where(Q = #kura_query{wheres = W}, Condition) ->
@@ -269,13 +270,23 @@ refuse_encrypted_cond({Field, Op}, _Scope, _Reason) when
     ok;
 refuse_encrypted_cond({Field, Value}, Scope, Reason) when is_atom(Field) ->
     refuse_field(Field, Scope, Reason),
-    refuse_value(Value, Scope);
+    refuse_subquery_value(Value);
+refuse_encrypted_cond({Field, between, {Low, High}}, Scope, Reason) when is_atom(Field) ->
+    refuse_field(Field, Scope, Reason),
+    refuse_subquery_value(Low),
+    refuse_subquery_value(High);
+refuse_encrypted_cond({Field, _Op, Values}, Scope, Reason) when is_atom(Field), is_list(Values) ->
+    refuse_field(Field, Scope, Reason),
+    refuse_subquery_values(Values);
 refuse_encrypted_cond({Field, _Op, Value}, Scope, Reason) when is_atom(Field) ->
     refuse_field(Field, Scope, Reason),
-    refuse_value(Value, Scope);
+    refuse_subquery_value(Value);
+refuse_encrypted_cond({Fields, _Op, Rows}, Scope, Reason) when is_list(Fields), is_list(Rows) ->
+    refuse_fields(Fields, Scope, Reason),
+    refuse_subquery_rows(Rows);
 refuse_encrypted_cond({Fields, _Op, Value}, Scope, Reason) when is_list(Fields) ->
     refuse_fields(Fields, Scope, Reason),
-    refuse_value(Value, Scope);
+    refuse_subquery_value(Value);
 refuse_encrypted_cond(_Cond, {[], _Ctes}, _Reason) ->
     ok;
 refuse_encrypted_cond(_Cond, _Scope, _Reason) ->
@@ -331,13 +342,27 @@ refuse_window_fields([Field | Rest], Scope) ->
 refuse_window_fields(_, _Scope) ->
     ok.
 
-%% A subquery in a value position is checked like any other: its conditions
-%% can reach the outer query's encrypted fields. kura_query_shape keeps it
-%% in the shape for the same reason.
-refuse_value({subquery, #kura_query{} = Sub}, Scope) ->
-    refuse_encrypted_subquery(Sub, Scope);
-refuse_value(_Value, _Scope) ->
+%% kura_dialect_pg compiles a subquery only in the clauses above; in any
+%% other value position it would be bound as a parameter.
+refuse_subquery_value({subquery, _}) ->
+    erlang:error({kura, unrecognised_condition});
+refuse_subquery_value(_Value) ->
     ok.
+
+refuse_subquery_values([Value | Rest]) ->
+    refuse_subquery_value(Value),
+    refuse_subquery_values(Rest);
+refuse_subquery_values(Tail) ->
+    refuse_subquery_value(Tail).
+
+refuse_subquery_rows([Row | Rest]) when is_tuple(Row) ->
+    refuse_subquery_values(tuple_to_list(Row)),
+    refuse_subquery_rows(Rest);
+refuse_subquery_rows([Value | Rest]) ->
+    refuse_subquery_value(Value),
+    refuse_subquery_rows(Rest);
+refuse_subquery_rows(Tail) ->
+    refuse_subquery_value(Tail).
 
 refuse_encrypted_subquery(Sub, {Encrypted, Ctes}) ->
     refuse_encrypted_query(Sub, Encrypted, Ctes).

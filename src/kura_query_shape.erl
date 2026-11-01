@@ -187,8 +187,8 @@ values([Value | Rest], Acc0) ->
 %% offset, whose record fields are typed as integers.
 value(Value, Acc) when Value =:= nil; Value =:= undefined ->
     {Value, Acc};
-value({subquery, #kura_query{}} = Value, Acc) ->
-    subquery(element(2, Value), Acc);
+value({subquery, SubQ}, Acc) ->
+    subquery(SubQ, Acc);
 value(Value, {N, Values}) ->
     {{?MARKER, N}, {N + 1, [Value | Values]}}.
 

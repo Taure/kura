@@ -621,19 +621,47 @@ cached_compile_test_() ->
     ]}.
 
 %%----------------------------------------------------------------------
-%% A subquery in a value position is walked too.
+%% The dialect compiles a subquery only under `exists`, `not_exists` and a
+%% single-column `in`. Anywhere else it would be bound as a value.
 %%----------------------------------------------------------------------
 
 subquery_value_refused_test_() ->
-    Sub = correlated({ssn, ?PLAIN}),
+    Sub = kura_query:from(kura_test_schema),
+    Conds = [
+        {"comparison", {id, '=', {subquery, Sub}}},
+        {"equality", {id, {subquery, Sub}}},
+        {"not_in", {id, not_in, {subquery, Sub}}},
+        {"row in", {[id], in, {subquery, Sub}}},
+        {"under not", {'not', {name, '>', {subquery, Sub}}}},
+        {"in-list element", {id, in, [1, {subquery, Sub}]}},
+        {"not_in-list element", {id, not_in, [{subquery, Sub}, 2]}},
+        {"in-list tail", {id, in, [1 | ill_typed({subquery, Sub})]}},
+        {"between low", {id, between, {{subquery, Sub}, 2}}},
+        {"between high", {id, between, {1, {subquery, Sub}}}},
+        {"row-value in", {[id, name], in, [{1, ~"a"}, {2, {subquery, Sub}}]}},
+        {"not a query", {id, '=', {subquery, not_a_query}}},
+        {"in, not a query", {id, in, {subquery, not_a_query}}}
+    ],
     [
-        {Name, ?_assertError(?WHERE_SSN, where_enc(Cond))}
-     || {Name, Cond} <- [
-            {"comparison", {id, '=', {subquery, Sub}}},
-            {"equality", {id, {subquery, Sub}}},
-            {"not_in", {id, not_in, {subquery, Sub}}},
-            {"row in", {[id], in, {subquery, Sub}}},
-            {"under not", {'not', {name, '>', {subquery, Sub}}}}
+        {Name ++ On, ?_assertError({kura, unrecognised_condition}, kura_query:where(Q, Cond))}
+     || {On, Q} <- [
+            {" (encrypted)", kura_query:from(?ENC)}, {" (plain)", kura_query:from(kura_test_schema)}
+        ],
+        {Name, Cond} <- Conds
+    ].
+
+subquery_condition_allowed_test_() ->
+    Sub = kura_query:from(kura_test_schema),
+    [
+        ?_assertMatch(#kura_query{}, where_enc(Cond))
+     || Cond <- [
+            {id, in, {subquery, Sub}},
+            {exists, {subquery, Sub}},
+            {not_exists, {subquery, Sub}},
+            {fragment, ~"id = ?", [{subquery, Sub}]},
+            {id, in, [1, 2]},
+            {id, between, {1, 2}},
+            {[id, name], in, [{1, ~"a"}]}
         ]
     ].
 
@@ -642,7 +670,7 @@ subquery_value_is_not_a_cache_hit_test_() ->
     {setup, fun compiler_setup/0, fun compiler_teardown/1, fun() ->
         _ = kura_query_compiler:to_sql_cached(?REPO, where_enc({id, '=', 5})),
         Raw = #kura_query{from = ?ENC, wheres = [{id, '=', {subquery, Sub}}]},
-        ?assertError(?WHERE_SSN, kura_query_compiler:to_sql_cached(?REPO, Raw))
+        ?assertError({kura, unrecognised_condition}, kura_query_compiler:to_sql_cached(?REPO, Raw))
     end}.
 
 %%----------------------------------------------------------------------
