@@ -137,8 +137,7 @@ where(Q = #kura_query{wheres = W}, Condition) ->
     refuse_each([Condition], guard_scope(Q, [], []), encrypted_field_in_where),
     Q#kura_query{wheres = W ++ [Condition]}.
 
-%% The encrypted field names a condition of Q can reach, and the CTEs it can
-%% read from: its own, then those of the queries it is nested in.
+%% A nested query reads its own CTEs before those of the queries around it.
 guard_scope(#kura_query{ctes = Own} = Q, OuterEncrypted, OuterCtes) ->
     Ctes = Own ++ OuterCtes,
     {encrypted_in_scope(Q, Ctes) ++ unshadowed(OuterEncrypted, Q, Ctes), Ctes}.
@@ -177,11 +176,10 @@ source_names(Source) when is_atom(Source) ->
 source_names(_Source) ->
     [].
 
-%% The column names of a CTE that may hold ciphertext: every encrypted field
-%% of its sources, each alias it selects one under, and, for a union branch,
-%% the name its first query gives the position where the branch selects
-%% one. When positions cannot be matched (a SELECT * on either side), every
-%% column of the CTE counts.
+%% A union exposes its first query's column names, so a branch's ciphertext
+%% column is exported under the name at the same position. When positions
+%% cannot be matched (a SELECT * on either side), fail closed: every column
+%% of the CTE counts.
 cte_exports(#kura_query{ctes = Own, select = Select, combinations = C} = Body, OuterCtes) ->
     Ctes = Own ++ OuterCtes,
     Encrypted = encrypted_in_scope(Body, Ctes),

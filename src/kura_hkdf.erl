@@ -1,20 +1,7 @@
 -module(kura_hkdf).
-%% Hidden from the docs until per-column key derivation (#137) uses it.
-%%
-%% HKDF-SHA256 (RFC 5869), built on `crypto:mac/4` since OTP's `crypto` has
-%% no HKDF. Intended for deriving per-purpose subkeys from a keyring root key.
-%%
-%% `extract/2` turns input keying material into a pseudorandom key, and
-%% `expand/3` stretches a pseudorandom key into `Length` bytes bound to
-%% `Info`. An empty `Salt` is the RFC's default of 32 zero bytes, since HMAC
-%% pads a short key with zeros.
-%%
-%% Raises `{kura_hkdf, badarg}` for a salt, input keying material, PRK or
-%% info that is not a binary, or a length that is not an integer;
-%% `{kura_hkdf, short_prk}` for a PRK shorter than 32 bytes, the hash length
-%% RFC 5869 requires; and `{kura_hkdf, {invalid_length, Length}}` for a
-%% length outside `1..8160` (255 blocks of 32 bytes). The reason never
-%% carries key material, and neither does the stacktrace.
+%% HKDF-SHA256 (RFC 5869); OTP's crypto has no HKDF. Hidden from the docs
+%% until per-column key derivation (#137) uses it. Errors never carry key
+%% material, in the reason or the stacktrace.
 -moduledoc false.
 
 -export([extract/2, expand/3]).

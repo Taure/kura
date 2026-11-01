@@ -483,14 +483,15 @@ Recognise an encrypted field type. Every check for "is this field
 encrypted" goes through here: the query guard, audit redaction, schema
 validation and the cast, dump and load seams.
 
-Returns `{ok, #{inner => Inner}}` for `{encrypted, Inner}`, `unsupported` for any other
-tuple tagged `encrypted` (such as a future `{encrypted, Inner, Opts}`), and
-`none` for every other type. An array of an encrypted type is encrypted
-element by element and stored as `BYTEA[]`; it returns the element's spec
-with `array => Depth`, or `unsupported` if the element type is.
-An `unsupported` type is still encrypted: it is redacted and refused in
-filters, a schema that declares one raises when it is first read, and cast,
-dump and load raise on a tagged one rather than handle it as plaintext.
+Returns `{ok, #{inner => Inner}}` for `{encrypted, Inner}`, `unsupported`
+for any other tuple tagged `encrypted` (such as a future `{encrypted,
+Inner, Opts}`), and `none` for every other type. An array of an encrypted
+type is encrypted element by element and stored as `BYTEA[]`; it returns
+the element's spec with `array => Depth`, or `unsupported` if the element
+type is. An `unsupported` type is still encrypted: it is redacted and
+refused in filters, a schema that declares one raises when it is first
+read, and cast, dump and load raise on a tagged one rather than handle it
+as plaintext.
 
 The spec is a map so that later encryption options can be added as keys
 without changing the return shape; only `inner` and `array` exist today.
