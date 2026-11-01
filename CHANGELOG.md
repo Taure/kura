@@ -34,10 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{kura_crypto, unsupported_encrypted_type}`. Before, such a type was
   not redacted by the audit trail, not refused by the filter guard, and
   loaded as its raw ciphertext.
-- `kura_types:load/2` on an encrypted type raises
-  `{kura_crypto, malformed_frame}` for a non-binary value instead of
-  returning `{error, _}`.
-
+- `kura_types:load/2` on an encrypted type loads `undefined`, which
+  kura_sqlite returns for NULL, as `undefined`, and raises
+  `{kura_crypto, malformed_frame}` for any other non-binary value. Both
+  crashed with a `function_clause` in `format_type/1` before.
 - Application boot starts a repo's pool the way `kura_repo_worker:start/1`
   does, through `kura_db:start_pool/1`, from the config
   `kura_repo:config/1` returns (#197). Boot now applies the repo's

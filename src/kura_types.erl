@@ -456,6 +456,8 @@ load(Type, Bytes) when ?IS_ENCRYPTED_TAG(Type), is_binary(Bytes) ->
     Inner = encryptable(encryption(Type)),
     {ok, Loaded} = load(Inner, decode_inner(Inner, kura_crypto:decrypt(Bytes))),
     {ok, Loaded};
+load(Type, undefined) when ?IS_ENCRYPTED_TAG(Type) ->
+    {ok, undefined};
 load(Type, _V) when ?IS_ENCRYPTED_TAG(Type) ->
     erlang:error({kura_crypto, malformed_frame});
 load(vector, V) when is_binary(V) ->

@@ -95,6 +95,11 @@ encryption_test_() ->
         ?_assertEqual(none, kura_types:encryption({embed, embeds_one, kura_test_address})),
         ?_assertError(
             {kura_crypto, malformed_frame}, kura_types:load({encrypted, string}, 42)
+        ),
+        ?_assertEqual({ok, undefined}, kura_types:load({encrypted, string}, undefined)),
+        ?_assertEqual({ok, undefined}, kura_types:load({encrypted, string}, null)),
+        ?_assertEqual(
+            {ok, [undefined]}, kura_types:load({array, {encrypted, string}}, [undefined])
         )
     ].
 
