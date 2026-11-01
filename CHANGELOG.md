@@ -190,6 +190,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `kura_types:cast/2`, `dump/2` and `load/2` crashed with
+  `function_clause` instead of returning `{error, _}` when the error
+  message had to name a `{vector, N}` type or an encrypted type, for
+  example an `{array, {encrypted, string}}` given a non-list. The message
+  names only the type, never the value.
 - `insert_all/3,4` honour `on_conflict`. The option was silently dropped
   and a plain INSERT emitted, so a bulk upsert failed on the unique
   constraint instead of upserting, and the partial-index conflict target

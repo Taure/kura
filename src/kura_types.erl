@@ -757,8 +757,15 @@ format_type({embed, _, Mod}) ->
     atom_to_binary(Mod, utf8);
 format_type({custom, Mod}) ->
     atom_to_binary(Mod, utf8);
+format_type({vector, _}) ->
+    ~"vector";
+format_type(Type) when ?IS_ENCRYPTED_TAG(Type) ->
+    format_encrypted(encryption(Type));
 format_type(T) when is_atom(T) ->
     atom_to_binary(T, utf8).
+
+format_encrypted({ok, Inner}) -> <<"encrypted_", (format_type(Inner))/binary>>;
+format_encrypted(_) -> ~"encrypted".
 
 dump_embed_to_term(Mod, Map) ->
     Types = kura_schema:field_types(Mod),
