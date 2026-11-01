@@ -330,6 +330,20 @@ legacy_defaults_filled(Repo, Filled) ->
 -spec start_pool(module(), atom(), map()) -> ok | {error, term()}.
 start_pool(Repo, Pool, Config) ->
     PoolMod = pool_module(Repo, Config),
+    locked(Pool, fun() -> claimed(Repo, Pool, PoolMod, Config) end).
+
+%% Two repos starting one pool name at once must not both see it unowned.
+%% Only pool start and stop take the lock; queries never do. The requester
+%% is the caller, as global grants a lock again to the same requester.
+-spec locked(atom(), fun(() -> ok | {error, term()})) -> ok | {error, term()}.
+locked(Pool, Run) ->
+    case global:trans({{kura_pool_start, Pool}, self()}, Run, [node()]) of
+        ok -> ok;
+        {error, Reason} -> {error, Reason}
+    end.
+
+-spec claimed(module(), atom(), module(), map()) -> ok | {error, term()}.
+claimed(Repo, Pool, PoolMod, Config) ->
     case owner(Pool) of
         Other when Other =/= undefined, Other =/= Repo ->
             Refused = {pool_owned_by, Other},
@@ -384,8 +398,10 @@ dropped.
 -spec stop_pool(module()) -> ok.
 stop_pool(Repo) ->
     case kura_repo_settings:lookup(Repo) of
-        #{pool := Pool, pool_module := PoolMod} -> stopped(Repo, Pool, PoolMod);
-        _NotStarted -> ok
+        #{pool := Pool, pool_module := PoolMod} ->
+            locked(Pool, fun() -> stopped(Repo, Pool, PoolMod) end);
+        _NotStarted ->
+            ok
     end,
     kura_repo_settings:forget(Repo).
 

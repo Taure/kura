@@ -902,6 +902,33 @@ a_refused_repo_reaches_its_own_pool_once_started_test() ->
         ?assertEqual(own_pool, kura_db:get_pool(kura_db_other_repo))
     end).
 
+concurrent_starts_of_one_pool_name_leave_one_owner_test() ->
+    Repos = [list_to_atom("kura_db_racing_repo_" ++ integer_to_list(N)) || N <- lists:seq(1, 5)],
+    Config = #{pool => raced_pool, pool_module => ?MODULE, answer_after => 20},
+    application:set_env(kura, repos, #{Repo => Config || Repo <- Repos}),
+    Self = self(),
+    try
+        _ = with_captured_logs(fun() ->
+            _ = [spawn(fun() -> Self ! {Repo, kura_repo_worker:start(Repo)} end) || Repo <- Repos],
+            put({?MODULE, raced}, [raced(Repo) || Repo <- Repos])
+        end),
+        Results = erase({?MODULE, raced}),
+        [Owner] = [Repo || {Repo, ok} <- Results],
+        ?assertEqual(
+            [{pool_owned_by, Owner} || _ <- tl(Repos)],
+            [Reason || {_Repo, {error, Reason}} <- Results]
+        )
+    after
+        application:unset_env(kura, repos),
+        kura_db:forget_pools()
+    end.
+
+raced(Repo) ->
+    receive
+        {Repo, Result} -> {Repo, Result}
+    after 5000 -> {Repo, timeout}
+    end.
+
 with_two_repos(Run) ->
     Shared = #{pool => shared_pool, pool_module => ?MODULE},
     with_pool_answer({ok, self()}, fun() ->
@@ -919,9 +946,16 @@ start_pool(Pool, Config) ->
     put({?MODULE, pool_name}, Pool),
     put({?MODULE, pool_config}, Config),
     case get({?MODULE, pool_answer}) of
+        undefined -> answer_after(maps:get(answer_after, Config, 0));
         {raise, Reason} -> error(Reason, [Pool, Config]);
         Answer -> Answer
     end.
+
+%% A start from another process, as a pool module that answers {ok, Pid}
+%% for a name already running would.
+answer_after(Millis) ->
+    timer:sleep(Millis),
+    {ok, self()}.
 
 log(#{meta := #{pid := Pid}} = Event, #{config := #{collector := Collector, pid := Pid}}) ->
     Collector ! {logged, Event};
