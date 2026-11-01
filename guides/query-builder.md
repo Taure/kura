@@ -229,10 +229,11 @@ or a list holding anything but numbers.
 - the field must be a `vector` or `{vector, N}` field;
 - for `{vector, N}`, the query vector must have `N` elements.
 
-Not supported yet: a distance in `where` or `having` (a threshold), in a
-window `order_by` inside `over/2`, and keyset pagination over a distance
-with `kura_paginator`, which builds its own `ORDER BY`. The SQLite
-backend has no distance operators.
+Not supported yet: a distance in `where` or `having` (a threshold), in
+`group_by/2` or in a window from `over/2`. Each raises `{kura,
+{distance_not_supported_here, Clause}}`. Keyset pagination over a
+distance with `kura_paginator`, which builds its own `ORDER BY`, is not
+supported either. The SQLite backend has no distance operators.
 
 ### Installing the extension
 

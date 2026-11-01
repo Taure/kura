@@ -242,3 +242,61 @@ preformatted_vector() -> ~"[1,2,3]".
 
 -spec hand_built_distance() -> dynamic().
 hand_built_distance() -> {distance, embedding, l2, [1]}.
+
+%% Thresholds land in PR2. Until then a distance outside order_by and
+%% select_expr would leave its vector in the cache key and crash the
+%% dialect, so the builder refuses it.
+distance_outside_order_by_and_select_raises_test_() ->
+    D = kura_query:distance(embedding, cosine, [1, 2, 3]),
+    Q = kura_query:from(?VEC_SCHEMA),
+    [
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}}, kura_query:where(Q, {D, '<', 0.3})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}},
+            kura_query:where(Q, {D, between, {0.1, 0.3}})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}},
+            kura_query:where(Q, {'and', [{id, 1}, {D, '<', 0.3}]})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}},
+            kura_query:where(Q, {'or', [{'not', {D, '>', 0.9}}]})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}}, kura_query:where(Q, {content, D})
+        ),
+        ?_assertError({kura, {distance_not_supported_here, where}}, kura_query:where(Q, D)),
+        ?_assertError(
+            {kura, {distance_not_supported_here, having}}, kura_query:having(Q, {D, '<', 0.3})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, group_by}},
+            kura_query:group_by(Q, [content, untyped_distance()])
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, over}},
+            kura_query:over(rank, #{order_by => [{untyped_distance(), asc}]})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, over}},
+            kura_query:over(row_number, #{partition_by => [untyped_distance()]})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, over}},
+            kura_query:over({min, untyped_distance()}, #{})
+        )
+    ].
+
+%% Only a field or value position is inspected: a bound value that
+%% happens to look like a distance node is data.
+distance_shaped_values_in_lists_are_left_alone_test() ->
+    Q = kura_query:where(kura_query:from(items), {tag, in, [{distance, a, l2, ~"x"}]}),
+    ?assertEqual([{tag, in, [{distance, a, l2, ~"x"}]}], Q#kura_query.wheres).
+
+%% group_by/2 and over/2 are typed for field atoms; a caller can still pass
+%% a distance.
+-spec untyped_distance() -> dynamic().
+untyped_distance() -> kura_query:distance(embedding, cosine, [1, 2, 3]).

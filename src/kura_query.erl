@@ -100,7 +100,15 @@ capability (PostgreSQL, or SQLite 3.25+).
 """.
 -spec over(window_fn(), window_spec()) -> {over, window_fn(), window_spec()}.
 over(WindowFn, Spec) when is_map(Spec) ->
+    reject_distances(over, window_fn_fields(WindowFn) ++ window_spec_fields(Spec)),
     {over, WindowFn, Spec}.
+
+window_fn_fields({_Agg, Field}) -> [Field];
+window_fn_fields(_Fn) -> [].
+
+window_spec_fields(Spec) ->
+    Orders = [Expr || {Expr, _Dir} <- maps:get(order_by, Spec, [])],
+    maps:get(partition_by, Spec, []) ++ Orders.
 
 -doc """
 Build a pgvector distance between the vector field `Field` and `Vector`,
@@ -118,6 +126,10 @@ holds anything but numbers raises.
 The query must be `from/1` a schema in which `Field` is a `vector` or
 `{vector, N}` field, and for `{vector, N}` the vector must have `N`
 elements. `order_by/2` and `select_expr/2` raise otherwise.
+
+A distance anywhere else, in `where/2`, `having/2`, `group_by/2` or a
+window from `over/2`, raises `{kura, {distance_not_supported_here,
+Clause}}`.
 
 ```erlang
 D = kura_query:distance(embedding, cosine, QueryVector),
@@ -172,6 +184,28 @@ check_distance(_Types, Distance) ->
 dimension(Text) ->
     length(binary:matches(Text, ~",")) + 1.
 
+reject_distances(Clause, Terms) ->
+    case lists:any(fun is_distance/1, Terms) of
+        true -> erlang:error({kura, {distance_not_supported_here, Clause}});
+        false -> ok
+    end.
+
+%% A distance reaches a condition only as its field or its value, never
+%% deeper, so a bound value that happens to look like one is left alone.
+reject_distance_cond(Clause, {Op, Conds}) when (Op =:= 'and' orelse Op =:= 'or'), is_list(Conds) ->
+    lists:foreach(fun(C) -> reject_distance_cond(Clause, C) end, Conds);
+reject_distance_cond(Clause, {'not', Cond}) ->
+    reject_distance_cond(Clause, Cond);
+reject_distance_cond(_Clause, {fragment, _SQL, _Params}) ->
+    ok;
+reject_distance_cond(Clause, Cond) when is_tuple(Cond) ->
+    reject_distances(Clause, [Cond | tuple_to_list(Cond)]);
+reject_distance_cond(_Clause, _Cond) ->
+    ok.
+
+is_distance({distance, _Field, _Metric, _Vector}) -> true;
+is_distance(_) -> false.
+
 -doc """
 Add a WHERE condition. Conditions: `{field, value}`, `{field, op, value}`,
 `{'and', [...]}`, etc.
@@ -183,6 +217,7 @@ bind parameter, into `pg_stat_statements` and the query log.
 """.
 -spec where(#kura_query{}, term()) -> #kura_query{}.
 where(Q = #kura_query{from = From, wheres = W}, Condition) ->
+    reject_distance_cond(where, Condition),
     reject_encrypted(From, Condition),
     Q#kura_query{wheres = W ++ [Condition]}.
 
@@ -249,10 +284,12 @@ order_by(Q = #kura_query{from = From}, Orders) ->
 
 -spec group_by(#kura_query{}, [atom()]) -> #kura_query{}.
 group_by(Q, Fields) ->
+    reject_distances(group_by, Fields),
     Q#kura_query{group_bys = Fields}.
 
 -spec having(#kura_query{}, term()) -> #kura_query{}.
 having(Q = #kura_query{havings = H}, Condition) ->
+    reject_distance_cond(having, Condition),
     Q#kura_query{havings = H ++ [Condition]}.
 
 -spec limit(#kura_query{}, non_neg_integer()) -> #kura_query{}.

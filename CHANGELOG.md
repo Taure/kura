@@ -236,7 +236,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   widens from `{atom(), Dir}` to `{atom() | distance(), Dir}`, and in
   `select_expr/2`. The vector is cast and dumped to text when
   the distance is built, and the query must be `from/1` a schema in which
-  the field is a `vector` or `{vector, N}` of matching dimension. The
+  the field is a `vector` or `{vector, N}` of matching dimension. A
+  distance in `where/2`, `having/2`, `group_by/2` or `over/2` raises
+  `{kura, {distance_not_supported_here, Clause}}`. The
   query builder guide covers search-time settings (`SET LOCAL
   hnsw.ef_search` in a transaction) and leaves `CREATE EXTENSION` to the
   cluster bootstrap.
