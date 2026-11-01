@@ -266,7 +266,9 @@ pool module reports a name that is already running. The refusal is logged as a
 pool that did not start, and the refused repo's queries raise
 `{pool_owned_by, Owner}` instead of running on that pool. The owner starting
 its pool again gets `ok`. A pool already running that kura did not start goes
-to the first repo that starts it. A pool stopped outside kura stays owned;
+to the first repo that starts it, with a warning that names the repo, the pool
+and the pool module: that pool keeps the connection settings it was started
+with. A pool stopped outside kura stays owned;
 `stop_pool/1` releases it.
 
 A start that fails leaves the stored settings as they were when the repo's
@@ -396,17 +398,18 @@ claimed(Repo, Pool, PoolMod, Config) ->
             ok = kura_repo_settings:refused(Repo, Other),
             ok = not_started(Repo, PoolMod, #{reason => Refused, pool => Pool}),
             {error, Refused};
-        _OwnedOrUnclaimed ->
-            pool_started(Repo, Pool, PoolMod, Config)
+        Owner ->
+            pool_started(Repo, Pool, PoolMod, Config, Owner =:= Repo)
     end.
 
--spec pool_started(module(), atom(), module(), map()) -> claim().
-pool_started(Repo, Pool, PoolMod, Config) ->
+-spec pool_started(module(), atom(), module(), map(), boolean()) -> claim().
+pool_started(Repo, Pool, PoolMod, Config, Owned) ->
     Secrets = secrets(Config),
     try PoolMod:start_pool(Pool, maps:without(?REPO_KEYS, Config)) of
         {ok, _Pid} ->
             owned(Repo, Pool, PoolMod, Config);
         {error, {already_started, _Pid}} ->
+            ok = adopted(Repo, Pool, PoolMod, Owned),
             owned(Repo, Pool, PoolMod, Config);
         {error, Reason} ->
             Redacted = redacted(Reason, Secrets),
@@ -420,6 +423,21 @@ pool_started(Repo, Pool, PoolMod, Config) ->
             ok = not_started(Repo, PoolMod, #{reason => Redacted, stacktrace => arities(Stack)}),
             error({pool_start_failed, Repo, Redacted})
     end.
+
+%% A running pool kura did not start keeps the settings it was started with,
+%% which may not be the repo's.
+-spec adopted(module(), atom(), module(), boolean()) -> ok.
+adopted(_Repo, _Pool, _PoolMod, true) ->
+    ok;
+adopted(Repo, Pool, PoolMod, false) ->
+    ?LOG_WARNING(#{
+        msg => ~"kura: adopted a running pool kura did not start",
+        repo => Repo,
+        pool => Pool,
+        pool_module => PoolMod,
+        action => ~"it keeps the connection settings it was started with"
+    }),
+    ok.
 
 %% A repo moved to a pool that did not start must not keep querying the pool
 %% it was on before. A failed restart on the same pool keeps its settings.

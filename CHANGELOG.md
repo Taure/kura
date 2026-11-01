@@ -72,7 +72,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pool module that answers `{ok, Pid}` for a name already running, as
   `kura_pool_minato` did. The repo that started a pool can start it
   again and gets `ok`. A pool already running that kura did not start
-  goes to the first repo that starts it. A pool stays owned until
+  goes to the first repo that starts it, with a warning naming the repo,
+  the pool and the pool module, since it keeps the connection settings
+  it was started with. Changing a running repo's credentials takes
+  `kura_db:stop_pool/1` and then `kura_repo_worker:start/1`; `start/1`
+  alone returns `ok` and leaves the pool as it is. A pool stays owned until
   `kura_db:stop_pool/1` releases it, also when it was stopped outside
   kura. A repo whose pool name another repo owns cannot query it either:
   `kura_db:get_pool/1` raises `{pool_owned_by, Owner}`, which covers a

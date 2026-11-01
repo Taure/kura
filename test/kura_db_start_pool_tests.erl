@@ -63,13 +63,42 @@ start_repo_pool_passes_the_repo_config_to_the_pool_module_test() ->
     end),
     ?assertEqual(#{database => ~"db"}, Received).
 
-pool_already_started_is_not_logged_test() ->
-    Events = with_captured_logs(fun() ->
-        with_pool_answer({error, {already_started, self()}}, fun() ->
+pool_already_started_by_its_owner_is_not_logged_test() ->
+    Events = with_pool_answer({ok, self()}, fun() ->
+        ?assertEqual(ok, kura_app:start_repo_pool(kura_db_failing_repo)),
+        put({?MODULE, pool_answer}, {error, {already_started, self()}}),
+        with_captured_logs(fun() ->
             ?assertEqual(ok, kura_app:start_repo_pool(kura_db_failing_repo))
         end)
     end),
     ?assertEqual([], Events).
+
+adopting_a_running_pool_kura_did_not_start_is_logged_test() ->
+    Events = with_captured_logs(fun() ->
+        with_pool_answer(
+            {error, {already_started, self()}},
+            #{password => ~"s3cret", database => ~"db"},
+            fun() -> ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)) end
+        )
+    end),
+    ?assertMatch(
+        [
+            #{
+                level := warning,
+                msg :=
+                    {report, #{
+                        msg := ~"kura: adopted a running pool kura did not start",
+                        repo := kura_db_failing_repo,
+                        pool := kura_db_failing_repo,
+                        pool_module := ?MODULE
+                    }}
+            }
+        ],
+        Events
+    ),
+    [#{msg := {report, Report}}] = Events,
+    ?assertEqual([action, msg, pool, pool_module, repo], lists:sort(maps:keys(Report))),
+    ?assertEqual(nomatch, string:find(io_lib:format("~p", [Report]), "s3cret")).
 
 %%----------------------------------------------------------------------
 %% kura_repo_worker:start/1 reports a pool that did not start
@@ -128,9 +157,11 @@ repo_worker_start_failure_hides_a_non_ascii_password_test() ->
     end),
     ?assertMatch([#{msg := {report, #{reason := {boom, {state, redacted}}}}}], Events).
 
-repo_worker_already_started_is_not_logged_test() ->
-    Events = with_captured_logs(fun() ->
-        with_pool_answer({error, {already_started, self()}}, #{database => ~"db"}, fun() ->
+repo_worker_already_started_by_its_owner_is_not_logged_test() ->
+    Events = with_pool_answer({ok, self()}, #{database => ~"db"}, fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        put({?MODULE, pool_answer}, {error, {already_started, self()}}),
+        with_captured_logs(fun() ->
             ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo))
         end)
     end),
@@ -856,7 +887,9 @@ the_owner_starting_its_pool_again_is_ok_test() ->
 a_running_pool_kura_did_not_start_goes_to_the_first_repo_test() ->
     with_two_repos(fun() ->
         put({?MODULE, pool_answer}, {error, {already_started, self()}}),
-        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        _ = with_captured_logs(fun() ->
+            ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo))
+        end),
         _ = with_captured_logs(fun() ->
             ?assertEqual(
                 {error, {pool_owned_by, kura_db_owner_repo}},
