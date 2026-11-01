@@ -262,10 +262,15 @@ ends and never reach the next query that checks out the connection:
 ```erlang
 kura_repo_worker:transaction(my_repo, fun() ->
     {ok, _} = kura_repo_worker:query(my_repo, ~"SET LOCAL hnsw.ef_search = 100", []),
-    {ok, _} = kura_repo_worker:query(my_repo, ~"SET LOCAL hnsw.iterative_scan = relaxed_order", []),
+    {ok, _} = kura_repo_worker:query(my_repo, ~"SET LOCAL hnsw.iterative_scan = strict_order", []),
     kura_repo_worker:all(my_repo, Q3)
 end).
 ```
+
+Use `strict_order`. `relaxed_order` scans faster but can return rows
+slightly out of distance order, and is only safe when the results are
+sorted again afterwards, which pgvector does with a materialized CTE
+that the query builder does not express.
 
 ## Preloading (in queries)
 
