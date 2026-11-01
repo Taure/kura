@@ -151,16 +151,17 @@ is_schema(Mod) when is_atom(Mod) ->
     end).
 
 -doc """
-Return the names of `Mod`'s `{encrypted, _}` fields, or `[]` if it has none
-or is not a schema. Encryption uses a random nonce, so a stored value never
-equals a freshly encrypted one - these fields cannot be filtered on.
+Return the names of `Mod`'s encrypted fields (see `kura_types:encryption/1`),
+or `[]` if it has none or is not a schema. Encryption uses a random nonce, so
+a stored value never equals a freshly encrypted one - these fields cannot be
+filtered on.
 """.
 -spec encrypted_fields(atom()) -> [atom()].
 encrypted_fields(Mod) when is_atom(Mod) ->
     cache({kura_schema, encrypted_fields, Mod}, fun() ->
         case is_schema(Mod) of
             false -> [];
-            true -> [N || N := {encrypted, _} <- field_types(Mod)]
+            true -> [N || N := T <- field_types(Mod), kura_types:encryption(T) =/= none]
         end
     end).
 

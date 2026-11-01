@@ -10,9 +10,9 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
 - `load/2` - convert driver results back to Erlang terms
 """.
 
--export([to_pg_type/1, from_pg_type/2, cast/2, dump/2, load/2]).
+-export([to_pg_type/1, from_pg_type/2, cast/2, dump/2, load/2, encryption/1]).
 
--export_type([kura_type/0]).
+-export_type([kura_type/0, encryption/0]).
 
 -type kura_type() ::
     id
@@ -38,6 +38,12 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
     | {vector, pos_integer()}
     | {embed, embeds_one | embeds_many, module()}
     | {custom, module()}.
+
+-type encryption() :: none | {ok, kura_type()} | unsupported.
+
+%% Any tuple tagged `encrypted`, whatever its arity, so a form this release
+%% does not support is still treated as encrypted and fails closed.
+-define(IS_ENCRYPTED_TAG(T), (is_tuple(T) andalso element(1, T) =:= encrypted)).
 
 -ifdef(TEST).
 -export([encryptable_inner/1, encode_inner/2, decode_inner/2]).
@@ -67,7 +73,7 @@ to_pg_type(uuid) -> ~"UUID";
 to_pg_type(jsonb) -> ~"JSONB";
 to_pg_type({enum, _}) -> ~"VARCHAR(255)";
 to_pg_type({array, Inner}) -> <<(to_pg_type(Inner))/binary, "[]">>;
-to_pg_type({encrypted, _}) -> ~"BYTEA";
+to_pg_type(Type) when ?IS_ENCRYPTED_TAG(Type) -> encrypted_pg_type(encryption(Type));
 to_pg_type(vector) -> ~"VECTOR";
 to_pg_type({vector, N}) -> <<"VECTOR(", (integer_to_binary(N))/binary, ")">>;
 to_pg_type({embed, _, _}) -> ~"JSONB";
@@ -271,13 +277,8 @@ cast({embed, embeds_one, _}, V) when is_map(V) ->
     {ok, V};
 cast({embed, embeds_many, _}, V) when is_list(V) ->
     {ok, V};
-cast({encrypted, Inner}, V) ->
-    case encryptable_inner(Inner) of
-        true ->
-            cast(Inner, V);
-        false ->
-            {error, <<"cannot use ", (format_type(Inner))/binary, " as an encrypted inner type">>}
-    end;
+cast(Type, V) when ?IS_ENCRYPTED_TAG(Type) ->
+    cast_encrypted(encryption(Type), V);
 cast(vector, V) when is_list(V) ->
     cast_vector(V, undefined);
 cast({vector, N}, V) when is_list(V) ->
@@ -354,10 +355,10 @@ dump({embed, embeds_one, Mod}, V) when is_map(V) ->
     json_encode(dump_embed_to_term(Mod, V));
 dump({embed, embeds_many, Mod}, V) when is_list(V) ->
     json_encode([dump_embed_to_term(Mod, Item) || Item <- V]);
-dump({encrypted, Inner}, V) ->
+dump(Type, V) when ?IS_ENCRYPTED_TAG(Type) ->
     %% Raise (never return {error}) so no caller can substitute plaintext
     %% for an encrypted field by treating a dump failure as recoverable.
-    encryptable_inner(Inner) orelse erlang:error({kura_crypto, {not_encryptable, Inner}}),
+    Inner = encryptable(encryption(Type)),
     {ok, Wire} = dump(Inner, V),
     {ok, kura_crypto:encrypt(encode_inner(Inner, Wire))};
 dump(vector, V) when is_list(V) ->
@@ -448,12 +449,14 @@ load({embed, embeds_many, Mod}, V) when is_binary(V) ->
     end;
 load({embed, embeds_many, Mod}, V) when is_list(V) ->
     {ok, [load_embed_map(Mod, M) || M <- V]};
-load({encrypted, Inner}, Bytes) when is_binary(Bytes) ->
+load(Type, Bytes) when ?IS_ENCRYPTED_TAG(Type), is_binary(Bytes) ->
     %% Raise (never return {error}) so the fail-open load seam can't
     %% substitute raw ciphertext for the field value.
-    encryptable_inner(Inner) orelse erlang:error({kura_crypto, {not_encryptable, Inner}}),
+    Inner = encryptable(encryption(Type)),
     {ok, Loaded} = load(Inner, decode_inner(Inner, kura_crypto:decrypt(Bytes))),
     {ok, Loaded};
+load(Type, _V) when ?IS_ENCRYPTED_TAG(Type) ->
+    erlang:error({kura_crypto, malformed_frame});
 load(vector, V) when is_binary(V) ->
     {ok, parse_vector(V)};
 load({vector, _}, V) when is_binary(V) ->
@@ -471,6 +474,41 @@ load(Type, _V) ->
 %% (no term_to_binary) is used - a bounded codec keyed on Inner, so a
 %% decrypted-but-corrupt payload can never forge an arbitrary term.
 %%----------------------------------------------------------------------
+
+-doc """
+Recognise an encrypted field type. Every check for "is this field
+encrypted" goes through here: the query guard, audit redaction, schema
+validation and the cast, dump and load seams.
+
+Returns `{ok, Inner}` for `{encrypted, Inner}`, `unsupported` for any other
+tuple tagged `encrypted` (such as a future `{encrypted, Inner, Opts}`), and
+`none` for every other type. An `unsupported` type is still encrypted: it is
+redacted and refused in filters, and cast, dump and load raise on it rather
+than handle it as plaintext.
+""".
+-spec encryption(kura_type() | {encrypted, kura_type(), term()}) -> encryption().
+encryption({encrypted, Inner}) -> {ok, Inner};
+encryption(Type) when ?IS_ENCRYPTED_TAG(Type) -> unsupported;
+encryption(_Type) -> none.
+
+encrypted_pg_type({ok, _Inner}) -> ~"BYTEA";
+encrypted_pg_type(_) -> erlang:error({kura_crypto, unsupported_encrypted_type}).
+
+cast_encrypted({ok, Inner}, V) ->
+    case encryptable_inner(Inner) of
+        true ->
+            cast(Inner, V);
+        false ->
+            {error, <<"cannot use ", (format_type(Inner))/binary, " as an encrypted inner type">>}
+    end;
+cast_encrypted(_, _V) ->
+    erlang:error({kura_crypto, unsupported_encrypted_type}).
+
+encryptable({ok, Inner}) ->
+    encryptable_inner(Inner) orelse erlang:error({kura_crypto, {not_encryptable, Inner}}),
+    Inner;
+encryptable(_) ->
+    erlang:error({kura_crypto, unsupported_encrypted_type}).
 
 -doc "Return `true` if `Inner` may be used as an `{encrypted, Inner}` inner type.".
 -spec encryptable_inner(kura_type()) -> boolean().
