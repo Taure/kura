@@ -742,6 +742,52 @@ with_counting_repo(Run) ->
 query(?MODULE, counted_pool, _SQL, _Params, _Opts) ->
     #{rows => [], num_rows => 0}.
 
+a_failed_start_on_a_new_pool_stops_queries_reaching_the_old_one_test() ->
+    with_pool_answer({ok, self()}, #{pool => old_pool}, fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        application:set_env(kura, repos, #{
+            kura_db_failing_repo => #{pool => new_pool, pool_module => ?MODULE}
+        }),
+        put({?MODULE, pool_answer}, {error, econnrefused}),
+        _ = with_captured_logs(fun() ->
+            ?assertEqual({error, econnrefused}, kura_repo_worker:start(kura_db_failing_repo))
+        end),
+        ?assertError({pool_not_started, new_pool}, kura_db:get_pool(kura_db_failing_repo)),
+        put({?MODULE, pool_answer}, {ok, self()}),
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        ?assertEqual(new_pool, kura_db:get_pool(kura_db_failing_repo))
+    end).
+
+a_raised_start_on_a_new_pool_stops_queries_reaching_the_old_one_test() ->
+    with_pool_answer({ok, self()}, #{pool => old_pool}, fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        application:set_env(kura, repos, #{
+            kura_db_failing_repo => #{pool => new_pool, pool_module => ?MODULE}
+        }),
+        put({?MODULE, pool_answer}, {raise, boom}),
+        _ = with_captured_logs(fun() ->
+            ?assertError({pool_start_failed, _, _}, kura_repo_worker:start(kura_db_failing_repo))
+        end),
+        ?assertError({pool_not_started, new_pool}, kura_db:get_pool(kura_db_failing_repo))
+    end).
+
+a_failed_restart_on_the_same_pool_keeps_the_settings_test() ->
+    with_pool_answer({ok, self()}, #{pool => old_pool}, fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        put({?MODULE, pool_answer}, {error, econnrefused}),
+        _ = with_captured_logs(fun() -> kura_repo_worker:start(kura_db_failing_repo) end),
+        ?assertEqual(old_pool, kura_db:get_pool(kura_db_failing_repo))
+    end).
+
+a_restart_where_only_init_fails_keeps_the_settings_test() ->
+    with_counting_repo(fun(Repo) ->
+        ?assertEqual(ok, kura_repo_worker:start(Repo)),
+        _ = with_captured_logs(fun() ->
+            ?assertMatch({error, {init_failed, _}}, kura_repo_worker:start(Repo))
+        end),
+        ?assertEqual(counted_pool, kura_db:get_pool(Repo))
+    end).
+
 %%----------------------------------------------------------------------
 %% A pool belongs to the repo that started it (#201)
 %%----------------------------------------------------------------------

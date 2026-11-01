@@ -163,13 +163,16 @@ Once `kura_db:start_pool/1` has started the repo's pool, these are the
 settings it was started with, read without calling `init/1`; starting the
 pool again re-reads them. For a repo whose pool kura has not started, they
 come from `config/1` on each call. A repo refused a pool that another repo
-owns raises `{pool_owned_by, Owner}` until its own pool starts.
+owns raises `{pool_owned_by, Owner}` until its own pool starts. A repo whose
+config moved it to a pool that then failed to start raises
+`{pool_not_started, Pool}` until a start succeeds.
 """.
 -spec settings(module()) -> settings().
 settings(RepoMod) ->
     case kura_repo_settings:lookup(RepoMod) of
         #{} = Settings -> Settings;
         {pool_owned_by, Owner} -> error({pool_owned_by, Owner});
+        {pool_not_started, Pool} -> error({pool_not_started, Pool});
         none -> kura_repo_settings:from_config(config(RepoMod))
     end.
 

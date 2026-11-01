@@ -1,7 +1,7 @@
 -module(kura_repo_settings).
 -moduledoc false.
 
--export([lookup/1, from_config/1, started/2, refused/2, forget/1]).
+-export([lookup/1, from_config/1, started/2, refused/2, not_started/2, forget/1]).
 
 -ifdef(TEST).
 -export([forget/0]).
@@ -11,7 +11,8 @@
 
 -define(SETTINGS, [dialect, pool, pool_module, driver_module, read_only, replicas, uuid_version]).
 
--type stored() :: kura_repo:settings() | {pool_owned_by, module()} | none.
+-type stored() ::
+    kura_repo:settings() | {pool_owned_by, module()} | {pool_not_started, atom()} | none.
 
 -spec lookup(module()) -> stored().
 lookup(Repo) ->
@@ -28,6 +29,10 @@ started(Repo, Config) ->
 -spec refused(module(), module()) -> ok.
 refused(Repo, Owner) ->
     persistent_term:put({?MODULE, Repo}, {pool_owned_by, Owner}).
+
+-spec not_started(module(), atom()) -> ok.
+not_started(Repo, Pool) ->
+    persistent_term:put({?MODULE, Repo}, {pool_not_started, Pool}).
 
 -spec forget(module()) -> ok.
 forget(Repo) ->

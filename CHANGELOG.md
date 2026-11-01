@@ -48,7 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raises later no longer turns every query into that exception, with the
   config in the crash report. Connection settings and secrets are not
   kept. The settings change only when the pool is started again:
-  `kura_repo_worker:start/1` on a running pool re-reads them. A repo
+  `kura_repo_worker:start/1` on a running pool re-reads them. A start
+  that moves the repo to another pool name and fails makes its queries
+  raise `{pool_not_started, Pool}` instead of reaching the previous pool;
+  a failed restart on the same pool, or a failing `init/1`, keeps the
+  previous settings. A repo
   whose pool kura did not start falls back to the old lookup, its config
   read and `init/1` run on each call. `kura_repo:config/1` still reads
   the config afresh each call.

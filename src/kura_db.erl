@@ -254,6 +254,11 @@ pool that did not start, and the refused repo's queries raise
 its pool again gets `ok`. A pool already running that kura did not start goes
 to the first repo that starts it. A pool stopped outside kura stays owned;
 `stop_pool/1` releases it.
+
+A start that fails leaves the stored settings as they were when the repo's
+pool is the one it was started on before, or when only `init/1` failed. When
+the config now names another pool and that pool does not start, the repo's
+queries raise `{pool_not_started, Pool}` rather than run on the previous pool.
 """.
 -spec start_pool(module()) -> ok | {error, term()}.
 start_pool(Repo) ->
@@ -364,13 +369,24 @@ pool_started(Repo, Pool, PoolMod, Config) ->
             owned(Repo, Pool, Config);
         {error, Reason} ->
             Redacted = redacted(Reason, Secrets),
+            ok = not_running(Repo, Pool),
             ok = not_started(Repo, PoolMod, #{reason => Redacted}),
             {error, Redacted}
     catch
         Class:Reason:Stack ->
             Redacted = {Class, redacted(Reason, Secrets)},
+            ok = not_running(Repo, Pool),
             ok = not_started(Repo, PoolMod, #{reason => Redacted, stacktrace => arities(Stack)}),
             error({pool_start_failed, Repo, Redacted})
+    end.
+
+%% A repo moved to a pool that did not start must not keep querying the pool
+%% it was on before. A failed restart on the same pool keeps its settings.
+-spec not_running(module(), atom()) -> ok.
+not_running(Repo, Pool) ->
+    case kura_repo_settings:lookup(Repo) of
+        #{pool := Running} when Running =/= Pool -> kura_repo_settings:not_started(Repo, Pool);
+        _SamePoolOrNone -> ok
     end.
 
 -spec owned(module(), atom(), map()) -> ok.
