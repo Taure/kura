@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `{Field, is_nil}` and `{Field, is_not_nil}` on an encrypted field are
   accepted by `where/2`. They bind nothing, and `NULL` is stored
   unencrypted.
+- `order_by/2` on an encrypted field raises
+  `{kura, {encrypted_field_in_order_by, Field}}`; `sum`, `avg`, `min` or
+  `max` of one, in `select/2`, the aggregate helpers or a window function,
+  raises `{kura, {encrypted_field_in_aggregate, Field}}`; and a window
+  `partition_by` or `order_by` on one raises
+  `{kura, {encrypted_field_in_window, Field}}`. The result would be
+  ordered or computed over ciphertexts. `count` is allowed. The compiler
+  re-check covers these too.
 - `kura_schema` refuses an encrypted primary key, association key
   (foreign key, referenced key or join-table key) or a field of an
   embedded schema, raising `{kura, {encrypted_primary_key, Mod, Field}}`,

@@ -59,9 +59,17 @@ Q3 = kura_query:limit(Q2, 10).
 from(Source) ->
     #kura_query{from = Source}.
 
--doc "Set the SELECT fields. Pass atoms for columns or `{agg, field}` tuples for aggregates.".
+-doc """
+Set the SELECT fields. Pass atoms for columns or `{agg, field}` tuples for
+aggregates.
+
+`sum`, `avg`, `min` or `max` of an encrypted field raises
+`{kura, {encrypted_field_in_aggregate, Field}}`: it would be computed over
+ciphertexts. `count` is allowed.
+""".
 -spec select(#kura_query{}, [atom() | term()]) -> #kura_query{}.
 select(Q, Fields) ->
+    refuse_select(Fields, guard_scope(Q, [], [])),
     Q#kura_query{select = Fields}.
 
 -doc """
@@ -79,6 +87,7 @@ Q = kura_query:select_expr(kura_query:from(sales), [
 """.
 -spec select_expr(#kura_query{}, [term()]) -> #kura_query{}.
 select_expr(Q, Exprs) ->
+    refuse_select({exprs, Exprs}, guard_scope(Q, [], [])),
     Q#kura_query{select = {exprs, Exprs}}.
 
 -doc """
@@ -224,6 +233,56 @@ refuse_encrypted_cond(_Cond, {[], _Ctes}, _Reason) ->
 refuse_encrypted_cond(_Cond, _Scope, _Reason) ->
     erlang:error({kura, unrecognised_condition}).
 
+%% Ordering, windowing and aggregating by an encrypted field bind nothing,
+%% but would order or compute over ciphertexts, so they are refused too.
+%% Malformed entries are left to the dialect: they carry no values.
+refuse_orders([{Field, _Dir} | Rest], Scope) ->
+    refuse_field(Field, Scope, encrypted_field_in_order_by),
+    refuse_orders(Rest, Scope);
+refuse_orders([_ | Rest], Scope) ->
+    refuse_orders(Rest, Scope);
+refuse_orders(_, _Scope) ->
+    ok.
+
+refuse_select({exprs, Exprs}, Scope) ->
+    refuse_exprs(Exprs, Scope);
+refuse_select(Fields, Scope) ->
+    refuse_aggregates(Fields, Scope).
+
+refuse_exprs([{_Alias, {over, Fn, Spec}} | Rest], Scope) ->
+    refuse_aggregates([Fn], Scope),
+    refuse_window(Spec, Scope),
+    refuse_exprs(Rest, Scope);
+refuse_exprs([_ | Rest], Scope) ->
+    refuse_exprs(Rest, Scope);
+refuse_exprs(_, _Scope) ->
+    ok.
+
+refuse_aggregates([{Agg, Field} | Rest], Scope) when
+    Agg =:= sum; Agg =:= avg; Agg =:= min; Agg =:= max
+->
+    refuse_field(Field, Scope, encrypted_field_in_aggregate),
+    refuse_aggregates(Rest, Scope);
+refuse_aggregates([_ | Rest], Scope) ->
+    refuse_aggregates(Rest, Scope);
+refuse_aggregates(_, _Scope) ->
+    ok.
+
+refuse_window(#{} = Spec, Scope) ->
+    refuse_window_fields(maps:get(partition_by, Spec, []), Scope),
+    refuse_window_fields(maps:get(order_by, Spec, []), Scope);
+refuse_window(_Spec, _Scope) ->
+    ok.
+
+refuse_window_fields([{Field, _Dir} | Rest], Scope) ->
+    refuse_field(Field, Scope, encrypted_field_in_window),
+    refuse_window_fields(Rest, Scope);
+refuse_window_fields([Field | Rest], Scope) ->
+    refuse_field(Field, Scope, encrypted_field_in_window),
+    refuse_window_fields(Rest, Scope);
+refuse_window_fields(_, _Scope) ->
+    ok.
+
 %% A subquery in a value position is checked like any other: its conditions
 %% can reach the outer query's encrypted fields. kura_query_shape keeps it
 %% in the shape for the same reason.
@@ -248,6 +307,8 @@ refuse_encrypted_query(
     {_, Ctes} = Scope = guard_scope(Q, OuterEncrypted, OuterCtes),
     refuse_each(W, Scope, encrypted_field_in_where),
     refuse_each(H, Scope, encrypted_field_in_having),
+    refuse_orders(Q#kura_query.order_bys, Scope),
+    refuse_select(Q#kura_query.select, Scope),
     refuse_bodies(Own ++ C, OuterEncrypted, Ctes).
 
 refuse_bodies([], _OuterEncrypted, _Ctes) ->
@@ -321,9 +382,16 @@ join(Q, Type, Table, On) ->
 join(Q = #kura_query{joins = J}, Type, Table, On, As) ->
     recheck_encrypted(Q#kura_query{joins = J ++ [{Type, Table, On, As}]}).
 
--doc "Set ORDER BY clauses as `[{field, asc | desc}]`.".
+-doc """
+Set ORDER BY clauses as `[{field, asc | desc}]`.
+
+Ordering by an encrypted field raises
+`{kura, {encrypted_field_in_order_by, Field}}`: the order of ciphertexts
+says nothing about the order of the values.
+""".
 -spec order_by(#kura_query{}, [{atom(), asc | desc}]) -> #kura_query{}.
 order_by(Q, Orders) ->
+    refuse_orders(Orders, guard_scope(Q, [], [])),
     Q#kura_query{order_bys = Orders}.
 
 -spec group_by(#kura_query{}, [atom()]) -> #kura_query{}.
@@ -394,6 +462,9 @@ recheck_encrypted(Q) ->
 Raise if any condition of `Query` would bind an encrypted field's plaintext,
 with the reasons `where/2` and `having/2` raise, wherever the condition sits:
 in the query's wheres or havings, a subquery, a CTE body or a union branch.
+It also raises where `order_by/2`, `select/2` and `select_expr/2` would: on
+ordering, windowing or aggregating (`sum`, `avg`, `min`, `max`) by an
+encrypted field.
 
 The verdict depends only on the query's structure (sources, selects, CTEs and
 the shape of every condition), never on a bound value. `kura_query_compiler`
@@ -452,16 +523,16 @@ count(Q, Field) ->
 
 -spec sum(#kura_query{}, atom()) -> #kura_query{}.
 sum(Q, Field) ->
-    Q#kura_query{select = [{sum, Field}]}.
+    select(Q, [{sum, Field}]).
 
 -spec avg(#kura_query{}, atom()) -> #kura_query{}.
 avg(Q, Field) ->
-    Q#kura_query{select = [{avg, Field}]}.
+    select(Q, [{avg, Field}]).
 
 -spec min(#kura_query{}, atom()) -> #kura_query{}.
 min(Q, Field) ->
-    Q#kura_query{select = [{min, Field}]}.
+    select(Q, [{min, Field}]).
 
 -spec max(#kura_query{}, atom()) -> #kura_query{}.
 max(Q, Field) ->
-    Q#kura_query{select = [{max, Field}]}.
+    select(Q, [{max, Field}]).

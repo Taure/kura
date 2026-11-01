@@ -328,7 +328,7 @@ cte_refused_test_() ->
             )},
         {"max of an encrypted field",
             ?_assertError(
-                {kura, {encrypted_field_in_where, max}},
+                {kura, {encrypted_field_in_aggregate, ssn}},
                 kura_query:where(
                     kura_query:with_cte(
                         kura_query:from(c), ~"c", kura_query:max(kura_query:from(?ENC), ssn)
@@ -644,3 +644,94 @@ subquery_value_is_not_a_cache_hit_test_() ->
         Raw = #kura_query{from = ?ENC, wheres = [{id, '=', {subquery, Sub}}]},
         ?assertError(?WHERE_SSN, kura_query_compiler:to_sql_cached(?REPO, Raw))
     end}.
+
+%%----------------------------------------------------------------------
+%% Ordering, windowing and aggregating by an encrypted field.
+%%----------------------------------------------------------------------
+
+-define(ORDER_SSN, {kura, {encrypted_field_in_order_by, ssn}}).
+-define(WINDOW_SSN, {kura, {encrypted_field_in_window, ssn}}).
+-define(AGG_SSN, {kura, {encrypted_field_in_aggregate, ssn}}).
+
+ordering_and_aggregates_refused_test_() ->
+    Enc = kura_query:from(?ENC),
+    Plain = kura_query:from(kura_test_schema),
+    Joined = kura_query:join(Plain, inner, ?ENC, {id, id}),
+    [
+        {"order_by", ?_assertError(?ORDER_SSN, kura_query:order_by(Enc, [{ssn, asc}]))},
+        {"order_by, second key",
+            ?_assertError(?ORDER_SSN, kura_query:order_by(Enc, [{name, asc}, {ssn, desc}]))},
+        {"order_by a joined schema",
+            ?_assertError(?ORDER_SSN, kura_query:order_by(Joined, [{ssn, asc}]))},
+        {"order_by, then join",
+            ?_assertError(
+                ?ORDER_SSN,
+                kura_query:join(kura_query:order_by(Plain, [{ssn, asc}]), inner, ?ENC, {id, id})
+            )},
+        {"order_by over a CTE",
+            ?_assertError(
+                ?ORDER_SSN, kura_query:order_by(enc_cte(kura_query:from(enc_cte)), [{ssn, asc}])
+            )}
+    ] ++
+        [
+            {atom_to_list(Agg), ?_assertError(?AGG_SSN, kura_query:Agg(Enc, ssn))}
+         || Agg <- [sum, avg, min, max]
+        ] ++
+        [
+            {"aggregate in select",
+                ?_assertError(?AGG_SSN, kura_query:select(Enc, [id, {max, ssn}]))},
+            {"window aggregate",
+                ?_assertError(
+                    ?AGG_SSN,
+                    kura_query:select_expr(Enc, [{m, kura_query:over({min, ssn}, #{})}])
+                )},
+            {"window partition_by",
+                ?_assertError(
+                    ?WINDOW_SSN,
+                    kura_query:select_expr(Enc, [
+                        {rn, kura_query:over(row_number, #{partition_by => [ssn]})}
+                    ])
+                )},
+            {"window order_by",
+                ?_assertError(
+                    ?WINDOW_SSN,
+                    kura_query:select_expr(Enc, [
+                        {rn, kura_query:over(rank, #{order_by => [{ssn, desc}]})}
+                    ])
+                )}
+        ].
+
+ordering_and_aggregates_allowed_test_() ->
+    Enc = kura_query:from(?ENC),
+    [
+        ?_assertMatch(#kura_query{}, kura_query:order_by(Enc, [{name, asc}])),
+        ?_assertMatch(#kura_query{}, kura_query:count(Enc, ssn)),
+        ?_assertMatch(#kura_query{}, kura_query:select(Enc, [id, ssn, {count, ssn}])),
+        ?_assertMatch(#kura_query{}, kura_query:max(Enc, id)),
+        ?_assertMatch(
+            #kura_query{},
+            kura_query:select_expr(Enc, [
+                {s, ssn},
+                {rn,
+                    kura_query:over(row_number, #{partition_by => [name], order_by => [{id, asc}]})}
+            ])
+        )
+    ].
+
+ordering_and_aggregates_compiled_test_() ->
+    Raw = [
+        {?ORDER_SSN, #kura_query{from = ?ENC, order_bys = [{ssn, asc}]}},
+        {?AGG_SSN, #kura_query{from = ?ENC, select = [{avg, ssn}]}},
+        {?WINDOW_SSN, #kura_query{
+            from = ?ENC,
+            select = {exprs, [{rn, {over, row_number, #{partition_by => [ssn]}}}]}
+        }},
+        {?ORDER_SSN, #kura_query{
+            from = kura_test_schema,
+            wheres = [{exists, {subquery, #kura_query{from = ?ENC, order_bys = [{ssn, asc}]}}}]
+        }}
+    ],
+    {setup, fun compiler_setup/0, fun compiler_teardown/1, [
+        {Path, ?_assertError(Reason, Compile(Q))}
+     || {Reason, Q} <- Raw, {Path, Compile} <- compile_paths()
+    ]}.
