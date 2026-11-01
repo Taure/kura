@@ -31,6 +31,7 @@ for pool lookup, sandbox support, telemetry, and type loading.
 -export([
     narrow_ok_error/1,
     forget_pools/0,
+    held/1,
     extract_result_status/1,
     extract_num_rows/1,
     emit_telemetry/6
@@ -383,12 +384,28 @@ retire(Repo, Pool, PoolMod) ->
 -spec retired(module(), atom(), module()) -> ok.
 retired(Repo, Pool, PoolMod) ->
     case {owner(Pool), held(Repo)} of
-        {Repo, {Held, _HeldMod}} when Held =/= Pool ->
+        {Repo, {Pool, _MovedBack}} ->
+            ok;
+        {Repo, _HeldElsewhereOrStopped} ->
             ok = PoolMod:stop_pool(Pool),
-            released(Repo, Pool);
-        _MovedBackOrNotOwned ->
+            ok = released(Repo, Pool);
+        _NotOwned ->
             ok
-    end.
+    end,
+    _ = persistent_term:erase({?MODULE, pool_retiring, Repo, Pool}),
+    ok.
+
+%% Pools a repo moved away from and has not stopped yet, recorded so that
+%% stop_pool/1 still reaches one whose retire never ran.
+-spec retiring(module()) -> [{atom(), module()}].
+retiring(Repo) ->
+    [
+        {Pool, PoolMod}
+     || {{?MODULE, pool_retiring, R, Pool}, PoolMod} <- persistent_term:get(),
+        R =:= Repo,
+        is_atom(Pool),
+        is_atom(PoolMod)
+    ].
 
 -spec claimed(module(), atom(), module(), map()) -> claim().
 claimed(Repo, Pool, PoolMod, Config) ->
@@ -457,6 +474,7 @@ owned(Repo, Pool, PoolMod, Config) ->
     ok = kura_repo_settings:started(Repo, Config#{pool => Pool}),
     case Previous of
         {PreviousPool, PreviousMod} when PreviousPool =/= Pool ->
+            ok = persistent_term:put({?MODULE, pool_retiring, Repo, PreviousPool}, PreviousMod),
             {moved_from, PreviousPool, PreviousMod};
         _SamePoolOrNone ->
             ok
@@ -492,9 +510,10 @@ Stop the pool `Repo` last started through `start_pool/1` and release it.
 The pool module's `stop_pool/1` stops the pool, the pool name is no longer
 owned by `Repo`, so another repo can start it, and `Repo`'s stored settings
 are dropped: its queries read its config on each call again, as for a repo
-kura has not started. A repo that does not own a running pool, one refused
-another repo's pool among them, stops nothing and only has its stored state
-dropped.
+kura has not started. A pool the repo moved away from that is still owned,
+because the start that moved it died or its stop failed, is stopped and
+released too. A repo that does not own a running pool, one refused another
+repo's pool among them, stops nothing and only has its stored state dropped.
 
 A stopped repo should not keep issuing queries. If another repo starts the
 same pool name, they raise `{pool_owned_by, Owner}`; otherwise they fail in
@@ -504,8 +523,11 @@ the pool module, as for any pool that is not running.
 stop_pool(Repo) ->
     case held(Repo) of
         {Pool, PoolMod} -> ok = locked(Pool, fun() -> stopped(Repo, Pool, PoolMod) end);
-        none -> kura_repo_settings:forget(Repo)
-    end.
+        none -> ok = kura_repo_settings:forget(Repo)
+    end,
+    lists:foreach(
+        fun({Previous, PreviousMod}) -> retire(Repo, Previous, PreviousMod) end, retiring(Repo)
+    ).
 
 %% A start of the same repo can move it to another pool while this runs; the
 %% pool it moved to stays held, so a later stop_pool/1 still reaches it.
@@ -537,10 +559,15 @@ unheld(Repo, Pool, PoolMod) ->
 forget_pools() ->
     _ = [
         persistent_term:erase(Key)
-     || {{?MODULE, Kind, _} = Key, _} <- persistent_term:get(),
-        Kind =:= pool_owner orelse Kind =:= pool_held
+     || {Key, _} <- persistent_term:get(),
+        is_pool_key(Key)
     ],
     kura_repo_settings:forget().
+
+is_pool_key({?MODULE, pool_owner, _}) -> true;
+is_pool_key({?MODULE, pool_held, _}) -> true;
+is_pool_key({?MODULE, pool_retiring, _, _}) -> true;
+is_pool_key(_Other) -> false.
 -endif.
 
 %% init/1 is the consumer's code, so nothing is known about what its reason

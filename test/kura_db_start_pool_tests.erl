@@ -1084,19 +1084,99 @@ a_stopped_repo_cannot_query_the_pool_another_repo_started_test() ->
         ?assertError({pool_owned_by, kura_db_other_repo}, kura_db:get_pool(kura_db_owner_repo))
     end).
 
-a_stop_racing_a_move_leaves_the_new_pool_stoppable_test() ->
-    with_pool_answer({ok, self()}, #{pool => old_pool}, fun() ->
-        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
-        application:set_env(kura, repos, #{
-            kura_db_failing_repo => #{pool => new_pool, pool_module => ?MODULE}
-        }),
-        put({?MODULE, stop_answer}, {start, kura_db_failing_repo}),
-        ?assertEqual(ok, kura_db:stop_pool(kura_db_failing_repo)),
-        ?assertEqual(new_pool, kura_db:get_pool(kura_db_failing_repo)),
-        erase({?MODULE, stopped}),
-        ?assertEqual(ok, kura_db:stop_pool(kura_db_failing_repo)),
-        ?assertEqual(new_pool, get({?MODULE, stopped}))
+a_stop_between_a_move_and_its_retire_still_frees_the_old_pool_test() ->
+    with_two_repos(fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        ok = moved_to(moved_pool),
+        Self = self(),
+        holding_lock(shared_pool, fun(Release) ->
+            {_Mover, Moving} = spawn_monitor(fun() ->
+                Self ! {moved, kura_repo_worker:start(kura_db_owner_repo)}
+            end),
+            ok = until(fun() -> kura_db:get_pool(kura_db_owner_repo) =:= moved_pool end),
+            {_Stopper, Stopping} = spawn_monitor(fun() ->
+                ok = kura_db:stop_pool(kura_db_owner_repo)
+            end),
+            ok = until(fun() -> kura_db:held(kura_db_owner_repo) =:= none end),
+            ok = Release(),
+            ?assertEqual(
+                ok,
+                receive
+                    {moved, Moved} -> Moved
+                after 5000 -> timeout
+                end
+            ),
+            ok = exited(Moving),
+            ok = exited(Stopping)
+        end),
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_other_repo)),
+        ?assertEqual(shared_pool, kura_db:get_pool(kura_db_other_repo))
     end).
+
+a_move_whose_caller_dies_before_the_retire_leaves_the_old_pool_stoppable_test() ->
+    with_two_repos(fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        ok = moved_to(moved_pool),
+        holding_lock(shared_pool, fun(Release) ->
+            {Mover, Moving} = spawn_monitor(fun() -> kura_repo_worker:start(kura_db_owner_repo) end),
+            ok = until(fun() -> kura_db:get_pool(kura_db_owner_repo) =:= moved_pool end),
+            exit(Mover, kill),
+            receive
+                {'DOWN', Moving, process, Mover, killed} -> ok
+            end,
+            Release()
+        end),
+        _ = with_captured_logs(fun() ->
+            ?assertEqual(
+                {error, {pool_owned_by, kura_db_owner_repo}},
+                kura_repo_worker:start(kura_db_other_repo)
+            )
+        end),
+        ?assertEqual(ok, kura_db:stop_pool(kura_db_owner_repo)),
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_other_repo))
+    end).
+
+%% Hold the lock kura_db takes on a pool name, from this process, so another
+%% process's start or stop of it waits until Release() is called.
+holding_lock(Pool, Run) ->
+    Lock = {{kura_pool_start, Pool}, self()},
+    true = global:set_lock(Lock, [node()]),
+    Release = fun() ->
+        true = global:del_lock(Lock, [node()]),
+        ok
+    end,
+    try
+        Run(Release)
+    after
+        Release()
+    end.
+
+moved_to(Pool) ->
+    application:set_env(kura, repos, #{
+        kura_db_owner_repo => #{pool => Pool, pool_module => ?MODULE},
+        kura_db_other_repo => #{pool => shared_pool, pool_module => ?MODULE}
+    }).
+
+until(Done) ->
+    until(Done, 500).
+
+until(Done, 0) ->
+    error({never, Done()});
+until(Done, Tries) ->
+    case Done() of
+        true ->
+            ok;
+        false ->
+            timer:sleep(5),
+            until(Done, Tries - 1)
+    end.
+
+exited(Monitor) ->
+    receive
+        {'DOWN', Monitor, process, _Pid, normal} -> ok;
+        {'DOWN', Monitor, process, _Pid, Reason} -> error({crashed, Reason})
+    after 5000 -> error(timeout)
+    end.
 
 with_two_repos(Run) ->
     Shared = #{pool => shared_pool, pool_module => ?MODULE},
