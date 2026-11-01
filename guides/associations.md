@@ -366,3 +366,17 @@ list of columns. A single atom is the one-element case of the same model.
 ```
 
 Persisting via `cast_assoc` or `put_assoc` deletes existing join rows and inserts new ones. See the [Nested Changesets](cast_assoc.md) guide for details.
+
+The join-table read, delete and insert are compiled by the repo's dialect,
+like every other query, so a many-to-many association works on any backend
+whose dialect implements `to_sql/1`, `delete_all/1` and `insert_all/3`. A
+`join_through` given as a binary reaches the dialect as the table name. Under
+a prefix tenant the join table is qualified with the tenant's schema; an
+attribute tenant does not scope the join table, which has no tenant column,
+but the related rows are read and checked under it.
+
+A join table with its own tenant column is not supported under attribute
+tenancy: kura never stamps the tenant on the join rows it inserts. A
+`NOT NULL` tenant column makes every `put_assoc` or `cast_assoc` on the
+association fail, and a nullable one is left `NULL`. Keep the tenant on the
+two linked tables, or write the join rows yourself.

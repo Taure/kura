@@ -190,8 +190,13 @@ argument.
 - **`kura_app`** / **`kura_sup`** - OTP application and root
   supervisor. The application callback resolves the configured backend
   aggregator (sets `dialect`, `pool_module`, `driver_module` from
-  `kura_backend_postgres` / `kura_backend_sqlite`) and starts the
-  configured pool. `pg_types` defaults are seeded only when the active
+  `kura_backend_postgres` / `kura_backend_sqlite`) and starts each
+  configured repo's pool through `kura_db:start_pool/1`, the same path
+  `kura_repo_worker:start/1` takes: the config from `kura_repo:config/1`
+  with the repo's `init/1` applied and the pool named by its `pool` key.
+  Kura adds no connection defaults, except the deprecated `user` and
+  `database` fill for the flat single-repo form on Postgres. A pool that
+  does not start is logged and boot carries on. `pg_types` defaults are seeded only when the active
   dialect is `kura_dialect_pg`.
 - **`kura_capabilities`** - capability flags for backends. A backend
   module implements the optional `capabilities/0` callback to declare

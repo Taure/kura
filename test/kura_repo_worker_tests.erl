@@ -38,16 +38,61 @@ key_clauses_incomplete_key_rejected_test() ->
         kura_repo_worker:key_clauses(kura_test_composite_schema, #{org_id => <<"o">>})
     ).
 
-key_conds_composite_counter_test() ->
-    {Conds, Params, Next} = kura_repo_worker:key_conds(
-        [{org_id, <<"o">>}, {user_id, <<"u">>}], 2
-    ),
+join_delete_sql_matches_every_owner_key_column_test() ->
     ?assertEqual(
-        [<<"\"org_id\" = $2">>, <<"\"user_id\" = $3">>],
-        [iolist_to_binary(C) || C <- Conds]
-    ),
-    ?assertEqual([<<"o">>, <<"u">>], Params),
-    ?assertEqual(4, Next).
+        {~"DELETE FROM \"posts_tags\" WHERE \"org_id\" = $1 AND \"post_id\" = $2", [~"o", 1]},
+        join_delete(kura_dialect_pg, ~"posts_tags", [{org_id, ~"o"}, {post_id, 1}])
+    ).
+
+join_delete_sql_uses_the_dialect_placeholders_test() ->
+    ?assertEqual(
+        {~"DELETE FROM \"posts_tags\" WHERE \"org_id\" = ?1 AND \"post_id\" = ?2", [~"o", 1]},
+        join_delete(kura_test_sqlite_dialect, ~"posts_tags", [{org_id, ~"o"}, {post_id, 1}])
+    ).
+
+join_delete_sql_qualifies_with_the_prefix_tenant_test() ->
+    ?assertEqual(
+        {~"DELETE FROM \"tenant_a\".\"posts_tags\" WHERE \"post_id\" = $1", [1]},
+        kura_tenant:with_tenant({prefix, ~"tenant_a"}, fun() ->
+            join_delete(kura_dialect_pg, ~"posts_tags", [{post_id, 1}])
+        end)
+    ).
+
+join_delete_sql_is_not_scoped_by_an_attribute_tenant_test() ->
+    ?assertEqual(
+        {~"DELETE FROM \"posts_tags\" WHERE \"post_id\" = $1", [1]},
+        kura_tenant:with_tenant({attribute, {org_id, 7}}, fun() ->
+            join_delete(kura_dialect_pg, ~"posts_tags", [{post_id, 1}])
+        end)
+    ).
+
+join_insert_sql_writes_one_join_row_test() ->
+    ?assertEqual(
+        {~"INSERT INTO \"posts_tags\" (\"post_id\", \"tag_id\") VALUES ($1, $2)", [1, 2]},
+        join_insert(kura_dialect_pg, ~"posts_tags", [{post_id, 1}, {tag_id, 2}])
+    ).
+
+join_insert_sql_uses_the_dialect_placeholders_test() ->
+    ?assertEqual(
+        {~"INSERT INTO \"posts_tags\" (\"post_id\", \"tag_id\") VALUES (?1, ?2)", [1, 2]},
+        join_insert(kura_test_sqlite_dialect, ~"posts_tags", [{post_id, 1}, {tag_id, 2}])
+    ).
+
+join_insert_sql_quotes_the_join_table_and_qualifies_it_test() ->
+    ?assertEqual(
+        {~"INSERT INTO \"tenant_a\".\"posts\"\" -- \" (\"post_id\") VALUES ($1)", [1]},
+        kura_tenant:with_tenant({prefix, ~"tenant_a"}, fun() ->
+            join_insert(kura_dialect_pg, ~"posts\" -- ", [{post_id, 1}])
+        end)
+    ).
+
+join_delete(Dialect, JoinThrough, Owner) ->
+    {SQL, Params} = kura_repo_worker:join_delete_sql(Dialect, JoinThrough, Owner),
+    {iolist_to_binary(SQL), Params}.
+
+join_insert(Dialect, JoinThrough, Row) ->
+    {SQL, Params} = kura_repo_worker:join_insert_sql(Dialect, JoinThrough, Row),
+    {iolist_to_binary(SQL), Params}.
 
 reload_composite_missing_key_col_rejected_test() ->
     %% user_id absent from the record: the key-completeness guard must
@@ -234,15 +279,6 @@ read_only_repo_rejects_soft_delete_test() ->
         CS = kura_changeset:cast(kura_test_soft_delete_schema, #{}, #{name => <<"x">>}, [name]),
         ?assertEqual({error, read_only}, kura_repo_worker:soft_delete(ro_repo, CS))
     end).
-
-quote_ident_bin_doubles_embedded_quotes_test() ->
-    ?assertEqual(
-        <<"\"users\"\" -- \"">>,
-        kura_repo_worker:quote_ident_bin(<<"users\" -- ">>)
-    ).
-
-quote_ident_bin_wraps_plain_name_test() ->
-    ?assertEqual(<<"\"users\"">>, kura_repo_worker:quote_ident_bin(<<"users">>)).
 
 %%----------------------------------------------------------------------
 %% dump_field/2 fails closed whatever cast/2 does

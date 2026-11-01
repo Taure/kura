@@ -64,7 +64,7 @@
 -define(KURA_IS_UNARY_OP(Op), (Op =:= is_nil orelse Op =:= is_not_nil)).
 
 -record(kura_query, {
-    from :: atom() | module() | undefined,
+    from :: atom() | module() | binary() | undefined,
     select = [] :: [atom() | term()] | {exprs, [term()]},
     wheres = [] :: [term()],
     joins = [] :: [term()],

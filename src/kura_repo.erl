@@ -64,7 +64,10 @@ the per-app form (`application:get_env(OtpApp, RepoModule)`). The
 form. New projects should prefer the map form.
 
 Optionally implement `init/1` to modify config at runtime - useful for reading
-secrets from files, environment variables, or external services:
+secrets from files, environment variables, or external services. For a repo in
+the `{repos, ...}` map or the flat form it runs during kura's own application
+start, when kura starts the pool, before the application that owns the repo
+has started, so it must not call that application's processes:
 
 ```erlang
 -module(my_repo).
@@ -102,6 +105,21 @@ dependency's migrations run first. See `kura_migrator:migration_apps/1`.
 
 -callback otp_app() -> atom().
 
+-doc """
+Adjust the repo's config at runtime. Optional.
+
+It runs whenever kura reads the config. For a repo in the `{repos, ...}` map
+or the flat form that includes kura's own application start, when the pool is
+started. The consuming application has not started then, so `init/1` must not
+call processes it owns. One that raises
+while the pool is started does not stop kura: the pool is not started, and
+only the shape of the reason is logged and returned (see
+`kura_db:start_pool/1`).
+
+`init/1` also runs on every config lookup at query time (`kura_db:get_pool/1`,
+`read_only/1`, the driver and dialect lookups). A raise there is not caught or
+redacted, so `init/1` should not raise with a secret in its reason.
+""".
 -callback init(Config :: map()) -> map().
 
 -callback migration_apps() -> [atom()].
@@ -181,6 +199,7 @@ per_app_config(RepoMod) ->
 kura_env_to_config() ->
     Excluded = [
         repo,
+        repos,
         backend,
         ensure_database,
         migration_pool_ready_timeout,

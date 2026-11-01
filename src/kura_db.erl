@@ -15,7 +15,9 @@ for pool lookup, sandbox support, telemetry, and type loading.
     in_transaction/1,
     get_pool/1,
     get_pool_module/1,
+    start_pool/1,
     start_pool/3,
+    resolve/1,
     get_driver_module/1,
     load_row/2,
     build_log_event/5,
@@ -37,8 +39,11 @@ for pool lookup, sandbox support, telemetry, and type loading.
 
 -define(DECODE_OPTS, [return_rows_as_maps, column_name_as_atom]).
 
-%% `key` is the TLS private key in ssl options.
--define(IS_SECRET_KEY(Key), (Key =:= password orelse Key =:= key)).
+%% `key` is the TLS private key in ssl options; `encryption` holds the
+%% field-encryption keys and `keyring` names where they come from.
+-define(IS_SECRET_KEY(Key),
+    (Key =:= password orelse Key =:= key orelse Key =:= encryption orelse Key =:= keyring)
+).
 
 -define(REPO_KEYS, [
     backend,
@@ -195,22 +200,119 @@ transaction_ok(RepoMod, Fun) ->
 
 -spec get_pool(module()) -> atom().
 get_pool(RepoMod) ->
-    Config = kura_repo:config(RepoMod),
+    pool_name(RepoMod, kura_repo:config(RepoMod)).
+
+-spec pool_name(module(), map()) -> atom().
+pool_name(RepoMod, Config) ->
     maps:get(pool, Config, RepoMod).
 
 -doc "Resolve the `kura_pool` implementation module for a repo.".
 -spec get_pool_module(module()) -> module().
 get_pool_module(RepoMod) ->
-    Config = kura_repo:config(RepoMod),
+    pool_module(RepoMod, kura_repo:config(RepoMod)).
+
+-spec pool_module(module(), map()) -> module().
+pool_module(RepoMod, Config) ->
     case maps:get(pool_module, Config, undefined) of
         M when is_atom(M), M =/= undefined -> M;
         _ -> error({no_pool_module_configured, RepoMod})
     end.
 
+-doc """
+Start `Repo`'s pool from its config, as `kura_repo:config/1` resolves it.
+
+`Repo:init/1` has run on that config, and the pool takes its name from
+the `pool` key, as `get_pool/1` does, so queries reach the pool started
+here. The repo module is loaded first: `kura_repo:config/1` only calls an
+`init/1` it finds loaded, and at boot nothing has called into the module
+yet. Application boot and `kura_repo_worker:start/1` both start pools
+through this function. The pool module applies its own connection defaults.
+
+Deprecated: the legacy flat single-repo form (`{repo, Repo}` in the kura env,
+no `repos` map) on `kura_dialect_pg` still gets `user` and `database` set to
+`"postgres"` when it leaves them out, with a warning naming the keys filled.
+Kura 3.0 removes this.
+
+An `init/1` that raises starts no pool. Only the shape of its reason is kept:
+an atom as it is, a tuple as `{Tag, redacted}` when its first element is an
+atom, anything else as `redacted`. The failure is logged that way and returned
+as `{error, {init_failed, {Class, Shape}}}`.
+""".
+-spec start_pool(module()) -> ok | {error, term()}.
+start_pool(Repo) ->
+    case resolved(Repo) of
+        {ok, Pool, Config, Filled} ->
+            ok = legacy_defaults_filled(Repo, Filled),
+            start_pool(Repo, Pool, Config);
+        {error, Failed, Stack} ->
+            ok = not_started(Repo, undefined, #{reason => Failed, stacktrace => arities(Stack)}),
+            {error, Failed}
+    end.
+
+-doc false.
+-spec resolve(module()) -> {ok, atom(), map()} | {error, init_failed()}.
+resolve(Repo) ->
+    case resolved(Repo) of
+        {ok, Pool, Config, _Filled} -> {ok, Pool, Config};
+        {error, Failed, _Stack} -> {error, Failed}
+    end.
+
+-type init_failed() :: {init_failed, {error | exit | throw, atom() | {atom(), redacted}}}.
+
+-spec resolved(module()) ->
+    {ok, atom(), map(), [atom()]} | {error, init_failed(), erlang:stacktrace()}.
+resolved(Repo) ->
+    _ = code:ensure_loaded(Repo),
+    try kura_repo:config(Repo) of
+        Resolved ->
+            {Config, Filled} = legacy_defaults(Repo, Resolved),
+            {ok, pool_name(Repo, Config), Config, Filled}
+    catch
+        Class:Reason:Stack -> {error, {init_failed, {Class, shape(Reason)}}, Stack}
+    end.
+
+%% Deprecated, removed in kura 3.0: the flat single-repo form on Postgres keeps
+%% the `user` and `database` kura filled in before 2.24.
+-spec legacy_defaults(module(), map()) -> {map(), [atom()]}.
+legacy_defaults(Repo, #{dialect := kura_dialect_pg} = Config) ->
+    case is_legacy_flat(Repo) of
+        true ->
+            Filled = [
+                Key
+             || {Key, Aliases} <- [{user, [user, username]}, {database, [database]}],
+                not lists:any(fun(Alias) -> is_map_key(Alias, Config) end, Aliases)
+            ],
+            {maps:merge(#{Key => "postgres" || Key <- Filled}, Config), Filled};
+        false ->
+            {Config, []}
+    end;
+legacy_defaults(_Repo, Config) ->
+    {Config, []}.
+
+-spec is_legacy_flat(module()) -> boolean().
+is_legacy_flat(Repo) ->
+    case application:get_env(kura, repos) of
+        {ok, Repos} when is_map(Repos) -> false;
+        _ -> application:get_env(kura, repo) =:= {ok, Repo}
+    end.
+
+-spec legacy_defaults_filled(module(), [atom()]) -> ok.
+legacy_defaults_filled(_Repo, []) ->
+    ok;
+legacy_defaults_filled(Repo, Filled) ->
+    ?LOG_WARNING(#{
+        msg => ~"kura: deprecated Postgres defaults filled in for the flat repo config",
+        repo => Repo,
+        filled => Filled,
+        value => ~"postgres",
+        action => ~"set these keys explicitly; kura 3.0 removes this fill"
+    }),
+    ok.
+
 -doc false.
 -spec start_pool(module(), atom(), map()) -> ok | {error, term()}.
 start_pool(Repo, Pool, Config) ->
-    PoolMod = get_pool_module(Repo),
+    PoolMod = pool_module(Repo, Config),
     Secrets = secrets(Config),
     try PoolMod:start_pool(Pool, maps:without(?REPO_KEYS, Config)) of
         {ok, _Pid} ->
@@ -227,6 +329,17 @@ start_pool(Repo, Pool, Config) ->
             ok = not_started(Repo, PoolMod, #{reason => Redacted, stacktrace => arities(Stack)}),
             error({pool_start_failed, Repo, Redacted})
     end.
+
+%% init/1 is the consumer's code, so nothing is known about what its reason
+%% holds: only its tag is kept.
+-spec shape(term()) -> atom() | {atom(), redacted}.
+shape(Reason) when is_atom(Reason) -> Reason;
+shape(Reason) when is_tuple(Reason) -> tagged(tuple_to_list(Reason));
+shape(_Reason) -> redacted.
+
+-spec tagged([term()]) -> {atom(), redacted} | redacted.
+tagged([Tag | _]) when is_atom(Tag) -> {Tag, redacted};
+tagged(_Untagged) -> redacted.
 
 -spec not_started(module(), module(), map()) -> ok.
 not_started(Repo, PoolMod, Report) ->
@@ -343,7 +456,9 @@ get_driver_module(RepoMod) ->
 %% Row loading
 %%----------------------------------------------------------------------
 
--spec load_row(module(), map()) -> map().
+-spec load_row(kura_dialect:table(), map()) -> map().
+load_row(Table, Row) when is_binary(Table) ->
+    Row;
 load_row(SchemaMod, Row) when is_atom(SchemaMod) ->
     case code:ensure_loaded(SchemaMod) of
         {module, SchemaMod} ->

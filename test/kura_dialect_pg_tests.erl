@@ -1090,3 +1090,16 @@ format_default_list_is_a_quoted_jsonb_literal_test() ->
     ?assertEqual(
         <<"'[\"it''s\",2]'::jsonb">>, kura_dialect_pg:format_default([~"it's", 2])
     ).
+
+%%----------------------------------------------------------------------
+%% A table named by a binary
+%%----------------------------------------------------------------------
+
+binary_table_insert_all_test() ->
+    {SQL, Params} = kura_dialect_pg:insert_all(~"posts_tags", [post_id], [#{post_id => 1}]),
+    ?assertEqual(~"INSERT INTO \"posts_tags\" (\"post_id\") VALUES ($1)", iolist_to_binary(SQL)),
+    ?assertEqual([1], Params).
+
+binary_table_select_test() ->
+    {SQL, []} = kura_dialect_pg:to_sql(#kura_query{from = ~"posts_tags"}),
+    ?assertEqual(~"SELECT * FROM \"posts_tags\"", iolist_to_binary(SQL)).
