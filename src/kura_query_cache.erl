@@ -23,6 +23,10 @@ limits bound it regardless, both counted in words and both configurable:
 - `query_cache_max_entry_size` (default 4096 words) - a single entry
   bigger than this is never interned.
 
+Both limits count the bytes of every off-heap binary an entry holds,
+such as its SQL text, which neither `erts_debug:flat_size/1` nor
+`ets:info(Tab, memory)` include.
+
 An `in` list is one shape per list length, so a caller-supplied array
 of arbitrary length still interns an entry per length. The per-entry
 ceiling keeps those entries small.
@@ -42,6 +46,9 @@ The ETS table is owned by `kura_query_cache_owner` (a gen_server under
 -define(TABLE, kura_query_cache).
 -define(DEFAULT_MAX_MEMORY_WORDS, 8000000).
 -define(DEFAULT_MAX_ENTRY_WORDS, 4096).
+-define(BINARY_TABLE, kura_query_cache_binaries).
+-define(BINARY_WORDS, binary_words).
+-define(HEAP_BINARY_LIMIT, 64).
 
 -doc """
 Initialize the query cache ETS table. No-op when the cache owner is
@@ -56,6 +63,7 @@ init() ->
             %% with `==', collapsing `where id = 1' and `where id = 1.0'
             %% onto one entry whose bound parameters differ. Do not change.
             _ = ets:new(?TABLE, [named_table, public, set, {read_concurrency, true}]),
+            _ = ets:new(?BINARY_TABLE, [named_table, public, set]),
             ok;
         _ ->
             ok
@@ -89,19 +97,56 @@ put(Key, Result) ->
     end.
 
 maybe_insert(Key, Result) ->
-    Words = erts_debug:flat_size(Key) + erts_debug:flat_size(Result),
+    BinaryWords = binary_words(Key) + binary_words(Result),
+    Words = erts_debug:flat_size(Key) + erts_debug:flat_size(Result) + BinaryWords,
     case Words > max_entry_words() of
         true ->
             ok;
         false ->
             _ =
-                case ets:info(?TABLE, memory) >= max_memory_words() of
-                    true -> ets:delete_all_objects(?TABLE);
+                case table_words() >= max_memory_words() of
+                    true -> drop_all();
                     false -> ok
                 end,
             ets:insert(?TABLE, {Key, Result}),
+            _ = ets:update_counter(?BINARY_TABLE, ?BINARY_WORDS, BinaryWords, {?BINARY_WORDS, 0}),
             ok
     end.
+
+drop_all() ->
+    ets:delete_all_objects(?TABLE),
+    ets:delete_all_objects(?BINARY_TABLE),
+    ok.
+
+-spec table_words() -> non_neg_integer().
+table_words() ->
+    Binaries =
+        case ets:lookup(?BINARY_TABLE, ?BINARY_WORDS) of
+            [{_, N}] when is_integer(N) -> N;
+            _ -> 0
+        end,
+    case ets:info(?TABLE, memory) of
+        Words when is_integer(Words) -> Words + Binaries;
+        _ -> Binaries
+    end.
+
+%% A binary over the heap limit lives outside the term, so its bytes are
+%% missing from flat_size and from the table's memory. A sub-binary keeps
+%% its whole parent alive, so the parent's size is what counts.
+-spec binary_words(term()) -> non_neg_integer().
+binary_words(B) when is_binary(B) ->
+    case binary:referenced_byte_size(B) of
+        Size when Size > ?HEAP_BINARY_LIMIT -> Size div erlang:system_info(wordsize) + 1;
+        _ -> 0
+    end;
+binary_words(T) when is_tuple(T) ->
+    binary_words(tuple_to_list(T));
+binary_words([H | T]) ->
+    binary_words(H) + binary_words(T);
+binary_words(M) when is_map(M) ->
+    binary_words(maps:to_list(M));
+binary_words(_) ->
+    0.
 
 -doc """
 Drop every cached entry. Required after swapping a repo's dialect at
@@ -114,8 +159,7 @@ flush() ->
         undefined ->
             ok;
         _ ->
-            ets:delete_all_objects(?TABLE),
-            ok
+            drop_all()
     end.
 
 -spec max_memory_words() -> pos_integer().

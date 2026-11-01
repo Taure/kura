@@ -153,6 +153,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The query cache's entry-size and memory limits count the bytes of
+  off-heap binaries. Neither `erts_debug:flat_size/1` nor
+  `ets:info(Tab, memory)` sees them, so an entry holding a large binary
+  counted as a few words.
 - `insert_all/3,4` honour `on_conflict`. The option was silently dropped
   and a plain INSERT emitted, so a bulk upsert failed on the unique
   constraint instead of upserting, and the partial-index conflict target

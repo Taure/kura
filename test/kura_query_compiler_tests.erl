@@ -363,3 +363,49 @@ update_all(_Q, _M) -> {~"FAKE_UPDATE_ALL", []}.
 delete_all(_Q) -> {~"FAKE_DELETE_ALL", []}.
 insert_all(_S, _F, _R) -> {~"FAKE_INSERT_ALL", []}.
 insert_all(_S, _F, _R, _O) -> {~"FAKE_INSERT_ALL", []}.
+
+%%----------------------------------------------------------------------
+%% Off-heap binaries count against both limits. Neither flat_size nor
+%% ets:info(memory) sees the bytes of a binary over 64 bytes.
+%%----------------------------------------------------------------------
+
+entry_holding_a_large_binary_is_never_interned_test() ->
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        Key = {?REPO, undefined, binary:copy(~"x", 64 * 1024)},
+        ok = kura_query_cache:put(Key, {~"SELECT 1", []}),
+        ?assertEqual(miss, kura_query_cache:get(Key))
+    after
+        kura_query_cache:flush()
+    end.
+
+memory_cap_counts_off_heap_binaries_test() ->
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    application:set_env(kura, query_cache_max_memory, 5000),
+    try
+        Keys = [{?REPO, undefined, binary:copy(<<N>>, 16 * 1024)} || N <- lists:seq(1, 10)],
+        _ = [ok = kura_query_cache:put(K, {~"SELECT 1", []}) || K <- Keys],
+        ?assert(ets:info(kura_query_cache, size) < 10)
+    after
+        application:unset_env(kura, query_cache_max_memory),
+        kura_query_cache:flush()
+    end.
+
+flush_resets_the_off_heap_count_test() ->
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    application:set_env(kura, query_cache_max_memory, 6000),
+    try
+        Key = fun(N) -> {?REPO, undefined, binary:copy(<<N>>, 16 * 1024)} end,
+        ok = kura_query_cache:put(Key(1), {~"SELECT 1", []}),
+        ok = kura_query_cache:put(Key(2), {~"SELECT 1", []}),
+        kura_query_cache:flush(),
+        ok = kura_query_cache:put(Key(3), {~"SELECT 1", []}),
+        ok = kura_query_cache:put(Key(4), {~"SELECT 1", []}),
+        ?assertEqual(2, ets:info(kura_query_cache, size))
+    after
+        application:unset_env(kura, query_cache_max_memory),
+        kura_query_cache:flush()
+    end.
