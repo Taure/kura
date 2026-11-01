@@ -400,3 +400,36 @@ cte_allowed_test_() ->
                 )
             )}
     ].
+
+%%----------------------------------------------------------------------
+%% Malformed conditions raise a reason that carries no value. A
+%% function_clause would carry the plaintext in its arguments.
+%%----------------------------------------------------------------------
+
+malformed_condition_test_() ->
+    P = ?PLAIN,
+    [
+        {Name, fun() -> assert_unrecognised_without_plaintext(Cond) end}
+     || {Name, Cond} <- [
+            {"improper and", {'and', [{id, 1} | ill_typed({ssn, P})]}},
+            {"improper or", {'or', [{id, 1}, {name, P} | ill_typed({ssn, P})]}},
+            {"improper nested and", {'not', {'and', [{'or', [{id, 1} | ill_typed(P)]}]}}},
+            {"and over a tuple", {'and', {ssn, P}}},
+            {"or over a binary", {'or', P}},
+            {"improper row in", {[id | ill_typed(ssn)], in, [{1, P}]}}
+        ]
+    ].
+
+%% An improper list, which the condition types do not allow.
+-spec ill_typed(term()) -> dynamic().
+ill_typed(Term) ->
+    Term.
+
+assert_unrecognised_without_plaintext(Cond) ->
+    try kura_query:where(kura_query:from(?ENC), Cond) of
+        Q -> ?assertEqual(raised, Q)
+    catch
+        error:Reason:Stack ->
+            ?assertEqual({kura, unrecognised_condition}, Reason),
+            ?assertEqual(nomatch, binary:match(term_to_binary(Stack), ?PLAIN))
+    end.

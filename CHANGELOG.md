@@ -160,6 +160,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decrypted owner value in the child query, and writes copied it into the
   child's foreign key in clear. Schema load now raises
   `{kura, {encrypted_association_key, Mod, Assoc, Field}}`.
+- On a query with encrypted fields in scope, an improper list under
+  `and`, `or` or a row-value `in` crashed the filter guard with a
+  `function_clause` whose arguments carried the plaintext, and an `and` or
+  `or` over a non-list was accepted. Both now raise
+  `{kura, unrecognised_condition}`.
 - Starting a pool hands the pool module the connection settings only.
   The repo's own settings, the `encryption` keyring among them, were
   passed along with them, and a pool module that echoed its options in

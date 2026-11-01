@@ -180,15 +180,23 @@ ciphertext_expr(_Expr, _Encrypted) ->
 refuse_encrypted({[], []}, _Conditions, _Reason) ->
     ok;
 refuse_encrypted(Scope, Conditions, Reason) ->
-    lists:foreach(fun(C) -> refuse_encrypted_cond(C, Scope, Reason) end, Conditions).
+    refuse_each(Conditions, Scope, Reason).
+
+%% Explicit recursion rather than lists:foreach/2, so an improper list raises
+%% a reason of its own instead of a function_clause carrying the values.
+refuse_each([], _Scope, _Reason) ->
+    ok;
+refuse_each([Cond | Rest], Scope, Reason) ->
+    refuse_encrypted_cond(Cond, Scope, Reason),
+    refuse_each(Rest, Scope, Reason);
+refuse_each(_Improper, _Scope, _Reason) ->
+    erlang:error({kura, unrecognised_condition}).
 
 %% An allow-list over the condition grammar kura_dialect_pg compiles. Every
 %% form that names a field is checked; a shape not listed here is refused
 %% rather than passed, so a new form cannot slip a value past the check.
-refuse_encrypted_cond({Op, Conds}, Scope, Reason) when
-    (Op =:= 'and' orelse Op =:= 'or'), is_list(Conds)
-->
-    refuse_encrypted(Scope, Conds, Reason);
+refuse_encrypted_cond({Op, Conds}, Scope, Reason) when Op =:= 'and'; Op =:= 'or' ->
+    refuse_each(Conds, Scope, Reason);
 refuse_encrypted_cond({'not', Cond}, Scope, Reason) ->
     refuse_encrypted_cond(Cond, Scope, Reason);
 refuse_encrypted_cond({fragment, _SQL, _Params}, _Scope, _Reason) ->
@@ -211,7 +219,7 @@ refuse_encrypted_cond({Field, _Value}, Scope, Reason) when is_atom(Field) ->
 refuse_encrypted_cond({Field, _Op, _Value}, Scope, Reason) when is_atom(Field) ->
     refuse_field(Field, Scope, Reason);
 refuse_encrypted_cond({Fields, _Op, _Value}, Scope, Reason) when is_list(Fields) ->
-    lists:foreach(fun(F) -> refuse_field(F, Scope, Reason) end, Fields);
+    refuse_fields(Fields, Scope, Reason);
 refuse_encrypted_cond(_Cond, _Scope, _Reason) ->
     erlang:error({kura, unrecognised_condition}).
 
@@ -257,6 +265,14 @@ columns(Source, Ctes) when is_atom(Source) ->
     end;
 columns(_Source, _Ctes) ->
     [].
+
+refuse_fields([], _Scope, _Reason) ->
+    ok;
+refuse_fields([Field | Rest], Scope, Reason) ->
+    refuse_field(Field, Scope, Reason),
+    refuse_fields(Rest, Scope, Reason);
+refuse_fields(_Improper, _Scope, _Reason) ->
+    erlang:error({kura, unrecognised_condition}).
 
 refuse_field(Field, {Encrypted, _Ctes}, Reason) ->
     case lists:member(Field, Encrypted) of
