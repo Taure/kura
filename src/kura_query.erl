@@ -99,46 +99,75 @@ over(WindowFn, Spec) when is_map(Spec) ->
 Add a WHERE condition. Conditions: `{field, value}`, `{field, op, value}`,
 `{'and', [...]}`, etc.
 
-Filtering on an `{encrypted, _}` field raises. Encryption uses a random
-nonce, so a freshly encrypted value never equals the stored ciphertext: the
-condition cannot match, and it would ship the plaintext to the server as a
-bind parameter, into `pg_stat_statements` and the query log.
+A condition that compares an encrypted field (see
+`kura_types:encryption/1`) to a value raises
+`{kura, {encrypted_field_in_where, Field}}`, wherever the field appears: under
+`and`, `or` or `not`, in an `in` list, or as one column of a row-value `in`.
+Encryption uses a random nonce, so a freshly encrypted value never equals the
+stored ciphertext: the condition cannot match, and it would ship the plaintext
+to the server as a bind parameter, into `pg_stat_statements`, the query log
+and telemetry. Fields of the `from` schema and of every joined schema are
+checked. `{Field, is_nil}` and `{Field, is_not_nil}` bind nothing and are
+allowed. A `{fragment, SQL, Params}` is not inspected: what it binds is the
+caller's responsibility. A query over a bare table name has no schema and is
+not checked.
 """.
 -spec where(#kura_query{}, term()) -> #kura_query{}.
-where(Q = #kura_query{from = From, wheres = W}, Condition) ->
-    reject_encrypted(From, Condition),
+where(Q = #kura_query{wheres = W}, Condition) ->
+    refuse_encrypted(encrypted_in_scope(Q), [Condition], encrypted_field_in_where),
     Q#kura_query{wheres = W ++ [Condition]}.
 
-reject_encrypted(From, Condition) when is_atom(From), From =/= undefined ->
-    case kura_schema:encrypted_fields(From) of
-        [] -> ok;
-        Encrypted -> reject_encrypted_cond(Condition, Encrypted)
-    end;
-reject_encrypted(_From, _Condition) ->
-    ok.
+encrypted_in_scope(#kura_query{from = From, joins = Joins}) ->
+    encrypted_fields(From) ++ lists:append([encrypted_fields(T) || {_, T, _, _} <- Joins]).
 
-reject_encrypted_cond({Op, Conds}, Encrypted) when
-    Op =:= 'and', is_list(Conds);
-    Op =:= 'or', is_list(Conds)
-->
-    lists:foreach(fun(C) -> reject_encrypted_cond(C, Encrypted) end, Conds);
-reject_encrypted_cond({fragment, _SQL, _Params}, _Encrypted) ->
+encrypted_fields(Source) when is_atom(Source), Source =/= undefined ->
+    kura_schema:encrypted_fields(Source);
+encrypted_fields(_Source) ->
+    [].
+
+refuse_encrypted([], _Conditions, _Reason) ->
     ok;
-reject_encrypted_cond(Cond, Encrypted) when is_tuple(Cond), tuple_size(Cond) >= 2 ->
-    case element(1, Cond) of
-        Field when is_atom(Field) ->
-            case lists:member(Field, Encrypted) of
-                true -> erlang:error({kura, {encrypted_field_in_where, Field}});
-                false -> ok
-            end;
-        _ ->
-            ok
-    end;
-reject_encrypted_cond(_Cond, _Encrypted) ->
-    ok.
+refuse_encrypted(Encrypted, Conditions, Reason) ->
+    lists:foreach(fun(C) -> refuse_encrypted_cond(C, Encrypted, Reason) end, Conditions).
+
+%% An allow-list over the condition grammar kura_dialect_pg compiles. Every
+%% form that names a field is checked; a shape not listed here is refused
+%% rather than passed, so a new form cannot slip a value past the check.
+refuse_encrypted_cond({Op, Conds}, Encrypted, Reason) when
+    (Op =:= 'and' orelse Op =:= 'or'), is_list(Conds)
+->
+    refuse_encrypted(Encrypted, Conds, Reason);
+refuse_encrypted_cond({'not', Cond}, Encrypted, Reason) ->
+    refuse_encrypted_cond(Cond, Encrypted, Reason);
+refuse_encrypted_cond({fragment, _SQL, _Params}, _Encrypted, _Reason) ->
+    ok;
+refuse_encrypted_cond({Exists, {subquery, _}}, _Encrypted, _Reason) when
+    Exists =:= exists; Exists =:= not_exists
+->
+    ok;
+refuse_encrypted_cond({Field, Op}, _Encrypted, _Reason) when
+    is_atom(Field), ?KURA_IS_UNARY_OP(Op)
+->
+    ok;
+refuse_encrypted_cond({Field, _Value}, Encrypted, Reason) when is_atom(Field) ->
+    refuse_field(Field, Encrypted, Reason);
+refuse_encrypted_cond({Field, _Op, _Value}, Encrypted, Reason) when is_atom(Field) ->
+    refuse_field(Field, Encrypted, Reason);
+refuse_encrypted_cond({Fields, _Op, _Value}, Encrypted, Reason) when is_list(Fields) ->
+    lists:foreach(fun(F) -> refuse_field(F, Encrypted, Reason) end, Fields);
+refuse_encrypted_cond(_Cond, _Encrypted, _Reason) ->
+    erlang:error({kura, unrecognised_condition}).
+
+refuse_field(Field, Encrypted, Reason) ->
+    case lists:member(Field, Encrypted) of
+        true -> erlang:error({kura, {Reason, Field}});
+        false -> ok
+    end.
 
 -doc """
 Add a JOIN clause. `Table` can be a schema module or raw table atom.
+Conditions already added with `where/2` or `having/2` are checked against the
+joined schema's encrypted fields, as if added after the join.
 `On` is `{LeftCol, RightCol}` where LeftCol is on the previous table
 (FROM for the first join, or the last joined table) and RightCol is on
 the joined table. For chained joins, the left side automatically advances.
@@ -158,7 +187,10 @@ join(Q, Type, Table, On) ->
 -spec join(
     #kura_query{}, inner | left | right | full, atom(), {atom(), atom()}, atom() | undefined
 ) -> #kura_query{}.
-join(Q = #kura_query{joins = J}, Type, Table, On, As) ->
+join(Q = #kura_query{joins = J, wheres = W, havings = H}, Type, Table, On, As) ->
+    Encrypted = encrypted_fields(Table),
+    refuse_encrypted(Encrypted, W, encrypted_field_in_where),
+    refuse_encrypted(Encrypted, H, encrypted_field_in_having),
     Q#kura_query{joins = J ++ [{Type, Table, On, As}]}.
 
 -doc "Set ORDER BY clauses as `[{field, asc | desc}]`.".
@@ -170,8 +202,14 @@ order_by(Q, Orders) ->
 group_by(Q, Fields) ->
     Q#kura_query{group_bys = Fields}.
 
+-doc """
+Add a HAVING condition, in the same forms as `where/2`. A condition that
+compares an encrypted field to a value raises
+`{kura, {encrypted_field_in_having, Field}}`, as `where/2` does.
+""".
 -spec having(#kura_query{}, term()) -> #kura_query{}.
 having(Q = #kura_query{havings = H}, Condition) ->
+    refuse_encrypted(encrypted_in_scope(Q), [Condition], encrypted_field_in_having),
     Q#kura_query{havings = H ++ [Condition]}.
 
 -spec limit(#kura_query{}, non_neg_integer()) -> #kura_query{}.
