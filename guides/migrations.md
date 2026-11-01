@@ -191,7 +191,9 @@ What changes for such a migration:
   Reason}}` and the error log gives `committed_statements`. Fix the cause and
   undo or account for what was committed before migrating again. A failed
   `CREATE INDEX CONCURRENTLY` leaves an invalid index behind that a retry
-  trips over, so drop it first. The simplest rule: one statement per
+  trips over, so drop it first (see
+  [Recovering from a failed concurrent build](#recovering-from-a-failed-concurrent-build)).
+  The simplest rule: one statement per
   non-transactional migration.
 - **The run is split around it.** Pending migrations are chosen once, under
   the lock. Transactional migrations before the non-transactional one run in
@@ -219,10 +221,69 @@ executes, when the caller is inside `kura_db:transaction/2` or holds a
 keep the lock held while the migration waited for it on a connection of its
 own. Migrate before checking out the sandbox in a test setup.
 
-A long index build runs under the driver's statement timeout like any other
-migration statement. With `kura_postgres` that is the pool's `timeout`
-option (minato's default is 15 seconds), so raise it for the node that
-migrates a large table.
+### Long index builds
+
+A statement in a migration runs under the repo pool's read timeout. With
+`kura_postgres` that is the pool's `timeout` option, 15 seconds by default,
+and a per-statement timeout can only shorten it. `CREATE INDEX CONCURRENTLY`
+on a large table runs longer than that: the client gives up, the server
+cancels the build, and an `INVALID` index is left behind.
+
+Rather than raising the application pool's `timeout`, which would let every
+query the application makes hang that long, migrate through a repo of its
+own. It points at the same database with its own small pool and a long or
+`infinity` timeout, and reads the same migrations through the same
+`otp_app/0` (and `migration_apps/0`, if the application repo has one):
+
+```erlang
+-module(my_migration_repo).
+-behaviour(kura_repo).
+-export([otp_app/0]).
+
+otp_app() -> my_app.
+```
+
+```erlang
+[{kura, [
+    {repos, #{
+        my_repo => #{
+            backend => kura_backend_postgres,
+            database => "my_app",
+            pool_size => 10
+        },
+        my_migration_repo => #{
+            backend => kura_backend_postgres,
+            database => "my_app",
+            pool_size => 2,
+            timeout => infinity
+        }
+    }}
+]}].
+```
+
+```erlang
+{ok, _} = kura_migrator:migrate(my_migration_repo).
+```
+
+Both repos share `schema_migrations` and the advisory lock, since both are
+in the same database, so the application repo's view of what is applied is
+the same.
+
+### Recovering from a failed concurrent build
+
+A `CREATE INDEX CONCURRENTLY` that fails, because the client timed out, the
+statement was cancelled, or Postgres's deadlock detector aborted it
+(`deadlock detected`), leaves an `INVALID` index and the migration pending.
+A re-run then fails on the name that already exists. Find the index, drop
+it, and migrate again:
+
+```sql
+SELECT indexrelid::regclass AS index FROM pg_index WHERE NOT indisvalid;
+DROP INDEX CONCURRENTLY IF EXISTS "users_email_index";
+```
+
+An invalid index is not used for reads but is still maintained on every
+write, so do not leave one behind.
 
 ### On SQLite
 
