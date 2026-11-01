@@ -709,6 +709,12 @@ the_settings_hold_no_connection_settings_test() ->
         )
     end).
 
+a_started_repo_without_read_only_is_writable_test() ->
+    with_pool_answer({ok, self()}, #{}, fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        ?assertEqual(false, kura_repo:read_only(kura_db_failing_repo))
+    end).
+
 starting_the_pool_again_rereads_the_settings_test() ->
     with_pool_answer({ok, self()}, #{read_only => false}, fun() ->
         ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
