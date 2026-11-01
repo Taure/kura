@@ -153,7 +153,7 @@ impossible.
 The lock is polled: the migrator tries `pg_try_advisory_xact_lock`, and a
 transaction that misses it ends and a new one tries again
 `migration_lock_retry_interval` milliseconds later (`kura` app env, default
-100). Waiting inside a blocking `pg_advisory_xact_lock` would keep a
+100; anything below 10 is taken as 10). Waiting inside a blocking `pg_advisory_xact_lock` would keep a
 transaction open that a `CREATE INDEX CONCURRENTLY` on the node holding the
 lock has to wait for, and the two would deadlock. Nodes on an older kura
 wait the blocking way; see the
@@ -167,6 +167,16 @@ A waiting migrator logs a warning every 30 seconds with the time it has
 waited. The wait has no limit unless `migration_lock_timeout` (`kura` app
 env, milliseconds, default `infinity`) is set, after which the operation
 returns `{error, migration_lock_timeout}`.
+
+The lock key is a fixed constant every kura migrator shares, and any role
+that can connect to the database can take the same advisory lock and hold
+it, stalling the migrations of every deploy. Set a finite
+`migration_lock_timeout` in production, longer than your slowest migration
+run, so a stuck or hostile holder fails the deploy instead of hanging it:
+
+```erlang
+{kura, [{migration_lock_timeout, 600000}]}
+```
 
 ## Non-Transactional Migrations
 

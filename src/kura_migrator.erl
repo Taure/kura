@@ -70,7 +70,7 @@ lock held while the migration waited for it on another connection.
 The lock is taken with `pg_try_advisory_xact_lock` or
 `pg_try_advisory_lock`, never with the blocking forms, and a transaction
 that misses it ends before the next try, `migration_lock_retry_interval`
-milliseconds later (`kura` app env, default 100). `CREATE INDEX
+milliseconds later (`kura` app env, default 100, at least 10). `CREATE INDEX
 CONCURRENTLY` on the node holding the lock waits for every transaction
 that had a snapshot when it started: a waiter blocked inside a statement,
 or retrying inside one long transaction, would never end, and the two
@@ -85,7 +85,10 @@ migration_lock_busy}`: retrying would keep that one transaction open.
 A waiting migrator logs a warning every 30 seconds with the time it has
 waited. The wait is unbounded unless `migration_lock_timeout` (`kura` app
 env, milliseconds, default `infinity`) is set; past it the operation
-returns `{error, migration_lock_timeout}`.
+returns `{error, migration_lock_timeout}`. The lock key is a fixed public
+constant, so any role that can connect to the database can take it and
+stall every deploy's migrations; set a finite `migration_lock_timeout`
+in production.
 
 A backend whose pool does not declare `advisory_locks` (SQLite) takes no
 lock and relies on its single writer. There a non-transactional
@@ -106,6 +109,7 @@ one.
 %% sharing a PostgreSQL database contend on this single lock.
 -define(MIGRATION_LOCK_KEY, 571629482).
 -define(LOCK_RETRY_INTERVAL_MS, 100).
+-define(LOCK_RETRY_FLOOR_MS, 10).
 -define(LOCK_WARN_INTERVAL_MS, 30000).
 
 %% Defaults for the pool-readiness wait at the start of migrator operations.
@@ -155,7 +159,8 @@ one.
     lock_wait_step/4,
     release_session_lock/1,
     run_non_transactional/3,
-    refuse_unsupported_concurrently/3
+    refuse_unsupported_concurrently/3,
+    lock_retry_interval/0
 ]).
 -endif.
 
@@ -1036,8 +1041,15 @@ lock_wait_step(_Now, _Since, _WarnAt, _Timeout) ->
 
 -spec pause_for_lock(lock_wait()) -> lock_wait().
 pause_for_lock(Wait) ->
-    timer:sleep(read_pos_int_env(migration_lock_retry_interval, ?LOCK_RETRY_INTERVAL_MS)),
+    timer:sleep(lock_retry_interval()),
     Wait.
+
+-spec lock_retry_interval() -> pos_integer().
+lock_retry_interval() ->
+    max(
+        ?LOCK_RETRY_FLOOR_MS,
+        read_pos_int_env(migration_lock_retry_interval, ?LOCK_RETRY_INTERVAL_MS)
+    ).
 
 -spec migration_lock_timeout() -> timeout().
 migration_lock_timeout() ->

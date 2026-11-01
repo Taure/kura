@@ -967,3 +967,21 @@ lock_wait_step_test() ->
     ?assertEqual(timeout, kura_migrator:lock_wait_step(500, 0, 30000, 500)),
     ?assertEqual(timeout, kura_migrator:lock_wait_step(40000, 0, 30000, 500)),
     ?assertEqual(timeout, kura_migrator:lock_wait_step(100, 100, 30100, 0)).
+
+lock_retry_interval_test() ->
+    Previous = application:get_env(kura, migration_lock_retry_interval),
+    try
+        application:unset_env(kura, migration_lock_retry_interval),
+        ?assertEqual(100, kura_migrator:lock_retry_interval()),
+        application:set_env(kura, migration_lock_retry_interval, 0),
+        ?assertEqual(10, kura_migrator:lock_retry_interval()),
+        application:set_env(kura, migration_lock_retry_interval, 9),
+        ?assertEqual(10, kura_migrator:lock_retry_interval()),
+        application:set_env(kura, migration_lock_retry_interval, 50),
+        ?assertEqual(50, kura_migrator:lock_retry_interval())
+    after
+        case Previous of
+            {ok, Value} -> application:set_env(kura, migration_lock_retry_interval, Value);
+            undefined -> application:unset_env(kura, migration_lock_retry_interval)
+        end
+    end.
