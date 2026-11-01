@@ -72,6 +72,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `transactional/0` and `concurrently`, so if it runs the migration itself
   it builds the index with a plain `CREATE INDEX` that blocks writes to
   the table.
+- A `schema_migrations` read that fails stops `migrate/1`,
+  `rollback/1,2,3` and `fake/1,2,3` with `{error,
+  {schema_migrations_unreadable, Reason}}`, where it was taken as an
+  empty table (#139). A non-transactional migration's re-read failing,
+  on a `lock_timeout` for instance, would otherwise run an applied
+  migration again in autocommit. `status/1` still reports such a table
+  as nothing applied.
 - A migrator waiting for the advisory lock logs a warning every 30
   seconds with the time it has waited, where the wait was silent after
   its first info line (#139). The wait is still unbounded by default; the

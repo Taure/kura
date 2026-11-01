@@ -18,6 +18,8 @@ unless its own session holds the migration advisory lock.
 -define(FAIL_APP, kura_nontx_fail).
 -define(REFUSE_APP, kura_nontx_refuse).
 -define(RAISE_APP, kura_nontx_raise).
+-define(SIDE_APP, kura_nontx_side).
+-define(LOCK_TIMEOUT_POOL, kura_migrator_nontx_tests_lock_timeout_pool).
 
 -define(LOCK_KEY, 571629482).
 
@@ -29,9 +31,14 @@ unless its own session holds the migration advisory lock.
 -define(FAIL_AFTER, 20250302120000).
 -define(REFUSE_INDEX, 20250303110000).
 -define(RAISE, 20250304100000).
+-define(SIDE, 20250305100000).
 
 -define(TABLES, [
-    ~"nontx_items", ~"nontx_fail_items", ~"nontx_fail_after", ~"nontx_refuse_items"
+    ~"nontx_items",
+    ~"nontx_fail_items",
+    ~"nontx_fail_after",
+    ~"nontx_refuse_items",
+    ~"nontx_side_effects"
 ]).
 
 nontx_test_() ->
@@ -54,6 +61,8 @@ nontx_test_() ->
                 {timeout, 30, fun lock_wait_times_out/0}},
             {"migration_lock_timeout ends a wait for the session lock",
                 {timeout, 30, fun session_lock_wait_times_out/0}},
+            {"an unreadable schema_migrations runs nothing again",
+                {timeout, 30, fun unreadable_schema_migrations_runs_nothing/0}},
             {"a non-transactional plan is refused inside the sandbox",
                 {timeout, 10, fun refused_in_sandbox/0}},
             {"a non-transactional plan is refused inside an outer transaction",
@@ -85,6 +94,7 @@ setup() ->
         m20250303110000_nontx_refuse_index
     ]),
     load_app(?RAISE_APP, [m20250304100000_nontx_raise]),
+    load_app(?SIDE_APP, [m20250305100000_nontx_side_effect]),
     application:set_env(?BASE, ?REPO, repo_config()),
     case kura_pool_minato:start_pool(?POOL, pool_config()) of
         {ok, _} -> ok;
@@ -98,7 +108,7 @@ cleanup(_) ->
     application:unset_env(kura, ensure_database),
     application:unset_env(kura, migration_lock_retry_interval),
     application:unset_env(kura, kura_nontx_apps),
-    [application:unload(A) || A <- [?OK_APP, ?FAIL_APP, ?REFUSE_APP, ?RAISE_APP, ?BASE]],
+    [application:unload(A) || A <- [?OK_APP, ?FAIL_APP, ?REFUSE_APP, ?RAISE_APP, ?SIDE_APP, ?BASE]],
     ok.
 
 %%----------------------------------------------------------------------
@@ -251,6 +261,53 @@ session_lock_wait_times_out() ->
         kura_pool_minato:checkin(?POOL, Token)
     end,
     ?assertEqual(false, lock_held()).
+
+unreadable_schema_migrations_runs_nothing() ->
+    declare([?SIDE_APP]),
+    ?assertEqual({ok, [?SIDE]}, kura_migrator:migrate(?REPO)),
+    ?assertEqual(1, side_effects()),
+    {ok, _} = minato:start_pool(?LOCK_TIMEOUT_POOL, #{
+        size => 2,
+        connection => #{
+            host => "localhost",
+            port => 5555,
+            database => ~"kura_test",
+            user => ~"postgres",
+            password => ~"root",
+            parameters => #{~"lock_timeout" => ~"200"}
+        }
+    }),
+    {ok, Conn, Token} = kura_pool_minato:checkout(?POOL, #{}),
+    application:set_env(?BASE, ?REPO, (repo_config())#{pool => ?LOCK_TIMEOUT_POOL}),
+    try
+        _ = kura_driver_minato:query_on(Conn, ~"BEGIN", [], decode()),
+        #{command := lock} = kura_driver_minato:query_on(
+            Conn, ~"LOCK TABLE schema_migrations IN ACCESS EXCLUSIVE MODE", [], decode()
+        ),
+        ?assertMatch(
+            {error, {schema_migrations_unreadable, _}},
+            kura_migrator:run_non_transactional(
+                {?SIDE, m20250305100000_nontx_side_effect}, up, ?REPO
+            )
+        ),
+        ?assertMatch(
+            {error, {schema_migrations_unreadable, _}},
+            kura_migrator:run_non_transactional(
+                {?SIDE, m20250305100000_nontx_side_effect}, down, ?REPO
+            )
+        )
+    after
+        application:set_env(?BASE, ?REPO, repo_config()),
+        _ = kura_driver_minato:query_on(Conn, ~"ROLLBACK", [], decode()),
+        kura_pool_minato:checkin(?POOL, Token),
+        ok = minato:stop_pool(?LOCK_TIMEOUT_POOL)
+    end,
+    ?assertEqual(1, side_effects()),
+    ?assertEqual([?SIDE], applied_versions()).
+
+side_effects() ->
+    #{rows := [#{n := N}]} = query(~"SELECT count(*)::int AS n FROM nontx_side_effects", []),
+    N.
 
 refused_in_sandbox() ->
     declare([?OK_APP]),

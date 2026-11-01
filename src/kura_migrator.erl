@@ -169,7 +169,7 @@ migrate(RepoMod) ->
         {ok, Groups} ->
             Ordered = flatten_groups(Groups),
             run_plan(RepoMod, up, fun() ->
-                pending_migrations(Ordered, get_applied_versions(RepoMod))
+                pending_migrations(Ordered, applied_versions_strict(RepoMod))
             end);
         {error, _} = Err ->
             Err
@@ -317,7 +317,7 @@ run_fake_up_to(RepoMod, Ordered, UpTo) ->
 run_fake(RepoMod, Ordered) ->
     T0 = erlang:monotonic_time(),
     Result = with_migration_lock(RepoMod, fun() ->
-        Pending = pending_migrations(Ordered, get_applied_versions(RepoMod)),
+        Pending = pending_migrations(Ordered, applied_versions_strict(RepoMod)),
         log_fake_stamp(RepoMod, Pending),
         emit_migrate_start(RepoMod, fake, length(Pending)),
         stamp_migrations(Pending, RepoMod, [])
@@ -370,7 +370,7 @@ rollback(RepoMod, Steps) ->
         {ok, Groups} ->
             Ordered = flatten_groups(Groups),
             run_plan(RepoMod, down, fun() ->
-                rollback_window(RepoMod, Ordered, Steps, get_applied_versions(RepoMod))
+                rollback_window(RepoMod, Ordered, Steps, applied_versions_strict(RepoMod))
             end);
         {error, _} = Err ->
             Err
@@ -418,7 +418,7 @@ rollback(RepoMod, App, Steps) ->
 -spec app_applied(module(), [{integer(), module()}]) -> [integer()].
 app_applied(RepoMod, Ordered) ->
     Known = #{V => [] || {V, _M} <- Ordered},
-    [V || V <- get_applied_versions(RepoMod), is_map_key(V, Known)].
+    [V || V <- applied_versions_strict(RepoMod), is_map_key(V, Known)].
 
 -spec rollback_window(module(), [migration()], non_neg_integer(), [integer()]) ->
     [migration()].
@@ -1110,7 +1110,7 @@ next_step([{_, Module} = Next | Rest] = Todo, Dir, RepoMod) ->
         true ->
             locked_step(RepoMod, fun() ->
                 run_transactional_prefix(
-                    still_todo(Dir, Todo, get_applied_versions(RepoMod)), Dir, RepoMod
+                    still_todo(Dir, Todo, applied_versions_strict(RepoMod)), Dir, RepoMod
                 )
             end)
     end.
@@ -1278,7 +1278,7 @@ release_session_lock(Target) ->
 -spec apply_non_transactional(migration(), up | down, conn_target()) ->
     {ok, [integer()]} | {error, term()}.
 apply_non_transactional({Version, Module} = Migration, Dir, Target) ->
-    case still_todo(Dir, [Migration], get_applied_versions(Target)) of
+    case still_todo(Dir, [Migration], applied_versions_strict(Target)) of
         [] ->
             {ok, []};
         [_] ->
@@ -1738,6 +1738,7 @@ log_warnings(Module, Warnings) ->
 %% Internal helpers
 %%----------------------------------------------------------------------
 
+%% Lenient: `status/1` reports a table it cannot read as nothing applied.
 -spec get_applied_versions(target()) -> [integer()].
 get_applied_versions(Target) ->
     case run_sql(Target, ~"SELECT version FROM schema_migrations ORDER BY version", []) of
@@ -1745,6 +1746,21 @@ get_applied_versions(Target) ->
             [V || #{version := V} <- Rows];
         _ ->
             []
+    end.
+
+%% For every path that decides what to run: a read that fails is not an
+%% empty table, and taking it for one would run applied migrations again.
+-spec applied_versions_strict(target()) -> [integer()].
+applied_versions_strict(Target) ->
+    case run_sql(Target, ~"SELECT version FROM schema_migrations ORDER BY version", []) of
+        #{rows := Rows} ->
+            [V || #{version := V} <- Rows];
+        Other ->
+            ?LOG_ERROR(#{
+                msg => ~"kura: could not read schema_migrations; running nothing",
+                reason => Other
+            }),
+            error({migration_aborted, {schema_migrations_unreadable, Other}})
     end.
 
 -spec run_sql(target(), binary(), list()) -> map() | {error, term()}.
