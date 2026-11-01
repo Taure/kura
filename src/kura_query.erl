@@ -49,6 +49,9 @@ Q3 = kura_query:limit(Q2, 10).
 
 -export_type([window_fn/0, window_spec/0]).
 
+%% Stands for every column of a CTE whose ciphertext columns cannot be named.
+-define(ANY_COLUMN, '$kura_any_column').
+
 -type window_fn() ::
     {count | sum | avg | min | max, atom()} | row_number | rank | dense_rank.
 -type window_spec() ::
@@ -168,10 +171,55 @@ source_names(_Source) ->
     [].
 
 %% The column names of a CTE that may hold ciphertext: every encrypted field
-%% of its sources, and each alias it selects one under.
-cte_exports(#kura_query{ctes = Own, select = Select} = Body, OuterCtes) ->
-    Encrypted = encrypted_in_scope(Body, Own ++ OuterCtes),
-    Encrypted ++ ciphertext_aliases(Select, Encrypted).
+%% of its sources, each alias it selects one under, and, for a union branch,
+%% the name its first query gives the position where the branch selects
+%% one. When positions cannot be matched (a SELECT * on either side), every
+%% column of the CTE counts.
+cte_exports(#kura_query{ctes = Own, select = Select, combinations = C} = Body, OuterCtes) ->
+    Ctes = Own ++ OuterCtes,
+    Encrypted = encrypted_in_scope(Body, Ctes),
+    Main = Encrypted ++ ciphertext_aliases(Select, Encrypted),
+    Main ++ lists:append([branch_exports(Body, Branch, Ctes) || {_, Branch} <- C]).
+
+branch_exports(Main, Branch, Ctes) ->
+    case cte_exports(Branch, Ctes) of
+        [] -> [];
+        Exports -> positional_exports(Main, Branch, Exports)
+    end.
+
+positional_exports(
+    #kura_query{select = [], joins = J} = Main,
+    #kura_query{select = [], joins = J} = Branch,
+    Exports
+) when
+    Main#kura_query.from =:= Branch#kura_query.from
+->
+    Exports;
+positional_exports(#kura_query{select = MainSelect}, #kura_query{select = BranchSelect}, Exports) ->
+    case {column_names(MainSelect), column_names(BranchSelect)} of
+        {{ok, Names}, {ok, BranchNames}} ->
+            [
+                N
+             || {N, B} <- lists:zip(Names, BranchNames, trim),
+                lists:member(B, Exports) orelse lists:member(?ANY_COLUMN, Exports)
+            ];
+        _ ->
+            [?ANY_COLUMN]
+    end.
+
+column_names([]) -> unknown;
+column_names({exprs, Exprs}) -> names([A || {A, _} <- Exprs], length(Exprs));
+column_names(Fields) -> names([column_name(F) || F <- Fields], length(Fields)).
+
+column_name(Field) when is_atom(Field) -> Field;
+column_name({Agg, _}) when is_atom(Agg) -> Agg;
+column_name(_) -> undefined.
+
+names(Names, Count) ->
+    case length(Names) =:= Count andalso not lists:member(undefined, Names) of
+        true -> {ok, Names};
+        false -> unknown
+    end.
 
 ciphertext_aliases({exprs, Exprs}, Encrypted) ->
     [Alias || {Alias, Expr} <- Exprs, ciphertext_expr(Expr, Encrypted)];
@@ -179,7 +227,7 @@ ciphertext_aliases(Fields, Encrypted) ->
     [Agg || {Agg, _} = Expr <- Fields, ciphertext_expr(Expr, Encrypted)].
 
 ciphertext_expr(Field, Encrypted) when is_atom(Field) ->
-    lists:member(Field, Encrypted);
+    lists:member(Field, Encrypted) orelse lists:member(?ANY_COLUMN, Encrypted);
 ciphertext_expr({Agg, Field}, Encrypted) when Agg =:= min; Agg =:= max ->
     lists:member(Field, Encrypted);
 ciphertext_expr({over, Fn, _Spec}, Encrypted) ->
@@ -351,7 +399,7 @@ refuse_fields(_Improper, _Scope, _Reason) ->
     erlang:error({kura, unrecognised_condition}).
 
 refuse_field(Field, {Encrypted, _Ctes}, Reason) ->
-    case lists:member(Field, Encrypted) of
+    case lists:member(Field, Encrypted) orelse lists:member(?ANY_COLUMN, Encrypted) of
         true -> erlang:error({kura, {Reason, Field}});
         false -> ok
     end.

@@ -169,15 +169,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   they do not shadow, including a `{subquery, Q}` given as the value of
   any other condition, such as `{id, '=', {subquery, Q}}`. A bare-table
   source shadows nothing.
-- A CTE bypassed the filter guard. A `from` or `join` naming a CTE over
-  an encrypted schema had no encrypted fields in scope, so
+- A CTE bypassed the filter guard. A `from` or `join` naming a CTE over an
+  encrypted schema had no encrypted fields in scope, so
   `where(from(enc_cte), {ssn, V})` bound the plaintext, as did a condition
   added before `with_cte/3`. A source now gets the encrypted fields of
   every CTE its name, or its schema's table name, resolves to, including
-  aliases a CTE selects an encrypted field under, and `with_cte/3` and
-  `join/4,5` re-check the conditions already in the query, its CTE bodies
-  and its union branches. A name shared by several CTEs, or by a CTE and a
-  schema, gets the encrypted fields of all of them.
+  aliases a CTE selects an encrypted field under and the columns of its
+  union, intersect or except branches (by position, under the first
+  query's names; every column when a `SELECT *` hides the positions), and
+  `with_cte/3` and `join/4,5` re-check the conditions already in the
+  query, its CTE bodies and its union branches. A name shared by several
+  CTEs, or by a CTE and a schema, gets the encrypted fields of all of
+  them.
 - A `has_many` or `has_one` whose `#kura_ref{target_key = Cols}` names an
   encrypted field of the owner was not refused. Preloading bound the
   decrypted owner value in the child query, and writes copied it into the

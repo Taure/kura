@@ -795,3 +795,85 @@ tenant_attribute_on_an_encrypted_field_in_upserts_test_() ->
                     end)
                 )}
         ]}.
+
+%%----------------------------------------------------------------------
+%% A CTE whose body is a union exports the ciphertext columns of every
+%% branch, under the first query's column names.
+%%----------------------------------------------------------------------
+
+union_cte(Body) ->
+    kura_query:with_cte(#kura_query{from = ~"u"}, ~"u", Body).
+
+union_cte_test_() ->
+    P = ?PLAIN,
+    Enc = kura_query:from(?ENC),
+    PlainSsn = kura_query:from(kura_test_plain_ssn_schema),
+    Users = kura_query:from(kura_test_schema),
+    Refused = [
+        {"SELECT * union of different schemas", union_cte(kura_query:union(PlainSsn, Enc)),
+            {ssn, P}},
+        {"... fails closed on every column", union_cte(kura_query:union(PlainSsn, Enc)), {id, 1}},
+        {"union_all", union_cte(kura_query:union_all(PlainSsn, Enc)), {ssn, P}},
+        {"except", union_cte(kura_query:except(PlainSsn, Enc)), {ssn, P}},
+        {"intersect", union_cte(kura_query:intersect(PlainSsn, Enc)), {ssn, P}},
+        {"same name, by position",
+            union_cte(
+                kura_query:union(
+                    kura_query:select(PlainSsn, [id, ssn]), kura_query:select(Enc, [id, ssn])
+                )
+            ),
+            {ssn, P}},
+        {"another name, by position",
+            union_cte(
+                kura_query:union(
+                    kura_query:select(Users, [id, email]), kura_query:select(Enc, [id, ssn])
+                )
+            ),
+            {email, P}},
+        {"aliased in the branch",
+            union_cte(
+                kura_query:union(
+                    kura_query:select(Users, [id, email]),
+                    kura_query:select_expr(Enc, [{id, id}, {e, ssn}])
+                )
+            ),
+            {email, P}},
+        {"a union nested in a branch",
+            union_cte(
+                kura_query:union(
+                    kura_query:select(Users, [id, email]),
+                    kura_query:union(
+                        kura_query:select(Users, [id, email]), kura_query:select(Enc, [id, ssn])
+                    )
+                )
+            ),
+            {email, P}},
+        {"the same schema twice", union_cte(kura_query:union(Enc, Enc)), {ssn, P}},
+        {"main SELECT * against a named branch",
+            union_cte(kura_query:union(Users, kura_query:select(Enc, [id, ssn]))), {name, P}}
+    ],
+    Allowed = [
+        {"another position",
+            union_cte(
+                kura_query:union(
+                    kura_query:select(Users, [id, email]), kura_query:select(Enc, [id, ssn])
+                )
+            ),
+            {id, 1}},
+        {"a plain column of the same schema twice", union_cte(kura_query:union(Enc, Enc)),
+            {name, P}},
+        {"plain branches", union_cte(kura_query:union(Users, Users)), {email, P}}
+    ],
+    [
+        {Name, fun() ->
+            assert_refused({kura, {encrypted_field_in_where, element(1, Cond)}}, Q, Cond)
+        end}
+     || {Name, Q, Cond} <- Refused
+    ] ++
+        [
+            {Name, ?_assertMatch(#kura_query{}, kura_query:where(Q, Cond))}
+         || {Name, Q, Cond} <- Allowed
+        ].
+
+assert_refused(Reason, Q, Cond) ->
+    ?assertError(Reason, kura_query:where(Q, Cond)).
