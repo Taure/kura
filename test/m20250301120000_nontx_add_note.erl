@@ -3,9 +3,9 @@
 
 -include("kura.hrl").
 
--export([up/0, down/0, transaction/0]).
+-export([up/0, down/0, transactional/0]).
 
-transaction() -> true.
+transactional() -> true.
 
 up() ->
     [{alter_table, ~"nontx_items", [{add_column, #kura_column{name = note, type = text}}]}].

@@ -66,10 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CONCURRENTLY` on the lock holder waits for, and the two deadlocked.
 
   **Upgrading:** deploy this kura on every node before shipping the
-  first `transaction() -> false` migration. A node still on an older
+  first `transactional() -> false` migration. A node still on an older
   kura waits for the lock the blocking way, which deadlocks with a
   concurrent index build on the node holding it, and it ignores
-  `transaction/0` and `concurrently`, so if it runs the migration itself
+  `transactional/0` and `concurrently`, so if it runs the migration itself
   it builds the index with a plain `CREATE INDEX` that blocks writes to
   the table.
 - A migrator waiting for the advisory lock logs a warning every 30
@@ -225,7 +225,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Non-transactional migrations (#139). A migration exporting
-  `transaction() -> false` runs outside a transaction, statement by
+  `transactional() -> false` runs outside a transaction, statement by
   statement, on one connection holding the session-level advisory lock.
   Its version is recorded only after its last statement succeeds: a
   failure part-way leaves the earlier statements committed and the

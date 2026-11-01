@@ -169,14 +169,14 @@ returns `{error, migration_lock_timeout}`.
 Some statements refuse to run inside a transaction: `CREATE INDEX
 CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, `ALTER TYPE ... ADD VALUE` on older
 Postgres versions. A migration opts out of the transaction by exporting
-`transaction/0` returning `false`:
+`transactional/0` returning `false`:
 
 ```erlang
 -module(m20250102120000_index_users_email).
 -behaviour(kura_migration).
--export([up/0, down/0, transaction/0]).
+-export([up/0, down/0, transactional/0]).
 
-transaction() -> false.
+transactional() -> false.
 
 up() ->
     [{create_index, ~"users", [email], #{concurrently => true}}].
@@ -188,10 +188,10 @@ down() ->
 ### Upgrade note: before the first non-transactional migration
 
 Deploy a kura with non-transactional migrations on every node that runs the
-migrator before shipping the first `transaction() -> false` migration. A
+migrator before shipping the first `transactional() -> false` migration. A
 node still on an older kura waits for the advisory lock the blocking way,
 which deadlocks with a `CREATE INDEX CONCURRENTLY` on the node holding it.
-It also ignores `transaction/0` and `concurrently`, so if it is the node
+It also ignores `transactional/0` and `concurrently`, so if it is the node
 that runs the migration it builds the index with a plain `CREATE INDEX`
 inside a transaction, blocking writes to the table for the whole build.
 

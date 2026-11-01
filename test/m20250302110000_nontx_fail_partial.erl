@@ -1,9 +1,9 @@
 -module(m20250302110000_nontx_fail_partial).
 -behaviour(kura_migration).
 
--export([up/0, down/0, transaction/0]).
+-export([up/0, down/0, transactional/0]).
 
-transaction() -> false.
+transactional() -> false.
 
 up() ->
     [

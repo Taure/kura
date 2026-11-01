@@ -142,7 +142,7 @@ unsafe operations during rolling deployments). `kura_migrator` discovers
 migration modules, maintains a `schema_migrations` table, and applies
 pending migrations in order. Pending migrations run inside a single
 transaction, split only around a migration that opts out of one with
-`transaction() -> false`. On Postgres, every step is guarded by an
+`transactional() -> false`. On Postgres, every step is guarded by an
 advisory lock, polled rather than waited on, so concurrent nodes do not
 race; on SQLite the single-writer transaction handles serialisation. The advisory-lock SQL is gated on
 the configured pool declaring the `advisory_locks` capability. The

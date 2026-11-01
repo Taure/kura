@@ -887,10 +887,10 @@ concurrently_on_a_pool_without_the_capability_is_plain() ->
         )
     ).
 
-transactional_test() ->
-    ?assertNot(kura_migrator:transactional(m20250301110000_nontx_index_items)),
-    ?assert(kura_migrator:transactional(m20250301120000_nontx_add_note)),
-    ?assert(kura_migrator:transactional(m20250301100000_nontx_create_items)).
+runs_in_transaction_test() ->
+    ?assertNot(kura_migrator:runs_in_transaction(m20250301110000_nontx_index_items)),
+    ?assert(kura_migrator:runs_in_transaction(m20250301120000_nontx_add_note)),
+    ?assert(kura_migrator:runs_in_transaction(m20250301100000_nontx_create_items)).
 
 concurrent_index_test() ->
     ?assert(kura_migrator:concurrent_index({create_index, ~"t", [a], #{concurrently => true}})),

@@ -28,14 +28,14 @@ down() ->
 The migrator runs a migration's operations inside a transaction, so a
 failing statement leaves nothing behind. Some statements cannot run in
 a transaction at all; `CREATE INDEX CONCURRENTLY` is the usual one. A
-migration opts out by exporting `transaction/0` returning `false`:
+migration opts out by exporting `transactional/0` returning `false`:
 
 ```erlang
 -module(m20250102120000_index_users_email).
 -behaviour(kura_migration).
--export([up/0, down/0, transaction/0]).
+-export([up/0, down/0, transactional/0]).
 
-transaction() -> false.
+transactional() -> false.
 
 up() ->
     [{create_index, <<"users">>, [email], #{concurrently => true}}].
@@ -65,8 +65,8 @@ Optional. Return `false` to run the migration outside a transaction.
 A missing callback, or any other value, keeps the migration
 transactional.
 """.
--callback transaction() -> boolean().
--optional_callbacks([safe/0, transaction/0]).
+-callback transactional() -> boolean().
+-optional_callbacks([safe/0, transactional/0]).
 
 -type safe_entry() ::
     {drop_column, atom()}

@@ -27,7 +27,7 @@ transaction, so they cannot race to create it either.
 
 ## Non-transactional migrations
 
-A migration exporting `transaction() -> false` (see `m:kura_migration`)
+A migration exporting `transactional() -> false` (see `m:kura_migration`)
 splits the run. The pending set is read once, under the lock, and the
 transactional migrations before the non-transactional one run in that
 first transaction and commit. The non-transactional migration then runs
@@ -72,7 +72,7 @@ CONCURRENTLY` on the node holding the lock waits for every transaction
 that had a snapshot when it started: a waiter blocked inside a statement,
 or retrying inside one long transaction, would never end, and the two
 would deadlock. A node still on an older kura waits the blocking way and
-ignores `transaction/0`, so deploy this version on every node before
+ignores `transactional/0`, so deploy this version on every node before
 shipping the first non-transactional migration.
 
 A waiting migrator logs a warning every 30 seconds with the time it has
@@ -141,7 +141,7 @@ one.
     collect_migration_groups/1,
     topo_sort_apps/1,
     pending_migrations/2,
-    transactional/1,
+    runs_in_transaction/1,
     concurrent_index/1,
     split_transactional/1,
     still_todo/3,
@@ -1100,7 +1100,7 @@ continue_plan({error, _} = Err, _Dir, RepoMod, Done) ->
 -spec next_step([migration()], up | down, module()) ->
     {ok, {[integer()], [migration()]}} | {error, term()}.
 next_step([{_, Module} = Next | Rest] = Todo, Dir, RepoMod) ->
-    case transactional(Module) of
+    case runs_in_transaction(Module) of
         false ->
             case run_non_transactional(Next, Dir, RepoMod) of
                 {ok, Versions} -> {ok, {Versions, Rest}};
@@ -1136,7 +1136,7 @@ split_transactional(Todo) ->
 
 -spec split_transactional([migration()], [migration()]) -> {[migration()], [migration()]}.
 split_transactional([{_, Module} = Migration | Rest] = Todo, Acc) ->
-    case transactional(Module) of
+    case runs_in_transaction(Module) of
         true -> split_transactional(Rest, [Migration | Acc]);
         false -> {reverse_migrations(Acc, []), Todo}
     end;
@@ -1149,11 +1149,11 @@ still_todo(up, Migrations, Applied) ->
 still_todo(down, Migrations, Applied) ->
     [M || {V, _} = M <- Migrations, lists:member(V, Applied)].
 
--spec transactional(module()) -> boolean().
-transactional(Module) ->
+-spec runs_in_transaction(module()) -> boolean().
+runs_in_transaction(Module) ->
     _ = code:ensure_loaded(Module),
-    case erlang:function_exported(Module, transaction, 0) of
-        true -> Module:transaction() =/= false;
+    case erlang:function_exported(Module, transactional, 0) of
+        true -> Module:transactional() =/= false;
         false -> true
     end.
 
@@ -1169,7 +1169,7 @@ enclosing_transaction(RepoMod) ->
 refuse_non_transactional_when_enclosed(false, _Todo) ->
     ok;
 refuse_non_transactional_when_enclosed(true, Todo) ->
-    case [M || {_, Module} = M <- Todo, not transactional(Module)] of
+    case [M || {_, Module} = M <- Todo, not runs_in_transaction(Module)] of
         [] ->
             ok;
         [{Version, Module} | _] ->
@@ -1186,13 +1186,13 @@ refuse_non_transactional_when_enclosed(true, Todo) ->
 refuse_concurrently_in_transaction([], _Dir) ->
     ok;
 refuse_concurrently_in_transaction([{Version, Module} | Rest], Dir) ->
-    case transactional(Module) andalso has_concurrent_index(get_migration_ops(Module, Dir)) of
+    case runs_in_transaction(Module) andalso has_concurrent_index(get_migration_ops(Module, Dir)) of
         true ->
             ?LOG_ERROR(#{
                 msg => ~"kura: concurrently => true needs a non-transactional migration",
                 version => Version,
                 module => Module,
-                hint => ~"export transaction() -> false from the migration"
+                hint => ~"export transactional() -> false from the migration"
             }),
             error({migration_aborted, {concurrently_in_transaction, Version, Module}});
         false ->
