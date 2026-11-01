@@ -61,6 +61,9 @@ queries(N) ->
         {"exists", #kura_query{from = users, wheres = [{exists, {subquery, Sub(1)}}, {id, V(2)}]}},
         {"not_exists", #kura_query{from = users, wheres = [{not_exists, {subquery, Sub(1)}}]}},
         {"limit and offset", #kura_query{from = users, limit = V(1), offset = V(2)}},
+        {"select fragment", #kura_query{
+            from = users, select = {exprs, [{id, id}, {score, {fragment, ~"? + ?", [V(1), V(2)]}}]}
+        }},
         {"having fragment", #kura_query{
             from = users,
             group_bys = [role],
@@ -128,7 +131,7 @@ queries_differing_only_in_values_share_one_entry_test() ->
         ?assertEqual(length(queries(1)), ets:info(kura_query_cache, size))
     end).
 
-values_left_in_the_shape_are_carried_through_a_hit_test() ->
+select_fragment_values_share_one_entry_test() ->
     with_pg(fun() ->
         Q = fun(Bonus, Id) ->
             #kura_query{
@@ -144,7 +147,7 @@ values_left_in_the_shape_are_carried_through_a_hit_test() ->
             )
          || {B, I} <- [{5, 1}, {5, 2}, {6, 3}, {6, 4}]
         ],
-        ?assertEqual(2, ets:info(kura_query_cache, size))
+        ?assertEqual(1, ets:info(kura_query_cache, size))
     end).
 
 is_nil_is_part_of_the_shape_test() ->

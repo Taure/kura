@@ -17,13 +17,14 @@ subquery it contains:
   row-value `in` whose tuples all match the column count;
 - both ends of a `between`;
 - the parameters of a condition fragment, in `wheres` or `havings`;
+- the parameters of a select-expression fragment;
 - `limit` and `offset`.
 
 `nil` and `undefined` stay in the shape wherever they appear, so a
 dialect that compiles them differently from other values still gets them.
-Unary conditions (`?KURA_IS_UNARY_OP`), select-expression fragments and
-anything not recognised also stay in the shape, so an unrecognised
-condition costs a cache entry per value set rather than correctness.
+Unary conditions (`?KURA_IS_UNARY_OP`) and anything not recognised also
+stay in the shape, so an unrecognised condition costs a cache entry per
+value set rather than correctness.
 
 A dialect is free to emit any SQL for a shape, but it must pass a bound
 value through to the parameter list untouched. `valid_template/2` checks
@@ -72,13 +73,15 @@ bind_param(P, _Values) -> P.
 
 -spec query(#kura_query{}, acc()) -> {#kura_query{}, acc()}.
 query(Q, Acc0) ->
-    {Wheres, Acc1} = conditions(Q#kura_query.wheres, Acc0),
-    {Havings, Acc2} = conditions(Q#kura_query.havings, Acc1),
-    {Limit, Acc3} = value(Q#kura_query.limit, Acc2),
-    {Offset, Acc4} = value(Q#kura_query.offset, Acc3),
-    {Ctes, Acc5} = named_queries(Q#kura_query.ctes, Acc4),
-    {Combinations, Acc6} = named_queries(Q#kura_query.combinations, Acc5),
+    {Select, Acc1} = select(Q#kura_query.select, Acc0),
+    {Wheres, Acc2} = conditions(Q#kura_query.wheres, Acc1),
+    {Havings, Acc3} = conditions(Q#kura_query.havings, Acc2),
+    {Limit, Acc4} = value(Q#kura_query.limit, Acc3),
+    {Offset, Acc5} = value(Q#kura_query.offset, Acc4),
+    {Ctes, Acc6} = named_queries(Q#kura_query.ctes, Acc5),
+    {Combinations, Acc7} = named_queries(Q#kura_query.combinations, Acc6),
     Shape = Q#kura_query{
+        select = Select,
         wheres = Wheres,
         havings = Havings,
         limit = Limit,
@@ -86,7 +89,32 @@ query(Q, Acc0) ->
         ctes = Ctes,
         combinations = Combinations
     },
-    {Shape, Acc6}.
+    {Shape, Acc7}.
+
+-spec select(Select, acc()) -> {Select, acc()} when Select :: [term()] | {exprs, [term()]}.
+select({exprs, Exprs}, Acc0) when is_list(Exprs) ->
+    {Shapes, Acc1} = select_exprs(Exprs, Acc0),
+    {{exprs, Shapes}, Acc1};
+select(Select, Acc) ->
+    {Select, Acc}.
+
+-spec select_exprs([term()], acc()) -> {[term()], acc()}.
+select_exprs([], Acc) ->
+    {[], Acc};
+select_exprs([{Alias, Expr} | Rest], Acc0) ->
+    {Shape, Acc1} = expr(Expr, Acc0),
+    {Shapes, Acc2} = select_exprs(Rest, Acc1),
+    {[{Alias, Shape} | Shapes], Acc2};
+select_exprs([Expr | Rest], Acc0) ->
+    {Shapes, Acc1} = select_exprs(Rest, Acc0),
+    {[Expr | Shapes], Acc1}.
+
+-spec expr(term(), acc()) -> {term(), acc()}.
+expr({fragment, SQL, Params}, Acc0) when is_list(Params) ->
+    {Markers, Acc1} = values(Params, Acc0),
+    {{fragment, SQL, Markers}, Acc1};
+expr(Expr, Acc) ->
+    {Expr, Acc}.
 
 -spec named_queries([{Name, #kura_query{}}], acc()) -> {[{Name, #kura_query{}}], acc()}.
 named_queries([], Acc) ->

@@ -153,6 +153,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The compiled-query cache replaces select-expression fragment
+  parameters with markers. They stayed in the shape, so every new value
+  interned another entry.
 - The query cache's entry-size and memory limits count the bytes of
   off-heap binaries. Neither `erts_debug:flat_size/1` nor
   `ets:info(Tab, memory)` sees them, so an entry holding a large binary
