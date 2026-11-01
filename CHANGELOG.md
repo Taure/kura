@@ -79,6 +79,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on a `lock_timeout` for instance, would otherwise run an applied
   migration again in autocommit. `status/1` still reports such a table
   as nothing applied.
+- The migrator keeps only a Postgres error's `code`, `message`,
+  `severity`, `hint`, `schema`, `table`, `column`, `data_type` and
+  `constraint` in what it logs, returns and emits as telemetry
+  `error_reason` (#139). A failed `CREATE UNIQUE INDEX` put the
+  duplicated key values, often personal data, in `detail`.
 - A migrator waiting for the advisory lock logs a warning every 30
   seconds with the time it has waited, where the wait was silent after
   its first info line (#139). The wait is still unbounded by default; the

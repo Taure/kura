@@ -19,6 +19,8 @@ unless its own session holds the migration advisory lock.
 -define(REFUSE_APP, kura_nontx_refuse).
 -define(RAISE_APP, kura_nontx_raise).
 -define(SIDE_APP, kura_nontx_side).
+-define(NONTX_DUP_APP, kura_nontx_dup).
+-define(TX_DUP_APP, kura_tx_dup).
 -define(LOCK_TIMEOUT_POOL, kura_migrator_nontx_tests_lock_timeout_pool).
 
 -define(LOCK_KEY, 571629482).
@@ -32,13 +34,17 @@ unless its own session holds the migration advisory lock.
 -define(REFUSE_INDEX, 20250303110000).
 -define(RAISE, 20250304100000).
 -define(SIDE, 20250305100000).
+-define(NONTX_DUP, 20250306100000).
+-define(TX_DUP, 20250306110000).
 
 -define(TABLES, [
     ~"nontx_items",
     ~"nontx_fail_items",
     ~"nontx_fail_after",
     ~"nontx_refuse_items",
-    ~"nontx_side_effects"
+    ~"nontx_side_effects",
+    ~"nontx_dups",
+    ~"tx_dups"
 ]).
 
 nontx_test_() ->
@@ -65,6 +71,8 @@ nontx_test_() ->
                 {timeout, 30, fun unreadable_schema_migrations_runs_nothing/0}},
             {"a busy lock is tried once inside a transaction or the sandbox",
                 {timeout, 10, fun busy_lock_is_tried_once_when_enclosed/0}},
+            {"a failed unique build keeps duplicated values out of the error",
+                fun duplicate_values_stay_out_of_the_error/0},
             {"a non-transactional plan is refused inside the sandbox",
                 {timeout, 10, fun refused_in_sandbox/0}},
             {"a non-transactional plan is refused inside an outer transaction",
@@ -98,6 +106,8 @@ setup() ->
     ]),
     load_app(?RAISE_APP, [m20250304100000_nontx_raise]),
     load_app(?SIDE_APP, [m20250305100000_nontx_side_effect]),
+    load_app(?NONTX_DUP_APP, [m20250306100000_nontx_dup_unique]),
+    load_app(?TX_DUP_APP, [m20250306110000_tx_dup_unique]),
     application:set_env(?BASE, ?REPO, repo_config()),
     case kura_pool_minato:start_pool(?POOL, pool_config()) of
         {ok, _} -> ok;
@@ -111,7 +121,19 @@ cleanup(_) ->
     application:unset_env(kura, ensure_database),
     application:unset_env(kura, migration_lock_retry_interval),
     application:unset_env(kura, kura_nontx_apps),
-    [application:unload(A) || A <- [?OK_APP, ?FAIL_APP, ?REFUSE_APP, ?RAISE_APP, ?SIDE_APP, ?BASE]],
+    [
+        application:unload(A)
+     || A <- [
+            ?OK_APP,
+            ?FAIL_APP,
+            ?REFUSE_APP,
+            ?RAISE_APP,
+            ?SIDE_APP,
+            ?NONTX_DUP_APP,
+            ?TX_DUP_APP,
+            ?BASE
+        ]
+    ],
     ok.
 
 %%----------------------------------------------------------------------
@@ -340,6 +362,19 @@ busy_lock_is_tried_once_when_enclosed() ->
         ),
         kura_pool_minato:checkin(?POOL, Token)
     end.
+
+duplicate_values_stay_out_of_the_error() ->
+    declare([?NONTX_DUP_APP]),
+    {error, {migration_failed, ?NONTX_DUP, {pgsql_error, NonTx}}} = kura_migrator:migrate(?REPO),
+    ?assertMatch(#{code := ~"23505", message := _}, NonTx),
+    ?assertNot(is_map_key(detail, NonTx)),
+    ?assertEqual(nomatch, binary:match(term_to_binary(NonTx), ~"dup@example.se")),
+    reset(),
+    declare([?TX_DUP_APP]),
+    {error, {migration_failed, ?TX_DUP, {pgsql_error, Tx}}} = kura_migrator:migrate(?REPO),
+    ?assertMatch(#{code := ~"23505", message := _}, Tx),
+    ?assertNot(is_map_key(detail, Tx)),
+    ?assertEqual(nomatch, binary:match(term_to_binary(Tx), ~"dup@example.se")).
 
 refused_in_sandbox() ->
     declare([?OK_APP]),

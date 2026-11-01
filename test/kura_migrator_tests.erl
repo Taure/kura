@@ -985,3 +985,26 @@ lock_retry_interval_test() ->
             undefined -> application:unset_env(kura, migration_lock_retry_interval)
         end
     end.
+
+without_row_values_test() ->
+    Fields = #{
+        code => ~"23505",
+        message => ~"could not create unique index \"users_email_index\"",
+        detail => ~"Key (email)=(a@example.se) is duplicated.",
+        where => ~"x",
+        internal_query => ~"y",
+        constraint => ~"users_email_index",
+        table => ~"users"
+    },
+    ?assertEqual(
+        {error,
+            {pgsql_error, #{
+                code => ~"23505",
+                message => ~"could not create unique index \"users_email_index\"",
+                constraint => ~"users_email_index",
+                table => ~"users"
+            }}},
+        kura_migrator:without_row_values({error, {pgsql_error, Fields}})
+    ),
+    ?assertEqual({error, timeout}, kura_migrator:without_row_values({error, timeout})),
+    ?assertEqual(#{rows => []}, kura_migrator:without_row_values(#{rows => []})).

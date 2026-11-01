@@ -160,7 +160,8 @@ one.
     release_session_lock/1,
     run_non_transactional/3,
     refuse_unsupported_concurrently/3,
-    lock_retry_interval/0
+    lock_retry_interval/0,
+    without_row_values/1
 ]).
 -endif.
 
@@ -1838,11 +1839,37 @@ applied_versions_strict(Target) ->
             error({migration_aborted, {schema_migrations_unreadable, Other}})
     end.
 
+%% Every statement the migrator runs goes through here, so no server
+%% error reaches its logs, results or telemetry with row values in it.
 -spec run_sql(target(), binary(), list()) -> map() | {error, term()}.
 run_sql({conn, RepoMod, Conn}, SQL, Params) ->
-    kura_db:query_on(RepoMod, Conn, SQL, Params);
+    without_row_values(kura_db:query_on(RepoMod, Conn, SQL, Params));
 run_sql(RepoMod, SQL, Params) ->
-    kura_db:query(RepoMod, SQL, Params).
+    without_row_values(kura_db:query(RepoMod, SQL, Params)).
+
+%% A failed `CREATE UNIQUE INDEX` puts the duplicated key values in
+%% `detail`, and `where` and `internal_query` can quote data too.
+-spec without_row_values(map() | {error, term()}) -> map() | {error, term()}.
+without_row_values({error, {pgsql_error, Fields}}) when is_map(Fields) ->
+    {error,
+        {pgsql_error,
+            maps:with(
+                [
+                    code,
+                    message,
+                    severity,
+                    severity_non_localised,
+                    hint,
+                    schema,
+                    table,
+                    column,
+                    data_type,
+                    constraint
+                ],
+                Fields
+            )}};
+without_row_values(Result) ->
+    Result.
 
 -spec target_repo(conn_target()) -> module().
 target_repo({conn, RepoMod, _Conn}) -> RepoMod.
