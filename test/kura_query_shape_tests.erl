@@ -125,7 +125,7 @@ cached_matches_uncached_test_() ->
 every_pg_condition_kind_is_cached_as_a_template_test() ->
     with_pg(fun() ->
         _ = [kura_query_compiler:to_sql_cached(?REPO, Q) || N <- [1, 2], {_, Q} <- queries(N)],
-        ?assertEqual(length(queries(1)), ets:info(kura_query_cache, size)),
+        ?assertEqual(length(queries(1)), kura_query_cache:entry_count()),
         ?assertEqual([], ets:match_object(kura_query_cache, {'_', uncacheable}))
     end).
 
@@ -135,7 +135,7 @@ queries_differing_only_in_values_share_one_entry_test() ->
             kura_query_compiler:to_sql_cached(?REPO, Q)
          || N <- lists:seq(1, 50), {_, Q} <- queries(N)
         ],
-        ?assertEqual(length(queries(1)), ets:info(kura_query_cache, size))
+        ?assertEqual(length(queries(1)), kura_query_cache:entry_count())
     end).
 
 select_fragment_values_share_one_entry_test() ->
@@ -154,7 +154,7 @@ select_fragment_values_share_one_entry_test() ->
             )
          || {B, I} <- [{5, 1}, {5, 2}, {6, 3}, {6, 4}]
         ],
-        ?assertEqual(1, ets:info(kura_query_cache, size))
+        ?assertEqual(1, kura_query_cache:entry_count())
     end).
 
 %% An embedding left in the shape would intern a cache entry per query
@@ -178,8 +178,8 @@ distinct_query_vectors_share_one_entry_test() ->
             end
          || Seed <- [1, 2, 3]
         ],
-        ?assertEqual(1, ets:info(kura_query_cache, size)),
-        [{Key, _}] = ets:tab2list(kura_query_cache),
+        ?assertEqual(1, kura_query_cache:entry_count()),
+        [{Key, _}] = cache_entries(),
         ?assertEqual([], [B || B <- binaries(Key), byte_size(B) > 64])
     end).
 
@@ -252,7 +252,7 @@ in_lists_of_different_lengths_are_different_shapes_test() ->
             )
          || Ids <- [[1], [1, 2], [3], [1, 2, 3], [4, 5]]
         ],
-        ?assertEqual(3, ets:info(kura_query_cache, size))
+        ?assertEqual(3, kura_query_cache:entry_count())
     end).
 
 row_tuples_that_do_not_match_the_columns_are_rejected_test() ->
@@ -302,7 +302,7 @@ dialect_that_inlines_values_is_never_served_a_shape_test() ->
         ?assertEqual(to_sql(QA), kura_query_compiler:to_sql_cached(?REPO, QA)),
         ?assertEqual(to_sql(QB), kura_query_compiler:to_sql_cached(?REPO, QB)),
         ?assertEqual(to_sql(QA), kura_query_compiler:to_sql_cached(?REPO, QA)),
-        ?assertMatch([{_, uncacheable}], ets:tab2list(kura_query_cache))
+        ?assertMatch([{_, uncacheable}], cache_entries())
     end).
 
 %% The record types `limit' as an integer, so a dialect may guard on it and
@@ -338,6 +338,10 @@ valid_template_test_() ->
         ?_assertNot(kura_query_shape:valid_template([M(1), [M(1)]], 1)),
         ?_assertNot(kura_query_shape:valid_template([M(1), #{k => M(1)}], 1))
     ].
+
+%% The cache table also holds a reserved row for its binary count.
+cache_entries() ->
+    [Entry || {Key, _} = Entry <- ets:tab2list(kura_query_cache), is_tuple(Key)].
 
 vec(N) ->
     iolist_to_binary([~"[", integer_to_binary(N), ~".0]"]).

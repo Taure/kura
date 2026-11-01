@@ -36,7 +36,7 @@ The ETS table is owned by `kura_query_cache_owner` (a gen_server under
 """.
 -behaviour(gen_server).
 
--export([init/0, get/1, put/2, flush/0]).
+-export([init/0, get/1, put/2, flush/0, entry_count/0]).
 -export([start_link/0, init/1, handle_call/3, handle_cast/2]).
 -export_type([entry/0]).
 
@@ -46,8 +46,10 @@ The ETS table is owned by `kura_query_cache_owner` (a gen_server under
 -define(TABLE, kura_query_cache).
 -define(DEFAULT_MAX_MEMORY_WORDS, 8000000).
 -define(DEFAULT_MAX_ENTRY_WORDS, 4096).
--define(BINARY_TABLE, kura_query_cache_binaries).
--define(BINARY_WORDS, binary_words).
+%% A reserved row, in the cache table itself so that dropping the entries
+%% drops their count with them. A real key is a `{Repo, Tenant, Shape}'
+%% tuple, never this atom.
+-define(BINARY_WORDS, '$kura_binary_words').
 -define(HEAP_BINARY_LIMIT, 64).
 
 -doc """
@@ -63,7 +65,6 @@ init() ->
             %% with `==', collapsing `where id = 1' and `where id = 1.0'
             %% onto one entry whose bound parameters differ. Do not change.
             _ = ets:new(?TABLE, [named_table, public, set, {read_concurrency, true}]),
-            _ = ets:new(?BINARY_TABLE, [named_table, public, set]),
             ok;
         _ ->
             ok
@@ -108,20 +109,38 @@ maybe_insert(Key, Result) ->
                     true -> drop_all();
                     false -> ok
                 end,
-            ets:insert(?TABLE, {Key, Result}),
-            _ = ets:update_counter(?BINARY_TABLE, ?BINARY_WORDS, BinaryWords, {?BINARY_WORDS, 0}),
-            ok
+            count_new(ets:insert_new(?TABLE, {Key, Result}), BinaryWords)
     end.
+
+%% Two processes that miss on the same key both put it; only the one whose
+%% insert landed adds to the count.
+count_new(true, BinaryWords) when BinaryWords > 0 ->
+    _ = ets:update_counter(?TABLE, ?BINARY_WORDS, BinaryWords, {?BINARY_WORDS, 0}),
+    ok;
+count_new(_Inserted, _BinaryWords) ->
+    ok.
 
 drop_all() ->
     ets:delete_all_objects(?TABLE),
-    ets:delete_all_objects(?BINARY_TABLE),
     ok.
+
+-doc false.
+-spec entry_count() -> non_neg_integer().
+entry_count() ->
+    case ets:info(?TABLE, size) of
+        Size when is_integer(Size) ->
+            case ets:member(?TABLE, ?BINARY_WORDS) of
+                true -> Size - 1;
+                false -> Size
+            end;
+        _ ->
+            0
+    end.
 
 -spec table_words() -> non_neg_integer().
 table_words() ->
     Binaries =
-        case ets:lookup(?BINARY_TABLE, ?BINARY_WORDS) of
+        case ets:lookup(?TABLE, ?BINARY_WORDS) of
             [{_, N}] when is_integer(N) -> N;
             _ -> 0
         end,
