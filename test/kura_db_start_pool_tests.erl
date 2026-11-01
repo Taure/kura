@@ -975,6 +975,31 @@ raced(Repo) ->
     after 5000 -> {Repo, timeout}
     end.
 
+a_repo_started_on_a_new_pool_releases_the_old_one_test() ->
+    with_two_repos(fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        application:set_env(kura, repos, #{
+            kura_db_owner_repo => #{pool => moved_pool, pool_module => ?MODULE},
+            kura_db_other_repo => #{pool => shared_pool, pool_module => ?MODULE}
+        }),
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        ?assertEqual(moved_pool, kura_db:get_pool(kura_db_owner_repo)),
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_other_repo)),
+        ?assertEqual(shared_pool, kura_db:get_pool(kura_db_other_repo))
+    end).
+
+stop_pool_after_a_failed_move_stops_the_pool_the_repo_owns_test() ->
+    with_pool_answer({ok, self()}, #{pool => old_pool}, fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        application:set_env(kura, repos, #{
+            kura_db_failing_repo => #{pool => new_pool, pool_module => ?MODULE}
+        }),
+        put({?MODULE, pool_answer}, {error, econnrefused}),
+        _ = with_captured_logs(fun() -> kura_repo_worker:start(kura_db_failing_repo) end),
+        ?assertEqual(ok, kura_db:stop_pool(kura_db_failing_repo)),
+        ?assertEqual(old_pool, get({?MODULE, stopped}))
+    end).
+
 with_two_repos(Run) ->
     Shared = #{pool => shared_pool, pool_module => ?MODULE},
     with_pool_answer({ok, self()}, fun() ->

@@ -245,7 +245,8 @@ and queries read them from there, so `init/1` does not run per query. Starting
 the pool again, through `kura_repo_worker:start/1`, resolves the config anew
 and replaces them.
 
-The repo that starts a pool owns it until `stop_pool/1`. A repo whose config
+The repo that starts a pool owns it until `stop_pool/1`, or until the repo
+starts on another pool name, which releases the one it had. A repo whose config
 names a pool another repo owns is refused with `{error, {pool_owned_by, Owner}}`
 before the pool module is called, so the answer does not depend on how the
 pool module reports a name that is already running. The refusal is logged as a
@@ -364,9 +365,9 @@ pool_started(Repo, Pool, PoolMod, Config) ->
     Secrets = secrets(Config),
     try PoolMod:start_pool(Pool, maps:without(?REPO_KEYS, Config)) of
         {ok, _Pid} ->
-            owned(Repo, Pool, Config);
+            owned(Repo, Pool, PoolMod, Config);
         {error, {already_started, _Pid}} ->
-            owned(Repo, Pool, Config);
+            owned(Repo, Pool, PoolMod, Config);
         {error, Reason} ->
             Redacted = redacted(Reason, Secrets),
             ok = not_running(Repo, Pool),
@@ -389,10 +390,33 @@ not_running(Repo, Pool) ->
         _SamePoolOrNone -> ok
     end.
 
--spec owned(module(), atom(), map()) -> ok.
-owned(Repo, Pool, Config) ->
+%% A repo owns one pool: the one it started last.
+-spec owned(module(), atom(), module(), map()) -> ok.
+owned(Repo, Pool, PoolMod, Config) ->
+    case held(Repo) of
+        {Previous, _PreviousMod} when Previous =/= Pool -> ok = released(Repo, Previous);
+        _SamePoolOrNone -> ok
+    end,
     ok = persistent_term:put({?MODULE, pool_owner, Pool}, Repo),
+    ok = persistent_term:put({?MODULE, pool_held, Repo}, {Pool, PoolMod}),
     kura_repo_settings:started(Repo, Config#{pool => Pool}).
+
+-spec released(module(), atom()) -> ok.
+released(Repo, Pool) ->
+    case owner(Pool) of
+        Repo ->
+            _ = persistent_term:erase({?MODULE, pool_owner, Pool}),
+            ok;
+        _NotOwned ->
+            ok
+    end.
+
+-spec held(module()) -> {atom(), module()} | none.
+held(Repo) ->
+    case persistent_term:get({?MODULE, pool_held, Repo}, none) of
+        {Pool, PoolMod} when is_atom(Pool), is_atom(PoolMod) -> {Pool, PoolMod};
+        _None -> none
+    end.
 
 -spec owner(atom()) -> module() | undefined.
 owner(Pool) ->
@@ -402,7 +426,7 @@ owner(Pool) ->
     end.
 
 -doc """
-Stop the pool `Repo` started through `start_pool/1` and release it.
+Stop the pool `Repo` last started through `start_pool/1` and release it.
 
 The pool module's `stop_pool/1` stops the pool, the pool name is no longer
 owned by `Repo`, so another repo can start it, and `Repo`'s stored settings
@@ -413,30 +437,28 @@ dropped.
 """.
 -spec stop_pool(module()) -> ok.
 stop_pool(Repo) ->
-    case kura_repo_settings:lookup(Repo) of
-        #{pool := Pool, pool_module := PoolMod} ->
-            locked(Pool, fun() -> stopped(Repo, Pool, PoolMod) end);
-        _NotStarted ->
-            ok
+    case held(Repo) of
+        {Pool, PoolMod} -> locked(Pool, fun() -> stopped(Repo, Pool, PoolMod) end);
+        none -> ok
     end,
     kura_repo_settings:forget(Repo).
 
 -spec stopped(module(), atom(), module()) -> ok.
 stopped(Repo, Pool, PoolMod) ->
     case owner(Pool) of
-        Repo ->
-            ok = PoolMod:stop_pool(Pool),
-            _ = persistent_term:erase({?MODULE, pool_owner, Pool}),
-            ok;
-        _NotOwned ->
-            ok
-    end.
+        Repo -> ok = PoolMod:stop_pool(Pool);
+        _NotOwned -> ok
+    end,
+    ok = released(Repo, Pool),
+    _ = persistent_term:erase({?MODULE, pool_held, Repo}),
+    ok.
 
 -ifdef(TEST).
 forget_pools() ->
     _ = [
         persistent_term:erase(Key)
-     || {{?MODULE, pool_owner, _} = Key, _} <- persistent_term:get()
+     || {{?MODULE, Kind, _} = Key, _} <- persistent_term:get(),
+        Kind =:= pool_owner orelse Kind =:= pool_held
     ],
     kura_repo_settings:forget().
 -endif.

@@ -67,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   again and gets `ok`. A pool already running that kura did not start
   goes to the first repo that starts it. A pool stays owned until
   `kura_db:stop_pool/1` releases it, also when it was stopped outside
-  kura.
+  kura, or until its repo starts on another pool name.
 - The many_to_many join-table SQL, the preload read and the `put_assoc` /
   `cast_assoc` DELETE and INSERT, is compiled by the repo's dialect
   (`to_sql/1`, `delete_all/1`, `insert_all/3`) instead of written by hand
