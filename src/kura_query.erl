@@ -43,7 +43,8 @@ Q3 = kura_query:limit(Q2, 10).
     sum/2,
     avg/2,
     min/2,
-    max/2
+    max/2,
+    check_encrypted/1
 ]).
 
 -export_type([window_fn/0, window_spec/0]).
@@ -117,7 +118,7 @@ not checked.
 """.
 -spec where(#kura_query{}, term()) -> #kura_query{}.
 where(Q = #kura_query{wheres = W}, Condition) ->
-    refuse_encrypted(guard_scope(Q, [], []), [Condition], encrypted_field_in_where),
+    refuse_each([Condition], guard_scope(Q, [], []), encrypted_field_in_where),
     Q#kura_query{wheres = W ++ [Condition]}.
 
 %% The encrypted field names a condition of Q can reach, and the CTEs it can
@@ -177,11 +178,6 @@ ciphertext_expr({over, Fn, _Spec}, Encrypted) ->
 ciphertext_expr(_Expr, _Encrypted) ->
     false.
 
-refuse_encrypted({[], []}, _Conditions, _Reason) ->
-    ok;
-refuse_encrypted(Scope, Conditions, Reason) ->
-    refuse_each(Conditions, Scope, Reason).
-
 %% Explicit recursion rather than lists:foreach/2, so an improper list raises
 %% a reason of its own instead of a function_clause carrying the values.
 refuse_each([], _Scope, _Reason) ->
@@ -220,6 +216,8 @@ refuse_encrypted_cond({Field, _Op, _Value}, Scope, Reason) when is_atom(Field) -
     refuse_field(Field, Scope, Reason);
 refuse_encrypted_cond({Fields, _Op, _Value}, Scope, Reason) when is_list(Fields) ->
     refuse_fields(Fields, Scope, Reason);
+refuse_encrypted_cond(_Cond, {[], _Ctes}, _Reason) ->
+    ok;
 refuse_encrypted_cond(_Cond, _Scope, _Reason) ->
     erlang:error({kura, unrecognised_condition}).
 
@@ -237,11 +235,17 @@ refuse_encrypted_query(
     OuterCtes
 ) ->
     {_, Ctes} = Scope = guard_scope(Q, OuterEncrypted, OuterCtes),
-    refuse_encrypted(Scope, W, encrypted_field_in_where),
-    refuse_encrypted(Scope, H, encrypted_field_in_having),
-    lists:foreach(
-        fun({_, Body}) -> refuse_encrypted_query(Body, OuterEncrypted, Ctes) end, Own ++ C
-    ).
+    refuse_each(W, Scope, encrypted_field_in_where),
+    refuse_each(H, Scope, encrypted_field_in_having),
+    refuse_bodies(Own ++ C, OuterEncrypted, Ctes).
+
+refuse_bodies([], _OuterEncrypted, _Ctes) ->
+    ok;
+refuse_bodies([{_, #kura_query{} = Body} | Rest], OuterEncrypted, Ctes) ->
+    refuse_encrypted_query(Body, OuterEncrypted, Ctes),
+    refuse_bodies(Rest, OuterEncrypted, Ctes);
+refuse_bodies(_Malformed, _OuterEncrypted, _Ctes) ->
+    erlang:error({kura, unrecognised_condition}).
 
 %% Only a column the subquery's schemas declare shadows an outer one. A bare
 %% table's or a CTE's columns are not known here, so it shadows nothing.
@@ -322,7 +326,7 @@ compares an encrypted field to a value raises
 """.
 -spec having(#kura_query{}, term()) -> #kura_query{}.
 having(Q = #kura_query{havings = H}, Condition) ->
-    refuse_encrypted(guard_scope(Q, [], []), [Condition], encrypted_field_in_having),
+    refuse_each([Condition], guard_scope(Q, [], []), encrypted_field_in_having),
     Q#kura_query{havings = H ++ [Condition]}.
 
 -spec limit(#kura_query{}, non_neg_integer()) -> #kura_query{}.
@@ -372,8 +376,20 @@ with_cte(Q = #kura_query{ctes = CTEs}, Name, CteQuery) ->
 %% A join or a CTE can bring encrypted fields into the scope of conditions
 %% already added, so the whole query is walked again.
 recheck_encrypted(Q) ->
-    refuse_encrypted_query(Q, [], []),
+    check_encrypted(Q),
     Q.
+
+-doc """
+Raise if any condition of `Query` compares an encrypted field to a value, with
+the reasons `where/2` and `having/2` raise, wherever the condition sits: in
+the query's wheres or havings, a subquery, a CTE body or a union branch.
+
+`kura_query_compiler` calls this on every query it compiles, so a
+`#kura_query{}` built or updated without `where/2` is checked too.
+""".
+-spec check_encrypted(#kura_query{}) -> ok.
+check_encrypted(Q) ->
+    refuse_encrypted_query(Q, [], []).
 
 -doc "Combine queries with UNION (removes duplicates).".
 -spec union(#kura_query{}, #kura_query{}) -> #kura_query{}.

@@ -433,3 +433,66 @@ assert_unrecognised_without_plaintext(Cond) ->
             ?assertEqual({kura, unrecognised_condition}, Reason),
             ?assertEqual(nomatch, binary:match(term_to_binary(Stack), ?PLAIN))
     end.
+
+%%----------------------------------------------------------------------
+%% kura_query_compiler re-runs the guard on every query it compiles, so a
+%% record built or updated without where/2 cannot bind the plaintext.
+%%----------------------------------------------------------------------
+
+-define(REPO, kura_encrypted_guard_repo).
+
+compiler_setup() ->
+    application:set_env(kura, repos, #{?REPO => #{dialect => kura_dialect_pg}}),
+    kura_query_cache:init().
+
+compiler_teardown(_) ->
+    kura_query_cache:flush(),
+    application:unset_env(kura, repos).
+
+compile_paths() ->
+    [
+        {"to_sql", fun(Q) -> kura_query_compiler:to_sql(?REPO, Q) end},
+        {"to_sql_cached", fun(Q) -> kura_query_compiler:to_sql_cached(?REPO, Q) end},
+        {"to_sql_from", fun(Q) -> kura_query_compiler:to_sql_from(?REPO, Q, 1) end},
+        {"update_all", fun(Q) -> kura_query_compiler:update_all(?REPO, Q, #{name => ~"x"}) end},
+        {"delete_all", fun(Q) -> kura_query_compiler:delete_all(?REPO, Q) end}
+    ].
+
+compiler_refuses_test_() ->
+    P = ?PLAIN,
+    Plain = kura_query:from(kura_test_schema),
+    Queries = [
+        {"raw record", ?WHERE_SSN, #kura_query{from = ?ENC, wheres = [{ssn, P}]}},
+        {"record update after where", ?WHERE_SSN, (kura_query:where(Plain, {ssn, P}))#kura_query{
+            from = ?ENC
+        }},
+        {"raw having", {kura, {encrypted_field_in_having, ssn}}, #kura_query{
+            from = ?ENC, havings = [{'not', {ssn, P}}]
+        }},
+        {"raw subquery in a plain query", ?WHERE_SSN, Plain#kura_query{
+            wheres = [{exists, {subquery, #kura_query{from = ?ENC, wheres = [{ssn, P}]}}}]
+        }},
+        {"raw CTE body", ?WHERE_SSN, Plain#kura_query{
+            ctes = [{~"c", #kura_query{from = ?ENC, wheres = [{ssn, P}]}}]
+        }},
+        {"union branch over the outer query's CTE", ?WHERE_SSN,
+            kura_query:union(enc_cte(Plain), kura_query:where(kura_query:from(enc_cte), {ssn, P}))},
+        {"raw improper and", {kura, unrecognised_condition}, #kura_query{
+            from = ?ENC, wheres = [{'and', [{id, 1} | ill_typed({ssn, P})]}]
+        }}
+    ],
+    {setup, fun compiler_setup/0, fun compiler_teardown/1, [
+        {Name ++ " via " ++ Path, ?_assertError(Reason, Compile(Q))}
+     || {Name, Reason, Q} <- Queries, {Path, Compile} <- compile_paths()
+    ]}.
+
+compiler_allows_test_() ->
+    Queries = [
+        kura_query:where(kura_query:from(kura_test_schema), {email, ?PLAIN}),
+        kura_query:where(kura_query:from(?ENC), {ssn, is_nil}),
+        kura_query:where(kura_query:from(?ENC), {name, ?PLAIN})
+    ],
+    {setup, fun compiler_setup/0, fun compiler_teardown/1, [
+        {Path, fun() -> [Compile(Q) || Q <- Queries] end}
+     || {Path, Compile} <- compile_paths()
+    ]}.

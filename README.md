@@ -254,11 +254,12 @@ produce different ciphertexts). `kura_query:where/2` and `having/2` raise
 on any condition that compares an encrypted field to a value, however it is
 nested, including inside a subquery or over a CTE that selects an encrypted
 field; `{Field, is_nil}` and `{Field, is_not_nil}` still work. A raw
-`{fragment, SQL, Params}` is not inspected. Primary keys, association keys
-and fields of embedded schemas cannot be encrypted, and neither can the
-elements of an array: `kura_schema` raises when it first reads such a
-schema. `NULL` stays `NULL` (unencrypted), so
-presence still leaks.
+`{fragment, SQL, Params}` is not inspected. The check runs again when a
+query is compiled, so a `#kura_query{}` record built by hand is covered
+too. Primary keys, association keys and fields of embedded schemas cannot
+be encrypted, and neither can the elements of an array: `kura_schema`
+raises when it first reads such a schema. `NULL` stays `NULL`
+(unencrypted), so presence still leaks.
 Schema introspection (`rebar3 kura gen_schemas`) cannot detect that a
 `BYTEA` column was encrypted - annotate it by hand. The audit trail
 redacts encrypted fields to `[encrypted]` (it keeps the "changed" signal

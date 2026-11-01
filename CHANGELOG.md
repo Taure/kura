@@ -165,6 +165,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `function_clause` whose arguments carried the plaintext, and an `and` or
   `or` over a non-list was accepted. Both now raise
   `{kura, unrecognised_condition}`.
+- The filter guard ran only in the builder functions, so a `#kura_query{}`
+  record built by hand, or updated after `where/2` (for example a new
+  `from`), compiled with the plaintext bound. `kura_query_compiler`'s
+  `to_sql/2`, `to_sql_cached/2`, `to_sql_from/3`, `update_all/3` and
+  `delete_all/2` now run `kura_query:check_encrypted/1` over the whole
+  query (wheres, havings, subqueries, CTE bodies, union branches) before
+  compiling. This adds about 70 ns per compiled query, also for schemas
+  without encrypted fields: a shortcut for those would skip a raw subquery,
+  CTE or union branch over an encrypted schema.
 - Starting a pool hands the pool module the connection settings only.
   The repo's own settings, the `encryption` keyring among them, were
   passed along with them, and a pool module that echoed its options in
@@ -278,6 +287,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `kura_query:check_encrypted/1`, the filter guard over a whole query.
 - `kura_types:encryption/1`, the one place that recognises an encrypted
   type. The filter guard, audit redaction, schema validation and the
   type seams all use it.
