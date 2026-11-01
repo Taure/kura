@@ -1186,3 +1186,19 @@ distance_in_a_cte_continues_the_numbering_test() ->
         },
         kura_dialect_pg:to_sql(Q)
     ).
+
+distance_before_a_select_fragment_keeps_param_order_test() ->
+    D = kura_query:distance(embedding, l2, [1, 2, 3]),
+    Q0 = kura_query:select_expr(kura_query:from(?VEC_SCHEMA), [
+        {dist, D}, {score, {fragment, ~"? + ?", [7, 8]}}
+    ]),
+    ?assertEqual(
+        {
+            <<
+                "SELECT \"embedding\" <-> $1 AS \"dist\", $2 + $3 AS \"score\" "
+                "FROM \"kura_vector_items\" LIMIT $4"
+            >>,
+            [~"[1.0,2.0,3.0]", 7, 8, 3]
+        },
+        kura_dialect_pg:to_sql(kura_query:limit(Q0, 3))
+    ).
