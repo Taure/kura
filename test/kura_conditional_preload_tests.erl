@@ -25,6 +25,7 @@ setup() ->
     application:ensure_all_started(kura),
     application:set_env(pg_types, uuid_format, string),
     kura_test_repo:start(),
+    drop_tables(),
     {ok, _} = kura_test_repo:query(
         "CREATE TABLE IF NOT EXISTS cond_users ("
         "  id BIGSERIAL PRIMARY KEY,"
@@ -45,7 +46,6 @@ setup() ->
         ")",
         []
     ),
-    {ok, _} = kura_test_repo:query("TRUNCATE cond_users CASCADE", []),
     %% Seed: user with 4 posts, 2 published and 2 drafts
     CS = kura_changeset:cast(kura_test_cond_user, #{}, #{name => ~"Alice"}, [name]),
     {ok, User} = kura_test_repo:insert(CS),
@@ -65,6 +65,9 @@ setup() ->
     {user, User}.
 
 teardown(_) ->
+    drop_tables().
+
+drop_tables() ->
     kura_test_repo:query("DROP TABLE IF EXISTS cond_posts CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS cond_users CASCADE", []),
     ok.
