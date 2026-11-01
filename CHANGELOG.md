@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `{Field, is_nil}` and `{Field, is_not_nil}` on an encrypted field are
+  accepted by `where/2`. They bind nothing, and `NULL` is stored
+  unencrypted.
+- `kura_schema` refuses an encrypted primary key, association key
+  (foreign key, referenced key or join-table key) or a field of an
+  embedded schema, raising `{kura, {encrypted_primary_key, Mod, Field}}`,
+  `{kura, {encrypted_association_key, Mod, Assoc, Field}}` or
+  `{kura, {encrypted_embed_field, Mod, Embed, Field}}` the first time it
+  reads the schema. None of these could work: keys are matched by
+  equality and an embed is stored as one JSON document.
+- A type tagged `encrypted` in any form other than `{encrypted, Inner}`
+  is treated as encrypted and refused: schema load raises
+  `{kura, {unsupported_encrypted_type, Mod, Field}}`, and `cast/2`,
+  `dump/2`, `load/2` and `to_pg_type/1` raise
+  `{kura_crypto, unsupported_encrypted_type}`. Before, such a type was
+  not redacted by the audit trail, not refused by the filter guard, and
+  loaded as its raw ciphertext.
+- `kura_types:load/2` on an encrypted type raises
+  `{kura_crypto, malformed_frame}` for a non-binary value instead of
+  returning `{error, _}`.
+
 - Application boot starts a repo's pool the way `kura_repo_worker:start/1`
   does, through `kura_db:start_pool/1`, from the config
   `kura_repo:config/1` returns (#197). Boot now applies the repo's
@@ -96,6 +117,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- The filter guard on `{encrypted, _}` fields could be bypassed (found
+  while designing #137). `kura_query:where/2` only refused an encrypted
+  field when it was the first element of the condition, and `having/2`
+  did not check at all. `{'not', {ssn, V}}`, `{[ssn], in, [{V}]}`,
+  `{[id, ssn], in, [{1, V}]}` and `having(Q, {ssn, V})` were accepted and
+  sent the plaintext to the server as a bind parameter and into the
+  telemetry and log `params`; the `not` form also matched every row. Both
+  functions now walk the whole condition (`and`, `or`, `not`, `in`,
+  row-value `in`, `between`, every comparison operator, `in` subqueries)
+  and raise `{kura, {encrypted_field_in_where | encrypted_field_in_having,
+  Field}}` on any comparison of an encrypted field to a value. Fields of
+  joined schemas are checked too, including conditions added before the
+  join, and so is the attribute-tenancy condition. On a schema with
+  encrypted fields, a condition shape the guard does not recognise raises
+  `{kura, unrecognised_condition}`. `{fragment, SQL, Params}` is still not
+  inspected.
 - Starting a pool hands the pool module the connection settings only.
   The repo's own settings, the `encryption` keyring among them, were
   passed along with them, and a pool module that echoed its options in
@@ -204,6 +241,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `kura_types:encryption/1`, the one place that recognises an encrypted
+  type. The filter guard, audit redaction, schema validation and the
+  type seams all use it.
+- `kura_hkdf`, HKDF-SHA256 (RFC 5869) over `crypto:mac/4`, with the RFC
+  test vectors. Not used yet; groundwork for per-column keys (#137).
+- A corpus of v1 ciphertexts under fixed test keys that every release
+  must keep decrypting.
 - `kura_schema:is_schema/1` and `kura_schema:encrypted_fields/1`, both
   memoised. `is_schema/1` replaces three hand-rolled copies of the same
   `code:ensure_loaded/1` + `function_exported/3` check, whose negative

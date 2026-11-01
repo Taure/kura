@@ -250,8 +250,13 @@ implementing the `kura_keyring` behaviour and setting `{kura, [{keyring, my_keyr
 
 **Constraints:** encrypted columns are **not queryable** and cannot carry a
 unique constraint (each write has a random nonce, so equal plaintexts
-produce different ciphertexts). Primary and foreign keys cannot be
-encrypted. `NULL` stays `NULL` (unencrypted), so presence still leaks.
+produce different ciphertexts). `kura_query:where/2` and `having/2` raise
+on any condition that compares an encrypted field to a value, however it is
+nested; `{Field, is_nil}` and `{Field, is_not_nil}` still work. A raw
+`{fragment, SQL, Params}` is not inspected. Primary keys, association keys
+and fields of embedded schemas cannot be encrypted: `kura_schema` raises
+when it first reads such a schema. `NULL` stays `NULL` (unencrypted), so
+presence still leaks.
 Schema introspection (`rebar3 kura gen_schemas`) cannot detect that a
 `BYTEA` column was encrypted - annotate it by hand. The audit trail
 redacts encrypted fields to `[encrypted]` (it keeps the "changed" signal
