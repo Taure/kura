@@ -914,3 +914,12 @@ still_todo_test() ->
     ?assertEqual([{1, a}, {3, c}], kura_migrator:still_todo(up, Migrations, [2])),
     ?assertEqual([{2, b}], kura_migrator:still_todo(down, Migrations, [2])),
     ?assertEqual([], kura_migrator:still_todo(down, Migrations, [])).
+
+lock_wait_step_test() ->
+    ?assertEqual(wait, kura_migrator:lock_wait_step(1000, 0, 30000, infinity)),
+    ?assertEqual({warn, 60000}, kura_migrator:lock_wait_step(30000, 0, 30000, infinity)),
+    ?assertEqual({warn, 61000}, kura_migrator:lock_wait_step(31000, 0, 30000, infinity)),
+    ?assertEqual(wait, kura_migrator:lock_wait_step(499, 0, 30000, 500)),
+    ?assertEqual(timeout, kura_migrator:lock_wait_step(500, 0, 30000, 500)),
+    ?assertEqual(timeout, kura_migrator:lock_wait_step(40000, 0, 30000, 500)),
+    ?assertEqual(timeout, kura_migrator:lock_wait_step(100, 100, 30100, 0)).

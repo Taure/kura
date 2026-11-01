@@ -159,6 +159,11 @@ lock has to wait for, and the two would deadlock. A node still running an
 older kura waits the blocking way, so run a concurrent-index migration once
 every node is upgraded.
 
+A waiting migrator logs a warning every 30 seconds with the time it has
+waited. The wait has no limit unless `migration_lock_timeout` (`kura` app
+env, milliseconds, default `infinity`) is set, after which the operation
+returns `{error, migration_lock_timeout}`.
+
 ## Non-Transactional Migrations
 
 Some statements refuse to run inside a transaction: `CREATE INDEX

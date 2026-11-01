@@ -74,6 +74,11 @@ or retrying inside one long transaction, would never end, and the two
 would deadlock. A node still on an older kura waits the blocking way, so
 run a concurrent-index migration once every node is on this version.
 
+A waiting migrator logs a warning every 30 seconds with the time it has
+waited. The wait is unbounded unless `migration_lock_timeout` (`kura` app
+env, milliseconds, default `infinity`) is set; past it the operation
+returns `{error, migration_lock_timeout}`.
+
 A backend whose pool does not declare `advisory_locks` (SQLite) takes no
 lock and relies on its single writer. There a non-transactional
 migration runs each statement in autocommit on one connection, so a
@@ -93,6 +98,7 @@ one.
 %% sharing a PostgreSQL database contend on this single lock.
 -define(MIGRATION_LOCK_KEY, 571629482).
 -define(LOCK_RETRY_INTERVAL_MS, 100).
+-define(LOCK_WARN_INTERVAL_MS, 30000).
 
 %% Defaults for the pool-readiness wait at the start of migrator operations.
 %% A pool can exist before its connections are open; we retry `SELECT 1`
@@ -137,7 +143,8 @@ one.
     transactional/1,
     concurrent_index/1,
     split_transactional/1,
-    still_todo/3
+    still_todo/3,
+    lock_wait_step/4
 ]).
 -endif.
 
@@ -145,6 +152,7 @@ one.
 -type migration() :: {integer(), module()}.
 -type conn_target() :: {conn, module(), kura_pool:conn()}.
 -type target() :: module() | conn_target().
+-type lock_wait() :: first | {waiting, Since :: integer(), WarnAt :: integer()}.
 -export_type([migration_group/0]).
 
 -doc "Run all pending migrations in order.".
@@ -561,7 +569,9 @@ it - no lock is held across the two.
 
 Returns `{error, {schema_migrations_failed, Reason}}` when the
 statement does not succeed, rather than leaving every later query to
-fail on a table that was never created.
+fail on a table that was never created, and `{error,
+migration_lock_timeout}` when the lock wait passes
+`migration_lock_timeout`.
 """.
 -spec ensure_schema_migrations(module()) -> ok | {error, term()}.
 ensure_schema_migrations(RepoMod) ->
@@ -577,6 +587,8 @@ ensure_schema_migrations(RepoMod) ->
     try
         in_migration_lock(RepoMod, fun() -> create_schema_migrations(RepoMod, SQL) end)
     catch
+        error:{migration_aborted, AbortReason} ->
+            {error, AbortReason};
         Class:Reason:Stack ->
             logger:error(#{
                 msg => ~"kura: schema_migrations bootstrap failed",
@@ -919,8 +931,8 @@ parse_migration_module(Module) ->
 in_migration_lock(RepoMod, Fun) ->
     in_migration_lock(RepoMod, Fun, first).
 
--spec in_migration_lock(module(), fun(() -> Result), first | retry) -> Result.
-in_migration_lock(RepoMod, Fun, Attempt) ->
+-spec in_migration_lock(module(), fun(() -> Result), lock_wait()) -> Result.
+in_migration_lock(RepoMod, Fun, Wait) ->
     PoolMod = kura_db:get_pool_module(RepoMod),
     Outcome = kura_db:transaction(RepoMod, fun() ->
         case xact_lock_taken(RepoMod, PoolMod) of
@@ -932,8 +944,7 @@ in_migration_lock(RepoMod, Fun, Attempt) ->
         {locked, Result} ->
             Result;
         busy ->
-            wait_for_lock(RepoMod, Attempt),
-            in_migration_lock(RepoMod, Fun, retry)
+            in_migration_lock(RepoMod, Fun, wait_for_lock(RepoMod, Wait))
     end.
 
 %% SQLite and other single-writer backends declare no `advisory_locks`
@@ -945,14 +956,11 @@ xact_lock_taken(RepoMod, PoolMod) ->
         false -> true
     end.
 
--spec acquire_session_lock(conn_target(), first | retry) -> ok.
-acquire_session_lock(Target, Attempt) ->
+-spec acquire_session_lock(conn_target(), lock_wait()) -> ok.
+acquire_session_lock(Target, Wait) ->
     case try_lock(Target, ~"SELECT pg_try_advisory_lock($1) AS locked") of
-        true ->
-            ok;
-        false ->
-            wait_for_lock(target_repo(Target), Attempt),
-            acquire_session_lock(Target, retry)
+        true -> ok;
+        false -> acquire_session_lock(Target, wait_for_lock(target_repo(Target), Wait))
     end.
 
 -spec try_lock(target(), binary()) -> boolean().
@@ -962,14 +970,56 @@ try_lock(Target, SQL) ->
         Other -> error({migration_lock_failed, Other})
     end.
 
--spec wait_for_lock(module(), first | retry) -> ok.
+%% Raises `{migration_aborted, migration_lock_timeout}` once the wait
+%% passes `migration_lock_timeout`, outside any transaction of its own.
+-spec wait_for_lock(module(), lock_wait()) -> lock_wait().
 wait_for_lock(RepoMod, first) ->
     ?LOG_INFO(#{
         msg => ~"kura: waiting for the migration lock held by another migrator", repo => RepoMod
     }),
-    wait_for_lock(RepoMod, retry);
-wait_for_lock(_RepoMod, retry) ->
-    timer:sleep(read_pos_int_env(migration_lock_retry_interval, ?LOCK_RETRY_INTERVAL_MS)).
+    Now = erlang:monotonic_time(millisecond),
+    pause_for_lock({waiting, Now, Now + ?LOCK_WARN_INTERVAL_MS});
+wait_for_lock(RepoMod, {waiting, Since, WarnAt}) ->
+    Now = erlang:monotonic_time(millisecond),
+    case lock_wait_step(Now, Since, WarnAt, migration_lock_timeout()) of
+        timeout ->
+            ?LOG_ERROR(#{
+                msg => ~"kura: gave up waiting for the migration lock",
+                repo => RepoMod,
+                waited_ms => Now - Since
+            }),
+            error({migration_aborted, migration_lock_timeout});
+        {warn, NextWarnAt} ->
+            ?LOG_WARNING(#{
+                msg => ~"kura: still waiting for the migration lock held by another migrator",
+                repo => RepoMod,
+                waited_ms => Now - Since
+            }),
+            pause_for_lock({waiting, Since, NextWarnAt});
+        wait ->
+            pause_for_lock({waiting, Since, WarnAt})
+    end.
+
+-spec lock_wait_step(integer(), integer(), integer(), timeout()) ->
+    timeout | {warn, integer()} | wait.
+lock_wait_step(Now, Since, _WarnAt, Timeout) when is_integer(Timeout), Now - Since >= Timeout ->
+    timeout;
+lock_wait_step(Now, _Since, WarnAt, _Timeout) when Now >= WarnAt ->
+    {warn, Now + ?LOCK_WARN_INTERVAL_MS};
+lock_wait_step(_Now, _Since, _WarnAt, _Timeout) ->
+    wait.
+
+-spec pause_for_lock(lock_wait()) -> lock_wait().
+pause_for_lock(Wait) ->
+    timer:sleep(read_pos_int_env(migration_lock_retry_interval, ?LOCK_RETRY_INTERVAL_MS)),
+    Wait.
+
+-spec migration_lock_timeout() -> timeout().
+migration_lock_timeout() ->
+    case application:get_env(kura, migration_lock_timeout, infinity) of
+        N when is_integer(N), N >= 0 -> N;
+        _ -> infinity
+    end.
 
 -spec with_migration_lock(module(), fun(() -> [integer()])) ->
     {ok, [integer()]} | {error, term()}.

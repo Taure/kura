@@ -66,6 +66,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CONCURRENTLY` on the lock holder waits for, and the two deadlocked. A
   node still on an older kura waits the blocking way: run a
   concurrent-index migration once every node is upgraded.
+- A migrator waiting for the advisory lock logs a warning every 30
+  seconds with the time it has waited, where the wait was silent after
+  its first info line (#139). The wait is still unbounded by default; the
+  new `migration_lock_timeout` app env (milliseconds, default `infinity`)
+  ends it with `{error, migration_lock_timeout}` from `migrate/1`,
+  `rollback/1,2,3`, `fake/1,2` and `ensure_schema_migrations/1`.
 - `kura_repo_worker:start/1` returns `{error, Reason}` when the pool does
   not start, where it logged the failure and returned `ok` (#192). A test
   setup written as `ok = kura_repo_worker:start(my_repo)` now stops at the
