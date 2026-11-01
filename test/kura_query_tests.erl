@@ -296,6 +296,15 @@ distance_shaped_values_in_lists_are_left_alone_test() ->
     Q = kura_query:where(kura_query:from(items), {tag, in, [{distance, a, l2, ~"x"}]}),
     ?assertEqual([{tag, in, [{distance, a, l2, ~"x"}]}], Q#kura_query.wheres).
 
+hand_built_distance_with_an_unknown_metric_raises_test() ->
+    ?assertError(
+        {kura, {invalid_distance, _}},
+        kura_query:order_by(kura_query:from(?VEC_SCHEMA), [{bad_metric_distance(), asc}])
+    ).
+
+-spec bad_metric_distance() -> dynamic().
+bad_metric_distance() -> {distance, embedding, l1, ~"[1.0,2.0,3.0]"}.
+
 %% group_by/2 and over/2 are typed for field atoms; a caller can still pass
 %% a distance.
 -spec untyped_distance() -> dynamic().

@@ -166,7 +166,9 @@ check_distances(From, Distances) ->
             erlang:error({kura, {distance_requires_schema, From}})
     end.
 
-check_distance(Types, {distance, Field, _Metric, Text}) when is_binary(Text) ->
+check_distance(Types, {distance, Field, Metric, Text}) when
+    is_atom(Field), ?IS_METRIC(Metric), is_binary(Text)
+->
     case maps:get(Field, Types, undefined) of
         vector ->
             ok;
