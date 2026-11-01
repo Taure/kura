@@ -152,6 +152,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on `update` and `delete`, which add the tenant to the key clauses
   directly and bound its plaintext. They now raise
   `{kura, {encrypted_field_in_where, Field}}` too.
+- An upsert (`insert/3` or `insert_all/4` with an `on_conflict` other than
+  `nothing`) under an attribute tenant on an encrypted field guarded the
+  conflict update with `table.Field = EXCLUDED.Field`, which compares two
+  ciphertexts with different nonces, so it silently never updated. It now
+  raises `{kura, {encrypted_field_in_where, Field}}`, from the same check
+  update and delete use.
 - A correlated subquery bypassed the filter guard. In
   `{exists, {subquery, Sub}}` or `{Field, in, {subquery, Sub}}` on a query
   over an encrypted schema, a condition in `Sub` naming an outer encrypted

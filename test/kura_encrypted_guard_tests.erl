@@ -759,3 +759,39 @@ tenant_attribute_on_an_encrypted_field_in_writes_test_() ->
                 end)
             )}
     ]}.
+
+%% An upsert's conflict guard compares the stored tenant ciphertext with the
+%% new row's, which never match, so the upsert would silently never update.
+tenant_attribute_on_an_encrypted_field_in_upserts_test_() ->
+    Tenant = {attribute, {ssn, ?PLAIN}},
+    Upsert = #{on_conflict => {[id], replace_all}},
+    Row = #{id => 1, name => ~"a"},
+    {setup,
+        fun() ->
+            compiler_setup(),
+            application:set_env(kura, encryption, #{
+                active => 1, keys => [{1, base64:encode(crypto:strong_rand_bytes(32))}]
+            })
+        end,
+        fun(X) ->
+            application:unset_env(kura, encryption),
+            compiler_teardown(X)
+        end,
+        [
+            {"insert",
+                ?_assertError(
+                    ?WHERE_SSN,
+                    kura_tenant:with_tenant(Tenant, fun() ->
+                        kura_repo_worker:insert(
+                            ?REPO, kura_changeset:cast(?ENC, #{}, Row, [id, name]), Upsert
+                        )
+                    end)
+                )},
+            {"insert_all",
+                ?_assertError(
+                    ?WHERE_SSN,
+                    kura_tenant:with_tenant(Tenant, fun() ->
+                        kura_repo_worker:insert_all(?REPO, ?ENC, [Row], Upsert)
+                    end)
+                )}
+        ]}.
