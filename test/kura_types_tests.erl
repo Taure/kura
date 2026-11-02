@@ -595,3 +595,40 @@ dump_embed_many_test() ->
     ?assert(is_binary(Json)),
     {ok, [_ | _] = Decoded} = kura_types:load(jsonb, Json),
     ?assertEqual(2, length(Decoded)).
+
+%%----------------------------------------------------------------------
+%% Error messages name the type, never the value
+%%----------------------------------------------------------------------
+
+vector_type_errors_test_() ->
+    [
+        ?_assertEqual({error, ~"cannot cast to vector"}, kura_types:cast({vector, 3}, ~"1,2,3")),
+        ?_assertEqual({error, ~"cannot dump vector"}, kura_types:dump({vector, 3}, ~"1,2,3")),
+        ?_assertEqual({error, ~"cannot load vector"}, kura_types:load({vector, 3}, 42)),
+        ?_assertEqual(
+            {error, ~"cannot use vector as an encrypted inner type"},
+            kura_types:cast({encrypted, {vector, 3}}, [1, 2, 3])
+        )
+    ].
+
+encrypted_type_errors_test_() ->
+    [
+        ?_assertEqual(
+            {error, ~"cannot load array_encrypted_string"},
+            kura_types:load({array, {encrypted, string}}, ~"secret-value")
+        ),
+        ?_assertEqual(
+            {error, ~"cannot cast to array_encrypted_string"},
+            kura_types:cast({array, {encrypted, string}}, ~"secret-value")
+        ),
+        ?_assertEqual(
+            {error, ~"cannot dump array_encrypted_string"},
+            kura_types:dump({array, {encrypted, string}}, ~"secret-value")
+        )
+    ].
+
+encrypted_options_form_errors_test() ->
+    V2 = kura_test_enc_v2_schema:v2_type(),
+    ?assertEqual(
+        {error, ~"cannot load array_encrypted"}, kura_types:load({array, V2}, ~"secret-value")
+    ).

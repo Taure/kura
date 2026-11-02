@@ -303,7 +303,7 @@ insert(RepoMod, CS, Opts) ->
 do_insert(_RepoMod, CS = #kura_changeset{valid = false}, _Opts) ->
     {error, CS#kura_changeset{action = insert}};
 do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opts0) ->
-    Opts = guard_upsert(Opts0),
+    Opts = guard_upsert(SchemaMod, Opts0),
     Changes0 = maybe_generate_pk(RepoMod, SchemaMod, maybe_apply_tenant_changes(Changes)),
     Changes1 = maybe_add_timestamps(SchemaMod, Changes0, insert),
     case dump_changes(SchemaMod, Changes1) of
@@ -423,7 +423,7 @@ insert_all(RepoMod, SchemaMod, Entries, Opts) ->
 do_insert_all(RepoMod, SchemaMod, Entries, Opts) ->
     case dump_entries(SchemaMod, [maybe_apply_tenant_changes(E) || E <- Entries]) of
         {error, _} = DumpErr -> DumpErr;
-        {ok, Rows} -> do_insert_all_rows(RepoMod, SchemaMod, Rows, guard_upsert(Opts))
+        {ok, Rows} -> do_insert_all_rows(RepoMod, SchemaMod, Rows, guard_upsert(SchemaMod, Opts))
     end.
 
 do_insert_all_rows(RepoMod, SchemaMod, Rows, Opts) ->
@@ -567,7 +567,7 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
                 0 ->
                     {ok, Data};
                 _ ->
-                    KeyClauses = tenant_key_clauses(key_pairs(SchemaMod, Data)),
+                    KeyClauses = tenant_key_clauses(SchemaMod, key_pairs(SchemaMod, Data)),
                     Changes1 = maybe_add_timestamps(SchemaMod, pin_tenant(Changes), update),
                     case dump_changes(SchemaMod, Changes1) of
                         {error, DumpErr} ->
@@ -856,7 +856,7 @@ delete_record(RepoMod, SchemaMod, Data) ->
         {error, _} = Err ->
             Err;
         ok ->
-            KeyClauses = tenant_key_clauses(key_pairs(SchemaMod, Data)),
+            KeyClauses = tenant_key_clauses(SchemaMod, key_pairs(SchemaMod, Data)),
             {SQL, Params} = kura_query_compiler:delete(RepoMod, SchemaMod, KeyClauses),
             case kura_db:query(RepoMod, SQL, Params) of
                 #{command := delete, rows := [Row]} ->
@@ -1156,10 +1156,24 @@ maybe_apply_tenant_prefix(Query) ->
             Query
     end.
 
-tenant_key_clauses(KeyClauses) ->
+tenant_key_clauses(SchemaMod, KeyClauses) ->
     case kura_tenant:get_tenant() of
-        {attribute, {Field, Value}} -> KeyClauses ++ [{Field, Value}];
-        _ -> KeyClauses
+        {attribute, {Field, Value}} ->
+            ok = refuse_encrypted_tenant(SchemaMod, Field),
+            KeyClauses ++ [{Field, Value}];
+        _ ->
+            KeyClauses
+    end.
+
+%% Every write path that matches rows on the attribute tenant goes through
+%% here. An update or delete key clause would bind the tenant value in
+%% plaintext, and an upsert's conflict guard compares two ciphertexts with
+%% different nonces, so it would silently never update. Both are refused
+%% with the reason where/2 gives.
+refuse_encrypted_tenant(SchemaMod, Field) ->
+    case lists:member(Field, kura_schema:encrypted_fields(SchemaMod)) of
+        true -> erlang:error({kura, {encrypted_field_in_where, Field}});
+        false -> ok
     end.
 
 pin_tenant(Changes) ->
@@ -1168,16 +1182,36 @@ pin_tenant(Changes) ->
         _ -> Changes
     end.
 
-guard_upsert(#{on_conflict := OnConflict} = Opts) ->
+guard_upsert(SchemaMod, #{on_conflict := OnConflict} = Opts) ->
+    ok = refuse_encrypted_conflict_guard(SchemaMod, OnConflict),
     case kura_tenant:get_tenant() of
-        {attribute, {Field, _Value}} -> Opts#{on_conflict => guarded(OnConflict, Field)};
-        _ -> Opts
+        {attribute, {Field, _Value}} ->
+            Opts#{on_conflict => guarded(OnConflict, SchemaMod, Field)};
+        _ ->
+            Opts
     end;
-guard_upsert(Opts) ->
+guard_upsert(_SchemaMod, Opts) ->
     Opts.
 
-guarded({_Target, nothing} = OnConflict, _Field) ->
+guarded({_Target, nothing} = OnConflict, _SchemaMod, _Field) ->
     OnConflict;
+guarded({_Target, nothing, _Opts} = OnConflict, _SchemaMod, _Field) ->
+    OnConflict;
+guarded(OnConflict, SchemaMod, Field) ->
+    ok = refuse_encrypted_tenant(SchemaMod, Field),
+    guarded(OnConflict, Field).
+
+refuse_encrypted_conflict_guard(SchemaMod, {_Target, Action, #{guard := Fields}}) when
+    Action =/= nothing, is_list(Fields)
+->
+    Encrypted = kura_schema:encrypted_fields(SchemaMod),
+    case [F || F <- Fields, lists:member(F, Encrypted)] of
+        [] -> ok;
+        [Field | _] -> erlang:error({kura, {encrypted_field_in_conflict_guard, Field}})
+    end;
+refuse_encrypted_conflict_guard(_SchemaMod, _OnConflict) ->
+    ok.
+
 guarded({Target, Action}, Field) ->
     {Target, Action, #{guard => [Field]}};
 guarded({Target, Action, Opts}, Field) when is_map(Opts) ->
