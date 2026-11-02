@@ -3,6 +3,15 @@
 
 -export([start_pool/2, stop_pool/1, query/5, log/2]).
 
+%% How long a test waits for another process before it fails. A mutant that
+%% breaks a lock or a record makes the wait run out, and a test that fails
+%% fast is a killed mutant rather than a timed-out one.
+-define(WAIT, 1000).
+
+%% How long until/1 polls for a step another process takes without waiting
+%% on a lock, which in a passing run is a matter of microseconds.
+-define(SETTLE, 250).
+
 %%----------------------------------------------------------------------
 %% start_repo_pool/1 reports a pool that did not start
 %%----------------------------------------------------------------------
@@ -1114,26 +1123,14 @@ a_stop_between_a_move_and_its_retire_still_frees_the_old_pool_test() ->
     with_two_repos(fun() ->
         ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
         ok = moved_to(moved_pool),
-        Self = self(),
         holding_lock(shared_pool, fun(Release) ->
-            {_Mover, Moving} = spawn_monitor(fun() ->
-                Self ! {moved, kura_repo_worker:start(kura_db_owner_repo)}
-            end),
+            Moving = spawned(fun() -> kura_repo_worker:start(kura_db_owner_repo) end),
             ok = until(fun() -> kura_db:get_pool(kura_db_owner_repo) =:= moved_pool end),
-            {_Stopper, Stopping} = spawn_monitor(fun() ->
-                ok = kura_db:stop_pool(kura_db_owner_repo)
-            end),
+            Stopping = spawned(fun() -> kura_db:stop_pool(kura_db_owner_repo) end),
             ok = until(fun() -> kura_db:held(kura_db_owner_repo) =:= none end),
             ok = Release(),
-            ?assertEqual(
-                ok,
-                receive
-                    {moved, Moved} -> Moved
-                after 5000 -> timeout
-                end
-            ),
-            ok = exited(Moving),
-            ok = exited(Stopping)
+            ?assertEqual({returned, ok}, outcome(Moving)),
+            ?assertEqual({returned, ok}, outcome(Stopping))
         end),
         ?assertEqual(ok, kura_repo_worker:start(kura_db_other_repo)),
         ?assertEqual(shared_pool, kura_db:get_pool(kura_db_other_repo))
@@ -1147,9 +1144,7 @@ a_move_whose_caller_dies_before_the_retire_leaves_the_old_pool_stoppable_test() 
             {Mover, Moving} = spawn_monitor(fun() -> kura_repo_worker:start(kura_db_owner_repo) end),
             ok = until(fun() -> kura_db:get_pool(kura_db_owner_repo) =:= moved_pool end),
             exit(Mover, kill),
-            receive
-                {'DOWN', Moving, process, Mover, killed} -> ok
-            end,
+            ?assertEqual(killed, down(Moving)),
             Release()
         end),
         _ = with_captured_logs(fun() ->
@@ -1161,6 +1156,23 @@ a_move_whose_caller_dies_before_the_retire_leaves_the_old_pool_stoppable_test() 
         ?assertEqual(ok, kura_db:stop_pool(kura_db_owner_repo)),
         ?assertEqual(ok, kura_repo_worker:start(kura_db_other_repo))
     end).
+
+%% Run Fun in a monitored process that exits with what Fun returned, so
+%% outcome/1 sees a crash as soon as it happens instead of waiting out a reply.
+spawned(Fun) ->
+    spawn_monitor(fun() -> exit({returned, Fun()}) end).
+
+outcome({Pid, Monitor}) ->
+    receive
+        {'DOWN', Monitor, process, Pid, Reason} -> Reason
+    after ?WAIT -> error({still_running, Pid})
+    end.
+
+down(Monitor) ->
+    receive
+        {'DOWN', Monitor, process, _Pid, Reason} -> Reason
+    after ?WAIT -> error(not_down)
+    end.
 
 %% Hold the lock kura_db takes on a pool name, from this process, so another
 %% process's start or stop of it waits until Release() is called.
@@ -1184,7 +1196,7 @@ moved_to(Pool) ->
     }).
 
 until(Done) ->
-    until(Done, 500).
+    until(Done, ?SETTLE div 5).
 
 until(Done, 0) ->
     error({never, Done()});
@@ -1195,13 +1207,6 @@ until(Done, Tries) ->
         false ->
             timer:sleep(5),
             until(Done, Tries - 1)
-    end.
-
-exited(Monitor) ->
-    receive
-        {'DOWN', Monitor, process, _Pid, normal} -> ok;
-        {'DOWN', Monitor, process, _Pid, Reason} -> error({crashed, Reason})
-    after 5000 -> error(timeout)
     end.
 
 a_repo_on_its_own_pool_refused_another_fails_closed_test() ->
