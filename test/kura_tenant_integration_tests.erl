@@ -58,6 +58,7 @@ setup() ->
     application:ensure_all_started(minato),
     application:ensure_all_started(kura),
     kura_test_repo:start(),
+    drop_tables(),
     {ok, _} = kura_test_repo:query(
         "CREATE TABLE IF NOT EXISTS tenant_items ("
         "  id BIGSERIAL PRIMARY KEY,"
@@ -89,6 +90,9 @@ setup() ->
 
 teardown(_) ->
     _ = kura_tenant:clear_tenant(),
+    drop_tables().
+
+drop_tables() ->
     kura_test_repo:query("DROP SCHEMA IF EXISTS tenant_p1 CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS tenant_item_links CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS tenant_notes CASCADE", []),

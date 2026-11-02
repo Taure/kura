@@ -334,6 +334,7 @@ drop_tables() ->
     %% creates then fails on every run after it. Dropping first makes the setup
     %% idempotent, which is what a fixture should be.
     Tables = [
+        ~"memberships",
         ~"audit_log",
         ~"audited_items",
         ~"secrets",
@@ -353,17 +354,7 @@ drop_tables() ->
     ).
 
 teardown(_) ->
-    kura_test_repo:query("DROP TABLE IF EXISTS memberships CASCADE", []),
-    kura_test_repo:query("DROP TABLE IF EXISTS secrets CASCADE", []),
-    kura_test_repo:query("DROP TABLE IF EXISTS articles CASCADE", []),
-    kura_test_repo:query("DROP TABLE IF EXISTS bookings CASCADE", []),
-    kura_test_repo:query("DROP TABLE IF EXISTS audit_log CASCADE", []),
-    kura_test_repo:query("DROP TABLE IF EXISTS audited_items CASCADE", []),
-    kura_test_repo:query("DROP TABLE IF EXISTS hook_items CASCADE", []),
-    kura_test_repo:query("DROP TABLE IF EXISTS participants CASCADE", []),
-    kura_test_repo:query("DROP TABLE IF EXISTS posts_simple CASCADE", []),
-    kura_test_repo:query("DROP TABLE IF EXISTS users CASCADE", []),
-    ok.
+    drop_tables().
 
 t_composite_crud() ->
     Org = ~"11111111-1111-1111-1111-111111111111",

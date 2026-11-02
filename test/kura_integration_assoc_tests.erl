@@ -91,6 +91,7 @@ setup() ->
     application:ensure_all_started(minato),
     application:ensure_all_started(kura),
     kura_test_repo:start(),
+    drop_tables(),
     create_tables(),
     ok.
 
