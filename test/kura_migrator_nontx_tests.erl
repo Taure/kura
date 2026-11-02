@@ -90,11 +90,14 @@ nontx_test_() ->
         ]}}.
 
 setup() ->
+    ok = claim_suite(),
     {ok, _} = application:ensure_all_started(minato),
     application:set_env(kura, dialect, kura_dialect_pg),
     {ok, _} = application:ensure_all_started(kura),
     application:set_env(kura, ensure_database, false),
     application:set_env(kura, migration_lock_retry_interval, 20),
+    application:unset_env(kura, migration_lock_timeout),
+    _ = minato:stop_pool(?LOCK_TIMEOUT_POOL),
     load_app(?BASE, [?REPO]),
     load_app(?OK_APP, [
         m20250301100000_nontx_create_items,
@@ -508,6 +511,26 @@ query_on_passes_options() ->
 %% Helpers
 %%----------------------------------------------------------------------
 
+%% rebar3_mutate gives up on a timed-out eunit run without stopping it, so an
+%% earlier run of this suite can still be migrating against the same tables.
+claim_suite() ->
+    try register(?MODULE, self()) of
+        true -> ok
+    catch
+        error:badarg ->
+            ok = stop_earlier_run(whereis(?MODULE)),
+            claim_suite()
+    end.
+
+stop_earlier_run(undefined) ->
+    ok;
+stop_earlier_run(Pid) ->
+    MRef = monitor(process, Pid),
+    exit(Pid, kill),
+    receive
+        {'DOWN', MRef, process, Pid, _} -> ok
+    end.
+
 declare(Apps) ->
     application:set_env(kura, kura_nontx_apps, Apps).
 
@@ -520,10 +543,10 @@ load_app(Name, Modules) ->
             {registered, []},
             {applications, [kernel, stdlib]}
         ]},
-    case application:load(Spec) of
-        ok -> ok;
-        {error, {already_loaded, Name}} -> ok
-    end.
+    %% A run killed before cleanup/1 leaves the app loaded, and load/1 then
+    %% answers {already_loaded, Spec}, not {already_loaded, Name}.
+    _ = application:unload(Name),
+    ok = application:load(Spec).
 
 reset() ->
     declare([]),
