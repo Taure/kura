@@ -90,6 +90,11 @@ Set SELECT expressions with aliases. Each expression is `{Alias, Expr}`
 where `Expr` is a plain field atom, a `{fragment, SQL, Params}`, a
 window expression from `over/2`, or a vector distance from `distance/3`.
 
+A distance over a field that may hold ciphertext, such as any column of a
+CTE whose encrypted columns cannot be named, raises
+`{kura, {encrypted_field_in_select, Field}}`: the distance would be
+computed over ciphertexts.
+
 ```erlang
 Q = kura_query:select_expr(kura_query:from(sales), [
     {category, category},
@@ -153,9 +158,10 @@ The query must be `from/1` a schema in which `Field` is a `vector` or
 `{vector, N}` field, and for `{vector, N}` the vector must have `N`
 elements. `order_by/2` and `select_expr/2` raise otherwise.
 
-A distance anywhere else, in `where/2`, `having/2`, `group_by/2` or a
-window from `over/2`, raises `{kura, {distance_not_supported_here,
-Clause}}`.
+A distance anywhere else, in `where/2`, `having/2`, `group_by/2`,
+`distinct/2`, `select/2` (and the aggregate helpers), `count/2`, a `join`
+column or a window from `over/2`, raises `{kura,
+{distance_not_supported_here, Clause}}`.
 
 ```erlang
 D = kura_query:distance(embedding, cosine, QueryVector),
@@ -781,7 +787,8 @@ atom or a vector distance from `distance/3`.
 
 Ordering by an encrypted field raises
 `{kura, {encrypted_field_in_order_by, Field}}`: the order of ciphertexts
-says nothing about the order of the values.
+says nothing about the order of the values. A distance is checked by its
+column, so the reason names the field and never carries the vector.
 """.
 -spec order_by(#kura_query{}, [order()]) -> #kura_query{}.
 order_by(Q = #kura_query{from = From}, Orders) ->
@@ -874,7 +881,10 @@ in the query's wheres or havings, a subquery, a CTE body or a union branch.
 It also raises where `order_by/2`, `group_by/2`, `distinct/2`, `join/5`,
 `select/2` and `select_expr/2` would: on ordering, grouping, DISTINCT ON,
 joining, windowing or aggregating (`sum`, `avg`, `min`, `max`) by an
-encrypted field or an alias of one.
+encrypted field or an alias of one, and on selecting a distance of one
+(`{kura, {encrypted_field_in_select, Field}}`). A term in a column
+position that is not a column, such as a distance, is reported as
+`not_a_column` in place of the field.
 
 The verdict depends only on the query's structure (sources, selects, CTEs and
 the shape of every condition), never on a bound value. `kura_query_compiler`

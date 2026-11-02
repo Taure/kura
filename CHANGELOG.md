@@ -26,7 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{kura, {encrypted_field_in_join, Field}}`: equal values encrypt to
   different ciphertexts, so they never group or join. ORDER BY, GROUP BY
   and DISTINCT ON on a `select_expr/2` alias of an encrypted field raise
-  too.
+  too. A `select_expr/2` distance over a column that may hold ciphertext
+  raises `{kura, {encrypted_field_in_select, Field}}`. A term in a column
+  position that is not a column is reported as `not_a_column`, so its
+  values stay out of the reason.
 - `kura_schema` refuses an encrypted primary key, association key
   (foreign key, referenced key or join-table key) or a field of an
   embedded schema, raising `{kura, {encrypted_primary_key, Mod, Field}}`,
@@ -411,10 +414,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after `HAVING` and before `LIMIT`. The vector is cast and dumped to text when
   the distance is built, and the query must be `from/1` a schema in which
   the field is a `vector` or `{vector, N}` of matching dimension. A
-  distance in `where/2`, `having/2`, `group_by/2` or `over/2` raises
-  `{kura, {distance_not_supported_here, Clause}}`. A vector over 16000
-  dimensions raises, and the compiler applies the same checks to a
-  `#kura_query{}` written by hand. Requires pgvector >= 0.8.2
+  distance in `where/2`, `having/2`, `group_by/2`, `distinct/2`,
+  `select/2` (and the aggregate helpers), `count/2`, a `join` column or
+  `over/2` raises `{kura, {distance_not_supported_here, Clause}}`, in a
+  condition also as a list element or a `between` end. A vector over
+  16000 dimensions raises, and every compiler entry point applies the
+  same checks to a `#kura_query{}` written by hand. No error reason
+  carries the query vector. Requires pgvector >= 0.8.2
   (CVE-2026-3172). The
   query builder guide covers search-time settings (`SET LOCAL
   hnsw.ef_search` in a transaction) and leaves `CREATE EXTENSION` to the

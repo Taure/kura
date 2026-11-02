@@ -239,10 +239,17 @@ text it encodes, so treat those params as you would the text itself.
 - the field must be a `vector` or `{vector, N}` field;
 - for `{vector, N}`, the query vector must have `N` elements.
 
-Not supported yet: a distance in `where` or `having` (a threshold), in
-`group_by/2` or in a window from `over/2`. Each raises `{kura,
-{distance_not_supported_here, Clause}}`. The SQLite backend has no
-distance operators.
+Not supported yet: a distance in `where` or `having` (a threshold, or a
+value or list element of a condition), in `group_by/2`, `distinct/2`,
+`select/2` (and the aggregate helpers), `count/2`, a `join` column or a
+window from `over/2`. Each raises `{kura, {distance_not_supported_here,
+Clause}}`. The SQLite backend has no distance operators.
+
+A distance is checked like its column by the encrypted-field guard. Over
+a CTE whose encrypted columns cannot be named, every column may hold
+ciphertext, so `order_by/2` raises `{kura, {encrypted_field_in_order_by,
+Field}}` and `select_expr/2` raises `{kura, {encrypted_field_in_select,
+Field}}`. The reason names the field, never the query vector.
 
 `kura_paginator:cursor_paginate/3` replaces the query's `order_by` with
 its cursor field, so it cannot page through nearest neighbours. A
