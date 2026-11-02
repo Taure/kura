@@ -243,6 +243,9 @@ preformatted_vector() -> ~"[1,2,3]".
 -spec hand_built_distance() -> dynamic().
 hand_built_distance() -> {distance, embedding, l2, [1]}.
 
+-spec improper(term()) -> dynamic().
+improper(Term) -> Term.
+
 %% Distance thresholds are planned in #122. Until then a distance outside order_by and
 %% select_expr would leave its vector in the cache key and crash the
 %% dialect, so the builder refuses it.
@@ -268,6 +271,74 @@ distance_outside_order_by_and_select_raises_test_() ->
         ?_assertError(
             {kura, {distance_not_supported_here, where}}, kura_query:where(Q, {content, D})
         ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}}, kura_query:where(Q, {id, in, [D]})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}},
+            kura_query:where(Q, {id, not_in, [1, 2, D]})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}},
+            kura_query:where(Q, {content, between, {0.1, D}})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}},
+            kura_query:where(Q, {content, between, {D, 0.3}})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}},
+            kura_query:where(Q, {[id, content], in, [{1, D}]})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}},
+            kura_query:where(Q, {[id, D], in, [{1, ~"x"}]})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}}, kura_query:where(Q, {tags, [D]})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}},
+            kura_query:where(Q, {'and', [{id, 1}, {id, in, [D]}]})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, having}},
+            kura_query:having(Q, {id, in, [D]})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, select}}, kura_query:select(Q, [id, D])
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, select}}, kura_query:select(Q, [{sum, D}])
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, select}},
+            kura_query:select(Q, [id | improper(D)])
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, select}},
+            kura_query:sum(Q, untyped_distance())
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, select}},
+            kura_query:max(Q, untyped_distance())
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, count}},
+            kura_query:count(Q, untyped_distance())
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, distinct}},
+            kura_query:distinct(Q, [id, untyped_distance()])
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, join}},
+            kura_query:join(Q, inner, ?VEC_SCHEMA, {untyped_distance(), id})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, join}},
+            kura_query:join(Q, left, ?VEC_SCHEMA, {id, untyped_distance()}, other)
+        ),
         ?_assertError({kura, {distance_not_supported_here, where}}, kura_query:where(Q, D)),
         ?_assertError(
             {kura, {distance_not_supported_here, having}}, kura_query:having(Q, {D, '<', 0.3})
@@ -290,11 +361,25 @@ distance_outside_order_by_and_select_raises_test_() ->
         )
     ].
 
-%% Only a field or value position is inspected: a bound value that
-%% happens to look like a distance node is data.
-distance_shaped_values_in_lists_are_left_alone_test() ->
-    Q = kura_query:where(kura_query:from(items), {tag, in, [{distance, a, l2, ~"x"}]}),
-    ?assertEqual([{tag, in, [{distance, a, l2, ~"x"}]}], Q#kura_query.wheres).
+%% A distance-shaped element of a list value would be bound as a parameter,
+%% so it is refused like a distance. An improper list value is refused
+%% rather than left for the dialect to crash on with its elements.
+distance_shaped_values_in_lists_are_refused_test_() ->
+    Q = kura_query:from(items),
+    [
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}},
+            kura_query:where(Q, {tag, in, [{distance, a, l2, ~"x"}]})
+        ),
+        ?_assertError(
+            {kura, unrecognised_condition},
+            kura_query:where(Q, {tag, in, [~"a" | improper(~"b")]})
+        )
+    ].
+
+plain_list_values_are_still_accepted_test() ->
+    Q = kura_query:where(kura_query:from(items), {tag, in, [~"a", {1, 2}, [3]]}),
+    ?assertEqual([{tag, in, [~"a", {1, 2}, [3]]}], Q#kura_query.wheres).
 
 hand_built_distance_with_an_unknown_metric_raises_test() ->
     ?assertError(

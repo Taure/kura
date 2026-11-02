@@ -81,6 +81,7 @@ ciphertexts. `count` is allowed.
 """.
 -spec select(#kura_query{}, [atom() | term()]) -> #kura_query{}.
 select(Q, Fields) ->
+    reject_selected_distances(Fields),
     refuse_select(Fields, guard_scope(Q, [], [])),
     Q#kura_query{select = Fields}.
 
@@ -124,16 +125,17 @@ over(WindowFn, Spec) when is_map(Spec) ->
     {over, WindowFn, Spec}.
 
 reject_window_distances(WindowFn, Spec) ->
-    reject_distances(over, window_fn_fields(WindowFn) ++ window_spec_fields(Spec)).
+    reject_window_fn_distance(WindowFn),
+    reject_window_spec_distances(Spec).
 
-window_fn_fields({_Agg, Field}) -> [Field];
-window_fn_fields(_Fn) -> [].
+reject_window_fn_distance({_Agg, Field}) -> reject_distance(over, Field);
+reject_window_fn_distance(_Fn) -> ok.
 
-window_spec_fields(Spec) when is_map(Spec) ->
-    Orders = [Expr || {Expr, _Dir} <- maps:get(order_by, Spec, [])],
-    maps:get(partition_by, Spec, []) ++ Orders;
-window_spec_fields(_Spec) ->
-    [].
+reject_window_spec_distances(Spec) when is_map(Spec) ->
+    reject_distances(over, maps:get(partition_by, Spec, [])),
+    reject_order_distances(over, maps:get(order_by, Spec, []));
+reject_window_spec_distances(_Spec) ->
+    ok.
 
 -doc """
 Build a pgvector distance between the vector field `Field` and `Vector`,
@@ -267,24 +269,89 @@ count_commas(<<$,, Rest/binary>>, N) -> count_commas(Rest, N + 1);
 count_commas(<<_, Rest/binary>>, N) -> count_commas(Rest, N);
 count_commas(<<>>, N) -> N.
 
-reject_distances(Clause, Terms) ->
-    case lists:any(fun is_distance/1, Terms) of
-        true -> erlang:error({kura, {distance_not_supported_here, Clause}});
-        false -> ok
-    end.
+%% An improper tail is checked as one more term, so a distance there is
+%% refused too and a malformed list is left to the guards that follow.
+reject_distances(Clause, [Term | Rest]) ->
+    reject_distance(Clause, Term),
+    reject_distances(Clause, Rest);
+reject_distances(Clause, Tail) ->
+    reject_distance(Clause, Tail).
 
-%% A distance reaches a condition only as its field or its value, never
-%% deeper, so a bound value that happens to look like one is left alone.
+reject_distance(Clause, {distance, _Field, _Metric, _Vector}) ->
+    erlang:error({kura, {distance_not_supported_here, Clause}});
+reject_distance(_Clause, _Term) ->
+    ok.
+
+reject_order_distances(Clause, [{Expr, _Dir} | Rest]) ->
+    reject_distance(Clause, Expr),
+    reject_order_distances(Clause, Rest);
+reject_order_distances(Clause, [Term | Rest]) ->
+    reject_distance(Clause, Term),
+    reject_order_distances(Clause, Rest);
+reject_order_distances(Clause, Tail) ->
+    reject_distance(Clause, Tail).
+
+reject_selected_distances([{Agg, Field} | Rest]) when is_atom(Agg) ->
+    reject_distance(select, Field),
+    reject_selected_distances(Rest);
+reject_selected_distances([Field | Rest]) ->
+    reject_distance(select, Field),
+    reject_selected_distances(Rest);
+reject_selected_distances(Tail) ->
+    reject_distance(select, Tail).
+
+reject_join_distances({Left, Right}) ->
+    reject_distance(join, Left),
+    reject_distance(join, Right);
+reject_join_distances(On) ->
+    reject_distance(join, On).
+
+%% A distance in a condition would be bound as a parameter wherever it
+%% sits: as the field, the value, an element of a list value or of a row,
+%% or an end of a `between`.
 reject_distance_cond(Clause, {Op, Conds}) when (Op =:= 'and' orelse Op =:= 'or'), is_list(Conds) ->
     reject_distance_conds(Clause, Conds);
 reject_distance_cond(Clause, {'not', Cond}) ->
     reject_distance_cond(Clause, Cond);
 reject_distance_cond(_Clause, {fragment, _SQL, _Params}) ->
     ok;
-reject_distance_cond(Clause, Cond) when is_tuple(Cond) ->
-    reject_distances(Clause, [Cond | tuple_to_list(Cond)]);
-reject_distance_cond(_Clause, _Cond) ->
-    ok.
+reject_distance_cond(Clause, {Field, Value}) ->
+    reject_distance_field(Clause, Field),
+    reject_distance_value(Clause, '=', Value);
+reject_distance_cond(Clause, {Field, Op, Value}) ->
+    reject_distance_field(Clause, Field),
+    reject_distance(Clause, Op),
+    reject_distance_value(Clause, Op, Value);
+reject_distance_cond(Clause, Cond) ->
+    reject_distance(Clause, Cond).
+
+reject_distance_field(Clause, Fields) when is_list(Fields) ->
+    reject_distances(Clause, Fields);
+reject_distance_field(Clause, Field) ->
+    reject_distance(Clause, Field).
+
+reject_distance_value(Clause, between, {Low, High}) ->
+    reject_distance(Clause, Low),
+    reject_distance(Clause, High);
+reject_distance_value(Clause, _Op, Values) when is_list(Values) ->
+    reject_distance_values(Clause, Values);
+reject_distance_value(Clause, _Op, Value) ->
+    reject_distance(Clause, Value).
+
+%% An element may be a row of a row-value `in`.
+reject_distance_values(_Clause, []) ->
+    ok;
+reject_distance_values(Clause, [{distance, _, _, _} = D | Rest]) ->
+    reject_distance(Clause, D),
+    reject_distance_values(Clause, Rest);
+reject_distance_values(Clause, [Row | Rest]) when is_tuple(Row) ->
+    reject_distances(Clause, tuple_to_list(Row)),
+    reject_distance_values(Clause, Rest);
+reject_distance_values(Clause, [Value | Rest]) ->
+    reject_distance(Clause, Value),
+    reject_distance_values(Clause, Rest);
+reject_distance_values(_Clause, _Improper) ->
+    erlang:error({kura, unrecognised_condition}).
 
 %% An improper tail is checked as one more condition rather than crashing,
 %% so the encrypted guard that runs next reports it without the values.
@@ -293,9 +360,6 @@ reject_distance_conds(Clause, [Cond | Rest]) ->
     reject_distance_conds(Clause, Rest);
 reject_distance_conds(Clause, Tail) ->
     reject_distance_cond(Clause, Tail).
-
-is_distance({distance, _Field, _Metric, _Vector}) -> true;
-is_distance(_) -> false.
 
 -doc """
 Add a WHERE condition. Conditions: `{field, value}`, `{field, op, value}`,
@@ -498,6 +562,9 @@ refuse_select({exprs, Exprs}, Scope) ->
 refuse_select(Fields, Scope) ->
     refuse_aggregates(Fields, Scope).
 
+refuse_exprs([{_Alias, {distance, Field, _Metric, _Vector}} | Rest], Scope) ->
+    refuse_field(Field, Scope, encrypted_field_in_select),
+    refuse_exprs(Rest, Scope);
 refuse_exprs([{_Alias, {over, Fn, Spec}} | Rest], Scope) ->
     refuse_aggregates([Fn], Scope),
     refuse_window(Spec, Scope),
@@ -668,6 +735,7 @@ join(Q, Type, Table, On) ->
     #kura_query{}, inner | left | right | full, atom(), {atom(), atom()}, atom() | undefined
 ) -> #kura_query{}.
 join(Q = #kura_query{joins = J}, Type, Table, On, As) ->
+    reject_join_distances(On),
     recheck_encrypted(Q#kura_query{joins = J ++ [{Type, Table, On, As}]}).
 
 -doc """
@@ -724,6 +792,7 @@ Set DISTINCT ON fields. An encrypted field raises
 """.
 -spec distinct(#kura_query{}, [atom()]) -> #kura_query{}.
 distinct(Q, Fields) ->
+    reject_distances(distinct, Fields),
     refuse_columns(Fields, output_scope(Q, guard_scope(Q, [], [])), encrypted_field_in_distinct),
     Q#kura_query{distinct = Fields}.
 
@@ -823,6 +892,7 @@ count(Q) ->
 
 -spec count(#kura_query{}, atom()) -> #kura_query{}.
 count(Q, Field) ->
+    reject_distance(count, Field),
     Q#kura_query{select = [{count, Field}]}.
 
 -spec sum(#kura_query{}, atom()) -> #kura_query{}.
