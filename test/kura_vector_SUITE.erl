@@ -27,7 +27,6 @@ cannot create the `vector` extension the suite skips, or fails when the
 
 -define(REPO, kura_vector_test_repo).
 -define(SCHEMA, kura_test_vector_schema).
--define(INDEX, "kura_vector_items_embedding_cos").
 -define(DEFAULT_URL, "postgres://postgres:root@localhost:5555/kura_test").
 
 all() ->
@@ -147,7 +146,9 @@ cached_query_takes_each_new_vector(_Config) ->
 hnsw_index_serves_the_ordering(_Config) ->
     D = kura_query:distance(embedding, cosine, [1, 0, 0]),
     Q = kura_query:limit(kura_query:order_by(kura_query:from(?SCHEMA), [{D, asc}]), 2),
-    ?assertNotEqual(nomatch, binary:match(index_plan(Q), <<"Index Scan using " ?INDEX>>)).
+    ?assertNotEqual(
+        nomatch, binary:match(index_plan(Q), ~"Index Scan using kura_vector_items_embedding_cos")
+    ).
 
 %% Ordering by the alias of a selected distance sends the vector once,
 %% and the planner still matches the ORDER BY to the index.
@@ -157,7 +158,9 @@ ordering_by_the_select_alias_uses_the_index(_Config) ->
     Q = kura_query:limit(kura_query:order_by(Q0, [{dist, asc}]), 2),
     {_SQL, Params} = kura_query_compiler:to_sql(?REPO, Q),
     ?assertEqual([~"[1.0,0.0,0.0]", 2], Params),
-    ?assertNotEqual(nomatch, binary:match(index_plan(Q), <<"Index Scan using " ?INDEX>>)),
+    ?assertNotEqual(
+        nomatch, binary:match(index_plan(Q), ~"Index Scan using kura_vector_items_embedding_cos")
+    ),
     {ok, Rows} = kura_repo_worker:all(?REPO, Q),
     ?assertEqual([~"x", ~"y"], [C || #{content := C} <- Rows]).
 
@@ -185,7 +188,7 @@ index_plan(Q) ->
     seed(),
     {ok, _} = kura_repo_worker:query(
         ?REPO,
-        <<"CREATE INDEX " ?INDEX " ON kura_vector_items USING hnsw (embedding vector_cosine_ops)">>,
+        ~"CREATE INDEX kura_vector_items_embedding_cos ON kura_vector_items USING hnsw (embedding vector_cosine_ops)",
         []
     ),
     {SQL, Params} = kura_query_compiler:to_sql(?REPO, Q),
