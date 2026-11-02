@@ -459,8 +459,8 @@ table_without_a_count_row_still_caches_test() ->
 
 %%----------------------------------------------------------------------
 %% A #kura_query{} written by hand skips the builder's distance checks,
-%% so both compile entry points run them before the shape is split. No
-%% reason carries the query vector.
+%% so every compile entry point runs them, the cached one before the
+%% shape is split. No reason carries the query vector.
 %%----------------------------------------------------------------------
 
 hand_built_distance_queries_raise_before_compiling_test_() ->
@@ -530,6 +530,9 @@ hand_built_distance_queries_raise_before_compiling_test_() ->
             [
                 ?_assertError(Reason, kura_query_compiler:to_sql(?REPO, Q)),
                 ?_assertError(Reason, kura_query_compiler:to_sql_cached(?REPO, Q)),
+                ?_assertError(Reason, kura_query_compiler:to_sql_from(?REPO, Q, 1)),
+                ?_assertError(Reason, kura_query_compiler:update_all(?REPO, Q, #{content => ~"x"})),
+                ?_assertError(Reason, kura_query_compiler:delete_all(?REPO, Q)),
                 ?_assertEqual(0, kura_query_cache:entry_count())
             ]
          || {Q, Reason} <- Cases
