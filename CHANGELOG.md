@@ -9,6 +9,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `{Field, is_nil}` and `{Field, is_not_nil}` on an encrypted field are
+  accepted by `where/2`. They bind nothing, and `NULL` is stored
+  unencrypted.
+- `order_by/2` on an encrypted field raises
+  `{kura, {encrypted_field_in_order_by, Field}}`; `sum`, `avg`, `min` or
+  `max` of one, in `select/2`, the aggregate helpers or a window function,
+  raises `{kura, {encrypted_field_in_aggregate, Field}}`; and a window
+  `partition_by` or `order_by` on one raises
+  `{kura, {encrypted_field_in_window, Field}}`. The result would be
+  ordered or computed over ciphertexts. `count` is allowed. The compiler
+  re-check covers these too.
+- `group_by/2`, `distinct/2` (DISTINCT ON) and a `join` `on` column on an
+  encrypted field raise `{kura, {encrypted_field_in_group_by, Field}}`,
+  `{kura, {encrypted_field_in_distinct, Field}}` and
+  `{kura, {encrypted_field_in_join, Field}}`: equal values encrypt to
+  different ciphertexts, so they never group or join. ORDER BY, GROUP BY
+  and DISTINCT ON on a `select_expr/2` alias of an encrypted field raise
+  too.
+- `kura_schema` refuses an encrypted primary key, association key
+  (foreign key, referenced key or join-table key) or a field of an
+  embedded schema, raising `{kura, {encrypted_primary_key, Mod, Field}}`,
+  `{kura, {encrypted_association_key, Mod, Assoc, Field}}` or
+  `{kura, {encrypted_embed_field, Mod, Embed, Field}}` the first time it
+  reads the schema. None of these could work: keys are matched by
+  equality and an embed is stored as one JSON document.
+- A type tagged `encrypted` in any form other than `{encrypted, Inner}`
+  is treated as encrypted and refused: schema load raises
+  `{kura, {unsupported_encrypted_type, Mod, Field}}`, and `cast/2`,
+  `dump/2`, `load/2` and `to_pg_type/1` raise
+  `{kura_crypto, unsupported_encrypted_type}`. Before, such a type was
+  not redacted by the audit trail, not refused by the filter guard, and
+  loaded as its raw ciphertext.
+- An `{encrypted, Inner}` field whose `Inner` cannot be encrypted, such as
+  `{encrypted, float}`, raises
+  `{kura, {unsupported_encrypted_type, Mod, Field}}` when the schema is
+  first read, instead of `{kura_crypto, {not_encryptable, Inner}}` at the
+  first write.
+- `kura_types:load/2` on an encrypted type loads `undefined`, which
+  kura_sqlite returns for NULL, as `undefined`, and raises
+  `{kura_crypto, malformed_frame}` for any other non-binary value. Both
+  crashed with a `function_clause` in `format_type/1` before.
+- **Upgrading:** the encrypted-field checks above and under Security
+  refuse calls that used to be accepted. None of them could work on
+  ciphertext, and none reads or changes stored data. Look for:
+  - `order_by/2`, `group_by/2`, `distinct/2`, a window `partition_by` or
+    `order_by`, or `sum`, `avg`, `min` or `max` on an encrypted field or
+    a `select_expr/2` alias of one: sort, group or compute on the loaded
+    rows instead.
+  - A `join` `on` column, a primary key, or an association key that is
+    encrypted, including the owner-side `target_key` of a `has_many` or
+    `has_one`: key on a plain column. A schema with an encrypted key now
+    fails to load.
+  - An attribute tenant on an encrypted field: `update/2`, `delete/2` and
+    upserts now raise as queries did. Make the tenant column plain.
+  - A conflict guard (`#{guard => [Field]}`) naming an encrypted field:
+    drop it from the guard.
+  - A condition added before the `join/4,5` or `with_cte/3` that brings
+    an encrypted field into scope: it now raises at the join or CTE, not
+    only when added after it.
+  - `{subquery, Q}` as a comparison value, an `in`-list element or a
+    `between` bound: use `exists`, `not_exists` or a single-column `in`.
+  - `{encrypted, Inner}` with an `Inner` that cannot be encrypted, or any
+    other type tagged `encrypted`: the schema fails to load and
+    `to_pg_type/1` raises `{kura_crypto, unsupported_encrypted_type}`,
+    so no migration column is generated for it. `{array, {encrypted,
+    Inner}}` keeps its `BYTEA[]` column and data unchanged.
 - Application boot starts a repo's pool the way `kura_repo_worker:start/1`
   does, through `kura_db:start_pool/1`, from the config
   `kura_repo:config/1` returns (#197). Boot now applies the repo's
@@ -96,6 +162,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- The filter guard on `{encrypted, _}` fields could be bypassed (found
+  while designing #137). `kura_query:where/2` only refused an encrypted
+  field when it was the first element of the condition, and `having/2`
+  did not check at all. `{'not', {ssn, V}}`, `{[ssn], in, [{V}]}`,
+  `{[id, ssn], in, [{1, V}]}` and `having(Q, {ssn, V})` were accepted and
+  sent the plaintext to the server as a bind parameter and into the
+  telemetry and log `params`; the `not` form also matched every row. Both
+  functions now walk the whole condition (`and`, `or`, `not`, `in`,
+  row-value `in`, `between`, every comparison operator, `in` subqueries)
+  and raise `{kura, {encrypted_field_in_where | encrypted_field_in_having,
+  Field}}` on any comparison of an encrypted field to a value. Fields of
+  joined schemas are checked too, including conditions added before the
+  join, and so is the attribute-tenancy condition. On a schema with
+  encrypted fields, a condition shape the guard does not recognise raises
+  `{kura, unrecognised_condition}`. `{fragment, SQL, Params}` is still not
+  inspected.
+- An `{array, {encrypted, Inner}}` field, at any array depth, was not
+  recognised as encrypted: `kura_types:encryption/1` returned `none`, so
+  the audit trail stored its elements in plaintext and the filter guard
+  let a condition bind them. It is now recognised as encrypted
+  (`{ok, #{inner => Inner, array => Depth}}`), so it is redacted, refused
+  in filters, ordering and aggregates, and refused as a key or embed field
+  like any other encrypted field. Its storage is unchanged: each element
+  encrypted, in a `BYTEA[]` column.
+- An attribute tenant on an encrypted field was refused on queries but not
+  on `update` and `delete`, which add the tenant to the key clauses
+  directly and bound its plaintext. They now raise
+  `{kura, {encrypted_field_in_where, Field}}` too.
+- An upsert (`insert/3` or `insert_all/4` with an `on_conflict` other than
+  `nothing`) under an attribute tenant on an encrypted field guarded the
+  conflict update with `table.Field = EXCLUDED.Field`, which compares two
+  ciphertexts with different nonces, so it silently never updated. It now
+  raises `{kura, {encrypted_field_in_where, Field}}`, from the same check
+  update and delete use.
+- A caller-supplied conflict guard on an encrypted field,
+  `{Target, Action, #{guard => [Field]}}`, never updated for the same
+  reason. It now raises
+  `{kura, {encrypted_field_in_conflict_guard, Field}}`. A `nothing` action
+  compiles no guard and is not refused, with or without options.
+- A correlated subquery bypassed the filter guard. In
+  `{exists, {subquery, Sub}}` or `{Field, in, {subquery, Sub}}` on a query
+  over an encrypted schema, a condition in `Sub` naming an outer encrypted
+  field that `Sub`'s own schemas do not declare was not checked, and the
+  database resolved the unqualified name to the outer column, binding the
+  plaintext. The guard now walks subquery conditions (wheres, havings,
+  union branches, nested subqueries) against the outer encrypted fields
+  they do not shadow. A bare-table source shadows nothing.
+- A `{subquery, Q}` anywhere but `exists`, `not_exists` or a
+  single-column `in`, such as `{id, '=', {subquery, Q}}`, an `in`-list
+  element or a `between` bound, now raises
+  `{kura, unrecognised_condition}` on every query. The dialect never
+  compiled it there; it was bound as a parameter value.
+- A CTE bypassed the filter guard. A `from` or `join` naming a CTE over an
+  encrypted schema had no encrypted fields in scope, so
+  `where(from(enc_cte), {ssn, V})` bound the plaintext, as did a condition
+  added before `with_cte/3`. A source now gets the encrypted fields of
+  every CTE its name, or its schema's table name, resolves to, including
+  aliases a CTE selects an encrypted field under and the columns of its
+  union, intersect or except branches (by position, under the first
+  query's names; every column when a `SELECT *` hides the positions), and
+  `with_cte/3` and `join/4,5` re-check the conditions already in the
+  query, its CTE bodies and its union branches. A name shared by several
+  CTEs, or by a CTE and a schema, gets the encrypted fields of all of
+  them.
+- A `has_many` or `has_one` whose `#kura_ref{target_key = Cols}` names an
+  encrypted field of the owner was not refused. Preloading bound the
+  decrypted owner value in the child query, and writes copied it into the
+  child's foreign key in clear. Schema load now raises
+  `{kura, {encrypted_association_key, Mod, Assoc, Field}}`.
+- On a query with encrypted fields in scope, an improper list under
+  `and`, `or` or a row-value `in` crashed the filter guard with a
+  `function_clause` whose arguments carried the plaintext, and an `and` or
+  `or` over a non-list was accepted. Both now raise
+  `{kura, unrecognised_condition}`.
+- The filter guard ran only in the builder functions, so a `#kura_query{}`
+  record built by hand, or updated after `where/2` (for example a new
+  `from`), compiled with the plaintext bound. `kura_query_compiler`'s
+  `to_sql/2`, `to_sql_cached/2`, `to_sql_from/3`, `update_all/3` and
+  `delete_all/2` now run `kura_query:check_encrypted/1` over the whole
+  query (wheres, havings, subqueries, CTE bodies, union branches) before
+  compiling. `to_sql_cached/2` runs it on a cache miss only: the guard
+  reads nothing the shape key replaces, so a hit means a query of the
+  same shape already passed. A query the shape split cannot take apart
+  goes through `to_sql/2` and is never cached. A hit costs what it did
+  before the guard (cached get-by-id in `kura_query_cache_bench`: 0.76 us
+  before, 0.98 us with the guard on every call, 0.74 us on a miss only;
+  filtered page: 3.00, 3.46, 3.12 us). The other entry points pay about
+  70 ns per call.
 - Starting a pool hands the pool module the connection settings only.
   The repo's own settings, the `encryption` keyring among them, were
   passed along with them, and a pool module that echoed its options in
@@ -153,6 +307,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `kura_types:cast/2`, `dump/2` and `load/2` crashed with
+  `function_clause` instead of returning `{error, _}` when the error
+  message had to name a `{vector, N}` type or an encrypted type, for
+  example an `{array, {encrypted, string}}` given a non-list. The message
+  names only the type, never the value.
 - `insert_all/3,4` honour `on_conflict`. The option was silently dropped
   and a plain INSERT emitted, so a bulk upsert failed on the unique
   constraint instead of upserting, and the partial-index conflict target
@@ -204,6 +363,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `kura_query:check_encrypted/1`, the filter guard over a whole query.
+- `kura_types:encryption/1`, the one place that recognises an encrypted
+  type. It returns `none`, `unsupported` or `{ok, #{inner => Inner}}`,
+  with `array => Depth` for an array of an encrypted type; the spec is a
+  map so later options can be added as keys. The filter guard, audit
+  redaction, schema validation and the type seams all use it.
+- `kura_types:encryptable_inner/1`, whether a type can be the `Inner` of
+  `{encrypted, Inner}`; schema validation uses it.
+- `kura_hkdf`, HKDF-SHA256 (RFC 5869) over `crypto:mac/4`, with the RFC
+  test vectors. Not used yet, and hidden from the docs until it is;
+  groundwork for per-column keys (#137).
+  `expand/3` refuses a PRK shorter than 32 bytes with
+  `{kura_hkdf, short_prk}`, and both functions raise
+  `{kura_hkdf, badarg}` on a non-binary key, salt or info or a
+  non-integer length, so no key material reaches a crash report.
+- A corpus of v1 ciphertexts under fixed test keys that every release
+  must keep decrypting.
 - `kura_schema:is_schema/1` and `kura_schema:encrypted_fields/1`, both
   memoised. `is_schema/1` replaces three hand-rolled copies of the same
   `code:ensure_loaded/1` + `function_exported/3` check, whose negative
