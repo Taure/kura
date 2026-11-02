@@ -81,6 +81,9 @@ condition names `Field` unqualified. A top-level query, CTE or union branch over
 a table without it fails. An `in` or `exists` subquery over such a table does
 not: the database resolves `Field` to the outer query's column, and the inner
 table is not scoped. Any other strategy leaves `Query` as it is.
+
+The condition goes through `kura_query:where/2`, so a `Field` that is
+encrypted in a schema of the query raises instead of binding the tenant value.
 """.
 -spec scope_query(undefined | strategy(), #kura_query{}) -> #kura_query{}.
 scope_query({attribute, {Field, Value}}, Query) when is_atom(Field) ->
@@ -90,15 +93,18 @@ scope_query(_Strategy, Query) ->
 
 -spec scoped(#kura_query{}, {atom(), term()}) -> #kura_query{}.
 scoped(Query, Condition) ->
-    Query#kura_query{
-        wheres = conditions(Query#kura_query.wheres, Condition) ++ [Condition],
-        havings = conditions(Query#kura_query.havings, Condition),
-        ctes = [{Name, scoped(Cte, Condition)} || {Name, Cte} <- Query#kura_query.ctes],
-        combinations = [
-            {Kind, scoped(Combined, Condition)}
-         || {Kind, Combined} <- Query#kura_query.combinations
-        ]
-    }.
+    kura_query:where(
+        Query#kura_query{
+            wheres = conditions(Query#kura_query.wheres, Condition),
+            havings = conditions(Query#kura_query.havings, Condition),
+            ctes = [{Name, scoped(Cte, Condition)} || {Name, Cte} <- Query#kura_query.ctes],
+            combinations = [
+                {Kind, scoped(Combined, Condition)}
+             || {Kind, Combined} <- Query#kura_query.combinations
+            ]
+        },
+        Condition
+    ).
 
 -spec conditions([term()], {atom(), term()}) -> [term()].
 conditions(Conditions, Condition) ->

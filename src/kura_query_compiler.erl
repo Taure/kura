@@ -55,9 +55,19 @@ Every query compiled here, and by the other query entry points in this
 module, is first confined to the ambient tenant with
 `kura_tenant:scope_query/2`, so no caller of this module can compile a query that
 skips it.
+
+Each of those entry points first runs the encrypted filter guard over the
+whole query with `kura_query:check_encrypted/1`, so a `#kura_query{}` record
+built or updated without `kura_query:where/2` cannot bind an encrypted
+field's plaintext either.
 """.
 -spec to_sql(module(), #kura_query{}) -> {iodata(), [term()]}.
 to_sql(RepoMod, Query) ->
+    ok = kura_query:check_encrypted(Query),
+    compile_query(RepoMod, Query).
+
+-spec compile_query(module(), #kura_query{}) -> {iodata(), [term()]}.
+compile_query(RepoMod, Query) ->
     (dialect(RepoMod)):to_sql(scope(Query)).
 
 -doc """
@@ -89,10 +99,34 @@ served to the next - a cross-tenant read.
 The dialect is deliberately *not* in the key: it is resolved from boot-time
 repo config. Swapping a repo's dialect at runtime requires an explicit
 `kura_query_cache:flush/0`.
+
+The encrypted filter guard (`kura_query:check_encrypted/1`) runs on a miss,
+before anything is stored, and on every call that compiles directly. A hit
+skips it: the guard reads the sources, joins, selects, CTEs, combinations and
+the structure of every condition and subquery, all of which the shape keeps,
+and never a bound value, which is all the shape replaces. A hit therefore
+means a query of the same shape already passed. A query the shape split
+cannot take apart, such as one with an improper condition list, goes through
+`to_sql/2`, so it is checked and never cached.
 """.
 -spec to_sql_cached(module(), #kura_query{}) -> {iodata(), [term()]}.
 to_sql_cached(RepoMod, Query) ->
-    {Shape, Values} = kura_query_shape:split(Query),
+    case split(Query) of
+        {ok, Shape, Values} -> cached(RepoMod, Query, Shape, Values);
+        malformed -> to_sql(RepoMod, Query)
+    end.
+
+%% A split crash would carry the query's values in its stacktrace.
+-spec split(#kura_query{}) -> {ok, #kura_query{}, tuple()} | malformed.
+split(Query) ->
+    try kura_query_shape:split(Query) of
+        {Shape, Values} -> {ok, Shape, Values}
+    catch
+        error:_ -> malformed
+    end.
+
+-spec cached(module(), #kura_query{}, #kura_query{}, tuple()) -> {iodata(), [term()]}.
+cached(RepoMod, Query, Shape, Values) ->
     Key = {RepoMod, kura_tenant:get_tenant(), Shape},
     case kura_query_cache:get(Key) of
         {ok, {SQL, Template}} ->
@@ -100,13 +134,14 @@ to_sql_cached(RepoMod, Query) ->
         {ok, uncacheable} ->
             to_sql(RepoMod, Query);
         miss ->
+            ok = kura_query:check_encrypted(Query),
             case compile_shape(RepoMod, Shape, tuple_size(Values)) of
                 {ok, {SQL, Template} = Entry} ->
                     kura_query_cache:put(Key, Entry),
                     {SQL, kura_query_shape:bind(Template, Values)};
                 uncacheable ->
                     kura_query_cache:put(Key, uncacheable),
-                    to_sql(RepoMod, Query)
+                    compile_query(RepoMod, Query)
             end
     end.
 
@@ -116,7 +151,7 @@ to_sql_cached(RepoMod, Query) ->
 -spec compile_shape(module(), #kura_query{}, non_neg_integer()) ->
     {ok, {binary(), [term()]}} | uncacheable.
 compile_shape(RepoMod, Shape, Arity) ->
-    try to_sql(RepoMod, Shape) of
+    try compile_query(RepoMod, Shape) of
         {SQL, Template} ->
             case kura_query_shape:valid_template(Template, Arity) of
                 true -> {ok, {iolist_to_binary(SQL), Template}};
@@ -129,6 +164,7 @@ compile_shape(RepoMod, Shape, Arity) ->
 -spec to_sql_from(module(), #kura_query{}, pos_integer()) ->
     {iodata(), [term()], pos_integer()}.
 to_sql_from(RepoMod, Query, StartCounter) ->
+    ok = kura_query:check_encrypted(Query),
     (dialect(RepoMod)):to_sql_from(scope(Query), StartCounter).
 
 -spec insert(module(), atom() | module(), [atom()], map()) -> {iodata(), [term()]}.
@@ -150,10 +186,12 @@ delete(RepoMod, SchemaOrTable, KeyClauses) ->
 
 -spec update_all(module(), #kura_query{}, map()) -> {iodata(), [term()]}.
 update_all(RepoMod, Query, SetMap) ->
+    ok = kura_query:check_encrypted(Query),
     (dialect(RepoMod)):update_all(scope(Query), SetMap).
 
 -spec delete_all(module(), #kura_query{}) -> {iodata(), [term()]}.
 delete_all(RepoMod, Query) ->
+    ok = kura_query:check_encrypted(Query),
     (dialect(RepoMod)):delete_all(scope(Query)).
 
 -spec insert_all(module(), atom() | module(), [atom()], [map()]) -> {iodata(), [term()]}.

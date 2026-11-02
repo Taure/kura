@@ -35,6 +35,7 @@ setup() ->
     application:ensure_all_started(minato),
     application:ensure_all_started(kura),
     kura_test_repo:start(),
+    drop_tables(),
     {ok, _} = kura_test_repo:query(
         "CREATE TABLE IF NOT EXISTS users ("
         "  id BIGSERIAL PRIMARY KEY,"
@@ -56,6 +57,9 @@ setup() ->
     ok.
 
 teardown(_) ->
+    drop_tables().
+
+drop_tables() ->
     kura_test_repo:query("DROP TABLE IF EXISTS users CASCADE", []),
     ok.
 
