@@ -703,7 +703,7 @@ logged_reason(Answer, Config) ->
 
 with_captured_logs(Run) ->
     Config = #{config => #{collector => self(), pid => self()}, level => all},
-    %% A run killed inside Run/0 never reaches the after clause below.
+    %% A test process killed inside Run/0 (eunit timeout) skips the after clause below.
     _ = logger:remove_handler(kura_db_start_pool_tests_capture),
     ok = logger:add_handler(kura_db_start_pool_tests_capture, ?MODULE, Config),
     Console = logger:get_handler_config(default),
