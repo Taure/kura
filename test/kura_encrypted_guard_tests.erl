@@ -1247,6 +1247,26 @@ distance_and_encryption_guards_both_apply_test_() ->
                 {kura, {distance_not_supported_here, join}},
                 kura_query:join(FailClosed, inner, ?ENC, {ill_typed(D), id})
             )
+        ]},
+        {"a hand-built distance in a column position over a fail-closed CTE is not a column", [
+            ?_assertError(
+                {kura, {Reason, not_a_column}},
+                kura_query:check_encrypted(Q)
+            )
+         || {Reason, Q} <- [
+                {encrypted_field_in_distinct, FailClosed#kura_query{distinct = [ill_typed(D)]}},
+                {encrypted_field_in_group_by, FailClosed#kura_query{group_bys = [ill_typed(D)]}},
+                {encrypted_field_in_aggregate, FailClosed#kura_query{select = [{sum, D}]}},
+                {encrypted_field_in_join, FailClosed#kura_query{
+                    joins = [{inner, ?ENC, {D, id}, undefined}]
+                }},
+                {encrypted_field_in_window, FailClosed#kura_query{
+                    select = {exprs, [{r, {over, row_number, #{partition_by => [D]}}}]}
+                }},
+                {encrypted_field_in_window, FailClosed#kura_query{
+                    select = {exprs, [{r, {over, rank, #{order_by => [{D, asc}]}}}]}
+                }}
+            ]
         ]}
     ].
 

@@ -100,8 +100,7 @@ Q = kura_query:select_expr(kura_query:from(sales), [
 """.
 -spec select_expr(#kura_query{}, [term()]) -> #kura_query{}.
 select_expr(Q = #kura_query{from = From}, Exprs) ->
-    _ = [reject_window_distances(Fn, Spec) || {_Alias, {over, Fn, Spec}} <- Exprs],
-    check_distances(From, [D || {_Alias, {distance, _, _, _} = D} <- Exprs]),
+    check_distances(From, expr_distances(Exprs)),
     Selected = Q#kura_query{select = {exprs, Exprs}},
     Scope = guard_scope(Selected, [], []),
     refuse_select({exprs, Exprs}, Scope),
@@ -212,7 +211,8 @@ vector_text(Floats) ->
 %% Called by kura_query_compiler before it compiles. Checks the distance
 %% nodes of select expressions (windows included) and order_bys, in the
 %% query and in its CTEs and combinations, as order_by/2 and select_expr/2
-%% do. A hand-built where, having or group_by is not inspected.
+%% do. A hand-built where, having, group_by, distinct, plain select or join
+%% is not inspected.
 -doc false.
 -spec check_distances(#kura_query{}) -> ok.
 check_distances(#kura_query{select = Select, order_bys = [], ctes = [], combinations = []}) when
@@ -222,28 +222,60 @@ check_distances(#kura_query{select = Select, order_bys = [], ctes = [], combinat
 check_distances(#kura_query{
     from = From, select = Select, order_bys = Orders, ctes = Ctes, combinations = Combinations
 }) ->
-    Exprs = select_exprs(Select),
-    _ = [reject_window_distances(Fn, Spec) || {_Alias, {over, Fn, Spec}} <- Exprs],
-    Distances =
-        [D || {_Alias, {distance, _, _, _} = D} <- Exprs] ++
-            [D || {{distance, _, _, _} = D, _Dir} <- Orders],
-    check_distances(From, Distances),
-    _ = [check_distances(Q) || {_Name, #kura_query{} = Q} <- Ctes ++ Combinations],
-    ok.
+    check_distances(From, select_distances(Select) ++ order_distances(Orders)),
+    check_bodies(Ctes),
+    check_bodies(Combinations).
 
-select_exprs({exprs, Exprs}) when is_list(Exprs) -> Exprs;
-select_exprs(_Select) -> [].
+select_distances({exprs, Exprs}) -> expr_distances(Exprs);
+select_distances(_Select) -> [].
+
+%% Explicit recursion rather than list comprehensions, so a malformed list
+%% raises a reason of its own instead of a bad_generator carrying the
+%% distance and its vector.
+expr_distances([]) ->
+    [];
+expr_distances([{_Alias, {over, Fn, Spec}} | Rest]) ->
+    reject_window_distances(Fn, Spec),
+    expr_distances(Rest);
+expr_distances([{_Alias, {distance, _, _, _} = D} | Rest]) ->
+    [D | expr_distances(Rest)];
+expr_distances([_ | Rest]) ->
+    expr_distances(Rest);
+expr_distances(_Improper) ->
+    erlang:error({kura, malformed_select}).
+
+order_distances([]) ->
+    [];
+order_distances([{{distance, _, _, _} = D, _Dir} | Rest]) ->
+    [D | order_distances(Rest)];
+order_distances([_ | Rest]) ->
+    order_distances(Rest);
+order_distances(_Improper) ->
+    erlang:error({kura, malformed_order_by}).
+
+%% A malformed CTE or combination is left to check_encrypted/1, which
+%% refuses it.
+check_bodies([{_Name, #kura_query{} = Q} | Rest]) ->
+    check_distances(Q),
+    check_bodies(Rest);
+check_bodies([_ | Rest]) ->
+    check_bodies(Rest);
+check_bodies(_) ->
+    ok.
 
 check_distances(_From, []) ->
     ok;
 check_distances(From, Distances) ->
     case is_atom(From) andalso From =/= undefined andalso kura_schema:is_schema(From) of
-        true ->
-            Types = kura_schema:field_types(From),
-            lists:foreach(fun(D) -> check_distance(Types, D) end, Distances);
-        false ->
-            erlang:error({kura, {distance_requires_schema, From}})
+        true -> check_each_distance(kura_schema:field_types(From), Distances);
+        false -> erlang:error({kura, {distance_requires_schema, From}})
     end.
+
+check_each_distance(_Types, []) ->
+    ok;
+check_each_distance(Types, [D | Rest]) ->
+    check_distance(Types, D),
+    check_each_distance(Types, Rest).
 
 check_distance(Types, {distance, Field, Metric, Text}) when
     is_atom(Field), ?IS_METRIC(Metric), is_binary(Text)
@@ -259,8 +291,10 @@ check_distance(Types, {distance, Field, Metric, Text}) when
         _ ->
             erlang:error({kura, {not_a_vector_field, Field}})
     end;
-check_distance(_Types, Distance) ->
-    erlang:error({kura, {invalid_distance, Distance}}).
+check_distance(_Types, {distance, Field, _Metric, _Vector}) when is_atom(Field) ->
+    erlang:error({kura, {invalid_distance, Field}});
+check_distance(_Types, _Distance) ->
+    erlang:error({kura, invalid_distance}).
 
 dimension(Text) ->
     count_commas(Text, 1).
@@ -703,9 +737,12 @@ refuse_fields([Field | Rest], Scope, Reason) ->
 refuse_fields(_Improper, _Scope, _Reason) ->
     erlang:error({kura, unrecognised_condition}).
 
+%% A term that is not a column, such as a distance, is named by what it is
+%% not, so its values stay out of the reason.
 refuse_field(Field, {Encrypted, _Ctes}, Reason) ->
     case ciphertext_column(Field, Encrypted) of
-        true -> erlang:error({kura, {Reason, Field}});
+        true when is_atom(Field) -> erlang:error({kura, {Reason, Field}});
+        true -> erlang:error({kura, {Reason, not_a_column}});
         false -> ok
     end.
 
@@ -748,7 +785,7 @@ says nothing about the order of the values.
 """.
 -spec order_by(#kura_query{}, [order()]) -> #kura_query{}.
 order_by(Q = #kura_query{from = From}, Orders) ->
-    check_distances(From, [D || {{distance, _, _, _} = D, _Dir} <- Orders]),
+    check_distances(From, order_distances(Orders)),
     refuse_orders(Orders, output_scope(Q, guard_scope(Q, [], []))),
     Q#kura_query{order_bys = Orders}.
 

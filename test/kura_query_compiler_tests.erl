@@ -459,7 +459,8 @@ table_without_a_count_row_still_caches_test() ->
 
 %%----------------------------------------------------------------------
 %% A #kura_query{} written by hand skips the builder's distance checks,
-%% so both compile entry points run them before the shape is split.
+%% so both compile entry points run them before the shape is split. No
+%% reason carries the query vector.
 %%----------------------------------------------------------------------
 
 hand_built_distance_queries_raise_before_compiling_test_() ->
@@ -468,10 +469,25 @@ hand_built_distance_queries_raise_before_compiling_test_() ->
     WrongDim = {distance, embedding, l2, ~"[1.0,2.0]"},
     Vec = kura_test_vector_schema,
     Cases = [
-        {#kura_query{from = Vec, order_bys = [{Iodata, asc}]}, {kura, {invalid_distance, Iodata}}},
+        {
+            #kura_query{from = Vec, order_bys = [{Iodata, asc}]},
+            {kura, {invalid_distance, embedding}}
+        },
         {
             #kura_query{from = Vec, select = {exprs, [{d, BadMetric}]}},
-            {kura, {invalid_distance, BadMetric}}
+            {kura, {invalid_distance, embedding}}
+        },
+        {
+            #kura_query{from = Vec, order_bys = [{{distance, "embedding", l2, ~"[1.0]"}, asc}]},
+            {kura, invalid_distance}
+        },
+        {
+            #kura_query{from = Vec, order_bys = [{id, asc} | improper({WrongDim, asc})]},
+            {kura, malformed_order_by}
+        },
+        {
+            #kura_query{from = Vec, select = {exprs, [{id, id} | improper({d, WrongDim})]}},
+            {kura, malformed_select}
         },
         {
             #kura_query{from = Vec, order_bys = [{WrongDim, asc}]},
@@ -491,13 +507,13 @@ hand_built_distance_queries_raise_before_compiling_test_() ->
             kura_query:with_cte(#kura_query{from = Vec}, ~"c", #kura_query{
                 from = Vec, order_bys = [{BadMetric, asc}]
             }),
-            {kura, {invalid_distance, BadMetric}}
+            {kura, {invalid_distance, embedding}}
         },
         {
             kura_query:union(#kura_query{from = Vec}, #kura_query{
                 from = Vec, select = {exprs, [{d, BadMetric}]}
             }),
-            {kura, {invalid_distance, BadMetric}}
+            {kura, {invalid_distance, embedding}}
         }
     ],
     {setup,
@@ -518,6 +534,10 @@ hand_built_distance_queries_raise_before_compiling_test_() ->
             ]
          || {Q, Reason} <- Cases
         ])}.
+
+%% An improper list, which the record's field types do not allow.
+-spec improper(term()) -> dynamic().
+improper(Term) -> Term.
 
 %% Pins the accounting: a binary counts only over 64 bytes, as
 %% `Bytes div WordSize + 1', wherever it sits in the key or the result,

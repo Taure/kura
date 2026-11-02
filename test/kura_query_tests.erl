@@ -222,9 +222,41 @@ distance_of_the_wrong_dimension_raises_test_() ->
 
 hand_built_distance_node_raises_test() ->
     ?assertError(
-        {kura, {invalid_distance, _}},
+        {kura, {invalid_distance, embedding}},
         kura_query:order_by(kura_query:from(?VEC_SCHEMA), [{hand_built_distance(), asc}])
     ).
+
+%% The reason names the field, or nothing when the field is not an atom,
+%% so the vector never lands in it.
+hand_built_distance_on_a_non_atom_field_raises_test() ->
+    ?assertError(
+        {kura, invalid_distance},
+        kura_query:order_by(kura_query:from(?VEC_SCHEMA), [{non_atom_field_distance(), asc}])
+    ).
+
+%% A list comprehension over an improper list would raise a bad_generator
+%% carrying the tail, the distance and its vector with it.
+improper_distance_lists_raise_without_the_vector_test_() ->
+    D = kura_query:distance(embedding, cosine, [1, 2, 3]),
+    Q = kura_query:from(?VEC_SCHEMA),
+    [
+        ?_assertError(
+            {kura, malformed_order_by},
+            kura_query:order_by(Q, [{id, asc} | improper({D, asc})])
+        ),
+        ?_assertError(
+            {kura, malformed_select},
+            kura_query:select_expr(Q, [{id, id} | improper({dist, D})])
+        ),
+        ?_assertError(
+            {kura, malformed_order_by},
+            kura_query:check_distances(Q#kura_query{order_bys = [{id, asc} | improper({D, asc})]})
+        ),
+        ?_assertError(
+            {kura, malformed_select},
+            kura_query:check_distances(Q#kura_query{select = {exprs, [{id, id} | improper({d, D})]}})
+        )
+    ].
 
 order_by_without_a_distance_still_takes_a_table_atom_test() ->
     Q = kura_query:order_by(kura_query:from(items), [{name, asc}]),
@@ -242,6 +274,9 @@ preformatted_vector() -> ~"[1,2,3]".
 
 -spec hand_built_distance() -> dynamic().
 hand_built_distance() -> {distance, embedding, l2, [1]}.
+
+-spec non_atom_field_distance() -> dynamic().
+non_atom_field_distance() -> {distance, "embedding", l2, ~"[1.0,2.0,3.0]"}.
 
 -spec improper(term()) -> dynamic().
 improper(Term) -> Term.
