@@ -58,6 +58,14 @@ nontx_test_() ->
                 fun failure_part_way_leaves_version_unrecorded/0},
             {"a split run that fails reports what it committed",
                 fun failed_split_run_reports_committed_versions/0},
+            {"a split run reports its start, each migration and its stop",
+                fun split_run_emits_telemetry/0},
+            {"a pool without advisory_locks migrates through migrate/1",
+                {timeout, 10, fun migrates_on_a_lockless_pool/0}},
+            {"a pool without concurrent_indexes is refused before anything runs",
+                {timeout, 10, fun lockless_pool_refuses_concurrently/0}},
+            {"a pool with no connection to give stops the step",
+                fun no_connection_stops_the_step/0},
             {"concurrently in a transactional migration is refused before anything runs",
                 fun concurrently_in_transactional_migration_is_refused/0},
             {"a non-transactional up/0 that raises stops the run while planning",
@@ -193,16 +201,89 @@ failed_split_run_reports_committed_versions() ->
     Ref = telemetry_test:attach_event_handlers(self(), [Stop]),
     try
         {error, {migration_failed, ?FAIL_PARTIAL, _}} = kura_migrator:migrate(?REPO),
-        receive
-            {Stop, Ref, _Measurements, Metadata} ->
-                ?assertMatch(
-                    #{result := error, applied_count := 1, applied_versions := [?FAIL_ITEMS]},
-                    Metadata
-                )
-        after 1000 -> error(no_stop_event)
-        end
+        ?assertMatch(
+            #{result := error, applied_count := 1, applied_versions := [?FAIL_ITEMS]},
+            telemetry_metadata(Stop, Ref)
+        )
     after
         telemetry:detach(Ref)
+    end.
+
+split_run_emits_telemetry() ->
+    declare([?OK_APP]),
+    Start = [kura, migrator, migrate, start],
+    Stop = [kura, migrator, migrate, stop],
+    Apply = [kura, migrator, migration, apply],
+    Ref = telemetry_test:attach_event_handlers(self(), [Start, Stop, Apply]),
+    try
+        {ok, _} = kura_migrator:migrate(?REPO),
+        ?assertMatch(
+            #{pending_count := 3, direction := up}, telemetry_metadata(Start, Ref)
+        ),
+        ?assertMatch(#{version := ?CREATE}, telemetry_metadata(Apply, Ref)),
+        ?assertMatch(
+            #{version := ?INDEX, direction := up, op_count := 2},
+            telemetry_metadata(Apply, Ref)
+        ),
+        ?assertMatch(#{version := ?NOTE}, telemetry_metadata(Apply, Ref)),
+        ?assertMatch(
+            #{result := ok, applied_count := 3, applied_versions := [?CREATE, ?INDEX, ?NOTE]},
+            telemetry_metadata(Stop, Ref)
+        )
+    after
+        telemetry:detach(Ref)
+    end.
+
+%% migrate/1 emits from the calling process, so an event that has not
+%% arrived by the time it returns never will.
+telemetry_metadata(Event, Ref) ->
+    receive
+        {Event, Ref, _Measurements, Metadata} -> Metadata
+    after 0 -> error({no_event, Event})
+    end.
+
+migrates_on_a_lockless_pool() ->
+    declare([?SIDE_APP]),
+    with_lockless_pool(fun() ->
+        ?assertEqual({ok, [?SIDE]}, kura_migrator:migrate(?REPO))
+    end),
+    ?assertEqual(1, side_effects()),
+    ?assertEqual([?SIDE], applied_versions()).
+
+lockless_pool_refuses_concurrently() ->
+    declare([?OK_APP]),
+    with_lockless_pool(fun() ->
+        ?assertEqual(
+            {error, {concurrent_indexes_unsupported, kura_nontx_nolock_pool}},
+            kura_migrator:migrate(?REPO)
+        )
+    end),
+    ?assertEqual([], applied_versions()),
+    ?assertNot(table_exists(~"nontx_items")).
+
+%% A wait for the lock this pool cannot take would never end, so a
+%% timeout turns that into a failure.
+with_lockless_pool(Run) ->
+    application:set_env(?BASE, ?REPO, (repo_config())#{pool_module => kura_nontx_nolock_pool}),
+    application:set_env(kura, migration_lock_timeout, 500),
+    try
+        Run()
+    after
+        application:unset_env(kura, migration_lock_timeout),
+        application:set_env(?BASE, ?REPO, repo_config())
+    end.
+
+no_connection_stops_the_step() ->
+    application:set_env(?BASE, ?REPO, (repo_config())#{pool => kura_nontx_no_such_pool}),
+    try
+        ?assertEqual(
+            {error, {no_connection, {no_pool, kura_nontx_no_such_pool}}},
+            kura_migrator:run_non_transactional(
+                {?SIDE, m20250305100000_nontx_side_effect}, up, ?REPO
+            )
+        )
+    after
+        application:set_env(?BASE, ?REPO, repo_config())
     end.
 
 concurrently_in_transactional_migration_is_refused() ->
@@ -432,7 +513,7 @@ refused_in_sandbox() ->
     ok = kura_sandbox:checkout(?REPO),
     Result =
         try
-            kura_migrator:migrate(?REPO)
+            with_lock_timeout(fun() -> kura_migrator:migrate(?REPO) end)
         after
             kura_sandbox:checkin(?REPO)
         end,
@@ -446,7 +527,9 @@ refused_in_sandbox() ->
 
 refused_in_outer_transaction() ->
     declare([?OK_APP]),
-    Result = kura_db:transaction(?REPO, fun() -> kura_migrator:migrate(?REPO) end),
+    Result = with_lock_timeout(fun() ->
+        kura_db:transaction(?REPO, fun() -> kura_migrator:migrate(?REPO) end)
+    end),
     ?assertEqual(
         {error, {non_transactional_in_transaction, ?INDEX, m20250301110000_nontx_index_items}},
         Result
@@ -454,6 +537,16 @@ refused_in_outer_transaction() ->
     ?assertEqual([], applied_versions()),
     ?assertNot(table_exists(~"nontx_items")),
     ?assertEqual(false, lock_held()).
+
+%% Without the refusal the step would wait on the enclosing transaction's
+%% lock forever.
+with_lock_timeout(Run) ->
+    application:set_env(kura, migration_lock_timeout, 500),
+    try
+        Run()
+    after
+        application:unset_env(kura, migration_lock_timeout)
+    end.
 
 raising_unlock_is_kept_quiet() ->
     ?assertError(
