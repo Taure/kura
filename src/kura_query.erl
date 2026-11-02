@@ -479,7 +479,12 @@ refuse_encrypted_cond(_Cond, _Scope, _Reason) ->
 
 %% Ordering, windowing and aggregating by an encrypted field bind nothing,
 %% but would order or compute over ciphertexts, so they are refused too.
-%% Malformed entries are left to the dialect: they carry no values.
+%% Malformed entries are left to the dialect: they carry no values. A
+%% distance is checked by its column, so the query vector stays out of the
+%% error.
+refuse_orders([{{distance, Field, _Metric, _Vector}, _Dir} | Rest], Scope) ->
+    refuse_field(Field, Scope, encrypted_field_in_order_by),
+    refuse_orders(Rest, Scope);
 refuse_orders([{Field, _Dir} | Rest], Scope) ->
     refuse_field(Field, Scope, encrypted_field_in_order_by),
     refuse_orders(Rest, Scope);

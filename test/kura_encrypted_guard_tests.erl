@@ -1209,6 +1209,20 @@ distance_and_encryption_guards_both_apply_test_() ->
             ?_assertError(
                 {kura, {distance_not_supported_here, group_by}},
                 kura_query:group_by(Joined, [ill_typed(D)])
+            )},
+        {"order_by a distance over a fail-closed CTE names the column, not the vector",
+            ?_assertError(
+                {kura, {encrypted_field_in_order_by, embedding}},
+                kura_query:order_by(
+                    kura_query:with_cte(
+                        kura_query:from(kura_test_vector_schema),
+                        kura_test_vector_schema:table(),
+                        kura_query:union(
+                            kura_query:from(kura_test_plain_ssn_schema), kura_query:from(?ENC)
+                        )
+                    ),
+                    [{D, asc}]
+                )
             )}
     ].
 
