@@ -9,18 +9,16 @@ Kura supports two embed types:
 
 ## Defining Embedded Schemas
 
-An embedded schema is a regular `kura_schema` module. The behaviour
-requires both `table/0` and `fields/0`, even when the module never backs
-its own table. By convention, return `<<"_embedded">>` from `table/0` so
-it is obviously not a real table.
+An embedded schema is a module that exports `fields/0`. It has no table of
+its own, so it exports no `table/0` and does not declare
+`-behaviour(kura_schema)`: tools that look for that attribute, such as the
+`rebar3_kura` migration generator, treat every module that declares it as a
+table to create.
 
 ```erlang
 -module(address).
--behaviour(kura_schema).
 -include_lib("kura/include/kura.hrl").
--export([table/0, fields/0]).
-
-table() -> ~"_embedded".
+-export([fields/0]).
 
 fields() ->
     [
@@ -32,11 +30,8 @@ fields() ->
 
 ```erlang
 -module(tag).
--behaviour(kura_schema).
 -include_lib("kura/include/kura.hrl").
--export([table/0, fields/0]).
-
-table() -> ~"_embedded".
+-export([fields/0]).
 
 fields() ->
     [
@@ -174,8 +169,14 @@ Params = #{name => ~"Alice", address => #{street => ~"123 Main St"}},
 CS = kura_changeset:cast(profile, #{}, Params, [name]),
 CS1 = kura_changeset:cast_embed(CS, address, #{with => WithFun}),
 %% CS1#kura_changeset.valid =:= false
-%% Errors include missing city and zip from the embedded changeset
+%% CS1#kura_changeset.errors =:= [{city, ~"can't be blank"}, {zip, ~"can't be blank"}]
 ```
+
+The embedded changeset's errors are added to the parent's as they are,
+keyed by the embedded field's name, not nested under the embed's name. A
+parent field and an embedded field with the same name are therefore not
+told apart in `errors`; give embedded fields names the parent does not use
+when a client needs to tell them apart.
 
 ## Storage
 

@@ -201,3 +201,34 @@ dump_load_roundtrip_test() ->
 to_pg_type_embed_test() ->
     ?assertEqual(<<"JSONB">>, kura_types:to_pg_type({embed, embeds_one, kura_test_address})),
     ?assertEqual(<<"JSONB">>, kura_types:to_pg_type({embed, embeds_many, kura_test_label})).
+
+%%----------------------------------------------------------------------
+%% An embed module needs only fields/0
+%%----------------------------------------------------------------------
+
+embed_module_without_table_casts_test() ->
+    Params = #{title => ~"Post", meta => #{cover_url => ~"/a.png", minutes => ~"4"}},
+    CS = kura_changeset:cast(kura_test_bare_embed_parent, #{}, Params, [title]),
+    CS1 = kura_changeset:cast_embed(CS, meta),
+    ?assert(CS1#kura_changeset.valid),
+    ?assertEqual(
+        #{cover_url => ~"/a.png", minutes => 4}, maps:get(meta, CS1#kura_changeset.changes)
+    ).
+
+embed_module_without_table_round_trips_test() ->
+    Type = {embed, embeds_one, kura_test_bare_embed},
+    {ok, Json} = kura_types:dump(Type, #{cover_url => ~"/a.png", minutes => 4}),
+    ?assertEqual({ok, #{cover_url => ~"/a.png", minutes => 4}}, kura_types:load(Type, Json)).
+
+embed_errors_are_keyed_by_the_embedded_field_test() ->
+    WithFun = fun(_Data, EmbedParams) ->
+        Child = kura_changeset:cast(kura_test_address, #{}, EmbedParams, [street, city, zip]),
+        kura_changeset:validate_required(Child, [street, city, zip])
+    end,
+    Params = #{name => ~"Alice", address => #{street => ~"123 Main St"}},
+    CS = kura_changeset:cast(kura_test_profile, #{}, Params, [name]),
+    CS1 = kura_changeset:cast_embed(CS, address, #{with => WithFun}),
+    ?assertNot(CS1#kura_changeset.valid),
+    ?assertEqual(
+        [{city, ~"can't be blank"}, {zip, ~"can't be blank"}], CS1#kura_changeset.errors
+    ).

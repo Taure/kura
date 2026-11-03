@@ -618,11 +618,17 @@ check_number(CS, Field, Val, Opts) ->
         Opts
     ).
 
+%% An embedded schema declares no constraints or indexes and need not
+%% export `table/0`, so the table is only looked up when there are some.
 build_schema_constraints(SchemaMod) ->
-    Table = schema_table(SchemaMod),
-    TableConstraints = build_table_constraints(kura_schema:constraints(SchemaMod), Table),
-    IndexConstraints = build_index_constraints(kura_schema:indexes(SchemaMod), Table),
-    TableConstraints ++ IndexConstraints.
+    case {kura_schema:constraints(SchemaMod), kura_schema:indexes(SchemaMod)} of
+        {[], []} ->
+            [];
+        {Constraints, Indexes} ->
+            Table = schema_table(SchemaMod),
+            build_table_constraints(Constraints, Table) ++
+                build_index_constraints(Indexes, Table)
+    end.
 
 -spec schema_table(module()) -> binary().
 schema_table(SchemaMod) -> SchemaMod:table().
