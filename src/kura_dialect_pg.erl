@@ -12,6 +12,8 @@ configured for the running app.
 
 -include("kura.hrl").
 
+-type column_context() :: undefined | {binary(), #{atom() => kura_types:kura_type()}}.
+
 -export([
     to_sql/1,
     to_sql_from/2,
@@ -40,17 +42,18 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
     {CteSQL, CteParams, Counter00} = compile_ctes(Q#kura_query.ctes, StartCounter),
 
     Table = resolve_table(From),
-    {SelectSQL, Params0, Counter0} = compile_select(Q, Counter00),
-    {WhereSQL, Params1, Counter1} = compile_wheres(Q#kura_query.wheres, Counter0),
+    Ctx = column_context(From, Table, Q#kura_query.joins),
+    {SelectSQL, Params0, Counter0} = compile_select(Q, Ctx, Counter00),
+    {WhereSQL, Params1, Counter1} = compile_wheres(Q#kura_query.wheres, Ctx, Counter0),
     Prefix = resolve_prefix(Q#kura_query.prefix),
     {JoinSQL, Params2, Counter2} = compile_joins(Q#kura_query.joins, Table, Prefix, Counter1),
-    {GroupSQL, _, Counter3} = compile_group_by(Q#kura_query.group_bys, Counter2),
-    {HavingSQL, Params3, Counter4} = compile_havings(Q#kura_query.havings, Counter3),
-    {OrderSQL, OrderParams, Counter5} = compile_order_by(Q#kura_query.order_bys, Counter4),
+    {GroupSQL, _, Counter3} = compile_group_by(Q#kura_query.group_bys, Ctx, Counter2),
+    {HavingSQL, Params3, Counter4} = compile_havings(Q#kura_query.havings, Ctx, Counter3),
+    {OrderSQL, OrderParams, Counter5} = compile_order_by(Q#kura_query.order_bys, Ctx, Counter4),
     {LimitSQL, Params4, Counter6} = compile_limit(Q#kura_query.limit, Counter5),
     {OffsetSQL, Params5, Counter7} = compile_offset(Q#kura_query.offset, Counter6),
     LockSQL = compile_lock(Q#kura_query.lock),
-    DistinctSQL = compile_distinct(Q#kura_query.distinct),
+    DistinctSQL = compile_distinct(Q#kura_query.distinct, Ctx),
 
     FromClause = [~"FROM ", qualified_table(Table, Prefix)],
 
@@ -204,7 +207,7 @@ update_all(#kura_query{from = From, wheres = Wheres, prefix = QPrefix}, SetMap) 
     Prefix = resolve_prefix(QPrefix),
     Fields = maps:keys(SetMap),
     {Sets, Params, Counter} = build_set_parts(Fields, SetMap, 1),
-    {WhereSQL, WhereParams, _} = compile_wheres(Wheres, Counter),
+    {WhereSQL, WhereParams, _} = compile_wheres(Wheres, undefined, Counter),
     SQL = iolist_to_binary([
         ~"UPDATE ",
         qualified_table(Table, Prefix),
@@ -222,7 +225,7 @@ update_all(#kura_query{from = From, wheres = Wheres, prefix = QPrefix}, SetMap) 
 delete_all(#kura_query{from = From, wheres = Wheres, prefix = QPrefix}) ->
     Table = resolve_table(From),
     Prefix = resolve_prefix(QPrefix),
-    {WhereSQL, WhereParams, _} = compile_wheres(Wheres, 1),
+    {WhereSQL, WhereParams, _} = compile_wheres(Wheres, undefined, 1),
     SQL = iolist_to_binary([
         ~"DELETE FROM ",
         qualified_table(Table, Prefix),
@@ -300,116 +303,116 @@ bulk_returning(#{}) ->
 %% Internal: SELECT clause
 %%----------------------------------------------------------------------
 
-compile_select(#kura_query{select = []}, Counter) ->
+compile_select(#kura_query{select = []}, _Ctx, Counter) ->
     {~"*", [], Counter};
-compile_select(#kura_query{select = {exprs, Exprs}}, Counter) ->
-    {Parts, AllParams, NewCounter} = compile_select_exprs(Exprs, Counter),
+compile_select(#kura_query{select = {exprs, Exprs}}, Ctx, Counter) ->
+    {Parts, AllParams, NewCounter} = compile_select_exprs(Exprs, Ctx, Counter),
     {join_comma(Parts), AllParams, NewCounter};
-compile_select(#kura_query{select = Fields}, Counter) ->
-    Parts = [compile_select_field(F) || F <- Fields],
+compile_select(#kura_query{select = Fields}, Ctx, Counter) ->
+    Parts = [compile_select_field(F, Ctx) || F <- Fields],
     {join_comma(Parts), [], Counter}.
 
-compile_select_field({Agg, '*'}) when Agg =:= count ->
+compile_select_field({Agg, '*'}, _Ctx) when Agg =:= count ->
     [atom_to_binary(Agg, utf8), ~"(*)", ~" AS ", quote_ident(atom_to_binary(Agg, utf8))];
-compile_select_field({Agg, Field}) when
+compile_select_field({Agg, Field}, Ctx) when
     Agg =:= count; Agg =:= sum; Agg =:= avg; Agg =:= min; Agg =:= max
 ->
     [
         atom_to_binary(Agg, utf8),
         ~"(",
-        quote_ident(atom_to_binary(Field, utf8)),
+        column(Field, Ctx),
         ~")",
         ~" AS ",
         quote_ident(atom_to_binary(Agg, utf8))
     ];
-compile_select_field(Field) when is_atom(Field) ->
-    quote_ident(atom_to_binary(Field, utf8)).
+compile_select_field(Field, Ctx) when is_atom(Field) ->
+    column(Field, Ctx).
 
 %%----------------------------------------------------------------------
 %% Internal: WHERE clause
 %%----------------------------------------------------------------------
 
-compile_wheres([], Counter) ->
+compile_wheres([], _Ctx, Counter) ->
     {<<>>, [], Counter};
-compile_wheres(Conditions, Counter) ->
-    {Parts, Params, NewCounter} = compile_conditions(Conditions, Counter),
+compile_wheres(Conditions, Ctx, Counter) ->
+    {Parts, Params, NewCounter} = compile_conditions(Conditions, Ctx, Counter),
     SQL = [~" WHERE ", join_and(Parts)],
     {iolist_to_binary(SQL), Params, NewCounter}.
 
-compile_conditions([], Counter) ->
+compile_conditions([], _Ctx, Counter) ->
     {[], [], Counter};
-compile_conditions([Cond | Rest], Counter) ->
-    {Part, Vars, Counter1} = compile_condition(Cond, Counter),
-    {Parts, MoreVars, Counter2} = compile_conditions(Rest, Counter1),
+compile_conditions([Cond | Rest], Ctx, Counter) ->
+    {Part, Vars, Counter1} = compile_condition(Cond, Ctx, Counter),
+    {Parts, MoreVars, Counter2} = compile_conditions(Rest, Ctx, Counter1),
     {[Part | Parts], Vars ++ MoreVars, Counter2}.
 
-compile_condition({'and', Conditions}, Counter) ->
-    {Parts, Params, NewCounter} = compile_conditions(Conditions, Counter),
+compile_condition({'and', Conditions}, Ctx, Counter) ->
+    {Parts, Params, NewCounter} = compile_conditions(Conditions, Ctx, Counter),
     {[~"(", join_and(Parts), ~")"], Params, NewCounter};
-compile_condition({'or', Conditions}, Counter) ->
-    {Parts, Params, NewCounter} = compile_conditions(Conditions, Counter),
+compile_condition({'or', Conditions}, Ctx, Counter) ->
+    {Parts, Params, NewCounter} = compile_conditions(Conditions, Ctx, Counter),
     {[~"(", join_or(Parts), ~")"], Params, NewCounter};
-compile_condition({'not', Condition}, Counter) ->
-    {Part, Params, NewCounter} = compile_condition(Condition, Counter),
+compile_condition({'not', Condition}, Ctx, Counter) ->
+    {Part, Params, NewCounter} = compile_condition(Condition, Ctx, Counter),
     {[~"NOT (", Part, ~")"], Params, NewCounter};
-compile_condition({fragment, SQL, Params}, Counter) ->
+compile_condition({fragment, SQL, Params}, _Ctx, Counter) ->
     {RewrittenSQL, NewCounter} = rewrite_fragment_placeholders(SQL, Counter),
     {RewrittenSQL, Params, NewCounter};
-compile_condition({Field, Op}, Counter) when is_atom(Field), ?KURA_IS_UNARY_OP(Op) ->
-    {[quote_ident(atom_to_binary(Field, utf8)), unary_sql(Op)], [], Counter};
-compile_condition({Field, '=', Value}, Counter) when is_atom(Field) ->
+compile_condition({Field, Op}, Ctx, Counter) when is_atom(Field), ?KURA_IS_UNARY_OP(Op) ->
+    {[column(Field, Ctx), unary_sql(Op)], [], Counter};
+compile_condition({Field, '=', Value}, Ctx, Counter) when is_atom(Field) ->
     {
-        [quote_ident(atom_to_binary(Field, utf8)), ~" = $", integer_to_binary(Counter)],
+        [column(Field, Ctx), ~" = $", integer_to_binary(Counter)],
         [Value],
         Counter + 1
     };
-compile_condition({Field, '!=', Value}, Counter) when is_atom(Field) ->
+compile_condition({Field, '!=', Value}, Ctx, Counter) when is_atom(Field) ->
     {
-        [quote_ident(atom_to_binary(Field, utf8)), ~" != $", integer_to_binary(Counter)],
+        [column(Field, Ctx), ~" != $", integer_to_binary(Counter)],
         [Value],
         Counter + 1
     };
-compile_condition({Field, '<', Value}, Counter) when is_atom(Field) ->
+compile_condition({Field, '<', Value}, Ctx, Counter) when is_atom(Field) ->
     {
-        [quote_ident(atom_to_binary(Field, utf8)), ~" < $", integer_to_binary(Counter)],
+        [column(Field, Ctx), ~" < $", integer_to_binary(Counter)],
         [Value],
         Counter + 1
     };
-compile_condition({Field, '>', Value}, Counter) when is_atom(Field) ->
+compile_condition({Field, '>', Value}, Ctx, Counter) when is_atom(Field) ->
     {
-        [quote_ident(atom_to_binary(Field, utf8)), ~" > $", integer_to_binary(Counter)],
+        [column(Field, Ctx), ~" > $", integer_to_binary(Counter)],
         [Value],
         Counter + 1
     };
-compile_condition({Field, '<=', Value}, Counter) when is_atom(Field) ->
+compile_condition({Field, '<=', Value}, Ctx, Counter) when is_atom(Field) ->
     {
-        [quote_ident(atom_to_binary(Field, utf8)), ~" <= $", integer_to_binary(Counter)],
+        [column(Field, Ctx), ~" <= $", integer_to_binary(Counter)],
         [Value],
         Counter + 1
     };
-compile_condition({Field, '>=', Value}, Counter) when is_atom(Field) ->
+compile_condition({Field, '>=', Value}, Ctx, Counter) when is_atom(Field) ->
     {
-        [quote_ident(atom_to_binary(Field, utf8)), ~" >= $", integer_to_binary(Counter)],
+        [column(Field, Ctx), ~" >= $", integer_to_binary(Counter)],
         [Value],
         Counter + 1
     };
-compile_condition({Field, like, Value}, Counter) when is_atom(Field) ->
+compile_condition({Field, like, Value}, Ctx, Counter) when is_atom(Field) ->
     {
-        [quote_ident(atom_to_binary(Field, utf8)), ~" LIKE $", integer_to_binary(Counter)],
+        [column(Field, Ctx), ~" LIKE $", integer_to_binary(Counter)],
         [Value],
         Counter + 1
     };
-compile_condition({Field, ilike, Value}, Counter) when is_atom(Field) ->
+compile_condition({Field, ilike, Value}, Ctx, Counter) when is_atom(Field) ->
     {
-        [quote_ident(atom_to_binary(Field, utf8)), ~" ILIKE $", integer_to_binary(Counter)],
+        [column(Field, Ctx), ~" ILIKE $", integer_to_binary(Counter)],
         [Value],
         Counter + 1
     };
-compile_condition({Field, matches, Value}, Counter) when is_atom(Field) ->
+compile_condition({Field, matches, Value}, Ctx, Counter) when is_atom(Field) ->
     {
         [
             ~"to_tsvector(",
-            quote_ident(atom_to_binary(Field, utf8)),
+            column(Field, Ctx),
             ~") @@ plainto_tsquery($",
             integer_to_binary(Counter),
             ~")"
@@ -417,39 +420,39 @@ compile_condition({Field, matches, Value}, Counter) when is_atom(Field) ->
         [Value],
         Counter + 1
     };
-compile_condition({Field, in, {subquery, SubQ}}, Counter) when is_atom(Field) ->
+compile_condition({Field, in, {subquery, SubQ}}, Ctx, Counter) when is_atom(Field) ->
     {SubSQL, SubParams, Counter2} = to_sql_from(SubQ, Counter),
-    {[quote_ident(atom_to_binary(Field, utf8)), ~" IN (", SubSQL, ~")"], SubParams, Counter2};
-compile_condition({exists, {subquery, SubQ}}, Counter) ->
+    {[column(Field, Ctx), ~" IN (", SubSQL, ~")"], SubParams, Counter2};
+compile_condition({exists, {subquery, SubQ}}, _Ctx, Counter) ->
     {SubSQL, SubParams, Counter2} = to_sql_from(SubQ, Counter),
     {[~"EXISTS (", SubSQL, ~")"], SubParams, Counter2};
-compile_condition({not_exists, {subquery, SubQ}}, Counter) ->
+compile_condition({not_exists, {subquery, SubQ}}, _Ctx, Counter) ->
     {SubSQL, SubParams, Counter2} = to_sql_from(SubQ, Counter),
     {[~"NOT EXISTS (", SubSQL, ~")"], SubParams, Counter2};
-compile_condition({[Col], in, Tuples}, Counter) when is_atom(Col), is_list(Tuples) ->
-    compile_condition({Col, in, [single_value(T) || T <- Tuples]}, Counter);
-compile_condition({Cols, in, Tuples}, Counter) when is_list(Cols), is_list(Tuples) ->
+compile_condition({[Col], in, Tuples}, Ctx, Counter) when is_atom(Col), is_list(Tuples) ->
+    compile_condition({Col, in, [single_value(T) || T <- Tuples]}, Ctx, Counter);
+compile_condition({Cols, in, Tuples}, Ctx, Counter) when is_list(Cols), is_list(Tuples) ->
     ColSQL = [
         ~"(",
-        join_comma([quote_ident(atom_to_binary(C, utf8)) || C <- Cols]),
+        join_comma([column(C, Ctx) || C <- Cols]),
         ~")"
     ],
     {RowSQLs, Params, NewCounter} = compile_row_tuples(Tuples, length(Cols), Counter, [], []),
     {[ColSQL, ~" IN (", join_comma(RowSQLs), ~")"], Params, NewCounter};
-compile_condition({Field, in, Values}, Counter) when is_atom(Field), is_list(Values) ->
+compile_condition({Field, in, Values}, Ctx, Counter) when is_atom(Field), is_list(Values) ->
     Placeholders = placeholders(Counter, length(Values)),
     NewCounter = Counter + length(Values),
     {
-        [quote_ident(atom_to_binary(Field, utf8)), ~" IN (", join_comma(Placeholders), ~")"],
+        [column(Field, Ctx), ~" IN (", join_comma(Placeholders), ~")"],
         Values,
         NewCounter
     };
-compile_condition({Field, not_in, Values}, Counter) when is_atom(Field), is_list(Values) ->
+compile_condition({Field, not_in, Values}, Ctx, Counter) when is_atom(Field), is_list(Values) ->
     Placeholders = placeholders(Counter, length(Values)),
     NewCounter = Counter + length(Values),
     {
         [
-            quote_ident(atom_to_binary(Field, utf8)),
+            column(Field, Ctx),
             ~" NOT IN (",
             join_comma(Placeholders),
             ~")"
@@ -457,10 +460,10 @@ compile_condition({Field, not_in, Values}, Counter) when is_atom(Field), is_list
         Values,
         NewCounter
     };
-compile_condition({Field, between, {Low, High}}, Counter) when is_atom(Field) ->
+compile_condition({Field, between, {Low, High}}, Ctx, Counter) when is_atom(Field) ->
     {
         [
-            quote_ident(atom_to_binary(Field, utf8)),
+            column(Field, Ctx),
             ~" BETWEEN $",
             integer_to_binary(Counter),
             ~" AND $",
@@ -469,9 +472,9 @@ compile_condition({Field, between, {Low, High}}, Counter) when is_atom(Field) ->
         [Low, High],
         Counter + 2
     };
-compile_condition({Field, Value}, Counter) when is_atom(Field) ->
+compile_condition({Field, Value}, Ctx, Counter) when is_atom(Field) ->
     {
-        [quote_ident(atom_to_binary(Field, utf8)), ~" = $", integer_to_binary(Counter)],
+        [column(Field, Ctx), ~" = $", integer_to_binary(Counter)],
         [Value],
         Counter + 1
     }.
@@ -495,29 +498,29 @@ join_type(full) -> ~"FULL JOIN".
 %% Internal: ORDER BY clause
 %%----------------------------------------------------------------------
 
-compile_order_by([], Counter) ->
+compile_order_by([], _Ctx, Counter) ->
     {<<>>, [], Counter};
-compile_order_by(Orders, Counter) ->
-    {Parts, Params, NewCounter} = compile_orders(Orders, Counter),
+compile_order_by(Orders, Ctx, Counter) ->
+    {Parts, Params, NewCounter} = compile_orders(Orders, Ctx, Counter),
     {iolist_to_binary([~" ORDER BY ", join_comma(Parts)]), Params, NewCounter}.
 
-compile_orders([], Counter) ->
+compile_orders([], _Ctx, Counter) ->
     {[], [], Counter};
-compile_orders([{Expr, Dir} | Rest], Counter) ->
-    {ExprSQL, Params, C1} = compile_order_expr(Expr, Counter),
-    {Parts, MoreParams, C2} = compile_orders(Rest, C1),
+compile_orders([{Expr, Dir} | Rest], Ctx, Counter) ->
+    {ExprSQL, Params, C1} = compile_order_expr(Expr, Ctx, Counter),
+    {Parts, MoreParams, C2} = compile_orders(Rest, Ctx, C1),
     {[[ExprSQL, ~" ", dir_to_sql(Dir)] | Parts], Params ++ MoreParams, C2}.
 
-compile_order_expr({distance, _Field, _Metric, _Vector} = Distance, Counter) ->
-    compile_distance(Distance, Counter);
-compile_order_expr(Field, Counter) when is_atom(Field) ->
-    {quote_ident(atom_to_binary(Field, utf8)), [], Counter}.
+compile_order_expr({distance, _Field, _Metric, _Vector} = Distance, Ctx, Counter) ->
+    compile_distance(Distance, Ctx, Counter);
+compile_order_expr(Field, Ctx, Counter) when is_atom(Field) ->
+    {column(Field, Ctx), [], Counter}.
 
 %% No cast on the parameter: the server infers it from the column, so the
 %% same SQL serves any pgvector column type.
-compile_distance({distance, Field, Metric, Vector}, Counter) when is_atom(Field) ->
+compile_distance({distance, Field, Metric, Vector}, Ctx, Counter) when is_atom(Field) ->
     {
-        [quote_ident(atom_to_binary(Field, utf8)), distance_op(Metric), integer_to_binary(Counter)],
+        [column(Field, Ctx), distance_op(Metric), integer_to_binary(Counter)],
         [Vector],
         Counter + 1
     }.
@@ -533,20 +536,20 @@ dir_to_sql(desc) -> ~"DESC".
 %% Internal: GROUP BY clause
 %%----------------------------------------------------------------------
 
-compile_group_by([], Counter) ->
+compile_group_by([], _Ctx, Counter) ->
     {<<>>, [], Counter};
-compile_group_by(Fields, Counter) ->
-    Parts = [quote_ident(atom_to_binary(F, utf8)) || F <- Fields],
+compile_group_by(Fields, Ctx, Counter) ->
+    Parts = [column(F, Ctx) || F <- Fields],
     {iolist_to_binary([~" GROUP BY ", join_comma(Parts)]), [], Counter}.
 
 %%----------------------------------------------------------------------
 %% Internal: HAVING clause
 %%----------------------------------------------------------------------
 
-compile_havings([], Counter) ->
+compile_havings([], _Ctx, Counter) ->
     {<<>>, [], Counter};
-compile_havings(Conditions, Counter) ->
-    {Parts, Params, NewCounter} = compile_conditions(Conditions, Counter),
+compile_havings(Conditions, Ctx, Counter) ->
+    {Parts, Params, NewCounter} = compile_conditions(Conditions, Ctx, Counter),
     SQL = [~" HAVING ", join_and(Parts)],
     {iolist_to_binary(SQL), Params, NewCounter}.
 
@@ -571,12 +574,12 @@ compile_offset(N, Counter) ->
 compile_lock(undefined) -> <<>>;
 compile_lock(Lock) -> <<" ", Lock/binary>>.
 
-compile_distinct(false) ->
+compile_distinct(false, _Ctx) ->
     <<>>;
-compile_distinct(true) ->
+compile_distinct(true, _Ctx) ->
     ~"DISTINCT ";
-compile_distinct(Fields) when is_list(Fields) ->
-    Parts = [quote_ident(atom_to_binary(F, utf8)) || F <- Fields],
+compile_distinct(Fields, Ctx) when is_list(Fields) ->
+    Parts = [column(F, Ctx) || F <- Fields],
     iolist_to_binary([~"DISTINCT ON (", join_comma(Parts), ~") "]).
 
 %%----------------------------------------------------------------------
@@ -688,6 +691,38 @@ resolve_table(Mod) when is_atom(Mod) ->
             atom_to_binary(Mod, utf8)
     end.
 
+%% Once a query joins another table, a bare column both tables have is
+%% ambiguous to the server. A bare field of the `from` schema names that
+%% schema's column, so it is qualified with the `from` table; any other name
+%% is left for the server to resolve among the joined tables.
+%%
+%% The attribute tenant's field stays bare. `kura_tenant:scope_query/2` adds
+%% its condition for the `from` table only, so qualifying it would confine
+%% the `from` rows and read the joined table's rows of every tenant. Bare,
+%% a join of two tables that both carry it stays ambiguous and is refused.
+-spec column_context(kura_dialect:table(), binary(), [term()]) -> column_context().
+column_context(_From, _Table, []) ->
+    undefined;
+column_context(From, Table, _Joins) when is_atom(From) ->
+    case kura_schema:is_schema(From) of
+        true -> {quote_ident(Table), unqualified_tenant(kura_schema:field_types(From))};
+        false -> undefined
+    end;
+column_context(_From, _Table, _Joins) ->
+    undefined.
+
+unqualified_tenant(Types) ->
+    case kura_tenant:get_tenant() of
+        {attribute, {Field, _Value}} -> maps:remove(Field, Types);
+        _ -> Types
+    end.
+
+-spec column(atom(), column_context()) -> iodata().
+column(Field, {Qualifier, Fields}) when is_map_key(Field, Fields) ->
+    [Qualifier, ~".", quote_ident(atom_to_binary(Field, utf8))];
+column(Field, _Ctx) ->
+    quote_ident(atom_to_binary(Field, utf8)).
+
 quote_ident(Name) when is_binary(Name) ->
     Escaped = binary:replace(Name, ~"\"", ~"\"\"", [global]),
     <<$", Escaped/binary, $">>.
@@ -781,51 +816,52 @@ build_row_placeholders([Field | Rest], Row, N) ->
             | atom()
         }
     ],
+    column_context(),
     pos_integer()
 ) ->
     {[iodata()], [term()], pos_integer()}.
-compile_select_exprs([], Counter) ->
+compile_select_exprs([], _Ctx, Counter) ->
     {[], [], Counter};
-compile_select_exprs([{Alias, {fragment, SQL, Params}} | Rest], Counter) ->
+compile_select_exprs([{Alias, {fragment, SQL, Params}} | Rest], Ctx, Counter) ->
     {RewrittenSQL, C2} = rewrite_fragment_placeholders(SQL, Counter),
     Part = [RewrittenSQL, ~" AS ", quote_ident(atom_to_binary(Alias, utf8))],
-    {Parts, MoreParams, C3} = compile_select_exprs(Rest, C2),
+    {Parts, MoreParams, C3} = compile_select_exprs(Rest, Ctx, C2),
     {[Part | Parts], Params ++ MoreParams, C3};
-compile_select_exprs([{Alias, {distance, _, _, _} = Distance} | Rest], Counter) ->
-    {DistanceSQL, Params, C2} = compile_distance(Distance, Counter),
+compile_select_exprs([{Alias, {distance, _, _, _} = Distance} | Rest], Ctx, Counter) ->
+    {DistanceSQL, Params, C2} = compile_distance(Distance, Ctx, Counter),
     Part = [DistanceSQL, ~" AS ", quote_ident(atom_to_binary(Alias, utf8))],
-    {Parts, MoreParams, C3} = compile_select_exprs(Rest, C2),
+    {Parts, MoreParams, C3} = compile_select_exprs(Rest, Ctx, C2),
     {[Part | Parts], Params ++ MoreParams, C3};
-compile_select_exprs([{Alias, {over, WindowFn, Spec}} | Rest], Counter) ->
+compile_select_exprs([{Alias, {over, WindowFn, Spec}} | Rest], Ctx, Counter) ->
     Part = [
-        compile_window_fn(WindowFn),
+        compile_window_fn(WindowFn, Ctx),
         ~" OVER (",
-        compile_over_clause(Spec),
+        compile_over_clause(Spec, Ctx),
         ~")",
         ~" AS ",
         quote_ident(atom_to_binary(Alias, utf8))
     ],
-    {Parts, MoreParams, C2} = compile_select_exprs(Rest, Counter),
+    {Parts, MoreParams, C2} = compile_select_exprs(Rest, Ctx, Counter),
     {[Part | Parts], MoreParams, C2};
-compile_select_exprs([{Alias, Field} | Rest], Counter) when is_atom(Field) ->
+compile_select_exprs([{Alias, Field} | Rest], Ctx, Counter) when is_atom(Field) ->
     Part = [
-        quote_ident(atom_to_binary(Field, utf8)),
+        column(Field, Ctx),
         ~" AS ",
         quote_ident(atom_to_binary(Alias, utf8))
     ],
-    {Parts, MoreParams, C2} = compile_select_exprs(Rest, Counter),
+    {Parts, MoreParams, C2} = compile_select_exprs(Rest, Ctx, Counter),
     {[Part | Parts], MoreParams, C2}.
 
-compile_window_fn({count, '*'}) ->
+compile_window_fn({count, '*'}, _Ctx) ->
     [~"count(*)"];
-compile_window_fn({Agg, Field}) when
+compile_window_fn({Agg, Field}, Ctx) when
     Agg =:= count; Agg =:= sum; Agg =:= avg; Agg =:= min; Agg =:= max
 ->
-    [atom_to_binary(Agg, utf8), ~"(", quote_ident(atom_to_binary(Field, utf8)), ~")"];
-compile_window_fn(Fn) when Fn =:= row_number; Fn =:= rank; Fn =:= dense_rank ->
+    [atom_to_binary(Agg, utf8), ~"(", column(Field, Ctx), ~")"];
+compile_window_fn(Fn, _Ctx) when Fn =:= row_number; Fn =:= rank; Fn =:= dense_rank ->
     [atom_to_binary(Fn, utf8), ~"()"].
 
-compile_over_clause(Spec) ->
+compile_over_clause(Spec, Ctx) ->
     Partition =
         case maps:get(partition_by, Spec, []) of
             [] ->
@@ -833,7 +869,7 @@ compile_over_clause(Spec) ->
             PFields ->
                 [
                     ~"PARTITION BY ",
-                    join_comma([quote_ident(atom_to_binary(F, utf8)) || F <- PFields])
+                    join_comma([column(F, Ctx) || F <- PFields])
                 ]
         end,
     Order =
@@ -844,7 +880,7 @@ compile_over_clause(Spec) ->
                 [
                     ~"ORDER BY ",
                     join_comma([
-                        [quote_ident(atom_to_binary(F, utf8)), ~" ", dir_to_sql(D)]
+                        [column(F, Ctx), ~" ", dir_to_sql(D)]
                      || {F, D} <- Orders
                     ])
                 ]
@@ -857,7 +893,7 @@ compile_over_clause(Spec) ->
     end.
 
 -spec compile_joins_loop(
-    [{atom(), atom() | module(), {atom(), atom()}, atom() | undefined}],
+    [{atom(), module() | binary(), {atom(), atom()}, atom() | undefined}],
     binary(),
     binary() | undefined
 ) -> [iodata()].

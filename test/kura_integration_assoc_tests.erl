@@ -52,6 +52,7 @@ assoc_test_() ->
 
             %% Join queries
             {"inner join query", fun t_join_inner/0},
+            {"join selects and filters on a column both tables have", fun t_join_shared_column/0},
             {"left join query", fun t_join_left/0},
 
             %% Foreign key constraint on assoc table
@@ -886,6 +887,21 @@ t_join_inner() ->
     {ok, Results} = kura_test_repo:all(Q4),
     ?assertMatch([_ | _], Results),
     ?assertEqual(<<"JoinA">>, maps:get(name, hd(Results))).
+
+t_join_shared_column() ->
+    {ok, User} = insert_user(<<"JoinShared">>, <<"joinshared@test.com">>),
+    UserId = maps:get(id, User),
+    {ok, Post} = insert_post(<<"Shared Post">>, <<"body">>, UserId),
+    PostId = maps:get(id, Post),
+    Q0 = kura_query:join(kura_query:from(kura_test_post_schema), inner, kura_test_schema, {
+        author_id, id
+    }),
+    Q1 = kura_query:select(Q0, [id, title, name, inserted_at]),
+    Q2 = kura_query:where(Q1, {id, PostId}),
+    Q3 = kura_query:order_by(Q2, [{inserted_at, desc}]),
+    {ok, Rows} = kura_test_repo:all(Q3),
+    ?assertMatch([#{id := PostId, title := <<"Shared Post">>, name := <<"JoinShared">>}], Rows),
+    ?assertEqual({ok, 1}, kura_repo_worker:count(kura_test_repo, Q2)).
 
 t_join_left() ->
     {ok, _User} = insert_user(<<"LeftJoin">>, <<"leftjoin@test.com">>),

@@ -757,7 +757,8 @@ refuse_field(Field, {Encrypted, _Ctes}, Reason) ->
     end.
 
 -doc """
-Add a JOIN clause. `Table` can be a schema module or raw table atom.
+Add a JOIN clause. `Table` can be a schema module, a raw table atom, or a
+binary table or CTE name.
 Conditions already added with `where/2` or `having/2` are checked against the
 joined schema's encrypted fields, as if added after the join.
 `On` is `{LeftCol, RightCol}` where LeftCol is on the previous table
@@ -774,12 +775,17 @@ Q2 = kura_query:join(Q1, inner, comment_schema, {id, post_id}).
 %% => posts.id = comments.post_id
 ```
 """.
--spec join(#kura_query{}, inner | left | right | full, atom(), {atom(), atom()}) -> #kura_query{}.
+-spec join(#kura_query{}, inner | left | right | full, module() | binary(), {atom(), atom()}) ->
+    #kura_query{}.
 join(Q, Type, Table, On) ->
     join(Q, Type, Table, On, undefined).
 
 -spec join(
-    #kura_query{}, inner | left | right | full, atom(), {atom(), atom()}, atom() | undefined
+    #kura_query{},
+    inner | left | right | full,
+    module() | binary(),
+    {atom(), atom()},
+    atom() | undefined
 ) -> #kura_query{}.
 join(Q = #kura_query{joins = J}, Type, Table, On, As) ->
     reject_join_distances(On),

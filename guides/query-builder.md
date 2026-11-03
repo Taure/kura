@@ -174,6 +174,29 @@ Q2 = kura_query:join(Q1, inner, my_comment, {id, post_id}).
 
 Join types: `inner`, `left`, `right`, `full`.
 
+Once a query has a join, a bare field of the `from` schema is qualified
+with the `from` table in `select`, `where`, `having`, `order_by`,
+`group_by` and `distinct`, so a column both tables have (`id`,
+`inserted_at`) names the `from` table's column. A name the `from` schema
+does not declare is left bare, for the database to find in the joined
+tables; it must be unique among them. Under attribute tenancy the tenant
+field stays bare too, so a join of two tables that both carry it is still
+refused (see the [Multitenancy](multitenancy.md) guide). To read a column of a joined table
+that the `from` schema also has, select it with a fragment:
+
+```erlang
+Q = kura_query:join(kura_query:from(post), inner, user, {author_id, id}),
+Q1 = kura_query:select_expr(Q, [
+    {id, id},
+    {title, title},
+    {author_id_check, {fragment, ~"\"users\".\"id\"", []}}
+]),
+Q2 = kura_query:where(Q1, {id, PostId}).
+%% => SELECT "posts"."id" AS "id", "posts"."title" AS "title", "users"."id" AS ...
+%%      FROM "posts" INNER JOIN "users" ON "posts"."author_id" = "users"."id"
+%%      WHERE "posts"."id" = $1
+```
+
 ## Aggregates
 
 ```erlang
