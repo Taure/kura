@@ -634,3 +634,61 @@ large_result_is_never_interned_test() ->
     after
         kura_query_cache:flush()
     end.
+
+%%----------------------------------------------------------------------
+%% Where values are converted by the dialect, not by kura_query:where/2
+%%----------------------------------------------------------------------
+
+boolean_filter() ->
+    Q0 = kura_query:from(kura_test_schema),
+    Q1 = kura_query:where(Q0, {active, '!=', ~"1"}),
+    Q2 = kura_query:where(Q1, {status, in, [active]}),
+    kura_query:where(Q2, {age, ~"42"}).
+
+pg_dialect_converts_where_values_test() ->
+    set_repo_dialect(kura_dialect_pg),
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        Q = boolean_filter(),
+        {_, Direct} = kura_query_compiler:to_sql(?REPO, Q),
+        {_, Miss} = kura_query_compiler:to_sql_cached(?REPO, Q),
+        {_, Hit} = kura_query_compiler:to_sql_cached(?REPO, Q),
+        ?assertEqual([true, ~"active", 42], Direct),
+        ?assertEqual(Direct, Miss),
+        ?assertEqual(Direct, Hit)
+    after
+        kura_query_cache:flush(),
+        unset_repo()
+    end.
+
+sqlite_dialect_leaves_where_values_unconverted_test() ->
+    set_repo_dialect(kura_test_sqlite_dialect),
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        Q = boolean_filter(),
+        {SQL, Direct} = kura_query_compiler:to_sql(?REPO, Q),
+        {_, Cached} = kura_query_compiler:to_sql_cached(?REPO, Q),
+        ?assertEqual([~"1", active, ~"42"], Direct),
+        ?assertEqual(Direct, Cached),
+        ?assertEqual(nomatch, binary:match(iolist_to_binary(SQL), ~"$"))
+    after
+        kura_query_cache:flush(),
+        unset_repo()
+    end.
+
+pg_dialect_converts_the_attribute_tenant_value_test() ->
+    set_repo_dialect(kura_dialect_pg),
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        Q = kura_query:from(kura_test_schema),
+        {_, Params} = kura_tenant:with_tenant({attribute, {age, ~"7"}}, fun() ->
+            kura_query_compiler:to_sql_cached(?REPO, Q)
+        end),
+        ?assertEqual([7], Params)
+    after
+        kura_query_cache:flush(),
+        unset_repo()
+    end.

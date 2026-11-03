@@ -17,16 +17,19 @@ Q1 = kura_query:where(Q, {active, true}),
 
 ## WHERE Conditions
 
-A value compared to a field of the `from` schema is converted only where it
-then binds the value the database would parse from it: an enum atom binds
-its binary, and a binary in cast form binds the value it spells on an
-`id`, `integer`, `bigint`, `smallint`, `float`, `boolean`, `date` or
-`time` field (`~"42"` for an integer), or on a datetime without an offset
-other than `Z` and without fractional seconds (`~"2026-01-01T00:00:00Z"`).
-Everything else is bound as given: decimal, jsonb, embed, string, uuid,
-array and custom fields, values the type rejects, and
-fields of joined schemas, CTEs and bare table names. Conditions from
-`having/2`, preloads and many-to-many lookups are not converted.
+On PostgreSQL, a value compared to a field of the `from` schema is
+converted when the query is compiled, only where it then binds the value
+the database would parse from it: an enum atom binds its binary, and a
+binary in cast form binds the value it spells on an `id`, `integer`,
+`bigint`, `smallint`, `float`, `boolean`, `date` or `time` field (`~"42"`
+for an integer), or on a datetime without an offset other than `Z` and
+without fractional seconds (`~"2026-01-01T00:00:00Z"`). Everything else is
+bound as given: decimal, jsonb, embed, string, uuid, array and custom
+fields, values the type rejects, and fields of joined schemas, CTEs and
+bare table names. Conditions from `having/2` are not converted. An integer
+binary over 20 bytes or a float binary over 64 is bound as given. Other
+dialects bind every value as given (see
+`kura_dialect_pg:prepare_query/1`).
 
 ### Equality
 

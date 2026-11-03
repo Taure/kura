@@ -74,7 +74,8 @@ to_sql(RepoMod, Query) ->
 %% run them on the query.
 -spec compile_query(module(), #kura_query{}) -> {iodata(), [term()]}.
 compile_query(RepoMod, Query) ->
-    (dialect(RepoMod)):to_sql(scope(Query)).
+    Dialect = dialect(RepoMod),
+    Dialect:to_sql(prepare(Dialect, scope(Query))).
 
 -doc """
 Cached `to_sql/2`. The cache key includes `RepoMod` so two repos with
@@ -117,7 +118,7 @@ cannot take apart, such as one with an improper condition list, goes through
 """.
 -spec to_sql_cached(module(), #kura_query{}) -> {iodata(), [term()]}.
 to_sql_cached(RepoMod, Query) ->
-    case split(Query) of
+    case split(prepare(dialect(RepoMod), Query)) of
         {ok, Shape, Values} -> cached(RepoMod, Query, Shape, Values);
         malformed -> to_sql(RepoMod, Query)
     end.
@@ -174,7 +175,8 @@ compile_shape(RepoMod, Shape, Arity) ->
 to_sql_from(RepoMod, Query, StartCounter) ->
     ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
-    (dialect(RepoMod)):to_sql_from(scope(Query), StartCounter).
+    Dialect = dialect(RepoMod),
+    Dialect:to_sql_from(prepare(Dialect, scope(Query)), StartCounter).
 
 -spec insert(module(), atom() | module(), [atom()], map()) -> {iodata(), [term()]}.
 insert(RepoMod, SchemaOrTable, Fields, Data) ->
@@ -197,13 +199,15 @@ delete(RepoMod, SchemaOrTable, KeyClauses) ->
 update_all(RepoMod, Query, SetMap) ->
     ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
-    (dialect(RepoMod)):update_all(scope(Query), SetMap).
+    Dialect = dialect(RepoMod),
+    Dialect:update_all(prepare(Dialect, scope(Query)), SetMap).
 
 -spec delete_all(module(), #kura_query{}) -> {iodata(), [term()]}.
 delete_all(RepoMod, Query) ->
     ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
-    (dialect(RepoMod)):delete_all(scope(Query)).
+    Dialect = dialect(RepoMod),
+    Dialect:delete_all(prepare(Dialect, scope(Query))).
 
 -spec insert_all(module(), atom() | module(), [atom()], [map()]) -> {iodata(), [term()]}.
 insert_all(RepoMod, SchemaOrTable, Fields, Rows) ->
@@ -213,6 +217,16 @@ insert_all(RepoMod, SchemaOrTable, Fields, Rows) ->
     {iodata(), [term()]}.
 insert_all(RepoMod, SchemaOrTable, Fields, Rows, Opts) ->
     (dialect(RepoMod)):insert_all(SchemaOrTable, Fields, Rows, Opts).
+
+%% A dialect's prepare_query/1 is optional (see kura_dialect), and
+%% function_exported/3 is false for a module not yet loaded.
+-spec prepare(module(), #kura_query{}) -> #kura_query{}.
+prepare(Dialect, Query) ->
+    _ = code:ensure_loaded(Dialect),
+    case erlang:function_exported(Dialect, prepare_query, 1) of
+        true -> Dialect:prepare_query(Query);
+        false -> Query
+    end.
 
 -spec scope(#kura_query{}) -> #kura_query{}.
 scope(Query) ->

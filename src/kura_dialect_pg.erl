@@ -17,6 +17,7 @@ configured for the running app.
 -export([
     to_sql/1,
     to_sql_from/2,
+    prepare_query/1,
     insert/3,
     insert/4,
     update/4,
@@ -83,6 +84,213 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
         Q#kura_query.combinations, MainSQL, MainParams, Counter7
     ),
     {FinalSQL, FinalParams, FinalCounter}.
+
+%%----------------------------------------------------------------------
+%% Where values
+%%----------------------------------------------------------------------
+
+-doc """
+Convert the values of a query's where conditions to what PostgreSQL would
+parse them as. `kura_query_compiler` calls this before it compiles the query
+or splits it into a cached shape.
+
+A value compared to a field of a `from` schema is converted only where it
+then binds the value the database would parse from it: an atom on an
+`{enum, [...]}` field binds its binary (`{status, published}` binds
+`~"published"`), and a binary in the form `kura_changeset:cast/4` accepts
+binds the value it spells on an `id`, `integer`, `bigint`, `smallint`,
+`float`, `boolean`, `date` or `time` field (`~"42"` binds `42`).
+A datetime or time binary is cast only without a UTC offset other than
+`Z` and without fractional seconds, since the cast would drop them. An
+integer binary longer than 20 bytes, or a float binary longer than 64, is
+not parsed. This covers `=`, `!=`, `<`, `>`, `<=`, `>=`, `in`, `not_in`
+and `between`, under `and`, `or` and `not`, in the query and in every CTE,
+combined query and subquery it holds, each against its own `from` schema.
+
+Everything else is bound as given: a value the type rejects, `decimal`
+(its cast parses a float, which would lose digits), `string`, `text`,
+`binary`, `uuid`, `jsonb`, embed, array, vector and custom fields,
+fields of joined schemas, CTEs and bare table names, `like`, `ilike`,
+`matches` and fragments. Havings are not converted.
+
+The conversion is PostgreSQL's reading of a value, so it lives here and not
+in `kura_query:where/2`: SQLite, for one, would compare a converted boolean
+`true` with an `INTEGER` column as the text `'true'`.
+""".
+-spec prepare_query(#kura_query{}) -> #kura_query{}.
+prepare_query(#kura_query{from = From, wheres = Wheres, ctes = Ctes, combinations = Comb} = Q) ->
+    Q#kura_query{
+        wheres = dump_conditions(from_types(From), Wheres),
+        ctes = prepare_named(Ctes),
+        combinations = prepare_named(Comb)
+    }.
+
+%% A hand-built query can hold an improper list, which the encrypted filter
+%% guard refuses after this runs; it is left for the guard, since a crash here
+%% would carry the query's values.
+prepare_named(Named) ->
+    case is_proper(Named) of
+        true -> [prepare_one(N) || N <- Named];
+        false -> Named
+    end.
+
+prepare_one({Name, #kura_query{} = Q}) -> {Name, prepare_query(Q)};
+prepare_one(Other) -> Other.
+
+dump_conditions(Types, Conditions) ->
+    case is_proper(Conditions) of
+        true -> [dump_condition(Types, C) || C <- Conditions];
+        false -> Conditions
+    end.
+
+is_proper([]) -> true;
+is_proper([_ | T]) -> is_proper(T);
+is_proper(_) -> false.
+
+from_types(From) when is_atom(From), From =/= undefined ->
+    case kura_schema:is_schema(From) of
+        true -> kura_schema:field_types(From);
+        false -> #{}
+    end;
+from_types(_From) ->
+    #{}.
+
+dump_condition(Types, {Logic, Conditions}) when
+    (Logic =:= 'and' orelse Logic =:= 'or'), is_list(Conditions)
+->
+    {Logic, dump_conditions(Types, Conditions)};
+dump_condition(Types, {'not', Condition}) ->
+    {'not', dump_condition(Types, Condition)};
+dump_condition(_Types, {Exists, {subquery, #kura_query{} = SubQ}}) when
+    Exists =:= exists; Exists =:= not_exists
+->
+    {Exists, {subquery, prepare_query(SubQ)}};
+dump_condition(_Types, {Field, Op, {subquery, #kura_query{} = SubQ}}) ->
+    {Field, Op, {subquery, prepare_query(SubQ)}};
+dump_condition(Types, Condition) when map_size(Types) =:= 0 ->
+    Condition;
+dump_condition(Types, {Field, Op, Values}) when
+    (Op =:= in orelse Op =:= not_in), is_atom(Field), is_list(Values)
+->
+    case convertible_type(Types, Field) of
+        {ok, Type} -> {Field, Op, where_values(Type, Values)};
+        none -> {Field, Op, Values}
+    end;
+dump_condition(Types, {Field, between, {Low, High}}) when is_atom(Field) ->
+    {Field, between, {dump_value(Types, Field, Low), dump_value(Types, Field, High)}};
+dump_condition(Types, {Field, Op, Value}) when
+    is_atom(Field),
+    (Op =:= '=' orelse Op =:= '!=' orelse Op =:= '<' orelse Op =:= '>' orelse Op =:= '<=' orelse
+        Op =:= '>=')
+->
+    {Field, Op, dump_value(Types, Field, Value)};
+dump_condition(Types, {Field, Value}) when is_atom(Field) ->
+    case ?KURA_IS_UNARY_OP(Value) of
+        true -> {Field, Value};
+        false -> {Field, dump_value(Types, Field, Value)}
+    end;
+dump_condition(_Types, Condition) ->
+    Condition.
+
+%% An encrypted field never reaches here with a value: kura_query's
+%% encrypted filter guard has already refused it.
+dump_value(Types, Field, Value) ->
+    case convertible_type(Types, Field) of
+        {ok, Type} -> where_value(Type, Value);
+        none -> Value
+    end.
+
+%% A long `in` list of values already in wire form is kept as it is.
+where_values(Type, Values) ->
+    case is_proper(Values) andalso any_convertible(Type, Values) of
+        true -> [where_value(Type, V) || V <- Values];
+        false -> Values
+    end.
+
+any_convertible(_Type, []) ->
+    false;
+any_convertible({enum, _} = Type, [V | Rest]) ->
+    is_atom(V) orelse any_convertible(Type, Rest);
+any_convertible(Type, [V | Rest]) ->
+    is_binary(V) orelse any_convertible(Type, Rest).
+
+convertible_type(Types, Field) ->
+    case Types of
+        #{Field := {enum, _} = Type} ->
+            {ok, Type};
+        #{Field := Type} when is_atom(Type) ->
+            case scalar_type(Type) of
+                true -> {ok, Type};
+                false -> none
+            end;
+        #{} ->
+            none
+    end.
+
+%% Only conversions that bind what the database would parse: an enum
+%% atom to its stored binary, and a binary in cast form to the scalar it
+%% spells. A datetime binary with an offset or a fraction is left alone,
+%% since the cast would drop them. jsonb, embeds, arrays, vectors, strings
+%% and custom types are bound as given, as they always were.
+where_value(_Type, Value) when Value =:= undefined; Value =:= null ->
+    Value;
+where_value({enum, _}, Value) when is_atom(Value) ->
+    atom_to_binary(Value, utf8);
+where_value(Type, Value) when is_binary(Value) ->
+    case scalar_type(Type) andalso exact_cast_form(Type, Value) of
+        true -> cast_or_keep(Type, Value);
+        false -> Value
+    end;
+where_value(_Type, Value) ->
+    Value.
+
+scalar_type(Type) ->
+    lists:member(Type, [
+        id,
+        integer,
+        bigint,
+        smallint,
+        float,
+        boolean,
+        date,
+        time,
+        utc_datetime,
+        naive_datetime
+    ]).
+
+exact_cast_form(Type, Value) when Type =:= utc_datetime; Type =:= naive_datetime ->
+    case binary:split(Value, [~"T", ~" "]) of
+        [_Date, Time] -> exact_time(Time);
+        _ -> false
+    end;
+exact_cast_form(time, Value) ->
+    exact_time(Value);
+exact_cast_form(Type, Value) when
+    Type =:= id; Type =:= integer; Type =:= bigint; Type =:= smallint
+->
+    byte_size(Value) =< 20;
+exact_cast_form(float, Value) ->
+    byte_size(Value) =< 64;
+exact_cast_form(_Type, _Value) ->
+    true.
+
+exact_time(Time) ->
+    Bare =
+        case Time of
+            <<Rest:(byte_size(Time) - 1)/binary, "Z">> -> Rest;
+            _ -> Time
+        end,
+    binary:match(Bare, [~".", ~",", ~"+", ~"-"]) =:= nomatch.
+
+%% cast/2 is not total (it reaches the datetime parsers unguarded), and a
+%% value it rejects is bound as given, as before.
+cast_or_keep(Type, Value) ->
+    try kura_types:cast(Type, Value) of
+        {ok, Cast} -> Cast;
+        {error, _} -> Value
+    catch
+        _:_ -> Value
+    end.
 
 %%----------------------------------------------------------------------
 %% INSERT

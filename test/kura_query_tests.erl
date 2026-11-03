@@ -509,12 +509,20 @@ too_many_dimensions_names_the_limit_test() ->
     ).
 
 %%----------------------------------------------------------------------
-%% where/2 dumps values through the from schema's field types
+%% kura_dialect_pg:prepare_query/1 dumps where values through the from
+%% schema's field types
 %%----------------------------------------------------------------------
+
+dumped(Q) ->
+    (kura_dialect_pg:prepare_query(Q))#kura_query.wheres.
+
+where_stores_the_condition_as_given_test() ->
+    Q = kura_query:where(kura_query:from(kura_test_schema), {active, '!=', ~"1"}),
+    ?assertEqual([{active, '!=', ~"1"}], Q#kura_query.wheres).
 
 where_dumps_an_enum_atom_test() ->
     Q = kura_query:where(kura_query:from(kura_test_schema), {status, active}),
-    ?assertEqual([{status, ~"active"}], Q#kura_query.wheres).
+    ?assertEqual([{status, ~"active"}], dumped(Q)).
 
 where_dumps_enum_atoms_under_operators_and_logic_test() ->
     Q = kura_query:where(
@@ -533,7 +541,7 @@ where_dumps_enum_atoms_under_operators_and_logic_test() ->
                 {status, not_in, [~"banned"]}
             ]}
         ],
-        Q#kura_query.wheres
+        dumped(Q)
     ).
 
 where_casts_a_value_in_cast_form_test() ->
@@ -547,14 +555,14 @@ where_casts_a_value_in_cast_form_test() ->
             {age, between, {18, 30}},
             {inserted_at, '>', {{2026, 1, 2}, {3, 4, 5}}}
         ],
-        Q3#kura_query.wheres
+        dumped(Q3)
     ).
 
 where_keeps_a_value_the_type_cannot_take_test() ->
     Q0 = kura_query:from(kura_test_schema),
     Q1 = kura_query:where(Q0, {status, 42}),
     Q2 = kura_query:where(Q1, {age, ~"not a number"}),
-    ?assertEqual([{status, 42}, {age, ~"not a number"}], Q2#kura_query.wheres).
+    ?assertEqual([{status, 42}, {age, ~"not a number"}], dumped(Q2)).
 
 where_leaves_unary_like_and_fragment_conditions_alone_test() ->
     Conds = [
@@ -564,7 +572,7 @@ where_leaves_unary_like_and_fragment_conditions_alone_test() ->
         {status, undefined}
     ],
     Q = where_all(kura_query:from(kura_test_schema), Conds),
-    ?assertEqual(Conds, Q#kura_query.wheres).
+    ?assertEqual(Conds, dumped(Q)).
 
 where_all(Q, []) -> Q;
 where_all(Q, [C | Rest]) -> where_all(kura_query:where(Q, C), Rest).
@@ -572,15 +580,15 @@ where_all(Q, [C | Rest]) -> where_all(kura_query:where(Q, C), Rest).
 where_binds_a_bare_table_or_cte_value_as_given_test() ->
     Q1 = kura_query:where(kura_query:from(users), {status, active}),
     Q2 = kura_query:where(kura_query:from(~"ranked"), {status, active}),
-    ?assertEqual([{status, active}], Q1#kura_query.wheres),
-    ?assertEqual([{status, active}], Q2#kura_query.wheres).
+    ?assertEqual([{status, active}], dumped(Q1)),
+    ?assertEqual([{status, active}], dumped(Q2)).
 
 where_binds_a_field_the_from_schema_lacks_as_given_test() ->
     Q0 = kura_query:join(kura_query:from(kura_test_post_schema), inner, kura_test_schema, {
         author_id, id
     }),
     Q = kura_query:where(Q0, {status, active}),
-    ?assertEqual([{status, active}], Q#kura_query.wheres).
+    ?assertEqual([{status, active}], dumped(Q)).
 
 from_accepts_a_binary_name_test() ->
     ?assertEqual(~"ranked", (kura_query:from(~"ranked"))#kura_query.from).
@@ -588,11 +596,11 @@ from_accepts_a_binary_name_test() ->
 where_binds_jsonb_values_as_given_test() ->
     Values = [~"active", ~"123", ~"true", 123, true, #{a => 1}, [1, 2]],
     Q = where_all(kura_query:from(kura_test_schema), [{metadata, V} || V <- Values]),
-    ?assertEqual([{metadata, V} || V <- Values], Q#kura_query.wheres).
+    ?assertEqual([{metadata, V} || V <- Values], dumped(Q)).
 
 where_binds_an_embed_value_as_given_test() ->
     Q = kura_query:where(kura_query:from(kura_test_profile), {address, #{city => ~"Oslo"}}),
-    ?assertEqual([{address, #{city => ~"Oslo"}}], Q#kura_query.wheres).
+    ?assertEqual([{address, #{city => ~"Oslo"}}], dumped(Q)).
 
 where_keeps_a_datetime_with_an_offset_or_fraction_test() ->
     Values = [
@@ -603,19 +611,19 @@ where_keeps_a_datetime_with_an_offset_or_fraction_test() ->
         ~"2026-01-02T"
     ],
     Q = where_all(kura_query:from(kura_test_schema), [{inserted_at, '>', V} || V <- Values]),
-    ?assertEqual([{inserted_at, '>', V} || V <- Values], Q#kura_query.wheres).
+    ?assertEqual([{inserted_at, '>', V} || V <- Values], dumped(Q)).
 
 where_casts_a_space_separated_datetime_test() ->
     Q = kura_query:where(
         kura_query:from(kura_test_type_schema), {happened_at, ~"2026-01-02 03:04:05"}
     ),
-    ?assertEqual([{happened_at, {{2026, 1, 2}, {3, 4, 5}}}], Q#kura_query.wheres).
+    ?assertEqual([{happened_at, {{2026, 1, 2}, {3, 4, 5}}}], dumped(Q)).
 
 where_binds_a_custom_value_as_given_test() ->
     Q0 = kura_query:from(kura_test_custom_schema),
     Q = where_all(Q0, [{price, {dollars, 5}}, {price, 500}, {email, ~"A@Example.com"}]),
     ?assertEqual(
-        [{price, {dollars, 5}}, {price, 500}, {email, ~"A@Example.com"}], Q#kura_query.wheres
+        [{price, {dollars, 5}}, {price, 500}, {email, ~"A@Example.com"}], dumped(Q)
     ).
 
 where_binds_strings_uuids_and_arrays_as_given_test() ->
@@ -624,23 +632,56 @@ where_binds_strings_uuids_and_arrays_as_given_test() ->
         {name, foo}, {ref_id, <<1:128>>}, {tags, [~"a"]}, {tags, in, [~"a"]}, {status, ~"active"}
     ],
     Q = where_all(Q0, Conds),
-    ?assertEqual(Conds, Q#kura_query.wheres).
+    ?assertEqual(Conds, dumped(Q)).
 
 where_casts_a_binary_boolean_and_float_test() ->
     Q = where_all(kura_query:from(kura_test_schema), [{active, ~"true"}, {score, '>', ~"1.5"}]),
-    ?assertEqual([{active, true}, {score, '>', 1.5}], Q#kura_query.wheres).
+    ?assertEqual([{active, true}, {score, '>', 1.5}], dumped(Q)).
 
 where_binds_a_long_precision_decimal_binary_as_given_test() ->
     Price = ~"12345678901234567.89",
     Conds = [{price, '=', Price}, {price, in, [Price, ~"0.1"]}, {price, between, {~"1", Price}}],
     Q = where_all(kura_query:from(kura_test_decimal_schema), Conds),
-    ?assertEqual(Conds, Q#kura_query.wheres).
+    ?assertEqual(Conds, dumped(Q)).
 
 where_keeps_undefined_and_null_in_an_enum_in_list_test() ->
     Q = kura_query:where(
         kura_query:from(kura_test_schema), {status, in, [active, undefined, null]}
     ),
-    ?assertEqual([{status, in, [~"active", undefined, null]}], Q#kura_query.wheres).
+    ?assertEqual([{status, in, [~"active", undefined, null]}], dumped(Q)).
+
+prepare_query_converts_nested_queries_against_their_own_schema_test() ->
+    Sub = kura_query:where(kura_query:from(kura_test_schema), {active, ~"1"}),
+    Q0 = kura_query:from(kura_test_post_schema),
+    Q1 = kura_query:where(Q0, {author_id, in, {subquery, kura_query:select(Sub, [id])}}),
+    Q2 = kura_query:where(Q1, {exists, {subquery, Sub}}),
+    Q3 = kura_query:with_cte(Q2, ~"c", Sub),
+    Q = kura_query:union(Q3, Sub),
+    P = kura_dialect_pg:prepare_query(Q),
+    [{author_id, in, {subquery, In}}, {exists, {subquery, Exists}}] = P#kura_query.wheres,
+    [{~"c", Cte}] = P#kura_query.ctes,
+    [{union, Union}] = P#kura_query.combinations,
+    [?assertMatch(#kura_query{wheres = [{active, true}]}, N) || N <- [In, Exists, Cte, Union]].
+
+prepare_query_is_idempotent_test() ->
+    Q = where_all(kura_query:from(kura_test_schema), [
+        {active, ~"true"}, {status, active}, {age, in, [~"1", 2]}
+    ]),
+    Once = kura_dialect_pg:prepare_query(Q),
+    ?assertEqual(Once, kura_dialect_pg:prepare_query(Once)).
+
+where_binds_an_oversized_number_binary_as_given_test() ->
+    Long = binary:copy(~"9", 21),
+    LongFloat = <<"1.", (binary:copy(~"5", 63))/binary>>,
+    Q = where_all(kura_query:from(kura_test_schema), [
+        {age, Long}, {id, in, [Long]}, {score, '>', LongFloat}
+    ]),
+    ?assertEqual([{age, Long}, {id, in, [Long]}, {score, '>', LongFloat}], dumped(Q)).
+
+where_casts_a_number_binary_at_the_size_limit_test() ->
+    Twenty = binary:copy(~"9", 20),
+    Q = kura_query:where(kura_query:from(kura_test_schema), {id, Twenty}),
+    ?assertEqual([{id, binary_to_integer(Twenty)}], dumped(Q)).
 
 %%----------------------------------------------------------------------
 %% Distance thresholds in where/2 and having/2

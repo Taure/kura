@@ -68,8 +68,8 @@ value will fail to load until you migrate them.
 ## Querying
 
 A where condition on an enum field of the query's `from` schema takes the
-atom, as the changeset does; `kura_query:where/2` dumps it to the stored
-binary. The binary works too:
+atom, as the changeset does; on PostgreSQL the query is compiled with the
+atom dumped to the stored binary. The binary works too:
 
 ```erlang
 Q = kura_query:from(post),

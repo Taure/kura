@@ -135,7 +135,18 @@ guard: it is what keeps an upsert inside its tenant.
 -doc "Optional. SQL bytes for a column default value, used by `kura_migrator` DDL.".
 -callback format_default(term()) -> binary().
 
--optional_callbacks([column_type/1, format_default/1]).
+-doc """
+Optional. Rewrite a query's bound values before it is compiled.
+`kura_query_compiler` calls it on every query it compiles, before it splits
+the query into a cached shape, so it sees the values rather than their
+markers, and again on the shape once the tenant condition is added, where it
+must leave a marker as it is. It must be idempotent and keep the query's
+structure. `kura_dialect_pg` converts where values to the field's type here.
+A dialect without it binds every value as the caller gave it.
+""".
+-callback prepare_query(#kura_query{}) -> #kura_query{}.
+
+-optional_callbacks([column_type/1, format_default/1, prepare_query/1]).
 
 -doc """
 Which bare fields of a query name a column of its `from` table.
