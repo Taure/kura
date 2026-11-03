@@ -81,6 +81,8 @@ Q2 = kura_query:where(Q, {status, in, [draft, published]}),
 A condition on a joined schema's enum field, a CTE or a bare table name is
 bound as given, so pass the binary there (`~"published"`).
 
+For untrusted input pass the binary; never `binary_to_atom/2`.
+
 ## Migration Behavior
 
 Enum fields generate `VARCHAR(255)` columns. Adding or removing values from the enum list in your schema doesn't require a new migration since the underlying column type stays the same.
