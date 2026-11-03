@@ -14,6 +14,7 @@
 -endif.
 
 start(_StartType, _StartArgs) ->
+    _ = kura_crypto:write_format(),
     resolve_backends(),
     maybe_configure_pg_types(),
     ok = ensure_pools(),

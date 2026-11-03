@@ -613,9 +613,12 @@ vector_type_errors_test_() ->
 
 encrypted_type_errors_test_() ->
     [
-        ?_assertEqual(
-            {error, ~"cannot load array_encrypted_string"},
+        ?_assertError(
+            {kura_crypto, malformed_frame},
             kura_types:load({array, {encrypted, string}}, ~"secret-value")
+        ),
+        ?_assertEqual(
+            {error, ~"cannot load array_string"}, kura_types:load({array, string}, ~"plain")
         ),
         ?_assertEqual(
             {error, ~"cannot cast to array_encrypted_string"},
@@ -629,6 +632,4 @@ encrypted_type_errors_test_() ->
 
 encrypted_options_form_errors_test() ->
     V2 = kura_test_enc_v2_schema:v2_type(),
-    ?assertEqual(
-        {error, ~"cannot load array_encrypted"}, kura_types:load({array, V2}, ~"secret-value")
-    ).
+    ?assertError({kura_crypto, malformed_frame}, kura_types:load({array, V2}, ~"secret-value")).

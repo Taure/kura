@@ -248,6 +248,59 @@ carries its key id, so existing rows keep decrypting under their original
 key - no backfill. A custom keyring (KMS/Vault) can replace the default by
 implementing the `kura_keyring` behaviour and setting `{kura, [{keyring, my_keyring}]}`.
 
+**Frame versions and column binding:** every ciphertext starts with a
+version byte. By default reads accept every version, so stored data never
+needs a backfill to stay readable.
+
+| Version | Layout | Bound to |
+|---|---|---|
+| v1 | `<<1, KeyId:8, Nonce:12, Tag:16, CT>>` | nothing: encrypted under the root key |
+| v2 | `<<2, Mode:8, KeyId:16, IV:12, Tag:16, CT>>` | its `{Table, Column}` |
+
+A v2 ciphertext is encrypted under a per-column subkey derived with
+HKDF-SHA256 from the root key and the column context `{Table, Column}`
+(the schema's unprefixed `table()` and the column name), and the context,
+mode and key id are authenticated as AAD. A v2 value copied by a
+database-level writer into another encrypted column or table fails to
+decrypt (`{kura_crypto, {bad_tag, KeyId}}`) instead of being shown as that
+column's value. The binding uses the table and column name, so renaming
+either makes the stored v2 values undecryptable. Mode is `0` (randomized)
+for now.
+
+What v2 does not cover yet:
+
+- **v1 is still accepted everywhere.** Every encrypted column accepts a v1
+  frame on read, including a column that only ever had v2 written to it,
+  and a v1 frame is bound to nothing. A database-level writer can copy a
+  v1 ciphertext (from a backup, or from a column not yet rewritten) into
+  any encrypted column and it decrypts there. Column binding is complete
+  only once v1 reads are refused, which no release does yet.
+- **Rows and tenants are not bound**, in either tenancy mode (schema
+  prefix or tenant attribute). A writer with database access can swap
+  ciphertexts of the same column between rows or tenants, and reorder or
+  splice the elements of an encrypted array within the column.
+- **Only the repo read path decrypts v2**: rows loaded for a schema
+  (`kura_db:load_row/2`, which every repo read, stream and preload uses).
+  An encrypted column of a joined schema is loaded by the `from` schema's
+  types, so it comes back undecrypted. A join without a `select` reads
+  `SELECT *`, so when a joined column shares its name with an encrypted
+  field of the `from` schema, the joined value may be read under that
+  field: it raises for a v2 value; a v1 value decrypts and is returned
+  under the `from` field. Use an explicit `select` on joins.
+
+**Write format:** kura writes v1 by default and reads both. Opt in to v2
+with:
+
+```erlang
+[{kura, [{encryption_write_format, v2}]}].
+```
+
+Any other value fails `kura` application start. Turn it on only once every
+node runs a kura that reads v2, since an older node cannot read a v2 value
+(see the rolling deployments guide). A later release makes v2 the default.
+An existing v1 value stays v1 until that field is written again; there is
+no in-place re-encryption yet.
+
 **Constraints:** encrypted columns are **not queryable** and cannot carry a
 unique constraint (each write has a random nonce, so equal plaintexts
 produce different ciphertexts). `kura_query:where/2` and `having/2` raise
@@ -267,9 +320,7 @@ be encrypted: `kura_schema` raises when it first reads such a schema. An
 Schema introspection (`rebar3 kura gen_schemas`) cannot detect that a
 `BYTEA` column was encrypted - annotate it by hand. The audit trail
 redacts encrypted fields to `[encrypted]` (it keeps the "changed" signal
-but never logs the value). Ciphertext is not yet bound to its row/column,
-so a database-level actor could copy a ciphertext between rows of the same
-column; per-column binding is planned.
+but never logs the value).
 
 ## Configuration
 

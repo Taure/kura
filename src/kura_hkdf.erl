@@ -1,6 +1,6 @@
 -module(kura_hkdf).
-%% HKDF-SHA256 (RFC 5869); OTP's crypto has no HKDF. Hidden from the docs
-%% until per-column key derivation (#137) uses it. Errors never carry key
+%% HKDF-SHA256 (RFC 5869); OTP's crypto has no HKDF. Internal: kura_crypto
+%% derives its v2 per-column subkeys with it. Errors never carry key
 %% material, in the reason or the stacktrace.
 -moduledoc false.
 

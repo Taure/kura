@@ -45,3 +45,11 @@ unset_keys([]) ->
 unset_keys([K | Rest]) ->
     application:unset_env(kura, K),
     unset_keys(Rest).
+
+invalid_encryption_write_format_refuses_start_test() ->
+    application:set_env(kura, encryption_write_format, v3),
+    try
+        ?assertError({kura_crypto, invalid_write_format}, kura_app:start(normal, []))
+    after
+        application:unset_env(kura, encryption_write_format)
+    end.
