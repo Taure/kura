@@ -13,5 +13,6 @@ fields() ->
         #kura_field{name = name, type = string},
         #kura_field{name = ssn, type = {encrypted, string}},
         #kura_field{name = nickname, type = {encrypted, string}},
-        #kura_field{name = tags, type = {array, {encrypted, text}}}
+        #kura_field{name = tags, type = {array, {encrypted, text}}},
+        #kura_field{name = ssn_confirmation, type = string, virtual = true}
     ].

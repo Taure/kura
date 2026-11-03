@@ -10,6 +10,9 @@ integration_test_() ->
             {"insert writes v2 and get reads it back", fun t_insert_v2/0},
             {"update writes v2", fun t_update_v2/0},
             {"update_all writes v2", fun t_update_all_v2/0},
+            {"update_all passes a column that is not a field through",
+                fun t_update_all_raw_column/0},
+            {"insert skips a virtual field", fun t_insert_virtual_field/0},
             {"insert_all writes v2", fun t_insert_all_v2/0},
             {"an encrypted array writes v2 elements", fun t_array_v2/0},
             {"rolling: v1 rows read after the flip to v2", fun t_rolling/0},
@@ -34,7 +37,8 @@ setup() ->
         "  name VARCHAR(255),"
         "  ssn BYTEA,"
         "  nickname BYTEA,"
-        "  tags BYTEA[]"
+        "  tags BYTEA[],"
+        "  extra TEXT"
         ")",
         []
     ),
@@ -106,6 +110,21 @@ t_update_all_v2() ->
     assert_v2(raw(~"enc_bound", ~"ssn", Id), ~"after"),
     {ok, Fetched} = kura_test_repo:get(?SCHEMA, Id),
     ?assertEqual(~"after", maps:get(ssn, Fetched)).
+
+t_update_all_raw_column() ->
+    write(v2),
+    #{id := Id} = insert(?SCHEMA, #{name => ~"c2", ssn => ~"s"}),
+    Q = kura_query:where(kura_query:from(?SCHEMA), {id, Id}),
+    {ok, 1} = kura_test_repo:update_all(Q, #{extra => ~"raw", ssn => ~"t"}),
+    ?assertEqual(~"raw", raw(~"enc_bound", ~"extra", Id)),
+    assert_v2(raw(~"enc_bound", ~"ssn", Id), ~"t").
+
+t_insert_virtual_field() ->
+    write(v2),
+    #{id := Id} = insert(?SCHEMA, #{name => ~"v", ssn => ~"s", ssn_confirmation => ~"s"}),
+    assert_v2(raw(~"enc_bound", ~"ssn", Id), ~"s"),
+    {ok, Fetched} = kura_test_repo:get(?SCHEMA, Id),
+    ?assertEqual(~"s", maps:get(ssn, Fetched)).
 
 t_insert_all_v2() ->
     write(v2),
