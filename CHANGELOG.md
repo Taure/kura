@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- A pgvector distance threshold in `where/2` and `having/2`:
+  `{kura_query:distance(Field, Metric, Vector), Op, Number}` with `Op`
+  one of `'<'`, `'<='`, `'>'`, `'>='`, also under `'and'`, `'or'` and
+  `'not'`. The PG dialect emits `"col" <=> $N < $M`, numbered in the
+  where's or having's place. The distance is checked against the schema
+  as in `order_by/2`, a threshold that is not a number raises
+  `{kura, {invalid_distance_threshold, Field}}`, and the encrypted-field
+  guard checks the distance's column. The query cache replaces both the
+  vector and the threshold with markers. The compiler's distance check
+  now covers a hand-built where or having, and the subqueries of `in`,
+  `exists` and `not_exists` conditions. A distance in any other condition
+  still raises `{kura, {distance_not_supported_here, Clause}}`.
+
 ### Changed
 
 - `{Field, is_nil}` and `{Field, is_not_nil}` on an encrypted field are

@@ -18,8 +18,8 @@ subquery it contains:
 - both ends of a `between`;
 - the parameters of a condition fragment, in `wheres` or `havings`;
 - the parameters of a select-expression fragment;
-- the vector of a `kura_query:distance/3` node, in a select expression
-  or in `order_by`;
+- the vector of a `kura_query:distance/3` node, in a select expression,
+  in `order_by` or in a distance threshold, and the threshold itself;
 - `limit` and `offset`.
 
 `nil` and `undefined` stay in the shape wherever they appear, so a
@@ -168,6 +168,12 @@ condition({'not', Condition}, Acc0) ->
 condition({fragment, SQL, Params}, Acc0) when is_list(Params) ->
     {Markers, Acc1} = values(Params, Acc0),
     {{fragment, SQL, Markers}, Acc1};
+condition({{distance, Field, Metric, Vector}, Op, Threshold}, Acc0) when
+    Op =:= '<'; Op =:= '<='; Op =:= '>'; Op =:= '>='
+->
+    {VectorMarker, Acc1} = value(Vector, Acc0),
+    {ThresholdMarker, Acc2} = value(Threshold, Acc1),
+    {{{distance, Field, Metric, VectorMarker}, Op, ThresholdMarker}, Acc2};
 condition({_Field, Op} = Condition, Acc) when ?KURA_IS_UNARY_OP(Op) ->
     {Condition, Acc};
 condition({Exists, {subquery, SubQ}}, Acc0) when Exists =:= exists; Exists =:= not_exists ->

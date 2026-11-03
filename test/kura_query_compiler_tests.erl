@@ -467,6 +467,7 @@ hand_built_distance_queries_raise_before_compiling_test_() ->
     Iodata = {distance, embedding, l2, [~"[1,2,3]"]},
     BadMetric = {distance, embedding, l1, ~"[1.0,2.0,3.0]"},
     WrongDim = {distance, embedding, l2, ~"[1.0,2.0]"},
+    Threshold = {distance, embedding, l2, ~"[1.0,2.0,3.0]"},
     Vec = kura_test_vector_schema,
     Cases = [
         {
@@ -513,6 +514,52 @@ hand_built_distance_queries_raise_before_compiling_test_() ->
             kura_query:union(#kura_query{from = Vec}, #kura_query{
                 from = Vec, select = {exprs, [{d, BadMetric}]}
             }),
+            {kura, {invalid_distance, embedding}}
+        },
+        {
+            #kura_query{from = Vec, wheres = [{Iodata, '<', 0.5}]},
+            {kura, {invalid_distance, embedding}}
+        },
+        {
+            #kura_query{from = Vec, wheres = [{id, 1}, {'or', [{'not', {WrongDim, '>', 0.5}}]}]},
+            {kura, {vector_dimension_mismatch, embedding, 3, 2}}
+        },
+        {
+            #kura_query{from = Vec, havings = [{BadMetric, '<=', 0.5}]},
+            {kura, {invalid_distance, embedding}}
+        },
+        {
+            #kura_query{from = items, wheres = [{WrongDim, '<', 0.5}]},
+            {kura, {distance_requires_schema, items}}
+        },
+        {
+            #kura_query{from = Vec, wheres = [{Threshold, '<', ~"0.5"}]},
+            {kura, {invalid_distance_threshold, embedding}}
+        },
+        {
+            #kura_query{from = Vec, wheres = [{Threshold, '=', 0.5}]},
+            {kura, {distance_not_supported_here, where}}
+        },
+        {
+            #kura_query{from = Vec, havings = [{id, in, [Threshold]}]},
+            {kura, {distance_not_supported_here, having}}
+        },
+        {
+            #kura_query{
+                from = Vec,
+                wheres = [
+                    {id, in, {subquery, #kura_query{from = Vec, wheres = [{WrongDim, '<', 1}]}}}
+                ]
+            },
+            {kura, {vector_dimension_mismatch, embedding, 3, 2}}
+        },
+        {
+            #kura_query{
+                from = Vec,
+                wheres = [
+                    {exists, {subquery, #kura_query{from = Vec, order_bys = [{Iodata, asc}]}}}
+                ]
+            },
             {kura, {invalid_distance, embedding}}
         }
     ],
