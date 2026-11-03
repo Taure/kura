@@ -74,7 +74,7 @@ fields() ->
     forget/1
 ]).
 
--export_type([on_delete/0]).
+-export_type([on_delete/0, field_encryption/0]).
 
 -doc """
 Referential action for a foreign key when the referenced row is deleted.
@@ -87,6 +87,15 @@ and MySQL's InnoDB rejects it at DDL time. A dialect-specific action must
 be introduced dialect-aware rather than added to this union.
 """.
 -type on_delete() :: cascade | restrict | set_null | no_action.
+-doc "An encrypted field's `kura_types:encryption/1` spec with its `context` resolved.".
+-type field_encryption() :: #{
+    inner := kura_types:kura_type(),
+    mode := kura_crypto:mode(),
+    legacy := kura_crypto:legacy(),
+    normalize := kura_types:normalize(),
+    context := kura_crypto:context(),
+    array => pos_integer()
+}.
 
 -callback table() -> binary().
 -callback fields() -> [#kura_field{}].
@@ -137,8 +146,17 @@ The first call for a module also checks its encrypted fields, and raises
 `{kura, Reason}` if one is used where it cannot work:
 
 - `{unsupported_encrypted_type, Mod, Field}` - a type tagged `encrypted`
-  that is not `{encrypted, Inner}`, an `Inner` that cannot be encrypted
-  (see `kura_types:encryptable_inner/1`), or an array of either;
+  that is not `{encrypted, Inner}` or `{encrypted, Inner, Opts}`, an
+  `Inner` that cannot be encrypted (see `kura_types:encryptable_inner/1`),
+  or an array of either;
+- `{invalid_encryption_options, Mod, Field}` - `Opts` is not a map;
+- `{unknown_encryption_option, Mod, Field, Key}` and
+  `{invalid_encryption_option, Mod, Field, Key}` - an `Opts` key that does
+  not exist, or a value it does not take (see
+  `kura_types:validate_encryption/1`);
+- `{unsupported_deterministic_type, Mod, Field}` - a deterministic field
+  whose `Inner` is not in `kura_types:deterministic_inner/1`, or an array
+  of deterministic values;
 - `{encrypted_primary_key, Mod, Field}`;
 - `{encrypted_association_key, Mod, Assoc, Field}` - a foreign key,
   referenced key or join-table key of an association;
@@ -191,31 +209,41 @@ encrypted_fields(Mod) when is_atom(Mod) ->
     end).
 
 -doc """
-Return how each of `Mod`'s stored encrypted fields is encrypted:
-`#{Field => #{context => {Table, Column}}}`. `context` is the column a v2
-ciphertext is bound to (see `kura_crypto`): `Table` is the schema's
-unprefixed `table()` and `Column` the field's column name (see
-`column_map/1`). Renaming the table or the column makes its stored v2
-values undecryptable. Virtual fields are left out. `#{}` if `Mod` has no
-encrypted fields or is not a schema.
+Return how each of `Mod`'s stored encrypted fields is encrypted: its
+`kura_types:encryption/1` spec (`inner`, `mode`, `legacy`, `normalize` and,
+for an array, `array`) with `context` set. `context` is the column a v2
+ciphertext is bound to (see `kura_crypto`): the field's `context` option
+if it has one, and otherwise `{Table, Column}`, where `Table` is the
+schema's unprefixed `table()` and `Column` the field's column name (see
+`column_map/1`). Renaming the table or the column of a field that does not
+pin `context` makes its stored v2 values undecryptable. Virtual fields are
+left out. `#{}` if `Mod` has no encrypted fields or is not a schema.
 """.
--spec encryption_specs(atom()) -> #{atom() => #{context := kura_crypto:context()}}.
+-spec encryption_specs(atom()) -> #{atom() => field_encryption()}.
 encryption_specs(Mod) when is_atom(Mod) ->
     cache({kura_schema, encryption_specs, Mod}, fun() ->
         case encrypted_fields(Mod) of
             [] -> #{};
-            Fields -> encryption_specs(Mod:table(), Fields, column_map(Mod))
+            Fields -> encryption_specs(Mod:table(), Fields, column_map(Mod), field_types(Mod))
         end
     end).
 
 -doc false.
 -spec field_specs(module()) ->
-    {#{atom() => kura_types:kura_type()}, #{atom() => #{context := kura_crypto:context()}}}.
+    {#{atom() => kura_types:kura_type()}, #{atom() => field_encryption()}}.
 field_specs(Mod) ->
     cache({kura_schema, field_specs, Mod}, fun() -> {field_types(Mod), encryption_specs(Mod)} end).
 
-encryption_specs(Table, Fields, Columns) ->
-    #{F => #{context => {Table, Column}} || F <- Fields, #{F := Column} <- [Columns]}.
+encryption_specs(Table, Fields, Columns, Types) ->
+    #{
+        F => field_encryption(Spec, {Table, Column})
+     || F <- Fields,
+        #{F := Column} <- [Columns],
+        {ok, Spec} <- [kura_types:encryption(maps:get(F, Types))]
+    }.
+
+field_encryption(#{context := _} = Spec, _Default) -> Spec;
+field_encryption(Spec, Default) -> Spec#{context => Default}.
 
 -doc "Return map of field name to column name (binary), excluding virtual fields.".
 -spec column_map(module()) -> #{atom() => binary()}.
@@ -450,17 +478,16 @@ indexes(Mod) ->
 %% field_types/1, so two schemas that refer to each other do not recurse.
 %%----------------------------------------------------------------------
 
-encryptable(Type) ->
-    case kura_types:encryption(Type) of
-        none -> true;
-        unsupported -> false;
-        {ok, #{inner := Inner}} -> kura_types:encryptable_inner(Inner)
-    end.
-
 validate_encryption(Mod) ->
     Fields = Mod:fields(),
-    Unsupported = [F || #kura_field{name = F, type = T} <- Fields, not encryptable(T)],
-    refuse(unsupported_encrypted_type, Mod, Unsupported),
+    refuse_types(
+        Mod,
+        [
+            {F, Reason}
+         || #kura_field{name = F, type = T} <- Fields,
+            {error, Reason} <- [kura_types:validate_encryption(T)]
+        ]
+    ),
     Encrypted = declared_encrypted(Mod),
     refuse(encrypted_primary_key, Mod, [F || F <- key_names(Mod), lists:member(F, Encrypted)]),
     validate_encrypted_columns(Mod, Fields, Encrypted),
@@ -487,6 +514,10 @@ validate_encrypted_columns(Mod, Fields, Encrypted) ->
 
 valid_column_name(C) when is_binary(C), byte_size(C) >= 1, byte_size(C) =< 65535 -> true;
 valid_column_name(_) -> false.
+
+refuse_types(_Mod, []) -> ok;
+refuse_types(Mod, [{Field, {Reason, Key}} | _]) -> error({kura, {Reason, Mod, Field, Key}});
+refuse_types(Mod, [{Field, Reason} | _]) -> error({kura, {Reason, Mod, Field}}).
 
 refuse(_Reason, _Mod, []) -> ok;
 refuse(Reason, Mod, [F | _]) -> error({kura, {Reason, Mod, F}}).
