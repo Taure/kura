@@ -307,6 +307,23 @@ facade_delegates_all_callbacks_to_dialect_test_() ->
 %% Two repos with different dialects don't share cache entries.
 %%----------------------------------------------------------------------
 
+%% erlang:function_exported/3 is false for a module the code server has not
+%% loaded yet, so the first query through a cold dialect must load it rather
+%% than skip its convert_values/1.
+converts_with_a_dialect_not_yet_loaded_test() ->
+    _ = code:purge(kura_test_cold_dialect),
+    _ = code:delete(kura_test_cold_dialect),
+    _ = code:purge(kura_test_cold_dialect),
+    ?assertNot(erlang:module_loaded(kura_test_cold_dialect)),
+    set_repo_dialect(kura_test_cold_dialect),
+    try
+        Q = kura_query:where(kura_query:from(kura_test_schema), {id, ~"42"}),
+        {_SQL, Params} = kura_query_compiler:to_sql(?REPO, Q),
+        ?assertEqual([42], Params)
+    after
+        unset_repo()
+    end.
+
 two_repos_different_dialects_test() ->
     application:set_env(kura, repos, #{
         repo_a => #{dialect => ?MODULE},
@@ -726,7 +743,9 @@ bulk_write_refuses_clauses_that_change_the_rows_test_() ->
         {distinct, kura_query:distinct(Base)},
         {distinct, kura_query:distinct(Base, [age])},
         {ctes, kura_query:with_cte(Base, ~"c", Sub)},
-        {combinations, kura_query:union(Base, Sub)}
+        {combinations, kura_query:union(Base, Sub)},
+        {order_bys, kura_query:limit(kura_query:order_by(Base, [{id, asc}]), 1)},
+        {limit, kura_query:union(kura_query:limit(Base, 1), Sub)}
     ],
     [
         {atom_to_list(Clause) ++ " " ++ atom_to_list(Dialect), fun() ->
