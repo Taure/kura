@@ -32,8 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `integer`, `bigint`, `smallint`; `boolean`, `jsonb` and arrays are
   refused. `legacy => reject` refuses a v1 frame
   (`{kura_crypto, {refused_version, 1}}`) and a v2 frame of the other mode
-  (`{kura_crypto, {refused_mode, Mode}}`) per column, which covers per
-  column what kura#214 proposes as a node-wide switch.
+  (`{kura_crypto, {refused_mode, ModeByte}}`, the frame's mode byte) per
+  column, which covers per column what kura#214 proposes as a node-wide
+  switch. Deterministic mode reveals which rows share a value, and a
+  lookup's ciphertext is a stable pseudonym in telemetry and logged
+  parameters; both modes reveal length and `NULL`-ness, and the value
+  stays personal data under the GDPR. A unique index holds within one
+  deterministic key generation. Keep a column under 2^32 distinct values
+  per key.
 - `kura_query:where/2` and `having/2` turn `=`, bare equality, `in`, `!=`
   and `not_in` on a deterministic field into
   `{Field, encrypted_in | encrypted_not_in, Ciphertexts}` before the
@@ -49,10 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cache keys a lookup by shape only when every value has the frame layout.
   For a deterministic field `where/2` and `having/2` read the keyring, so
   they can raise a keyring error such as
-  `{kura_crypto, no_deterministic_key}`. On a schema without encrypted
-  fields the rewrite costs about 30-60 ns per `where/2` (best of 7 x 50,000
-  calls on `kura_test_schema`: equality 0.096 us before, 0.128 us after;
-  three-way `and` 0.158, 0.222 us; a 100-value `in` 1.19-1.24 us both).
+  `{kura_crypto, no_deterministic_key}`. The rewrite costs about 30-60 ns
+  per `where/2` on a schema without deterministic fields.
 - `kura_encryption:lookup_params/3` returns the ciphertexts a lookup binds,
   for a `{fragment, SQL, Params}`.
 - `kura_keyring` gains the optional callbacks `deterministic_active/0` and
@@ -71,12 +75,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `not_in` are correct only while every stored generation is a lookup
   key.
 - `kura_crypto:encrypt/3` and `decrypt/3`;
-  `kura_types:validate_encryption/1` and `deterministic_inner/1`.
-- Deterministic mode reveals which rows share a value, and a lookup's
-  ciphertext is a stable pseudonym in telemetry and logged parameters;
-  both modes reveal length and `NULL`-ness, and the value stays personal
-  data under the GDPR. A unique index holds within one deterministic key
-  generation. Keep a column under 2^32 distinct values per key.
+  `kura_types:validate_encryption/1` and `deterministic_inner/1`; the
+  types `kura_crypto:mode/0`, `legacy/0` and `policy/0`,
+  `kura_types:encryption_opts/0` and `normalize/0`, and
+  `kura_schema:field_encryption/0`.
 - A pgvector distance threshold in `where/2` and `having/2`:
   `{kura_query:distance(Field, Metric, Vector), Op, Number}` with `Op`
   one of `'<'`, `'<='`, `'>'`, `'>='`, also under `'and'`, `'or'` and
@@ -123,12 +125,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{kura, {encrypted_field_in_where, Field}}` when a query is scoped, as on
   a randomized field: writes refuse an encrypted tenant field in either
   mode.
-- `kura_keyring_env` raises `{kura_crypto, invalid_keyring_config}` when
-  the `encryption` config is not a map or its `keys` is not a proper list.
-  It used to raise a `badmap` or `badarg` whose reason or stack arguments
-  held the whole config, base64 keys included, on any encrypted read,
-  write or lookup.
-
 - Map-form `create_index` honours `name`. It used to be ignored, the
   index always taking `kura_migration:index_name/2`. A migration that
   passed `name` now creates the index under that name, and a unique
@@ -412,6 +408,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- `kura_keyring_env` raises `{kura_crypto, invalid_keyring_config}` when
+  the `encryption` config is not a map or its `keys` is not a proper list.
+  It used to raise a `badmap` or `badarg` whose reason or stack arguments
+  held the whole config, base64 keys included, on any encrypted read,
+  write or lookup.
 - The filter guard on `{encrypted, _}` fields could be bypassed (found
   while designing #137). `kura_query:where/2` only refused an encrypted
   field when it was the first element of the condition, and `having/2`

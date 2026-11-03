@@ -64,7 +64,8 @@ Return the ids of the earlier deterministic keys whose values a lookup must
 still find. A deterministic lookup is encrypted under each of them and under
 `deterministic_active/0`, which may be listed or not. Each id is fetched
 through `fetch/1`, and a lookup raises `{kura_crypto, {unknown_key_id, Id}}`
-when one does not resolve.
+when one does not resolve, and `{kura_crypto, invalid_key_ids}` when the
+result is not a list of key ids (0-255).
 """.
 -callback deterministic_key_ids() -> [key_id()].
 

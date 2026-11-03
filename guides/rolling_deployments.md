@@ -133,11 +133,21 @@ To roll back step 2, set the write format back to `v1`: the v2 values
 already written stay readable by every node from step 1, but not by a
 release older than it.
 
-After step 2 the column binding is still not complete: every encrypted
-column keeps accepting v1 frames on read, and a v1 frame is bound to
-nothing, so a v1 ciphertext copied into a column decrypts there. That gap
-stays open until a release can refuse v1 reads, after every stored value
-has been rewritten as v2.
+After step 2 the column binding is still not complete: a
+`{encrypted, Inner}` column keeps accepting v1 frames on read, and a v1
+frame is bound to nothing, so a v1 ciphertext copied into the column
+decrypts there. The options form, `{encrypted, Inner, #{}}`, refuses v1
+reads by default (`legacy => reject`) and closes that gap. Switch an
+existing column to it with `legacy => accept` until every stored value has
+been rewritten as v2, then drop `legacy` to refuse v1.
+
+A v2 value is bound to its table name and column name. Renaming either, or
+copying ciphertexts between columns in SQL (`UPDATE t SET new = old`),
+makes them undecryptable. To rename an encrypted v2 column or its table,
+either pin the old binding in the field's options (`context => {Table,
+Column}`, the names the values were written under) or add the new column,
+rewrite each row through kura so it is encrypted for the new name, then
+drop the old one.
 
 ### Write Deterministic Frames into an Existing Column
 
@@ -147,12 +157,6 @@ loads. Deploy this release to every node, and wait until no node runs an
 older one, before any node writes deterministic frames into an existing
 column: switching a field to `{encrypted, Inner, #{mode => deterministic,
 legacy => accept}}` is that write.
-
-A v2 value is bound to its table name and column name. Renaming either, or
-copying ciphertexts between columns in SQL (`UPDATE t SET new = old`),
-makes them undecryptable. To rename an encrypted v2 column or its table,
-add the new column, rewrite each row through kura so it is encrypted for
-the new name, then drop the old one.
 
 ## Suppressing Warnings
 

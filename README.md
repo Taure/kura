@@ -271,12 +271,15 @@ either makes the stored v2 values undecryptable, unless the field pins its
 
 What v2 does not cover yet:
 
-- **v1 is still accepted everywhere.** Every encrypted column accepts a v1
-  frame on read, including a column that only ever had v2 written to it,
-  and a v1 frame is bound to nothing. A database-level writer can copy a
-  v1 ciphertext (from a backup, or from a column not yet rewritten) into
-  any encrypted column and it decrypts there. Column binding is complete
-  only once v1 reads are refused, which no release does yet.
+- **`{encrypted, T}` still accepts v1.** A `{encrypted, T}` column accepts
+  a v1 frame on read, including a column that only ever had v2 written to
+  it, and a v1 frame is bound to nothing. A database-level writer can copy
+  a v1 ciphertext (from a backup, or from a column not yet rewritten) into
+  such a column and it decrypts there. The options form,
+  `{encrypted, T, #{}}`, refuses v1 reads by default (`legacy => reject`),
+  which completes the column binding. Switching an existing
+  `{encrypted, T}` column to it needs `legacy => accept` until every row
+  has been rewritten as v2.
 - **Rows and tenants are not bound**, in either tenancy mode (schema
   prefix or tenant attribute). A writer with database access can swap
   ciphertexts of the same column between rows or tenants, and reorder or
@@ -346,8 +349,8 @@ forms of a value (precomposed or not) compare equal.
 The options form is always written as a v2 frame, whatever
 `encryption_write_format` says. With `legacy => reject` a column refuses a
 v1 frame (`{kura_crypto, {refused_version, 1}}`) and a v2 frame of the
-other mode (`{kura_crypto, {refused_mode, Mode}}`); `accept` reads both,
-which is how a column moves between modes. Moving a column is complete only
+other mode (`{kura_crypto, {refused_mode, ModeByte}}`, the frame's mode
+byte); `accept` reads both, which is how a column moves between modes. Moving a column is complete only
 once every row has been rewritten: until a reencrypt tool rewrites them, an
 old randomized row never matches a lookup, `!=` and `not_in` return it, and
 a unique index does not cover it. `{encrypted, Inner}` keeps its
