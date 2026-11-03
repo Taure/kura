@@ -485,7 +485,15 @@ multi(RepoMod, Multi) ->
             {error, Name, Value, Completed}
     end.
 
--doc "Execute raw SQL with parameters.".
+-doc """
+Execute raw SQL with parameters.
+
+Rows come back as the driver decodes them: no schema is involved, so no
+field type is applied. A `jsonb` column arrives as its JSON text, and an
+enum column as a binary. Decode such a column yourself (`json:decode/1`),
+extract the value in SQL (`metadata->>'key'`), or read through a schema
+query, which loads every column through its field type.
+""".
 -spec query(module(), iodata(), [term()]) -> {ok, list()} | {error, term()}.
 query(RepoMod, SQL, Params) ->
     case kura_db:query(RepoMod, SQL, Params) of
