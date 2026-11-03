@@ -510,7 +510,7 @@ t_update_timestamps() ->
         kura_changeset:put_change(Inserted, updated_at, OrigUpdatedAt)
     ),
     ?assertEqual(OrigUpdatedAt, maps:get(updated_at, User)),
-    CS = kura_changeset:cast(kura_test_schema, User, #{<<"name">> => <<"TSUser2">>}, [name]),
+    CS = kura_changeset:cast(kura_test_schema, User, #{~"name" => ~"TSUser2"}, [name]),
     {ok, Updated} = kura_test_repo:update(CS),
     NewUpdatedAt = maps:get(updated_at, Updated),
     ?assertNotEqual(OrigUpdatedAt, NewUpdatedAt).

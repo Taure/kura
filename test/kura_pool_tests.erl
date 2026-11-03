@@ -2,6 +2,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 %% A trivial fake pool that lets us test kura_pool:with_conn/3,4 without PG.
+%% The last test checks the minato pool's own contract and needs Postgres.
 
 -export([checkout/2, checkin/2]).
 
@@ -69,11 +70,11 @@ assert_checkin(Name, Token) ->
 minato_pool_reports_a_running_name_as_already_started_test() ->
     Name = kura_pool_tests_minato,
     Opts = #{
-        hostname => <<"localhost">>,
+        hostname => ~"localhost",
         port => 5555,
-        database => <<"kura_test">>,
-        username => <<"postgres">>,
-        password => <<"root">>,
+        database => ~"kura_test",
+        username => ~"postgres",
+        password => ~"root",
         pool_size => 1
     },
     {ok, Pid} = kura_pool_minato:start_pool(Name, Opts),
