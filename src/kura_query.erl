@@ -525,7 +525,10 @@ The lookup reveals which rows share the value, and the ciphertexts bound as
 parameters are a stable pseudonym of it in telemetry and logged parameters.
 
 For a deterministic field `where/2` reads the keyring, so it can raise a
-keyring error such as `{kura_crypto, no_deterministic_key}`.
+keyring error such as `{kura_crypto, no_deterministic_key}`. `!=` and
+`not_in` on a deterministic field return the rows stored under a key
+generation missing from `deterministic_keys`, since those never equal the
+excluded value.
 
 Fields of the `from` schema and of every joined schema are
 checked. So are the conditions of an `in` or `exists` subquery, against the

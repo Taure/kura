@@ -14,7 +14,9 @@ writes under a separate key, `deterministic_active/0`, so rotating `active`
 never changes the ciphertext of a value a deterministic column is looked up
 by. A lookup encrypts its value under `deterministic_active/0` and under
 every other id of `deterministic_key_ids/0`, at most 8 in all, so rows
-written under an earlier deterministic key are still found. Keys used only
+written under an earlier deterministic key are still found. An `in` of N
+values binds N x K ciphertexts for K lookup keys, so PostgreSQL's limit of
+65535 parameters is reached at N > 65535 / K. Keys used only
 for randomized writes never enter a lookup. Both callbacks are optional:
 without `deterministic_active/0` every deterministic write and lookup
 raises `{kura_crypto, no_deterministic_key}`, and without

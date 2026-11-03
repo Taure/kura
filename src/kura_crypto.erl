@@ -55,7 +55,9 @@ is cached: subkeys are derived per operation.
 
 Deterministic encryption reveals which rows hold equal values (frequency
 analysis) and its ciphertext is a stable pseudonym wherever it appears,
-including telemetry and logged query parameters. Both modes reveal the
+including telemetry and logged query parameters. Equality is visible
+across tenants in both tenancy modes, since the context is the unprefixed
+table. Both modes reveal the
 length of a value and whether it is `NULL`. A synthetic IV collision
 between two distinct values of one column under one key breaks GCM's
 confidentiality for that pair, so keep a deterministic column under 2^32

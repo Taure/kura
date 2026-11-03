@@ -340,6 +340,8 @@ the schema is first read (an unknown key or a bad value raises
 
 `casefold` is Unicode full case folding (`string:casefold/1`) without the
 Turkic mappings, so dotless `ı` and `I` fold to different values.
+`nfc_casefold` decomposes, folds and recomposes, so canonically equivalent
+forms of a value (precomposed or not) compare equal.
 
 The options form is always written as a v2 frame, whatever
 `encryption_write_format` says. With `legacy => reject` a column refuses a
@@ -385,7 +387,9 @@ closed without one (`{kura_crypto, no_deterministic_key}`):
 
 A lookup is encrypted under `deterministic_active` and every id in
 `deterministic_keys` (default `[]`; at most 8 ids in all, beyond which a
-lookup raises `{kura_crypto, {too_many_lookup_keys, N}}`). Keys used only
+lookup raises `{kura_crypto, {too_many_lookup_keys, N}}`). An `in` of N
+values binds N x K ciphertexts for K lookup keys, so PostgreSQL's limit of
+65535 parameters is reached at N > 65535 / K. Keys used only
 by `active` never enter a lookup. To rotate a deterministic key, add the
 new key to `keys`, set `deterministic_active` to it and keep the old id in
 `deterministic_keys` until no stored value is encrypted under it, then drop
@@ -405,6 +409,7 @@ What deterministic mode gives away, compared with randomized:
 | | Randomized | Deterministic |
 |---|---|---|
 | Which rows hold equal values | hidden | **revealed** (frequency analysis) |
+| Equal values across tenants | hidden | **revealed** in both tenancy modes: the context is the unprefixed table |
 | A looked-up value in telemetry and logged query parameters | never bound | its ciphertext, a stable pseudonym |
 | Length of a value, and whether it is `NULL` | revealed | revealed |
 | Personal data under the GDPR | yes | yes (pseudonymised, not anonymised) |
