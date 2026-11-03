@@ -68,7 +68,12 @@ end).
 -doc "Opaque per-impl token handed back to `checkin/2`.".
 -type token() :: dynamic().
 
--doc "Start a pool registered under `Name`.".
+-doc """
+Start a pool registered under `Name`.
+
+Starting a name that is already running returns
+`{error, {already_started, Pid}}` and leaves that pool as it is.
+""".
 -callback start_pool(name(), opts()) -> {ok, pid()} | {error, term()}.
 
 -doc "Stop a previously-started pool.".

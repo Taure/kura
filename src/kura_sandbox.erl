@@ -81,7 +81,7 @@ Options:
 -spec checkout(module(), map()) -> ok.
 checkout(RepoMod, Opts) ->
     ensure_started(),
-    Pool = get_pool(RepoMod),
+    Pool = kura_db:get_pool(RepoMod),
     PoolMod = kura_db:get_pool_module(RepoMod),
     DriverMod = kura_db:get_driver_module(RepoMod),
     {ok, Conn, Token} = PoolMod:checkout(Pool, #{}),
@@ -100,7 +100,7 @@ checkout(RepoMod, Opts) ->
 -doc "Roll back the sandbox transaction and return the connection to the pool.".
 -spec checkin(module()) -> ok.
 checkin(RepoMod) ->
-    Pool = get_pool(RepoMod),
+    Pool = kura_db:get_pool(RepoMod),
     DriverMod = kura_db:get_driver_module(RepoMod),
     Self = self(),
 
@@ -137,7 +137,7 @@ The child process must call this before making any database queries.
 """.
 -spec allow(module(), pid(), pid()) -> ok.
 allow(RepoMod, OwnerPid, ChildPid) ->
-    Pool = get_pool(RepoMod),
+    Pool = kura_db:get_pool(RepoMod),
     ets:insert(?TABLE, {{Pool, ChildPid, allowed}, OwnerPid}),
     ok.
 
@@ -235,7 +235,3 @@ ensure_started() ->
         undefined -> start();
         _ -> ok
     end.
-
-get_pool(RepoMod) ->
-    Config = kura_repo:config(RepoMod),
-    maps:get(pool, Config, RepoMod).
