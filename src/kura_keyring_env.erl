@@ -29,7 +29,8 @@ searches under `deterministic_active` alone); at most 8 ids in all,
 `deterministic_active` included. Keys used only by `active` never enter a
 lookup. `deterministic_key_ids/0` raises `{kura_crypto,
 invalid_deterministic_keys}` when `deterministic_keys` is not a list of key
-ids and `{kura_crypto, {unknown_key_id, Id}}` when an id is not in `keys`.
+ids and `{kura_crypto, {unknown_key_id, Id}}` when an id is not in `keys`;
+a lookup raises the same when an id's key does not decode to 32 bytes.
 
 Rotating a deterministic key: add the new key to `keys`, set
 `deterministic_active` to it and add the old id to `deterministic_keys`.
@@ -57,10 +58,12 @@ deterministic_key_ids() ->
 
 resolved_ids([], _Cfg) ->
     [];
+%% Only presence is checked here: kura_crypto fetches each id once for the
+%% lookup and raises the same unknown_key_id on a key that does not decode.
 resolved_ids([Id | Rest], Cfg) when is_integer(Id), Id >= 0, Id =< 255 ->
-    case key_bytes(Id, Cfg) of
-        {ok, _Key} -> [Id | resolved_ids(Rest, Cfg)];
-        error -> erlang:error({kura_crypto, {unknown_key_id, Id}})
+    case lists:keymember(Id, 1, maps:get(keys, Cfg, [])) of
+        true -> [Id | resolved_ids(Rest, Cfg)];
+        false -> erlang:error({kura_crypto, {unknown_key_id, Id}})
     end;
 resolved_ids(_Ids, _Cfg) ->
     erlang:error({kura_crypto, invalid_deterministic_keys}).

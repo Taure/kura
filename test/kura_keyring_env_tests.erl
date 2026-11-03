@@ -58,19 +58,21 @@ keyring_env_test_() ->
         end},
         {"deterministic_key_ids/0 raises on an id not in the ring", fun() ->
             K = base64:encode(crypto:strong_rand_bytes(32)),
+            application:set_env(kura, encryption, #{deterministic_keys => [1, 3], keys => [{1, K}]}),
+            ?assertError(
+                {kura_crypto, {unknown_key_id, 3}}, kura_keyring_env:deterministic_key_ids()
+            )
+        end},
+        {"a lookup raises on a deterministic key that does not decode", fun() ->
+            K = base64:encode(crypto:strong_rand_bytes(32)),
             Short = base64:encode(crypto:strong_rand_bytes(31)),
-            [
-                begin
-                    application:set_env(kura, encryption, #{
-                        deterministic_keys => [1, Id], keys => [{1, K}, {2, Short}]
-                    }),
-                    ?assertError(
-                        {kura_crypto, {unknown_key_id, Id}},
-                        kura_keyring_env:deterministic_key_ids()
-                    )
-                end
-             || Id <- [2, 3]
-            ]
+            application:set_env(kura, encryption, #{
+                deterministic_active => 1, deterministic_keys => [2], keys => [{1, K}, {2, Short}]
+            }),
+            ?assertEqual([2], kura_keyring_env:deterministic_key_ids()),
+            ?assertError(
+                {kura_crypto, {unknown_key_id, 2}}, kura_crypto:lookup([~"x"], {~"t", ~"c"})
+            )
         end},
         {"deterministic_key_ids/0 raises on a malformed deterministic_keys", fun() ->
             K = base64:encode(crypto:strong_rand_bytes(32)),
