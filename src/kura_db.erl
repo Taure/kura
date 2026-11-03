@@ -190,6 +190,7 @@ savepointed(DriverMod, Conn, Fun) ->
     ],
     case on_sandbox(DriverMod, Conn, [~"SAVEPOINT ", Savepoint]) of
         ended -> error({DriverMod, transaction_ended_by_statement});
+        rolled_back -> error(transaction_rolled_back);
         {error, Refused} -> error({DriverMod, {savepoint_failed, reduced(Refused)}});
         _Started -> ok
     end,
@@ -252,6 +253,7 @@ on_sandbox(DriverMod, Conn, SQL) ->
         in_sandbox(DriverMod, Conn, SQL, [])
     catch
         error:{DriverMod, transaction_ended_by_statement} -> ended;
+        error:transaction_rolled_back -> rolled_back;
         Class:_ -> {error, {raised, Class}}
     end.
 

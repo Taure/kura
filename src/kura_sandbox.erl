@@ -49,7 +49,7 @@ raises `{DriverMod, transaction_ended_by_statement}`. So does every
 statement on the connection that starts after that error, from any
 process sharing it, without being run. On SQLite, a statement another
 process started while the `COMMIT` ran can still run in autocommit and
-keep its work. With a driver that does not check, the statements after
+keep its work, or raise `transaction_rolled_back`. With a driver that does not check, the statements after
 it run in autocommit and their work is kept. On kura_postgres, a
 `RESET ALL` in the test also reads as the end of the transaction.
 """.
@@ -219,9 +219,6 @@ leave_transaction(Conn) ->
             ok
     end.
 
-%% Called by kura_db when the driver raises
-%% {DriverMod, transaction_ended_by_statement}. Cleared by checkin/1 and
-%% checkout/2.
 -doc false.
 -spec note_ended(kura_pool:conn()) -> ok.
 note_ended(Conn) ->

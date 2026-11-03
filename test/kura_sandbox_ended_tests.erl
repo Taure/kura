@@ -38,7 +38,9 @@ ended_test_() ->
         {"checkin clears it for the next checkout", fun checkin_clears/0},
         {"a checkout clears what a test that never checked in left",
             fun checkout_clears_a_lost_checkin/0},
-        {"other driver errors still read as the savepoint failing", fun other_failures_unchanged/0}
+        {"other driver errors still read as the savepoint failing", fun other_failures_unchanged/0},
+        {"a SAVEPOINT the database rolled back raises transaction_rolled_back",
+            fun rolled_back_savepoint/0}
     ]}.
 
 statements_are_marked() ->
@@ -104,7 +106,9 @@ transaction_after_commit() ->
 checkin_clears() ->
     ok = kura_sandbox:checkout(?MODULE),
     ?assertError(?ENDED, kura_db:query(?MODULE, ~"COMMIT", [])),
+    [{_, {_PoolMod, _Token, Conn}}] = ets:lookup(kura_sandbox_registry, {?POOL, self()}),
     ok = kura_sandbox:checkin(?MODULE),
+    ?assertNot(kura_sandbox:ended(Conn)),
     ok = kura_sandbox:checkout(?MODULE),
     ?assertMatch(#{}, kura_db:query(?MODULE, ~"SELECT 1", [])),
     ?assertEqual(
@@ -130,6 +134,17 @@ other_failures_unchanged() ->
             kura_db:transaction(?MODULE, fun() -> error(ran) end)
         ),
         ?assertMatch(#{}, kura_db:query(?MODULE, ~"SELECT 1", []))
+    after
+        persistent_term:erase({?MODULE, raise_on_savepoint})
+    end.
+
+rolled_back_savepoint() ->
+    ok = kura_sandbox:checkout(?MODULE),
+    persistent_term:put({?MODULE, raise_on_savepoint}, transaction_rolled_back),
+    try
+        ?assertError(
+            transaction_rolled_back, kura_db:transaction(?MODULE, fun() -> error(ran) end)
+        )
     after
         persistent_term:erase({?MODULE, raise_on_savepoint})
     end.
@@ -217,6 +232,7 @@ answer(~"COMMIT", inside) ->
 answer(<<"SAVEPOINT ", _/binary>>, inside) ->
     case persistent_term:get({?MODULE, raise_on_savepoint}, false) of
         true -> error(refused);
+        transaction_rolled_back -> error(transaction_rolled_back);
         false -> #{command => savepoint, num_rows => 0, rows => []}
     end;
 answer(_Statement, _Transaction) ->
