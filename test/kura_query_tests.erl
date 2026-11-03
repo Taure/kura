@@ -613,6 +613,12 @@ where_casts_a_binary_boolean_and_float_test() ->
     Q = where_all(kura_query:from(kura_test_schema), [{active, ~"true"}, {score, '>', ~"1.5"}]),
     ?assertEqual([{active, true}, {score, '>', 1.5}], Q#kura_query.wheres).
 
+where_binds_a_long_precision_decimal_binary_as_given_test() ->
+    Price = ~"12345678901234567.89",
+    Conds = [{price, '=', Price}, {price, in, [Price, ~"0.1"]}, {price, between, {~"1", Price}}],
+    Q = where_all(kura_query:from(kura_test_decimal_schema), Conds),
+    ?assertEqual(Conds, Q#kura_query.wheres).
+
 where_keeps_undefined_and_null_in_an_enum_in_list_test() ->
     Q = kura_query:where(
         kura_query:from(kura_test_schema), {status, in, [active, undefined, null]}

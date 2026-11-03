@@ -426,18 +426,20 @@ caller's responsibility. A query over a bare table name has no schema and is
 not checked. A `{subquery, Q}` anywhere but `exists`, `not_exists` or a
 single-column `in` raises `{kura, unrecognised_condition}`.
 
-A value compared to a field of a `from` schema is converted where the
-conversion cannot change what the condition matches: an atom on an
+A value compared to a field of a `from` schema is converted only where it
+then binds the value the database would parse from it: an atom on an
 `{enum, [...]}` field binds its binary (`{status, published}` binds
 `~"published"`), and a binary in the form `kura_changeset:cast/4` accepts
 binds the value it spells on an `id`, `integer`, `bigint`, `smallint`,
-`float`, `decimal`, `boolean`, `date` or `time` field (`~"42"` binds `42`).
+`float`, `boolean`, `date` or `time` field (`~"42"` binds `42`).
 A datetime or time binary is cast only without a UTC offset other than
-`Z` and without fractional seconds, since the cast would drop them. This covers `=`, `!=`, `<`, `>`,
-`<=`, `>=`, `in`, `not_in` and `between`, under `and`, `or` and `not`.
+`Z` and without fractional seconds, since the cast would drop them. This
+covers `=`, `!=`, `<`, `>`, `<=`, `>=`, `in`, `not_in` and `between`,
+under `and`, `or` and `not`.
 
-Everything else is bound as given: a value the type rejects, `string`,
-`text`, `binary`, `uuid`, `jsonb`, embed, array, vector and custom fields,
+Everything else is bound as given: a value the type rejects, `decimal`
+(its cast parses a float, which would lose digits), `string`, `text`,
+`binary`, `uuid`, `jsonb`, embed, array, vector and custom fields,
 fields of joined schemas, CTEs and bare table names, `like`, `ilike`,
 `matches`, fragments and subqueries. Conditions added by other paths, such
 as `having/2`, preloads and many-to-many lookups, are not converted.
@@ -522,7 +524,7 @@ convertible_type(Types, Field) ->
             none
     end.
 
-%% Only conversions that cannot change what a condition matches: an enum
+%% Only conversions that bind what the database would parse: an enum
 %% atom to its stored binary, and a binary in cast form to the scalar it
 %% spells. A datetime binary with an offset or a fraction is left alone,
 %% since the cast would drop them. jsonb, embeds, arrays, vectors, strings
@@ -546,7 +548,6 @@ scalar_type(Type) ->
         bigint,
         smallint,
         float,
-        decimal,
         boolean,
         date,
         time,
