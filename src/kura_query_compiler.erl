@@ -57,8 +57,9 @@ module, is first confined to the ambient tenant with
 skips it.
 
 Each of those entry points first runs both guards over the whole query:
-the distance checks that `kura_query:order_by/2` and
-`kura_query:select_expr/2` apply, and the encrypted filter guard with
+the distance checks that `kura_query:order_by/2`,
+`kura_query:select_expr/2`, `kura_query:where/2` and
+`kura_query:having/2` apply, and the encrypted filter guard with
 `kura_query:check_encrypted/1`, so a `#kura_query{}` record built or
 updated without `kura_query:where/2` cannot bind an encrypted field's
 plaintext either.

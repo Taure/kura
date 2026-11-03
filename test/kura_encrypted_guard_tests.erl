@@ -1270,6 +1270,48 @@ distance_and_encryption_guards_both_apply_test_() ->
         ]}
     ].
 
+%% A distance threshold is guarded by its column, in the builders and in
+%% the compiler's re-check of a hand-built query.
+distance_threshold_and_encryption_guards_both_apply_test_() ->
+    D = kura_query:distance(embedding, cosine, [1, 2, 3]),
+    Joined = kura_query:join(kura_query:from(kura_test_vector_schema), inner, ?ENC, {id, id}),
+    FailClosed = fail_closed_vector_cte(),
+    WhereEmbedding = {kura, {encrypted_field_in_where, embedding}},
+    HavingEmbedding = {kura, {encrypted_field_in_having, embedding}},
+    [
+        {"a threshold beside an encrypted schema",
+            ?_assertMatch(#kura_query{}, kura_query:where(Joined, {D, '<', 0.3}))},
+        {"a threshold in having beside an encrypted schema",
+            ?_assertMatch(#kura_query{}, kura_query:having(Joined, {D, '>=', 0.3}))},
+        {"a hand-built threshold beside an encrypted schema passes the re-check",
+            ?_assertEqual(
+                ok, kura_query:check_encrypted(Joined#kura_query{wheres = [{D, '<', 1}]})
+            )},
+        {"a threshold beside an encrypted field still refuses the field",
+            ?_assertError(
+                ?WHERE_SSN, kura_query:where(Joined, {'and', [{D, '<', 0.3}, {ssn, ?PLAIN}]})
+            )},
+        {"a threshold over a fail-closed CTE names the column, not the vector",
+            ?_assertError(WhereEmbedding, kura_query:where(FailClosed, {D, '<', 0.3}))},
+        {"a threshold in having over a fail-closed CTE",
+            ?_assertError(HavingEmbedding, kura_query:having(FailClosed, {'not', {D, '>', 0.3}}))},
+        {"a hand-built threshold over a fail-closed CTE",
+            ?_assertError(
+                WhereEmbedding,
+                kura_query:check_encrypted(FailClosed#kura_query{wheres = [{D, '<=', 0.3}]})
+            )},
+        {"a join after a threshold rechecks its column",
+            ?_assertMatch(
+                #kura_query{},
+                kura_query:join(
+                    kura_query:where(kura_query:from(kura_test_vector_schema), {D, '<', 0.3}),
+                    inner,
+                    ?ENC,
+                    {id, id}
+                )
+            )}
+    ].
+
 %% A CTE over the vector schema's table whose union's encrypted column
 %% cannot be named, so every column of it counts as ciphertext.
 fail_closed_vector_cte() ->

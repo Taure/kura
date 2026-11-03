@@ -44,8 +44,10 @@ replaced by a marker, so an implementation may compile them specially.
 ## Vector distance
 
 A `{distance, Field, Metric, Vector}` node from `kura_query:distance/3`
-can appear in a select expression and in `order_by`. `Vector` is a bound
-value like any other. `kura_dialect_pg` emits pgvector's `<->`, `<=>`
+can appear in a select expression, in `order_by`, and as the left side
+of a `{Distance, Op, Threshold}` condition in a where or a having, `Op`
+being `'<'`, `'<='`, `'>'` or `'>='`. `Vector` and `Threshold` are bound
+values like any other. `kura_dialect_pg` emits pgvector's `<->`, `<=>`
 and `<#>`. A dialect for a backend without vector distance must raise
 `{unsupported, vector_distance}` on such a node, and must never fall back
 to the PG spelling: in MySQL `<=>` is NULL-safe equality, so a query
