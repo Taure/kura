@@ -24,8 +24,7 @@ This module is internal. Use `kura_repo_worker` for executing queries.
     delete_all/2,
     insert_all/4,
     insert_all/5,
-    dialect/1,
-    qualified_columns/1
+    dialect/1
 ]).
 
 -doc """
@@ -213,36 +212,6 @@ insert_all(RepoMod, SchemaOrTable, Fields, Rows) ->
     {iodata(), [term()]}.
 insert_all(RepoMod, SchemaOrTable, Fields, Rows, Opts) ->
     (dialect(RepoMod)):insert_all(SchemaOrTable, Fields, Rows, Opts).
-
-%% Once a query joins another table, a bare column both tables have is
-%% ambiguous to the server. A bare field of the `from` schema names that
-%% schema's column, so a dialect qualifies it with the `from` table this
-%% returns; any other name is left for the server to resolve among the
-%% joined tables. Without a join, or over a bare table or CTE name, nothing
-%% is qualified.
-%%
-%% The attribute tenant's field stays bare. `kura_tenant:scope_query/2` adds
-%% its condition for the `from` table only, so qualifying it would confine
-%% the `from` rows and read the joined table's rows of every tenant. Bare,
-%% a join of two tables that both carry it stays ambiguous and is refused.
--doc false.
--spec qualified_columns(#kura_query{}) ->
-    undefined | {binary(), #{atom() => kura_types:kura_type()}}.
-qualified_columns(#kura_query{joins = []}) ->
-    undefined;
-qualified_columns(#kura_query{from = From}) when is_atom(From), From =/= undefined ->
-    case kura_schema:is_schema(From) of
-        true -> {From:table(), unqualified_tenant(kura_schema:field_types(From))};
-        false -> undefined
-    end;
-qualified_columns(#kura_query{}) ->
-    undefined.
-
-unqualified_tenant(Types) ->
-    case kura_tenant:get_tenant() of
-        {attribute, {Field, _Value}} -> maps:remove(Field, Types);
-        _ -> Types
-    end.
 
 -spec scope(#kura_query{}) -> #kura_query{}.
 scope(Query) ->

@@ -694,10 +694,10 @@ resolve_table(Mod) when is_atom(Mod) ->
     end.
 
 %% Which columns to qualify is decided by
-%% `kura_query_compiler:qualified_columns/1`; the dialect only renders it.
+%% `kura_dialect:qualified_columns/1`; the dialect only renders it.
 -spec column_context(#kura_query{}) -> column_context().
 column_context(Q) ->
-    case kura_query_compiler:qualified_columns(Q) of
+    case kura_dialect:qualified_columns(Q) of
         undefined -> undefined;
         {Table, Fields} -> {quote_ident(Table), Fields}
     end.

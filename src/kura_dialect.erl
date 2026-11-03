@@ -62,6 +62,8 @@ callbacks directly.
 
 -include("kura.hrl").
 
+-export([qualified_columns/1]).
+
 -export_type([sql/0, params/0, counter/0, table/0]).
 
 -doc """
@@ -132,3 +134,39 @@ guard: it is what keeps an upsert inside its tenant.
 -callback format_default(term()) -> binary().
 
 -optional_callbacks([column_type/1, format_default/1]).
+
+-doc """
+Which bare fields of a query name a column of its `from` table.
+
+Returns `undefined` when nothing is qualified: the query has no join, or
+its `from` is a bare table or CTE name rather than a schema module.
+Otherwise returns `{Table, Fields}`: the `from` schema's `table/0` and the
+fields, with their types, that a dialect writes as `"Table"."field"`. Any
+other name stays bare, for the server to find among the joined tables.
+
+Under attribute tenancy (`kura_tenant`) the tenant field is left out of
+`Fields`. `kura_tenant:scope_query/2` adds the tenant condition for the
+`from` table only, so a qualified tenant field would confine the `from`
+rows and read the joined table's rows of every tenant. Bare, the field is
+ambiguous in a join of two tables that both carry it, and the server
+refuses the query.
+""".
+-spec qualified_columns(#kura_query{}) ->
+    undefined | {binary(), #{atom() => kura_types:kura_type()}}.
+qualified_columns(#kura_query{joins = []}) ->
+    undefined;
+qualified_columns(#kura_query{from = From}) when is_atom(From), From =/= undefined ->
+    case kura_schema:is_schema(From) of
+        true -> {From:table(), unqualified_tenant(kura_schema:field_types(From))};
+        false -> undefined
+    end;
+qualified_columns(#kura_query{}) ->
+    undefined.
+
+-spec unqualified_tenant(#{atom() => kura_types:kura_type()}) ->
+    #{atom() => kura_types:kura_type()}.
+unqualified_tenant(Types) ->
+    case kura_tenant:get_tenant() of
+        {attribute, {Field, _Value}} -> maps:remove(Field, Types);
+        _ -> Types
+    end.

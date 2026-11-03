@@ -1318,21 +1318,21 @@ qualified_columns_test_() ->
     }),
     [
         ?_assertEqual(
-            undefined, kura_query_compiler:qualified_columns(kura_query:from(kura_test_post_schema))
+            undefined, kura_dialect:qualified_columns(kura_query:from(kura_test_post_schema))
         ),
         ?_assertEqual(
             undefined,
-            kura_query_compiler:qualified_columns(
+            kura_dialect:qualified_columns(
                 kura_query:join(kura_query:from(user), inner, post, {id, user_id})
             )
         ),
         ?_assertMatch(
             {~"posts", #{id := id, author_id := integer}},
-            kura_query_compiler:qualified_columns(Joined)
+            kura_dialect:qualified_columns(Joined)
         ),
         ?_test(begin
             {~"posts", Fields} = kura_tenant:with_tenant({attribute, {author_id, 1}}, fun() ->
-                kura_query_compiler:qualified_columns(Joined)
+                kura_dialect:qualified_columns(Joined)
             end),
             ?assertNot(is_map_key(author_id, Fields))
         end)
