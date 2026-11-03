@@ -105,11 +105,67 @@ Indexes use a map-based options format with auto-generated names following Ecto 
 %% Generates: CREATE UNIQUE INDEX "users_email_index" ON "users" ("email") WHERE email IS NOT NULL
 ```
 
-The index name is auto-generated via `kura_migration:index_name/2`. If you need a custom name, the legacy 5-tuple format is still supported:
+The index name is auto-generated via `kura_migration:index_name/2`. Pass `name` to choose one, for example to put two indexes on the same column:
+
+```erlang
+{create_index, ~"users", [email], #{unique => true, name => ~"users_email_key"}}.
+%% Generates: CREATE UNIQUE INDEX "users_email_key" ON "users" ("email")
+```
+
+The legacy 5-tuple format also takes a name:
 
 ```erlang
 {create_index, ~"my_custom_idx", ~"users", [email], [unique]}.
 ```
+
+#### Access method, operator class and storage parameters
+
+The map form takes three more options, for PostgreSQL:
+
+- `using`: the index access method, such as `hnsw`, `ivfflat`, `gin`, `gist`, `brin` or `hash`. Without it Postgres builds a btree.
+- `opclass`: the operator class of the column. Only for an index on one column; with more it raises `{invalid_index_option, opclass, {columns, Columns}}`.
+- `with`: storage parameters, a map of atom keys to integers, emitted in key order.
+
+`using`, `opclass` and the `with` keys are atoms matching `^[a-z][a-z0-9_]*$`, emitted quoted. Anything else, a `with` value that is not an integer, an empty `with` map or a `name` that is not a non-empty binary raises `{invalid_index_option, Option, Value}` when the migration is compiled.
+
+```erlang
+%% GIN index on an array column
+{create_index, ~"docs", [tags], #{using => gin}}.
+%% Generates: CREATE INDEX "docs_tags_index" ON "docs" USING "gin" ("tags")
+```
+
+#### Vector indexes (pgvector)
+
+An HNSW index for cosine distance, named so an L2 index can sit beside it:
+
+```erlang
+{create_index, ~"memories", [embedding], #{
+    using => hnsw,
+    opclass => vector_cosine_ops,
+    with => #{m => 16, ef_construction => 64},
+    name => ~"memories_embedding_cos_index"
+}}.
+%% Generates: CREATE INDEX "memories_embedding_cos_index" ON "memories" USING "hnsw"
+%%   ("embedding" "vector_cosine_ops") WITH ("ef_construction" = 64, "m" = 16)
+```
+
+An IVFFlat index for L2 distance. Build it after the table holds data, since the lists are computed from the rows present at build time:
+
+```erlang
+{create_index, ~"memories", [embedding], #{
+    using => ivfflat, opclass => vector_l2_ops, with => #{lists => 100}
+}}.
+```
+
+The operator class must match the metric the queries use: `vector_l2_ops` for `l2`, `vector_cosine_ops` for `cosine`, `vector_ip_ops` for `inner_product` (see the vector search section of the [query builder guide](query-builder.md)). An index serves `order_by` on a distance with a `limit`, ascending.
+
+`CREATE EXTENSION vector` belongs to the cluster bootstrap, not to a migration. pgvector is not a trusted extension, so the role an app migrates as usually cannot create it, on CloudNativePG and on managed Postgres alike: run `CREATE EXTENSION IF NOT EXISTS vector` as a superuser when the database is set up, for example in CNPG's `postInitApplicationSQL`. Where the migrating role is allowed to, an `execute` step works:
+
+```erlang
+{execute, ~"CREATE EXTENSION IF NOT EXISTS vector"}
+```
+
+A large HNSW build can take minutes and blocks writes for its duration. Add `concurrently => true` in a [non-transactional migration](#non-transactional-migrations) to build it online.
 
 `concurrently => true` (`concurrently` in the list form) builds the index
 without blocking writes to the table, and only works in a

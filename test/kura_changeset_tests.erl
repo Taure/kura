@@ -756,6 +756,16 @@ build_index_constraints_unique_index_test() ->
     ?assertEqual(code, C#kura_constraint.field),
     ?assertEqual(<<"has already been taken">>, C#kura_constraint.message).
 
+build_index_constraints_take_the_generated_name_test() ->
+    [C] = kura_changeset:build_index_constraints([{[code], #{unique => true}}], ~"items"),
+    ?assertEqual(~"items_code_index", C#kura_constraint.constraint).
+
+build_index_constraints_honour_a_declared_name_test() ->
+    [C] = kura_changeset:build_index_constraints(
+        [{[code], #{unique => true, name => ~"items_by_code"}}], ~"items"
+    ),
+    ?assertEqual(~"items_by_code", C#kura_constraint.constraint).
+
 build_index_constraints_non_unique_skipped_test() ->
     Result = kura_changeset:build_index_constraints([{[code], #{unique => false}}], <<"t">>),
     ?assertEqual([], Result).

@@ -84,7 +84,15 @@ transactional.
     | {modify_column, atom(), kura_types:kura_type()}.
 
 -type index_opts() :: [unique | concurrently | {where, binary()}].
--type index_opts_map() :: #{unique => boolean(), where => binary(), concurrently => boolean()}.
+-type index_opts_map() :: #{
+    unique => boolean(),
+    where => binary(),
+    concurrently => boolean(),
+    name => binary(),
+    using => atom(),
+    opclass => atom(),
+    with => #{atom() => integer()}
+}.
 -type index_def() :: {[atom()], index_opts_map()}.
 
 -type table_constraint() ::

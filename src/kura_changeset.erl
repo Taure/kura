@@ -648,8 +648,12 @@ build_table_constraints([_ | Rest], Table) ->
 -spec build_index_constraints([kura_migration:index_def()], binary()) -> [#kura_constraint{}].
 build_index_constraints([], _Table) ->
     [];
-build_index_constraints([{[First | _] = Cols, #{unique := true}} | Rest], Table) ->
-    Name = kura_migration:index_name(Table, Cols),
+build_index_constraints([{[First | _] = Cols, #{unique := true} = Opts} | Rest], Table) ->
+    Name =
+        case Opts of
+            #{name := Named} when is_binary(Named) -> Named;
+            #{} -> kura_migration:index_name(Table, Cols)
+        end,
     [
         #kura_constraint{
             type = unique,

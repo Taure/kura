@@ -1487,13 +1487,12 @@ compile_operation(RepoMod, {alter_table, Name, AlterOps}) ->
         iolist_to_binary(lists:join(~", ", Ops))
     ]);
 compile_operation(RepoMod, {create_index, Table, Columns, Opts}) when is_map(Opts) ->
-    IdxName = kura_migration:index_name(Table, Columns),
+    IdxName = map_index_name(Table, Columns, Opts),
     Unique =
         case maps:get(unique, Opts, false) of
             true -> ~"UNIQUE ";
             false -> <<>>
         end,
-    Cols = iolist_to_binary(lists:join(~", ", [quote(atom_to_binary(C, utf8)) || C <- Columns])),
     Where =
         case maps:get(where, Opts, undefined) of
             undefined -> <<>>;
@@ -1507,9 +1506,11 @@ compile_operation(RepoMod, {create_index, Table, Columns, Opts}) when is_map(Opt
         quote(IdxName),
         ~" ON ",
         quote(Table),
+        index_method(Opts),
         ~" (",
-        Cols,
+        index_columns(Columns, Opts),
         ~")",
+        index_storage(Opts),
         Where
     ]);
 compile_operation(RepoMod, {create_index, IdxName, Table, Columns, Opts}) ->
@@ -1541,6 +1542,55 @@ compile_operation(_RepoMod, {drop_index, Name}) ->
     iolist_to_binary([~"DROP INDEX ", quote(Name)]);
 compile_operation(_RepoMod, {execute, SQL}) ->
     SQL.
+
+-spec map_index_name(binary(), [atom()], kura_migration:index_opts_map()) -> binary().
+map_index_name(_Table, _Columns, #{name := Name}) when is_binary(Name), Name =/= ~"" ->
+    Name;
+map_index_name(_Table, _Columns, #{name := Name}) ->
+    error({invalid_index_option, name, Name});
+map_index_name(Table, Columns, #{}) ->
+    kura_migration:index_name(Table, Columns).
+
+-spec index_method(kura_migration:index_opts_map()) -> iodata().
+index_method(#{using := Method}) ->
+    [~" USING ", index_identifier(using, Method)];
+index_method(#{}) ->
+    [].
+
+-spec index_columns([atom()], kura_migration:index_opts_map()) -> iodata().
+index_columns([Column], #{opclass := OpClass}) ->
+    [quote(atom_to_binary(Column, utf8)), ~" ", index_identifier(opclass, OpClass)];
+index_columns(Columns, #{opclass := _}) ->
+    error({invalid_index_option, opclass, {columns, Columns}});
+index_columns(Columns, #{}) ->
+    lists:join(~", ", [quote(atom_to_binary(C, utf8)) || C <- Columns]).
+
+-spec index_storage(kura_migration:index_opts_map()) -> iodata().
+index_storage(#{with := With}) when is_map(With), map_size(With) > 0 ->
+    Params = [storage_param(Key, Value) || {Key, Value} <- lists:sort(maps:to_list(With))],
+    [~" WITH (", lists:join(~", ", Params), ~")"];
+index_storage(#{with := With}) ->
+    error({invalid_index_option, with, With});
+index_storage(#{}) ->
+    [].
+
+-spec storage_param(term(), term()) -> iodata().
+storage_param(Key, Value) when is_integer(Value) ->
+    [index_identifier(with, Key), ~" = ", integer_to_binary(Value)];
+storage_param(Key, Value) ->
+    error({invalid_index_option, with, {Key, Value}}).
+
+%% Only plain lowercase names, so a quoted name is the name PostgreSQL
+%% folds the unquoted one to.
+-spec index_identifier(using | opclass | with, term()) -> binary().
+index_identifier(Option, Name) when is_atom(Name) ->
+    Bin = atom_to_binary(Name, utf8),
+    case re:run(Bin, ~"^[a-z][a-z0-9_]*$", [{capture, none}]) of
+        match -> quote(Bin);
+        nomatch -> error({invalid_index_option, Option, Name})
+    end;
+index_identifier(Option, Name) ->
+    error({invalid_index_option, Option, Name}).
 
 %% A non-Postgres backend without `concurrent_indexes` (SQLite) has no
 %% online index build, and a plain `CREATE INDEX` is what it would run

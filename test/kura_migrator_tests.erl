@@ -564,6 +564,163 @@ create_composite_index_map_test() ->
         SQL
     ).
 
+%%----------------------------------------------------------------------
+%% Map-based create_index: name, using, opclass, with
+%%----------------------------------------------------------------------
+
+create_index_map_honours_name_test() ->
+    ?assertEqual(
+        ~"CREATE INDEX \"memories_embedding_cos_index\" ON \"memories\" (\"embedding\")",
+        kura_migrator:compile_operation(
+            ?REPO,
+            {create_index, ~"memories", [embedding], #{name => ~"memories_embedding_cos_index"}}
+        )
+    ).
+
+create_index_map_quotes_a_custom_name_test() ->
+    ?assertEqual(
+        ~"CREATE INDEX \"odd\"\"name\" ON \"t\" (\"c\")",
+        kura_migrator:compile_operation(?REPO, {create_index, ~"t", [c], #{name => ~"odd\"name"}})
+    ).
+
+create_index_map_hnsw_test() ->
+    ?assertEqual(
+        <<
+            "CREATE INDEX \"memories_embedding_cos_index\" ON \"memories\" USING \"hnsw\" "
+            "(\"embedding\" \"vector_cosine_ops\") WITH (\"ef_construction\" = 64, \"m\" = 16)"
+        >>,
+        kura_migrator:compile_operation(
+            ?REPO,
+            {create_index, ~"memories", [embedding], #{
+                using => hnsw,
+                opclass => vector_cosine_ops,
+                with => #{m => 16, ef_construction => 64},
+                name => ~"memories_embedding_cos_index"
+            }}
+        )
+    ).
+
+create_index_map_ivfflat_test() ->
+    ?assertEqual(
+        <<
+            "CREATE INDEX \"memories_embedding_index\" ON \"memories\" USING \"ivfflat\" "
+            "(\"embedding\" \"vector_l2_ops\") WITH (\"lists\" = 100)"
+        >>,
+        kura_migrator:compile_operation(
+            ?REPO,
+            {create_index, ~"memories", [embedding], #{
+                using => ivfflat, opclass => vector_l2_ops, with => #{lists => 100}
+            }}
+        )
+    ).
+
+create_index_map_using_alone_test() ->
+    ?assertEqual(
+        ~"CREATE INDEX \"docs_tags_index\" ON \"docs\" USING \"gin\" (\"tags\")",
+        kura_migrator:compile_operation(?REPO, {create_index, ~"docs", [tags], #{using => gin}})
+    ).
+
+create_index_map_opclass_without_using_test() ->
+    ?assertEqual(
+        ~"CREATE INDEX \"users_name_index\" ON \"users\" (\"name\" \"text_pattern_ops\")",
+        kura_migrator:compile_operation(
+            ?REPO, {create_index, ~"users", [name], #{opclass => text_pattern_ops}}
+        )
+    ).
+
+create_index_map_using_with_unique_and_where_test() ->
+    ?assertEqual(
+        <<
+            "CREATE UNIQUE INDEX \"by_code\" ON \"items\" USING \"btree\" (\"code\") "
+            "WITH (\"fillfactor\" = 90) WHERE code IS NOT NULL"
+        >>,
+        kura_migrator:compile_operation(
+            ?REPO,
+            {create_index, ~"items", [code], #{
+                unique => true,
+                using => btree,
+                with => #{fillfactor => 90},
+                where => ~"code IS NOT NULL",
+                name => ~"by_code"
+            }}
+        )
+    ).
+
+create_index_map_using_with_several_columns_test() ->
+    ?assertEqual(
+        ~"CREATE INDEX \"t_a_b_index\" ON \"t\" USING \"brin\" (\"a\", \"b\")",
+        kura_migrator:compile_operation(?REPO, {create_index, ~"t", [a, b], #{using => brin}})
+    ).
+
+create_index_map_rejections_test_() ->
+    Compile = fun(Columns, Opts) ->
+        fun() -> kura_migrator:compile_operation(?REPO, {create_index, ~"t", Columns, Opts}) end
+    end,
+    [
+        ?_assertError(
+            {invalid_index_option, using, 'Hnsw'}, (Compile([c], #{using => 'Hnsw'}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, using, 'hnsw; DROP TABLE t'},
+            (Compile([c], #{using => 'hnsw; DROP TABLE t'}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, using, '9hnsw'}, (Compile([c], #{using => '9hnsw'}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, using, '_hnsw'}, (Compile([c], #{using => '_hnsw'}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, using, ''}, (Compile([c], #{using => ''}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, using, 'a\nb'}, (Compile([c], #{using => 'a\nb'}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, using, ~"hnsw"}, (Compile([c], #{using => ill_typed(~"hnsw")}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, opclass, 'vector-ops'},
+            (Compile([c], #{opclass => 'vector-ops'}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, opclass, "ops"}, (Compile([c], #{opclass => ill_typed("ops")}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, opclass, {columns, [a, b]}},
+            (Compile([a, b], #{opclass => vector_l2_ops}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, opclass, {columns, []}},
+            (Compile([], #{opclass => vector_l2_ops}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, with, {m, 1.5}}, (Compile([c], #{with => #{m => 1.5}}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, with, {lists, ~"100"}},
+            (Compile([c], #{with => #{lists => ill_typed(~"100")}}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, with, 'Bad'}, (Compile([c], #{with => #{'Bad' => 1}}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, with, ~"m"},
+            (Compile([c], #{with => ill_typed(#{~"m" => 1})}))()
+        ),
+        ?_assertError({invalid_index_option, with, #{}}, (Compile([c], #{with => #{}}))()),
+        ?_assertError(
+            {invalid_index_option, with, [{m, 1}]}, (Compile([c], #{with => ill_typed([{m, 1}])}))()
+        ),
+        ?_assertError({invalid_index_option, name, ~""}, (Compile([c], #{name => ~""}))()),
+        ?_assertError(
+            {invalid_index_option, name, idx}, (Compile([c], #{name => ill_typed(idx)}))()
+        )
+    ].
+
+-spec ill_typed(term()) -> dynamic().
+ill_typed(Term) -> Term.
+
 index_name_test() ->
     ?assertEqual(<<"users_email_index">>, kura_migration:index_name(<<"users">>, [email])),
     ?assertEqual(

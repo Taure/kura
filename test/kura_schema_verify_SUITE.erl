@@ -51,6 +51,8 @@ trust it as a healthcheck/readiness gate:
     verify_reports_composite_index_in_wrong_order/1,
     verify_accepts_unique_index_for_plain_declaration/1,
     verify_reports_partial_index_for_full_declaration/1,
+    verify_matches_declared_access_method/1,
+    verify_reports_wrong_access_method/1,
     verify_handles_column_aliasing/1,
     verify_skips_schema_without_indexes_callback/1,
     verify_returns_pool_error_when_pool_missing/1,
@@ -82,6 +84,8 @@ all() ->
         verify_reports_composite_index_in_wrong_order,
         verify_accepts_unique_index_for_plain_declaration,
         verify_reports_partial_index_for_full_declaration,
+        verify_matches_declared_access_method,
+        verify_reports_wrong_access_method,
         verify_handles_column_aliasing,
         verify_skips_schema_without_indexes_callback,
         verify_returns_pool_error_when_pool_missing,
@@ -104,7 +108,8 @@ init_per_suite(Config) ->
                 kura_schema_verify_test_aliased_schema,
                 kura_schema_verify_test_no_indexes_schema,
                 kura_schema_verify_test_partial_schema,
-                kura_schema_verify_test_composite_schema
+                kura_schema_verify_test_composite_schema,
+                kura_schema_verify_test_method_schema
             ]},
             {registered, []},
             {applications, [kernel, stdlib]}
@@ -346,6 +351,23 @@ discover_schemas_finds_implementing_modules(_Config) ->
     %% The repo module itself isn't a schema and must not be picked up.
     ?assertNot(lists:member(?REPO, Schemas)).
 
+%% A declared `using` is compared with pg_am.amname under any name; an
+%% index declared without one takes any method.
+verify_matches_declared_access_method(_Config) ->
+    create_method_table(),
+    sql(~"CREATE INDEX other_name ON kura_verify_test_method USING hash (email)"),
+    sql(~"CREATE INDEX name_hash ON kura_verify_test_method USING hash (name)"),
+    ?assertEqual(ok, kura_schema_verify:verify(?REPO, [kura_schema_verify_test_method_schema])).
+
+verify_reports_wrong_access_method(_Config) ->
+    create_method_table(),
+    sql(~"CREATE INDEX by_email_hash ON kura_verify_test_method (email)"),
+    sql(~"CREATE UNIQUE INDEX name_btree ON kura_verify_test_method (name)"),
+    ?assertMatch(
+        {drift, [{missing_index, _, [email], #{using := hash}}]},
+        kura_schema_verify:verify(?REPO, [kura_schema_verify_test_method_schema])
+    ).
+
 %%----------------------------------------------------------------------
 %% Helpers
 %%----------------------------------------------------------------------
@@ -379,11 +401,17 @@ drop_test_table() ->
     sql(~"DROP TABLE IF EXISTS kura_verify_test_aliased CASCADE"),
     sql(~"DROP TABLE IF EXISTS kura_verify_test_no_idx CASCADE"),
     sql(~"DROP TABLE IF EXISTS kura_verify_test_partial CASCADE"),
-    sql(~"DROP TABLE IF EXISTS kura_verify_test_composite CASCADE").
+    sql(~"DROP TABLE IF EXISTS kura_verify_test_composite CASCADE"),
+    sql(~"DROP TABLE IF EXISTS kura_verify_test_method CASCADE").
 
 sql(SQL) ->
     #{} = kura_driver_minato:query(kura_pool_minato, ?LIVE_POOL, SQL, [], #{}),
     ok.
+
+create_method_table() ->
+    sql(
+        ~"CREATE TABLE kura_verify_test_method (id BIGSERIAL PRIMARY KEY, email VARCHAR(255), name VARCHAR(255))"
+    ).
 
 create_composite_table() ->
     sql(
