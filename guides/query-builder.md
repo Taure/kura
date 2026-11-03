@@ -17,11 +17,15 @@ Q1 = kura_query:where(Q, {active, true}),
 
 ## WHERE Conditions
 
-A value compared to a field of the `from` schema is dumped through that
-field's type before it is bound, as a write dumps it: an enum atom binds
-its binary, and a value in the form a changeset casts, such as `~"42"` for
-an integer field or `~"2026-01-01T00:00:00Z"` for a datetime, is cast first.
-A value the type cannot take is bound as given.
+A value compared to a field of the `from` schema is converted where the
+conversion cannot change what the condition matches: an enum atom binds its
+binary, and a binary in cast form binds the value it spells on a numeric,
+`boolean`, `date` or `time` field (`~"42"` for an integer), or on a
+datetime without an offset other than `Z` and without fractional seconds
+(`~"2026-01-01T00:00:00Z"`). Everything else is bound as given: jsonb,
+embed, string, uuid, array and custom fields, values the type rejects, and
+fields of joined schemas, CTEs and bare table names. Conditions from
+`having/2`, preloads and many-to-many lookups are not converted.
 
 ### Equality
 

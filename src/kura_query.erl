@@ -426,14 +426,21 @@ caller's responsibility. A query over a bare table name has no schema and is
 not checked. A `{subquery, Q}` anywhere but `exists`, `not_exists` or a
 single-column `in` raises `{kura, unrecognised_condition}`.
 
-A value compared to a field of a `from` schema is dumped through the
-field's type, as a write would dump it, so `{status, published}` on an
-`{enum, [...]}` field binds `~"published"`, and a value in the form
-`kura_changeset:cast/4` accepts, such as `~"42"` for an integer field, is
-cast first. This covers `=`, `!=`, `<`, `>`, `<=`, `>=`, `in`, `not_in` and
-`between`, under `and`, `or` and `not`. A value that neither dumps nor casts
-is bound as given. Fields of joined schemas, CTEs and bare table names are
-bound as given.
+A value compared to a field of a `from` schema is converted where the
+conversion cannot change what the condition matches: an atom on an
+`{enum, [...]}` field binds its binary (`{status, published}` binds
+`~"published"`), and a binary in the form `kura_changeset:cast/4` accepts
+binds the value it spells on an `id`, `integer`, `bigint`, `smallint`,
+`float`, `decimal`, `boolean`, `date` or `time` field (`~"42"` binds `42`).
+A datetime or time binary is cast only without a UTC offset other than
+`Z` and without fractional seconds, since the cast would drop them. This covers `=`, `!=`, `<`, `>`,
+`<=`, `>=`, `in`, `not_in` and `between`, under `and`, `or` and `not`.
+
+Everything else is bound as given: a value the type rejects, `string`,
+`text`, `binary`, `uuid`, `jsonb`, embed, array, vector and custom fields,
+fields of joined schemas, CTEs and bare table names, `like`, `ilike`,
+`matches`, fragments and subqueries. Conditions added by other paths, such
+as `having/2`, preloads and many-to-many lookups, are not converted.
 """.
 -spec where(#kura_query{}, term()) -> #kura_query{}.
 where(Q = #kura_query{wheres = W, from = From}, Condition) ->
@@ -460,7 +467,10 @@ dump_condition(Types, {'not', Condition}) ->
 dump_condition(Types, {Field, Op, Values}) when
     (Op =:= in orelse Op =:= not_in), is_atom(Field), is_list(Values)
 ->
-    {Field, Op, [dump_value(Types, Field, V) || V <- Values]};
+    case convertible_type(Types, Field) of
+        {ok, Type} -> {Field, Op, where_values(Type, Values)};
+        none -> {Field, Op, Values}
+    end;
 dump_condition(Types, {Field, between, {Low, High}}) when is_atom(Field) ->
     {Field, between, {dump_value(Types, Field, Low), dump_value(Types, Field, High)}};
 dump_condition(Types, {Field, Op, Value}) when
@@ -479,46 +489,97 @@ dump_condition(_Types, Condition) ->
 
 %% An encrypted field never reaches here with a value: the guard above has
 %% already refused it.
-dump_value(_Types, _Field, Value) when Value =:= undefined; Value =:= null ->
-    Value;
-dump_value(_Types, _Field, {subquery, _} = Value) ->
-    Value;
 dump_value(Types, Field, Value) ->
+    case convertible_type(Types, Field) of
+        {ok, Type} -> where_value(Type, Value);
+        none -> Value
+    end.
+
+%% A long `in` list of values already in wire form is kept as it is.
+where_values(Type, Values) ->
+    case any_convertible(Type, Values) of
+        true -> [where_value(Type, V) || V <- Values];
+        false -> Values
+    end.
+
+any_convertible(_Type, []) ->
+    false;
+any_convertible({enum, _} = Type, [V | Rest]) ->
+    is_atom(V) orelse any_convertible(Type, Rest);
+any_convertible(Type, [V | Rest]) ->
+    is_binary(V) orelse any_convertible(Type, Rest).
+
+convertible_type(Types, Field) ->
     case Types of
-        #{Field := Type} ->
-            case kura_types:encryption(Type) of
-                none -> dump_or_keep(Type, Value);
-                _ -> Value
+        #{Field := {enum, _} = Type} ->
+            {ok, Type};
+        #{Field := Type} when is_atom(Type) ->
+            case scalar_type(Type) of
+                true -> {ok, Type};
+                false -> none
             end;
         #{} ->
-            Value
+            none
     end.
 
-%% Binding the value as given is what a where did before it was dumped, so a
-%% value the type cannot take, or a custom type that raises on it, is left
-%% for the server to judge.
-dump_or_keep(Type, Value) ->
-    try
-        dump_or_cast(Type, Value)
+%% Only conversions that cannot change what a condition matches: an enum
+%% atom to its stored binary, and a binary in cast form to the scalar it
+%% spells. A datetime binary with an offset or a fraction is left alone,
+%% since the cast would drop them. jsonb, embeds, arrays, vectors, strings
+%% and custom types are bound as given, as they always were.
+where_value(_Type, Value) when Value =:= undefined; Value =:= null ->
+    Value;
+where_value({enum, _}, Value) when is_atom(Value) ->
+    atom_to_binary(Value, utf8);
+where_value(Type, Value) when is_binary(Value) ->
+    case scalar_type(Type) andalso exact_cast_form(Type, Value) of
+        true -> cast_or_keep(Type, Value);
+        false -> Value
+    end;
+where_value(_Type, Value) ->
+    Value.
+
+scalar_type(Type) ->
+    lists:member(Type, [
+        id,
+        integer,
+        bigint,
+        smallint,
+        float,
+        decimal,
+        boolean,
+        date,
+        time,
+        utc_datetime,
+        naive_datetime
+    ]).
+
+exact_cast_form(Type, Value) when Type =:= utc_datetime; Type =:= naive_datetime ->
+    case binary:split(Value, [~"T", ~" "]) of
+        [_Date, Time] -> exact_time(Time);
+        _ -> false
+    end;
+exact_cast_form(time, Value) ->
+    exact_time(Value);
+exact_cast_form(_Type, _Value) ->
+    true.
+
+exact_time(Time) ->
+    Bare =
+        case Time of
+            <<Rest:(byte_size(Time) - 1)/binary, "Z">> -> Rest;
+            _ -> Time
+        end,
+    binary:match(Bare, [~".", ~",", ~"+", ~"-"]) =:= nomatch.
+
+%% cast/2 is not total (it reaches the datetime parsers unguarded), and a
+%% value it rejects is bound as given, as before.
+cast_or_keep(Type, Value) ->
+    try kura_types:cast(Type, Value) of
+        {ok, Cast} -> Cast;
+        {error, _} -> Value
     catch
         _:_ -> Value
-    end.
-
-dump_or_cast(Type, Value) ->
-    case kura_types:dump(Type, Value) of
-        {ok, Dumped} ->
-            Dumped;
-        {error, _} ->
-            case kura_types:cast(Type, Value) of
-                {ok, Cast} -> dumped_cast(Type, Cast, Value);
-                {error, _} -> Value
-            end
-    end.
-
-dumped_cast(Type, Cast, Value) ->
-    case kura_types:dump(Type, Cast) of
-        {ok, Dumped} -> Dumped;
-        {error, _} -> Value
     end.
 
 %% A nested query reads its own CTEs before those of the queries around it.

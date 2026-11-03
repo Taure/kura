@@ -567,3 +567,54 @@ where_binds_a_field_the_from_schema_lacks_as_given_test() ->
 
 from_accepts_a_binary_name_test() ->
     ?assertEqual(~"ranked", (kura_query:from(~"ranked"))#kura_query.from).
+
+where_binds_jsonb_values_as_given_test() ->
+    Values = [~"active", ~"123", ~"true", 123, true, #{a => 1}, [1, 2]],
+    Q = where_all(kura_query:from(kura_test_schema), [{metadata, V} || V <- Values]),
+    ?assertEqual([{metadata, V} || V <- Values], Q#kura_query.wheres).
+
+where_binds_an_embed_value_as_given_test() ->
+    Q = kura_query:where(kura_query:from(kura_test_profile), {address, #{city => ~"Oslo"}}),
+    ?assertEqual([{address, #{city => ~"Oslo"}}], Q#kura_query.wheres).
+
+where_keeps_a_datetime_with_an_offset_or_fraction_test() ->
+    Values = [
+        ~"2026-01-02T03:04:05+02:00",
+        ~"2026-01-02T03:04:05-05:00",
+        ~"2026-01-02T03:04:05.123Z",
+        ~"2026-01-02T03:04:05,5",
+        ~"2026-01-02T"
+    ],
+    Q = where_all(kura_query:from(kura_test_schema), [{inserted_at, '>', V} || V <- Values]),
+    ?assertEqual([{inserted_at, '>', V} || V <- Values], Q#kura_query.wheres).
+
+where_casts_a_space_separated_datetime_test() ->
+    Q = kura_query:where(
+        kura_query:from(kura_test_type_schema), {happened_at, ~"2026-01-02 03:04:05"}
+    ),
+    ?assertEqual([{happened_at, {{2026, 1, 2}, {3, 4, 5}}}], Q#kura_query.wheres).
+
+where_binds_a_custom_value_as_given_test() ->
+    Q0 = kura_query:from(kura_test_custom_schema),
+    Q = where_all(Q0, [{price, {dollars, 5}}, {price, 500}, {email, ~"A@Example.com"}]),
+    ?assertEqual(
+        [{price, {dollars, 5}}, {price, 500}, {email, ~"A@Example.com"}], Q#kura_query.wheres
+    ).
+
+where_binds_strings_uuids_and_arrays_as_given_test() ->
+    Q0 = kura_query:from(kura_test_type_schema),
+    Conds = [
+        {name, foo}, {ref_id, <<1:128>>}, {tags, [~"a"]}, {tags, in, [~"a"]}, {status, ~"active"}
+    ],
+    Q = where_all(Q0, Conds),
+    ?assertEqual(Conds, Q#kura_query.wheres).
+
+where_casts_a_binary_boolean_and_float_test() ->
+    Q = where_all(kura_query:from(kura_test_schema), [{active, ~"true"}, {score, '>', ~"1.5"}]),
+    ?assertEqual([{active, true}, {score, '>', 1.5}], Q#kura_query.wheres).
+
+where_keeps_undefined_and_null_in_an_enum_in_list_test() ->
+    Q = kura_query:where(
+        kura_query:from(kura_test_schema), {status, in, [active, undefined, null]}
+    ),
+    ?assertEqual([{status, in, [~"active", undefined, null]}], Q#kura_query.wheres).
