@@ -143,10 +143,15 @@ The first call for a module also checks its encrypted fields, and raises
 - `{encrypted_association_key, Mod, Assoc, Field}` - a foreign key,
   referenced key or join-table key of an association;
 - `{encrypted_embed_field, Mod, Embed, Field}` - an encrypted field in an
-  embedded schema, at any depth.
+  embedded schema, at any depth;
+- `{invalid_encrypted_column, Mod, Field}` - an encrypted field whose
+  column name is not a binary of 1 to 65535 bytes;
+- `{duplicate_encrypted_column, Mod, Column}` - two encrypted fields
+  stored in the same column.
 
 A key is matched by equality and an embed is stored as one JSON document,
-so none of these can hold a ciphertext.
+so none of these can hold a ciphertext. A v2 frame is bound to its column
+name, so two encrypted fields on one column would share a subkey.
 """.
 -spec field_types(module()) -> #{atom() => kura_types:kura_type()}.
 field_types(Mod) ->
@@ -458,6 +463,7 @@ validate_encryption(Mod) ->
     refuse(unsupported_encrypted_type, Mod, Unsupported),
     Encrypted = declared_encrypted(Mod),
     refuse(encrypted_primary_key, Mod, [F || F <- key_names(Mod), lists:member(F, Encrypted)]),
+    validate_encrypted_columns(Mod, Fields, Encrypted),
     case
         [
             {Name, F}
@@ -469,6 +475,18 @@ validate_encryption(Mod) ->
         [{Name, F} | _] -> error({kura, {encrypted_association_key, Mod, Name, F}})
     end,
     validate_embeds(Mod, embeds(Mod), [Mod]).
+
+validate_encrypted_columns(Mod, Fields, Encrypted) ->
+    Columns = [
+        {F, column_name(Field)}
+     || #kura_field{name = F, virtual = false} = Field <- Fields, lists:member(F, Encrypted)
+    ],
+    refuse(invalid_encrypted_column, Mod, [F || {F, C} <- Columns, not valid_column_name(C)]),
+    Names = [C || {_, C} <- Columns],
+    refuse(duplicate_encrypted_column, Mod, Names -- lists:usort(Names)).
+
+valid_column_name(C) when is_binary(C), byte_size(C) >= 1, byte_size(C) =< 65535 -> true;
+valid_column_name(_) -> false.
 
 refuse(_Reason, _Mod, []) -> ok;
 refuse(Reason, Mod, [F | _]) -> error({kura, {Reason, Mod, F}}).
@@ -551,12 +569,10 @@ field_column_map([], Acc) ->
 field_column_map([#kura_field{virtual = true} | Rest], Acc) ->
     field_column_map(Rest, Acc);
 field_column_map([F | Rest], Acc) ->
-    Col =
-        case F#kura_field.column of
-            undefined -> atom_to_binary(F#kura_field.name, utf8);
-            C -> C
-        end,
-    field_column_map(Rest, Acc#{F#kura_field.name => Col}).
+    field_column_map(Rest, Acc#{F#kura_field.name => column_name(F)}).
+
+column_name(#kura_field{name = Name, column = undefined}) -> atom_to_binary(Name, utf8);
+column_name(#kura_field{column = Column}) -> Column.
 
 embed_column_map([], Acc) ->
     Acc;

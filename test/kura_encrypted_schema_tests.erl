@@ -75,6 +75,47 @@ placement_test_() ->
     ].
 
 %%----------------------------------------------------------------------
+%% Columns: a v2 frame is bound to the column name
+%%----------------------------------------------------------------------
+
+duplicate_encrypted_column_test() ->
+    ?assertError(
+        {kura, {duplicate_encrypted_column, kura_test_enc_dup_column_schema, ~"b"}},
+        kura_schema:field_types(kura_test_enc_dup_column_schema)
+    ).
+
+encrypted_column_name_test_() ->
+    {foreach, fun forget_test_schemas/0,
+        fun(_) ->
+            application:unset_env(kura, test_enc_column_name),
+            forget_test_schemas()
+        end,
+        [
+            ?_test(column_name_accepted(binary:copy(~"c", 1))),
+            ?_test(column_name_accepted(binary:copy(~"c", 65535))),
+            ?_test(column_name_refused(~"")),
+            ?_test(column_name_refused(binary:copy(~"c", 65536))),
+            ?_test(column_name_refused(ssn))
+        ]}.
+
+column_name_accepted(Column) ->
+    application:set_env(kura, test_enc_column_name, Column),
+    ?assertMatch(
+        #{ssn := {encrypted, string}}, kura_schema:field_types(kura_test_enc_column_name_schema)
+    ),
+    ?assertEqual(
+        #{ssn => #{context => {~"enc_column_name", Column}}},
+        kura_schema:encryption_specs(kura_test_enc_column_name_schema)
+    ).
+
+column_name_refused(Column) ->
+    application:set_env(kura, test_enc_column_name, Column),
+    ?assertError(
+        {kura, {invalid_encrypted_column, kura_test_enc_column_name_schema, ssn}},
+        kura_schema:field_types(kura_test_enc_column_name_schema)
+    ).
+
+%%----------------------------------------------------------------------
 %% Recognition: one function, both forms
 %%----------------------------------------------------------------------
 
