@@ -187,7 +187,9 @@ with the `from` table in `select`, `where`, `having`, `order_by`,
 does not declare is left bare, for the database to find in the joined
 tables; it must be unique among them. Under attribute tenancy the tenant
 field stays bare too, so a join of two tables that both carry it is still
-refused (see the [Multitenancy](multitenancy.md) guide). To read a column of a joined table
+refused (see the [Multitenancy](multitenancy.md) guide). An `order_by`
+name that is a `select_expr/2` alias stays bare, so it keeps naming the
+expression. To read a column of a joined table
 that the `from` schema also has, select it with a fragment:
 
 ```erlang

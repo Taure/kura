@@ -1295,3 +1295,45 @@ join_leaves_the_attribute_tenant_field_bare_test() ->
         >>,
         SQL
     ).
+
+join_leaves_an_order_by_alias_bare_test() ->
+    Q0 = kura_query:join(kura_query:from(kura_test_post_schema), inner, kura_test_schema, {
+        author_id, id
+    }),
+    Q1 = kura_query:select_expr(Q0, [{title, {fragment, ~"upper(\"posts\".\"title\")", []}}]),
+    Q2 = kura_query:order_by(Q1, [{title, asc}, {inserted_at, desc}]),
+    {SQL, _} = kura_dialect_pg:to_sql(Q2),
+    ?assertEqual(
+        <<
+            "SELECT upper(\"posts\".\"title\") AS \"title\" FROM \"posts\" "
+            "INNER JOIN \"users\" ON \"posts\".\"author_id\" = \"users\".\"id\" "
+            "ORDER BY \"title\" ASC, \"posts\".\"inserted_at\" DESC"
+        >>,
+        SQL
+    ).
+
+qualified_columns_test_() ->
+    Joined = kura_query:join(kura_query:from(kura_test_post_schema), inner, kura_test_schema, {
+        author_id, id
+    }),
+    [
+        ?_assertEqual(
+            undefined, kura_query_compiler:qualified_columns(kura_query:from(kura_test_post_schema))
+        ),
+        ?_assertEqual(
+            undefined,
+            kura_query_compiler:qualified_columns(
+                kura_query:join(kura_query:from(user), inner, post, {id, user_id})
+            )
+        ),
+        ?_assertMatch(
+            {~"posts", #{id := id, author_id := integer}},
+            kura_query_compiler:qualified_columns(Joined)
+        ),
+        ?_test(begin
+            {~"posts", Fields} = kura_tenant:with_tenant({attribute, {author_id, 1}}, fun() ->
+                kura_query_compiler:qualified_columns(Joined)
+            end),
+            ?assertNot(is_map_key(author_id, Fields))
+        end)
+    ].

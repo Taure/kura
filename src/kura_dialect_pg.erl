@@ -42,14 +42,16 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
     {CteSQL, CteParams, Counter00} = compile_ctes(Q#kura_query.ctes, StartCounter),
 
     Table = resolve_table(From),
-    Ctx = column_context(From, Table, Q#kura_query.joins),
+    Ctx = column_context(Q),
     {SelectSQL, Params0, Counter0} = compile_select(Q, Ctx, Counter00),
     {WhereSQL, Params1, Counter1} = compile_wheres(Q#kura_query.wheres, Ctx, Counter0),
     Prefix = resolve_prefix(Q#kura_query.prefix),
     {JoinSQL, Params2, Counter2} = compile_joins(Q#kura_query.joins, Table, Prefix, Counter1),
     {GroupSQL, _, Counter3} = compile_group_by(Q#kura_query.group_bys, Ctx, Counter2),
     {HavingSQL, Params3, Counter4} = compile_havings(Q#kura_query.havings, Ctx, Counter3),
-    {OrderSQL, OrderParams, Counter5} = compile_order_by(Q#kura_query.order_bys, Ctx, Counter4),
+    {OrderSQL, OrderParams, Counter5} = compile_order_by(
+        Q#kura_query.order_bys, order_context(Q, Ctx), Counter4
+    ),
     {LimitSQL, Params4, Counter6} = compile_limit(Q#kura_query.limit, Counter5),
     {OffsetSQL, Params5, Counter7} = compile_offset(Q#kura_query.offset, Counter6),
     LockSQL = compile_lock(Q#kura_query.lock),
@@ -691,31 +693,22 @@ resolve_table(Mod) when is_atom(Mod) ->
             atom_to_binary(Mod, utf8)
     end.
 
-%% Once a query joins another table, a bare column both tables have is
-%% ambiguous to the server. A bare field of the `from` schema names that
-%% schema's column, so it is qualified with the `from` table; any other name
-%% is left for the server to resolve among the joined tables.
-%%
-%% The attribute tenant's field stays bare. `kura_tenant:scope_query/2` adds
-%% its condition for the `from` table only, so qualifying it would confine
-%% the `from` rows and read the joined table's rows of every tenant. Bare,
-%% a join of two tables that both carry it stays ambiguous and is refused.
--spec column_context(kura_dialect:table(), binary(), [term()]) -> column_context().
-column_context(_From, _Table, []) ->
-    undefined;
-column_context(From, Table, _Joins) when is_atom(From) ->
-    case kura_schema:is_schema(From) of
-        true -> {quote_ident(Table), unqualified_tenant(kura_schema:field_types(From))};
-        false -> undefined
-    end;
-column_context(_From, _Table, _Joins) ->
-    undefined.
-
-unqualified_tenant(Types) ->
-    case kura_tenant:get_tenant() of
-        {attribute, {Field, _Value}} -> maps:remove(Field, Types);
-        _ -> Types
+%% Which columns to qualify is decided by
+%% `kura_query_compiler:qualified_columns/1`; the dialect only renders it.
+-spec column_context(#kura_query{}) -> column_context().
+column_context(Q) ->
+    case kura_query_compiler:qualified_columns(Q) of
+        undefined -> undefined;
+        {Table, Fields} -> {quote_ident(Table), Fields}
     end.
+
+%% ORDER BY resolves a name to a select_expr output column before an input
+%% column, so an alias is left bare to keep naming the expression.
+-spec order_context(#kura_query{}, column_context()) -> column_context().
+order_context(#kura_query{select = {exprs, Exprs}}, {Qualifier, Fields}) ->
+    {Qualifier, maps:without([Alias || {Alias, _} <- Exprs], Fields)};
+order_context(_Q, Ctx) ->
+    Ctx.
 
 -spec column(atom(), column_context()) -> iodata().
 column(Field, {Qualifier, Fields}) when is_map_key(Field, Fields) ->
