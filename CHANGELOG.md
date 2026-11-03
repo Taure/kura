@@ -21,16 +21,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one. A changeset with associations refuses any `on_conflict` action but
   `nothing`, raising `{kura, on_conflict_with_assocs}`.
 - `kura_query:where/2` converts a value compared to a field of the `from`
-  schema where the conversion cannot change what matches: an enum atom
-  binds its binary, and a binary in cast form binds the scalar it spells
-  on `id`, `integer`, `bigint`, `smallint`, `float`, `decimal`,
+  schema only where it then binds what the database would parse from it:
+  an enum atom binds its binary, and a binary in cast form binds the
+  scalar it spells on `id`, `integer`, `bigint`, `smallint`, `float`,
   `boolean`, `date` and `time` fields, and on datetimes without an offset
-  other than `Z` or a fraction. Every other value is bound as given.
+  other than `Z` or a fraction. Every other value, `decimal` included, is
+  bound as given. On SQLite, `{flag, ~"true"}` on a boolean field used to
+  match no row and now matches the true ones.
 - After a join, the PostgreSQL dialect qualifies a bare field of the
   `from` schema with the `from` table in select, where, having, order_by,
   group_by, distinct and window specs, so a column both tables have is no
   longer ambiguous. The attribute-tenancy field and `order_by` names that
-  are `select_expr/2` aliases stay bare.
+  are `select_expr/2` aliases stay bare. Which fields are qualified is
+  decided by the new `kura_dialect:qualified_columns/1`. kura_sqlite
+  delegates to this dialect and inherits the qualification; a where on a
+  byte field of the `from` schema under a join needs the kura_sqlite
+  release that uses `kura_dialect:qualified_columns/1`.
 - `kura_changeset:validate_length/3` measures a binary in Unicode code
   points rather than bytes; invalid UTF-8 is still measured in bytes.
 - `cast/4` looks up `table/0` only when the schema declares constraints
