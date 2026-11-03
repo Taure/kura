@@ -119,10 +119,10 @@ in `kura_query:where/2`: SQLite, for one, would compare a converted boolean
 `true` with an `INTEGER` column as the text `'true'`.
 """.
 -spec convert_values(#kura_query{}) -> #kura_query{}.
-convert_values(#kura_query{from = From, wheres = Wheres, ctes = Ctes, combinations = Comb} = Q) ->
+convert_values(#kura_query{from = From, wheres = Wheres, ctes = With, combinations = Comb} = Q) ->
     Q#kura_query{
         wheres = dump_conditions(from_types(From), Wheres),
-        ctes = convert_named(Ctes),
+        ctes = convert_named(With),
         combinations = convert_named(Comb)
     }.
 
@@ -156,14 +156,14 @@ from_types(From) when is_atom(From), From =/= undefined ->
 from_types(_From) ->
     #{}.
 
-dump_condition(Types, {Logic, Conditions}) when
-    (Logic =:= 'and' orelse Logic =:= 'or'), is_list(Conditions)
-->
-    {Logic, dump_conditions(Types, Conditions)};
+dump_condition(Types, {'and', Conditions}) when is_list(Conditions) ->
+    {'and', dump_conditions(Types, Conditions)};
+dump_condition(Types, {'or', Conditions}) when is_list(Conditions) ->
+    {'or', dump_conditions(Types, Conditions)};
 dump_condition(Types, {'not', Condition}) ->
     {'not', dump_condition(Types, Condition)};
 dump_condition(_Types, {Exists, {subquery, #kura_query{} = SubQ}}) when
-    Exists =:= exists; Exists =:= not_exists
+    Exists =:= exists orelse Exists =:= not_exists
 ->
     {Exists, {subquery, convert_values(SubQ)}};
 dump_condition(_Types, {Field, Op, {subquery, #kura_query{} = SubQ}}) ->
@@ -171,7 +171,7 @@ dump_condition(_Types, {Field, Op, {subquery, #kura_query{} = SubQ}}) ->
 dump_condition(Types, Condition) when map_size(Types) =:= 0 ->
     Condition;
 dump_condition(Types, {Field, Op, Values}) when
-    (Op =:= in orelse Op =:= not_in), is_atom(Field), is_list(Values)
+    is_atom(Field) andalso is_list(Values) andalso (Op =:= in orelse Op =:= not_in)
 ->
     case convertible_type(Types, Field) of
         {ok, Type} -> {Field, Op, where_values(Type, Values)};
@@ -180,9 +180,9 @@ dump_condition(Types, {Field, Op, Values}) when
 dump_condition(Types, {Field, between, {Low, High}}) when is_atom(Field) ->
     {Field, between, {dump_value(Types, Field, Low), dump_value(Types, Field, High)}};
 dump_condition(Types, {Field, Op, Value}) when
-    is_atom(Field),
-    (Op =:= '=' orelse Op =:= '!=' orelse Op =:= '<' orelse Op =:= '>' orelse Op =:= '<=' orelse
-        Op =:= '>=')
+    is_atom(Field) andalso
+        (Op =:= '=' orelse Op =:= '!=' orelse Op =:= '<' orelse Op =:= '>' orelse Op =:= '<=' orelse
+            Op =:= '>=')
 ->
     {Field, Op, dump_value(Types, Field, Value)};
 dump_condition(Types, {Field, Value}) when is_atom(Field) ->
