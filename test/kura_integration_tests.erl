@@ -3,6 +3,8 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-export([forward_telemetry/4]).
+
 %%----------------------------------------------------------------------
 %% Test fixture
 %%----------------------------------------------------------------------
@@ -103,6 +105,8 @@ integration_test_() ->
             {"exclusion_constraint maps DB error", fun t_exclusion_constraint/0},
             {"full-text search via matches operator", fun t_full_text_search/0},
             {"encrypted field: ciphertext at rest, plaintext on load", fun t_field_encryption/0},
+            {"encrypted field filters never reach the server or telemetry",
+                fun t_encrypted_filter_never_sent/0},
 
             %% Transactions
             {"transaction rollback", fun t_transaction_rollback/0},
@@ -330,6 +334,7 @@ drop_tables() ->
     %% creates then fails on every run after it. Dropping first makes the setup
     %% idempotent, which is what a fixture should be.
     Tables = [
+        ~"memberships",
         ~"audit_log",
         ~"audited_items",
         ~"secrets",
@@ -349,17 +354,7 @@ drop_tables() ->
     ).
 
 teardown(_) ->
-    kura_test_repo:query("DROP TABLE IF EXISTS memberships CASCADE", []),
-    kura_test_repo:query("DROP TABLE IF EXISTS secrets CASCADE", []),
-    kura_test_repo:query("DROP TABLE IF EXISTS articles CASCADE", []),
-    kura_test_repo:query("DROP TABLE IF EXISTS bookings CASCADE", []),
-    kura_test_repo:query("DROP TABLE IF EXISTS audit_log CASCADE", []),
-    kura_test_repo:query("DROP TABLE IF EXISTS audited_items CASCADE", []),
-    kura_test_repo:query("DROP TABLE IF EXISTS hook_items CASCADE", []),
-    kura_test_repo:query("DROP TABLE IF EXISTS participants CASCADE", []),
-    kura_test_repo:query("DROP TABLE IF EXISTS posts_simple CASCADE", []),
-    kura_test_repo:query("DROP TABLE IF EXISTS users CASCADE", []),
-    ok.
+    drop_tables().
 
 t_composite_crud() ->
     Org = ~"11111111-1111-1111-1111-111111111111",
@@ -502,12 +497,20 @@ t_update_noop() ->
     ?assertEqual(maps:get(id, User), maps:get(id, Result)).
 
 t_update_timestamps() ->
-    {ok, User} = insert_user(<<"TSUser">>, <<"tsuser@example.com">>),
-    OrigUpdatedAt = maps:get(updated_at, User),
-
-    %% Sleep >1s to ensure timestamp differs (PG timestamp has second resolution)
-    timer:sleep(1100),
-    CS = kura_changeset:cast(kura_test_schema, User, #{<<"name">> => <<"TSUser2">>}, [name]),
+    %% An updated_at in the past makes the bump visible without sleeping past
+    %% the second the insert ran in.
+    OrigUpdatedAt = {{2000, 1, 1}, {0, 0, 0}},
+    Inserted = kura_changeset:cast(
+        kura_test_schema,
+        #{},
+        #{~"name" => ~"TSUser", ~"email" => ~"tsuser@example.com"},
+        [name, email]
+    ),
+    {ok, User} = kura_test_repo:insert(
+        kura_changeset:put_change(Inserted, updated_at, OrigUpdatedAt)
+    ),
+    ?assertEqual(OrigUpdatedAt, maps:get(updated_at, User)),
+    CS = kura_changeset:cast(kura_test_schema, User, #{~"name" => ~"TSUser2"}, [name]),
     {ok, Updated} = kura_test_repo:update(CS),
     NewUpdatedAt = maps:get(updated_at, Updated),
     ?assertNotEqual(OrigUpdatedAt, NewUpdatedAt).
@@ -1219,6 +1222,43 @@ t_field_encryption() ->
     ?assertEqual(nomatch, binary:match(Raw, Plain)),
     %% frame: version=1, key_id=1 header
     ?assertEqual(1, binary:at(Raw, 0)).
+
+t_encrypted_filter_never_sent() ->
+    Plain = ~"987-65-4321",
+    CS = kura_changeset:cast(
+        kura_test_encrypted_schema, #{}, #{name => ~"Eve", ssn => Plain}, [name, ssn]
+    ),
+    {ok, #{id := Id}} = kura_test_repo:insert(CS),
+    Handler = {?MODULE, encrypted_filter},
+    ok = telemetry:attach(
+        Handler, [kura, repo, query], fun ?MODULE:forward_telemetry/4, #{pid => self()}
+    ),
+    From = kura_query:from(kura_test_encrypted_schema),
+    Attempts = [
+        fun() -> kura_test_repo:all(kura_query:where(From, {'not', {ssn, Plain}})) end,
+        fun() -> kura_test_repo:all(kura_query:where(From, {[ssn], in, [{Plain}]})) end,
+        fun() -> kura_test_repo:all(kura_query:where(From, {[id, ssn], in, [{Id, Plain}]})) end,
+        fun() -> kura_test_repo:all(kura_query:having(From, {ssn, Plain})) end,
+        fun() -> kura_test_repo:get_by(kura_test_encrypted_schema, [{ssn, Plain}]) end
+    ],
+    try
+        [?assertError({kura, {_, ssn}}, Attempt()) || Attempt <- Attempts],
+        {ok, [_]} = kura_test_repo:all(kura_query:where(From, {id, Id})),
+        Events = telemetry_events([]),
+        ?assertEqual(1, length(Events)),
+        ?assertEqual(nomatch, binary:match(term_to_binary(Events), Plain))
+    after
+        telemetry:detach(Handler)
+    end.
+
+forward_telemetry(_Event, _Measurements, Metadata, #{pid := Pid}) ->
+    Pid ! {kura_query_event, Metadata}.
+
+telemetry_events(Acc) ->
+    receive
+        {kura_query_event, Metadata} -> telemetry_events([Metadata | Acc])
+    after 100 -> lists:reverse(Acc)
+    end.
 
 t_schema_constraints() ->
     ChatId = <<"550e8400-e29b-41d4-a716-446655440000">>,

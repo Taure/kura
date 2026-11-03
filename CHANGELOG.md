@@ -9,6 +9,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `{Field, is_nil}` and `{Field, is_not_nil}` on an encrypted field are
+  accepted by `where/2`. They bind nothing, and `NULL` is stored
+  unencrypted.
+- `order_by/2` on an encrypted field raises
+  `{kura, {encrypted_field_in_order_by, Field}}`; `sum`, `avg`, `min` or
+  `max` of one, in `select/2`, the aggregate helpers or a window function,
+  raises `{kura, {encrypted_field_in_aggregate, Field}}`; and a window
+  `partition_by` or `order_by` on one raises
+  `{kura, {encrypted_field_in_window, Field}}`. The result would be
+  ordered or computed over ciphertexts. `count` is allowed. The compiler
+  re-check covers these too.
+- `group_by/2`, `distinct/2` (DISTINCT ON) and a `join` `on` column on an
+  encrypted field raise `{kura, {encrypted_field_in_group_by, Field}}`,
+  `{kura, {encrypted_field_in_distinct, Field}}` and
+  `{kura, {encrypted_field_in_join, Field}}`: equal values encrypt to
+  different ciphertexts, so they never group or join. ORDER BY, GROUP BY
+  and DISTINCT ON on a `select_expr/2` alias of an encrypted field raise
+  too. A `select_expr/2` distance over a column that may hold ciphertext
+  raises `{kura, {encrypted_field_in_select, Field}}`. A term in a column
+  position that is not a column is reported as `not_a_column`, so its
+  values stay out of the reason.
+- `kura_schema` refuses an encrypted primary key, association key
+  (foreign key, referenced key or join-table key) or a field of an
+  embedded schema, raising `{kura, {encrypted_primary_key, Mod, Field}}`,
+  `{kura, {encrypted_association_key, Mod, Assoc, Field}}` or
+  `{kura, {encrypted_embed_field, Mod, Embed, Field}}` the first time it
+  reads the schema. None of these could work: keys are matched by
+  equality and an embed is stored as one JSON document.
+- A type tagged `encrypted` in any form other than `{encrypted, Inner}`
+  is treated as encrypted and refused: schema load raises
+  `{kura, {unsupported_encrypted_type, Mod, Field}}`, and `cast/2`,
+  `dump/2`, `load/2` and `to_pg_type/1` raise
+  `{kura_crypto, unsupported_encrypted_type}`. Before, such a type was
+  not redacted by the audit trail, not refused by the filter guard, and
+  loaded as its raw ciphertext.
+- An `{encrypted, Inner}` field whose `Inner` cannot be encrypted, such as
+  `{encrypted, float}`, raises
+  `{kura, {unsupported_encrypted_type, Mod, Field}}` when the schema is
+  first read, instead of `{kura_crypto, {not_encryptable, Inner}}` at the
+  first write.
+- `kura_types:load/2` on an encrypted type loads `undefined`, which
+  kura_sqlite returns for NULL, as `undefined`, and raises
+  `{kura_crypto, malformed_frame}` for any other non-binary value. Both
+  crashed with a `function_clause` in `format_type/1` before.
+- **Upgrading:** the encrypted-field checks above and under Security
+  refuse calls that used to be accepted. None of them could work on
+  ciphertext, and none reads or changes stored data. Look for:
+  - `order_by/2`, `group_by/2`, `distinct/2`, a window `partition_by` or
+    `order_by`, or `sum`, `avg`, `min` or `max` on an encrypted field or
+    a `select_expr/2` alias of one: sort, group or compute on the loaded
+    rows instead.
+  - A `join` `on` column, a primary key, or an association key that is
+    encrypted, including the owner-side `target_key` of a `has_many` or
+    `has_one`: key on a plain column. A schema with an encrypted key now
+    fails to load.
+  - An attribute tenant on an encrypted field: `update/2`, `delete/2` and
+    upserts now raise as queries did. Make the tenant column plain.
+  - A conflict guard (`#{guard => [Field]}`) naming an encrypted field:
+    drop it from the guard.
+  - A condition added before the `join/4,5` or `with_cte/3` that brings
+    an encrypted field into scope: it now raises at the join or CTE, not
+    only when added after it.
+  - `{subquery, Q}` as a comparison value, an `in`-list element or a
+    `between` bound: use `exists`, `not_exists` or a single-column `in`.
+  - `{encrypted, Inner}` with an `Inner` that cannot be encrypted, or any
+    other type tagged `encrypted`: the schema fails to load and
+    `to_pg_type/1` raises `{kura_crypto, unsupported_encrypted_type}`,
+    so no migration column is generated for it. `{array, {encrypted,
+    Inner}}` keeps its `BYTEA[]` column and data unchanged.
 - Application boot starts a repo's pool the way `kura_repo_worker:start/1`
   does, through `kura_db:start_pool/1`, from the config
   `kura_repo:config/1` returns (#197). Boot now applies the repo's
@@ -35,11 +104,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{Tag, redacted}`, anything else as `redacted`, since `init/1` is the
   consumer's code and its reason may hold a secret it fetched.
   `kura_repo_worker:start/1` returns `{error, {init_failed, {Class,
-  Shape}}}`. This covers pool start only: `init/1` also runs on every
-  config lookup at query time, where a raise is neither caught nor
-  redacted. For a repo in the `repos` map or the flat form, `init/1` runs
-  during kura's own start, before the consuming application, so it must
-  not call that application's processes.
+  Shape}}}`. For a repo in the `repos` map or the flat form, `init/1`
+  runs during kura's own start, before the consuming application, so it
+  must not call that application's processes.
+- A repo's `init/1` no longer runs on every query (#200). The pool start
+  keeps the repo's own settings (`dialect`, `pool`, `pool_module`,
+  `driver_module`, `read_only`, `replicas`, `uuid_version`) in a
+  `persistent_term`, and the query-time lookups (`kura_db:get_pool/1`,
+  the pool and driver module, `kura_repo:read_only/1`, `replica/1`, the
+  dialect and the UUID version) read them from there. An `init/1` that
+  reads a file or a vault does it once per pool start, and one that
+  raises later no longer turns every query into that exception, with the
+  config in the crash report. Connection settings and secrets are not
+  kept. The settings change only when the pool is started again:
+  `kura_repo_worker:start/1` on a running pool re-reads them. A start
+  that moves the repo to another pool name and fails makes its queries
+  raise `{pool_not_started, Pool}` instead of reaching the previous pool;
+  a failed restart on the same pool, or a failing `init/1`, keeps the
+  previous settings. A repo
+  whose pool kura did not start falls back to the old lookup, its config
+  read and `init/1` run on each call. `kura_repo:config/1` still reads
+  the config afresh each call.
+- A started repo's settings are a snapshot taken at pool start (#200).
+  Changing its `read_only`, `replicas`, `uuid_version`, `dialect`,
+  `pool`, `pool_module` or `driver_module` with `application:set_env`
+  no longer takes effect on the next query: queries keep the settings
+  stored at pool start until `kura_repo_worker:start/1` is called again.
+  A repo whose pool kura did not start still sees the change on its
+  next call.
+- **Upgrading:** `read_only` is captured when the repo's pool starts
+  (#200). A started repo switched to `read_only => true` at runtime,
+  with `application:set_env` or by `init/1` reading a flag, keeps
+  accepting writes until `kura_repo_worker:start/1` is called again for
+  it. Call `start/1` after changing it.
+- **Upgrading:** `replicas`, `uuid_version`, `dialect`, `pool`,
+  `pool_module` and `driver_module` are captured the same way (#200). A
+  test or a release task that changes them with `application:set_env`
+  on a started repo must call `kura_repo_worker:start/1` for that repo
+  afterwards; a repo whose pool kura did not start still reads them on
+  each call.
+- **Upgrading:** two repos can no longer share one pool by naming the
+  same `pool` (#201). That includes a repo kura never started that only
+  names another repo's running pool, such as a migration repo pointed at
+  the application repo's pool. Give each repo its own pool name.
+- A repo whose config names a pool another repo started is refused
+  instead of sharing that pool, database and credentials (#201).
+  `kura_repo_worker:start/1` returns
+  `{error, {pool_owned_by, Owner}}`, boot logs it as a pool that did not
+  start and carries on, and the refused repo's queries raise
+  `{pool_owned_by, Owner}`. The check is made before the pool module is
+  called, so it holds for a pool module that answers `{ok, Pid}` for a
+  name already running, as `kura_pool_minato` did. The repo that started
+  a pool can start it again and gets `ok`. A pool already running that
+  kura did not start goes to the first repo that starts it, with a
+  warning naming the repo, the pool and the pool module, since it keeps
+  the connection settings it was started with. Changing a running repo's
+  credentials takes `kura_db:stop_pool/1` and then
+  `kura_repo_worker:start/1`; `start/1` alone returns `ok` and leaves the
+  pool as it is. A pool stays owned by the repo that started it until
+  `kura_db:stop_pool/1` releases it, or until that repo starts on another
+  pool name and the old pool has stopped; a pool stopped outside kura
+  stays owned. A repo whose pool name another repo owns cannot query it
+  either: `kura_db:get_pool/1` raises `{pool_owned_by, Owner}`, which
+  covers a repo kura never started and one stopped with
+  `kura_db:stop_pool/1` whose pool name another repo then started. A repo
+  that starts on another pool name keeps the pool it had until that pool
+  is stopped, which happens right after the new one starts, so no other
+  repo can adopt it while it runs with the first repo's credentials. Two
+  such starts of one repo at once leave it on one of the two new pools
+  and stop the other. If a stop raises, the start still returns `ok`, the
+  failure is logged with only the shape of its reason, and that pool
+  stays owned. `kura_db:stop_pool/1` stops every pool the repo still
+  owns, one whose stop raised or whose start died before stopping it
+  among them; a pool whose stop raises there is logged the same way and
+  stays owned, and the others are still stopped.
 - The many_to_many join-table SQL, the preload read and the `put_assoc` /
   `cast_assoc` DELETE and INSERT, is compiled by the repo's dialect
   (`to_sql/1`, `delete_all/1`, `insert_all/3`) instead of written by hand
@@ -139,6 +277,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- The filter guard on `{encrypted, _}` fields could be bypassed (found
+  while designing #137). `kura_query:where/2` only refused an encrypted
+  field when it was the first element of the condition, and `having/2`
+  did not check at all. `{'not', {ssn, V}}`, `{[ssn], in, [{V}]}`,
+  `{[id, ssn], in, [{1, V}]}` and `having(Q, {ssn, V})` were accepted and
+  sent the plaintext to the server as a bind parameter and into the
+  telemetry and log `params`; the `not` form also matched every row. Both
+  functions now walk the whole condition (`and`, `or`, `not`, `in`,
+  row-value `in`, `between`, every comparison operator, `in` subqueries)
+  and raise `{kura, {encrypted_field_in_where | encrypted_field_in_having,
+  Field}}` on any comparison of an encrypted field to a value. Fields of
+  joined schemas are checked too, including conditions added before the
+  join, and so is the attribute-tenancy condition. On a schema with
+  encrypted fields, a condition shape the guard does not recognise raises
+  `{kura, unrecognised_condition}`. `{fragment, SQL, Params}` is still not
+  inspected.
+- An `{array, {encrypted, Inner}}` field, at any array depth, was not
+  recognised as encrypted: `kura_types:encryption/1` returned `none`, so
+  the audit trail stored its elements in plaintext and the filter guard
+  let a condition bind them. It is now recognised as encrypted
+  (`{ok, #{inner => Inner, array => Depth}}`), so it is redacted, refused
+  in filters, ordering and aggregates, and refused as a key or embed field
+  like any other encrypted field. Its storage is unchanged: each element
+  encrypted, in a `BYTEA[]` column.
+- An attribute tenant on an encrypted field was refused on queries but not
+  on `update` and `delete`, which add the tenant to the key clauses
+  directly and bound its plaintext. They now raise
+  `{kura, {encrypted_field_in_where, Field}}` too.
+- An upsert (`insert/3` or `insert_all/4` with an `on_conflict` other than
+  `nothing`) under an attribute tenant on an encrypted field guarded the
+  conflict update with `table.Field = EXCLUDED.Field`, which compares two
+  ciphertexts with different nonces, so it silently never updated. It now
+  raises `{kura, {encrypted_field_in_where, Field}}`, from the same check
+  update and delete use.
+- A caller-supplied conflict guard on an encrypted field,
+  `{Target, Action, #{guard => [Field]}}`, never updated for the same
+  reason. It now raises
+  `{kura, {encrypted_field_in_conflict_guard, Field}}`. A `nothing` action
+  compiles no guard and is not refused, with or without options.
+- A correlated subquery bypassed the filter guard. In
+  `{exists, {subquery, Sub}}` or `{Field, in, {subquery, Sub}}` on a query
+  over an encrypted schema, a condition in `Sub` naming an outer encrypted
+  field that `Sub`'s own schemas do not declare was not checked, and the
+  database resolved the unqualified name to the outer column, binding the
+  plaintext. The guard now walks subquery conditions (wheres, havings,
+  union branches, nested subqueries) against the outer encrypted fields
+  they do not shadow. A bare-table source shadows nothing.
+- A `{subquery, Q}` anywhere but `exists`, `not_exists` or a
+  single-column `in`, such as `{id, '=', {subquery, Q}}`, an `in`-list
+  element or a `between` bound, now raises
+  `{kura, unrecognised_condition}` on every query. The dialect never
+  compiled it there; it was bound as a parameter value.
+- A CTE bypassed the filter guard. A `from` or `join` naming a CTE over an
+  encrypted schema had no encrypted fields in scope, so
+  `where(from(enc_cte), {ssn, V})` bound the plaintext, as did a condition
+  added before `with_cte/3`. A source now gets the encrypted fields of
+  every CTE its name, or its schema's table name, resolves to, including
+  aliases a CTE selects an encrypted field under and the columns of its
+  union, intersect or except branches (by position, under the first
+  query's names; every column when a `SELECT *` hides the positions), and
+  `with_cte/3` and `join/4,5` re-check the conditions already in the
+  query, its CTE bodies and its union branches. A name shared by several
+  CTEs, or by a CTE and a schema, gets the encrypted fields of all of
+  them.
+- A `has_many` or `has_one` whose `#kura_ref{target_key = Cols}` names an
+  encrypted field of the owner was not refused. Preloading bound the
+  decrypted owner value in the child query, and writes copied it into the
+  child's foreign key in clear. Schema load now raises
+  `{kura, {encrypted_association_key, Mod, Assoc, Field}}`.
+- On a query with encrypted fields in scope, an improper list under
+  `and`, `or` or a row-value `in` crashed the filter guard with a
+  `function_clause` whose arguments carried the plaintext, and an `and` or
+  `or` over a non-list was accepted. Both now raise
+  `{kura, unrecognised_condition}`.
+- The filter guard ran only in the builder functions, so a `#kura_query{}`
+  record built by hand, or updated after `where/2` (for example a new
+  `from`), compiled with the plaintext bound. `kura_query_compiler`'s
+  `to_sql/2`, `to_sql_cached/2`, `to_sql_from/3`, `update_all/3` and
+  `delete_all/2` now run `kura_query:check_encrypted/1` over the whole
+  query (wheres, havings, subqueries, CTE bodies, union branches) before
+  compiling. `to_sql_cached/2` runs it on a cache miss only: the guard
+  reads nothing the shape key replaces, so a hit means a query of the
+  same shape already passed. A query the shape split cannot take apart
+  goes through `to_sql/2` and is never cached. A hit costs what it did
+  before the guard (cached get-by-id in `kura_query_cache_bench`: 0.76 us
+  before, 0.98 us with the guard on every call, 0.74 us on a miss only;
+  filtered page: 3.00, 3.46, 3.12 us). The other entry points pay about
+  70 ns per call.
 - Starting a pool hands the pool module the connection settings only.
   The repo's own settings, the `encryption` keyring among them, were
   passed along with them, and a pool module that echoed its options in
@@ -196,6 +422,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The compiled-query cache replaces select-expression fragment
+  parameters with markers. They stayed in the shape, so every new value
+  interned another entry.
+- The query cache's entry-size and memory limits count the bytes of
+  off-heap binaries. Neither `erts_debug:flat_size/1` nor
+  `ets:info(Tab, memory)` sees them, so an entry holding a large binary
+  counted as a few words.
+- `kura_types:cast/2`, `dump/2` and `load/2` crashed with
+  `function_clause` instead of returning `{error, _}` when the error
+  message had to name a `{vector, N}` type or an encrypted type, for
+  example an `{array, {encrypted, string}}` given a non-list. The message
+  names only the type, never the value.
 - `insert_all/3,4` honour `on_conflict`. The option was silently dropped
   and a plain INSERT emitted, so a bulk upsert failed on the unique
   constraint instead of upserting, and the partial-index conflict target
@@ -273,7 +511,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `kura_db:query_on/4,5` runs a statement on a connection the caller
   checked out, with the same telemetry as `kura_db:query/3`. `/5` hands
   an options map to the driver's `query_on/4` (`timeout` for minato).
-
+- `kura_repo:settings/1` returns a repo's own settings as queries see
+  them, without connection settings or secrets (#200).
+- `kura_db:stop_pool/1` stops a repo's pool through its pool module,
+  releases the pool name and drops the repo's stored settings (#201).
+- The `kura_pool` contract states that `start_pool/2` on a name already
+  running returns `{error, {already_started, Pid}}`.
+- `kura_query:check_encrypted/1`, the filter guard over a whole query.
+- `kura_types:encryption/1`, the one place that recognises an encrypted
+  type. It returns `none`, `unsupported` or `{ok, #{inner => Inner}}`,
+  with `array => Depth` for an array of an encrypted type; the spec is a
+  map so later options can be added as keys. The filter guard, audit
+  redaction, schema validation and the type seams all use it.
+- `kura_types:encryptable_inner/1`, whether a type can be the `Inner` of
+  `{encrypted, Inner}`; schema validation uses it.
+- `kura_hkdf`, HKDF-SHA256 (RFC 5869) over `crypto:mac/4`, with the RFC
+  test vectors. Not used yet, and hidden from the docs until it is;
+  groundwork for per-column keys (#137).
+  `expand/3` refuses a PRK shorter than 32 bytes with
+  `{kura_hkdf, short_prk}`, and both functions raise
+  `{kura_hkdf, badarg}` on a non-binary key, salt or info or a
+  non-integer length, so no key material reaches a crash report.
+- A corpus of v1 ciphertexts under fixed test keys that every release
+  must keep decrypting.
 - `kura_schema:is_schema/1` and `kura_schema:encrypted_fields/1`, both
   memoised. `is_schema/1` replaces three hand-rolled copies of the same
   `code:ensure_loaded/1` + `function_exported/3` check, whose negative
@@ -289,6 +549,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flushes the compiled-query cache, for tools that reload schema modules
   in one VM. The cache never expired before, so a reloaded module kept
   answering with the old module's key and associations (#169).
+- `kura_query:distance(Field, Metric, Vector)` for pgvector
+  nearest-neighbour search (#122). Metrics are `l2`, `cosine` and
+  `inner_product`, emitted as `<->`, `<=>` and `<#>`; a smaller value is
+  nearer for all three. A distance goes in `order_by/2`, whose spec
+  widens from `{atom(), Dir}` to `{atom() | distance(), Dir}`, and in
+  `select_expr/2`. `ORDER BY` now carries bind parameters, numbered
+  after `HAVING` and before `LIMIT`. The vector is cast and dumped to text when
+  the distance is built, and the query must be `from/1` a schema in which
+  the field is a `vector` or `{vector, N}` of matching dimension. A
+  distance in `where/2`, `having/2`, `group_by/2`, `distinct/2`,
+  `select/2` (and the aggregate helpers), `count/2`, a `join` column or
+  `over/2` raises `{kura, {distance_not_supported_here, Clause}}`, in a
+  condition also as a list element or a `between` end. A vector over
+  16000 dimensions raises, and every compiler entry point applies the
+  same checks to a `#kura_query{}` written by hand. No error reason
+  carries the query vector. Requires pgvector >= 0.8.2
+  (CVE-2026-3172). The
+  query builder guide covers search-time settings (`SET LOCAL
+  hnsw.ef_search` in a transaction) and leaves `CREATE EXTENSION` to the
+  cluster bootstrap.
 
 
 ### Added

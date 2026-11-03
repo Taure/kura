@@ -1919,7 +1919,7 @@ format_default(RepoMod, Val) ->
 
 -spec ddl_dialect(module()) -> {ok, module()} | none.
 ddl_dialect(RepoMod) ->
-    Cfg = kura_repo:config(RepoMod),
+    Cfg = kura_repo:settings(RepoMod),
     case maps:get(dialect, Cfg, undefined) of
         M when is_atom(M), M =/= undefined ->
             {ok, M};

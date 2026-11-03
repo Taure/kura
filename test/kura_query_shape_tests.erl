@@ -61,6 +61,16 @@ queries(N) ->
         {"exists", #kura_query{from = users, wheres = [{exists, {subquery, Sub(1)}}, {id, V(2)}]}},
         {"not_exists", #kura_query{from = users, wheres = [{not_exists, {subquery, Sub(1)}}]}},
         {"limit and offset", #kura_query{from = users, limit = V(1), offset = V(2)}},
+        {"select fragment", #kura_query{
+            from = users, select = {exprs, [{id, id}, {score, {fragment, ~"? + ?", [V(1), V(2)]}}]}
+        }},
+        {"distance in select and order by", #kura_query{
+            from = kura_test_vector_schema,
+            select = {exprs, [{dist, {distance, any_embedding, cosine, vec(V(1))}}]},
+            wheres = [{id, V(2)}],
+            order_bys = [{id, asc}, {{distance, any_embedding, l2, vec(V(3))}, desc}],
+            limit = V(4)
+        }},
         {"having fragment", #kura_query{
             from = users,
             group_bys = [role],
@@ -115,7 +125,7 @@ cached_matches_uncached_test_() ->
 every_pg_condition_kind_is_cached_as_a_template_test() ->
     with_pg(fun() ->
         _ = [kura_query_compiler:to_sql_cached(?REPO, Q) || N <- [1, 2], {_, Q} <- queries(N)],
-        ?assertEqual(length(queries(1)), ets:info(kura_query_cache, size)),
+        ?assertEqual(length(queries(1)), kura_query_cache:entry_count()),
         ?assertEqual([], ets:match_object(kura_query_cache, {'_', uncacheable}))
     end).
 
@@ -125,10 +135,10 @@ queries_differing_only_in_values_share_one_entry_test() ->
             kura_query_compiler:to_sql_cached(?REPO, Q)
          || N <- lists:seq(1, 50), {_, Q} <- queries(N)
         ],
-        ?assertEqual(length(queries(1)), ets:info(kura_query_cache, size))
+        ?assertEqual(length(queries(1)), kura_query_cache:entry_count())
     end).
 
-values_left_in_the_shape_are_carried_through_a_hit_test() ->
+select_fragment_values_share_one_entry_test() ->
     with_pg(fun() ->
         Q = fun(Bonus, Id) ->
             #kura_query{
@@ -144,8 +154,56 @@ values_left_in_the_shape_are_carried_through_a_hit_test() ->
             )
          || {B, I} <- [{5, 1}, {5, 2}, {6, 3}, {6, 4}]
         ],
-        ?assertEqual(2, ets:info(kura_query_cache, size))
+        ?assertEqual(1, kura_query_cache:entry_count())
     end).
+
+%% An embedding left in the shape would intern a cache entry per query
+%% vector, each holding an off-heap binary the memory cap does not see.
+distinct_query_vectors_share_one_entry_test() ->
+    with_pg(fun() ->
+        Build = fun(Seed) ->
+            Vec = [float(Seed + I) || I <- lists:seq(1, 1536)],
+            {distance, _, _, Text} = D = kura_query:distance(any_embedding, cosine, Vec),
+            Q0 = kura_query:select_expr(
+                kura_query:from(kura_test_vector_schema), [{id, id}, {dist, D}]
+            ),
+            {kura_query:limit(kura_query:order_by(Q0, [{D, asc}]), 10), Text}
+        end,
+        [
+            begin
+                {Q, Text} = Build(Seed),
+                {SQL, Params} = kura_query_compiler:to_sql_cached(?REPO, Q),
+                ?assertEqual(kura_query_compiler:to_sql(?REPO, Q), {SQL, Params}),
+                ?assertEqual([Text, Text, 10], Params)
+            end
+         || Seed <- [1, 2, 3]
+        ],
+        ?assertEqual(1, kura_query_cache:entry_count()),
+        [{Key, _}] = cache_entries(),
+        ?assertEqual([], [B || B <- binaries(Key), byte_size(B) > 64])
+    end).
+
+distance_vectors_are_split_out_of_the_shape_test() ->
+    D = {distance, embedding, l2, ~"[1.0]"},
+    {Shape, Values} = kura_query_shape:split(
+        #kura_query{
+            from = items,
+            select = {exprs, [{dist, D}, {raw, {fragment, ~"?", [x]}}]},
+            order_bys = [{D, asc}, {id, desc}]
+        }
+    ),
+    ?assertEqual({~"[1.0]", x, ~"[1.0]"}, Values),
+    ?assertEqual(
+        {exprs, [
+            {dist, {distance, embedding, l2, {'$kura_param', 1}}},
+            {raw, {fragment, ~"?", [{'$kura_param', 2}]}}
+        ]},
+        Shape#kura_query.select
+    ),
+    ?assertEqual(
+        [{{distance, embedding, l2, {'$kura_param', 3}}, asc}, {id, desc}],
+        Shape#kura_query.order_bys
+    ).
 
 is_nil_is_part_of_the_shape_test() ->
     with_pg(fun() ->
@@ -194,7 +252,7 @@ in_lists_of_different_lengths_are_different_shapes_test() ->
             )
          || Ids <- [[1], [1, 2], [3], [1, 2, 3], [4, 5]]
         ],
-        ?assertEqual(3, ets:info(kura_query_cache, size))
+        ?assertEqual(3, kura_query_cache:entry_count())
     end).
 
 row_tuples_that_do_not_match_the_columns_are_rejected_test() ->
@@ -244,7 +302,7 @@ dialect_that_inlines_values_is_never_served_a_shape_test() ->
         ?assertEqual(to_sql(QA), kura_query_compiler:to_sql_cached(?REPO, QA)),
         ?assertEqual(to_sql(QB), kura_query_compiler:to_sql_cached(?REPO, QB)),
         ?assertEqual(to_sql(QA), kura_query_compiler:to_sql_cached(?REPO, QA)),
-        ?assertMatch([{_, uncacheable}], ets:tab2list(kura_query_cache))
+        ?assertMatch([{_, uncacheable}], cache_entries())
     end).
 
 %% The record types `limit' as an integer, so a dialect may guard on it and
@@ -281,6 +339,18 @@ valid_template_test_() ->
         ?_assertNot(kura_query_shape:valid_template([M(1), #{k => M(1)}], 1))
     ].
 
+%% The cache table also holds a reserved row for its binary count.
+cache_entries() ->
+    [Entry || {Key, _} = Entry <- ets:tab2list(kura_query_cache), is_tuple(Key)].
+
+vec(N) ->
+    iolist_to_binary([~"[", integer_to_binary(N), ~".0]"]).
+
+binaries(B) when is_binary(B) -> [B];
+binaries(T) when is_tuple(T) -> binaries(tuple_to_list(T));
+binaries(L) when is_list(L) -> lists:append([binaries(E) || E <- L]);
+binaries(_) -> [].
+
 sql(Q) ->
     {SQL, Params} = kura_query_compiler:to_sql(?REPO, Q),
     {iolist_to_binary(SQL), Params}.
@@ -306,3 +376,18 @@ update_all(_, _) -> {~"", []}.
 delete_all(_) -> {~"", []}.
 insert_all(_, _, _) -> {~"", []}.
 insert_all(_, _, _, _) -> {~"", []}.
+
+%% A select item or order entry that is not a 2-tuple is left in the
+%% shape untouched, as an unrecognised condition is, and binds nothing.
+non_pair_select_and_order_items_stay_in_the_shape_test() ->
+    Select = {exprs, [bare_item, {score, {fragment, ~"?", [5]}}]},
+    Orders = [{name, asc, nulls_last}, {id, desc}],
+    {Shape, Values} = kura_query_shape:split(
+        #kura_query{from = users, select = Select, order_bys = Orders}
+    ),
+    ?assertEqual({5}, Values),
+    ?assertEqual(
+        {exprs, [bare_item, {score, {fragment, ~"?", [{'$kura_param', 1}]}}]},
+        Shape#kura_query.select
+    ),
+    ?assertEqual(Orders, Shape#kura_query.order_bys).

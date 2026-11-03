@@ -46,7 +46,7 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
     {JoinSQL, Params2, Counter2} = compile_joins(Q#kura_query.joins, Table, Prefix, Counter1),
     {GroupSQL, _, Counter3} = compile_group_by(Q#kura_query.group_bys, Counter2),
     {HavingSQL, Params3, Counter4} = compile_havings(Q#kura_query.havings, Counter3),
-    {OrderSQL, _, Counter5} = compile_order_by(Q#kura_query.order_bys, Counter4),
+    {OrderSQL, OrderParams, Counter5} = compile_order_by(Q#kura_query.order_bys, Counter4),
     {LimitSQL, Params4, Counter6} = compile_limit(Q#kura_query.limit, Counter5),
     {OffsetSQL, Params5, Counter7} = compile_offset(Q#kura_query.offset, Counter6),
     LockSQL = compile_lock(Q#kura_query.lock),
@@ -70,7 +70,8 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
         OffsetSQL,
         LockSQL
     ]),
-    MainParams = CteParams ++ Params0 ++ Params2 ++ Params1 ++ Params3 ++ Params4 ++ Params5,
+    MainParams =
+        CteParams ++ Params0 ++ Params2 ++ Params1 ++ Params3 ++ OrderParams ++ Params4 ++ Params5,
 
     %% Combinations (UNION, INTERSECT, EXCEPT)
     {FinalSQL, FinalParams, FinalCounter} = compile_combinations(
@@ -497,11 +498,33 @@ join_type(full) -> ~"FULL JOIN".
 compile_order_by([], Counter) ->
     {<<>>, [], Counter};
 compile_order_by(Orders, Counter) ->
-    Parts = [
-        [quote_ident(atom_to_binary(Field, utf8)), ~" ", dir_to_sql(Dir)]
-     || {Field, Dir} <- Orders
-    ],
-    {iolist_to_binary([~" ORDER BY ", join_comma(Parts)]), [], Counter}.
+    {Parts, Params, NewCounter} = compile_orders(Orders, Counter),
+    {iolist_to_binary([~" ORDER BY ", join_comma(Parts)]), Params, NewCounter}.
+
+compile_orders([], Counter) ->
+    {[], [], Counter};
+compile_orders([{Expr, Dir} | Rest], Counter) ->
+    {ExprSQL, Params, C1} = compile_order_expr(Expr, Counter),
+    {Parts, MoreParams, C2} = compile_orders(Rest, C1),
+    {[[ExprSQL, ~" ", dir_to_sql(Dir)] | Parts], Params ++ MoreParams, C2}.
+
+compile_order_expr({distance, _Field, _Metric, _Vector} = Distance, Counter) ->
+    compile_distance(Distance, Counter);
+compile_order_expr(Field, Counter) when is_atom(Field) ->
+    {quote_ident(atom_to_binary(Field, utf8)), [], Counter}.
+
+%% No cast on the parameter: the server infers it from the column, so the
+%% same SQL serves any pgvector column type.
+compile_distance({distance, Field, Metric, Vector}, Counter) when is_atom(Field) ->
+    {
+        [quote_ident(atom_to_binary(Field, utf8)), distance_op(Metric), integer_to_binary(Counter)],
+        [Vector],
+        Counter + 1
+    }.
+
+distance_op(l2) -> ~" <-> $";
+distance_op(cosine) -> ~" <=> $";
+distance_op(inner_product) -> ~" <#> $".
 
 dir_to_sql(asc) -> ~"ASC";
 dir_to_sql(desc) -> ~"DESC".
@@ -754,6 +777,7 @@ build_row_placeholders([Field | Rest], Row, N) ->
             atom(),
             {fragment, binary(), [term()]}
             | {over, kura_query:window_fn(), kura_query:window_spec()}
+            | kura_query:distance()
             | atom()
         }
     ],
@@ -765,6 +789,11 @@ compile_select_exprs([], Counter) ->
 compile_select_exprs([{Alias, {fragment, SQL, Params}} | Rest], Counter) ->
     {RewrittenSQL, C2} = rewrite_fragment_placeholders(SQL, Counter),
     Part = [RewrittenSQL, ~" AS ", quote_ident(atom_to_binary(Alias, utf8))],
+    {Parts, MoreParams, C3} = compile_select_exprs(Rest, C2),
+    {[Part | Parts], Params ++ MoreParams, C3};
+compile_select_exprs([{Alias, {distance, _, _, _} = Distance} | Rest], Counter) ->
+    {DistanceSQL, Params, C2} = compile_distance(Distance, Counter),
+    Part = [DistanceSQL, ~" AS ", quote_ident(atom_to_binary(Alias, utf8))],
     {Parts, MoreParams, C3} = compile_select_exprs(Rest, C2),
     {[Part | Parts], Params ++ MoreParams, C3};
 compile_select_exprs([{Alias, {over, WindowFn, Spec}} | Rest], Counter) ->

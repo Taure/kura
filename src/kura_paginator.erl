@@ -86,9 +86,15 @@ Options:
 - `before` - cursor value; fetch entries before this value (backward)
 
 When neither `after` nor `before` is given, fetches from the beginning.
+
+The query's own `order_by` is replaced by the cursor field. A vector
+distance in it raises `{kura, {distance_not_supported_here,
+cursor_paginate}}` rather than being dropped; ordering by the alias of a
+selected distance is dropped like any other ordering.
 """.
 -spec cursor_paginate(module(), #kura_query{}, map()) -> {ok, map()} | {error, term()}.
 cursor_paginate(Repo, Query, Opts) ->
+    reject_distance_order(Query),
     Limit = maps:get(limit, Opts, 20),
     CursorField = maps:get(cursor_field, Opts, id),
 
@@ -156,6 +162,12 @@ cursor_paginate(Repo, Query, Opts) ->
     end.
 
 -doc "Calculate total number of pages given total entries and page size.".
+reject_distance_order(#kura_query{order_bys = Orders}) ->
+    case [D || {{distance, _, _, _} = D, _Dir} <- Orders] of
+        [] -> ok;
+        _ -> erlang:error({kura, {distance_not_supported_here, cursor_paginate}})
+    end.
+
 -spec total_pages(non_neg_integer(), pos_integer()) -> non_neg_integer().
 total_pages(0, _PageSize) -> 0;
 total_pages(TotalEntries, PageSize) -> (TotalEntries + PageSize - 1) div PageSize.

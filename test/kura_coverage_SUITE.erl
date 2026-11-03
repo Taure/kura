@@ -113,7 +113,7 @@ init_per_group(migrator, Config) ->
         ]},
     ok = application:load(AppSpec),
     application:set_env(kura_coverage_mig_app, kura_coverage_mig_repo, #{
-        pool => kura_test_repo,
+        pool => kura_coverage_mig_pool,
         pool_module => kura_pool_minato,
         driver_module => kura_driver_minato,
         database => <<"kura_test">>,
@@ -123,6 +123,7 @@ init_per_group(migrator, Config) ->
         password => <<"root">>,
         pool_size => 5
     }),
+    ok = kura_repo_worker:start(kura_coverage_mig_repo),
     kura_test_repo:query("DROP TABLE IF EXISTS coverage_items CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS schema_migrations CASCADE", []),
     Config;
@@ -136,6 +137,7 @@ init_per_group(_, Config) ->
 end_per_group(migrator, _Config) ->
     kura_test_repo:query("DROP TABLE IF EXISTS coverage_items CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS schema_migrations CASCADE", []),
+    ok = kura_db:stop_pool(kura_coverage_mig_repo),
     application:unload(kura_coverage_mig_app),
     ok;
 end_per_group(stream, _Config) ->
@@ -376,7 +378,7 @@ migrate_error_bad_sql(_Config) ->
         ]},
     ok = application:load(AppSpec),
     application:set_env(kura_coverage_mig_app, kura_coverage_mig_repo, #{
-        pool => kura_test_repo,
+        pool => kura_coverage_mig_pool,
         pool_module => kura_pool_minato,
         driver_module => kura_driver_minato
     }),
@@ -409,7 +411,7 @@ migrate_with_safe_callback(_Config) ->
         ]},
     ok = application:load(AppSpec),
     application:set_env(kura_coverage_mig_app, kura_coverage_mig_repo, #{
-        pool => kura_test_repo,
+        pool => kura_coverage_mig_pool,
         pool_module => kura_pool_minato,
         driver_module => kura_driver_minato
     }),

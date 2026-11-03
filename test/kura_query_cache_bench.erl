@@ -51,7 +51,7 @@ report(Results) ->
 measure(Name, Fun) ->
     Queries = [Fun(I) || I <- lists:seq(1, ?CALLS)],
     Cached = time_per_call(fun(Q) -> kura_query_compiler:to_sql_cached(?REPO, Q) end, Queries),
-    Entries = ets:info(kura_query_cache, size),
+    Entries = kura_query_cache:entry_count(),
     Uncached = time_per_call(fun(Q) -> kura_query_compiler:to_sql(?REPO, Q) end, Queries),
     {Name, Cached, Uncached, Entries}.
 
