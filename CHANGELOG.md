@@ -522,7 +522,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   --module=kura_crypto_bench`): v1 encrypt 1.9-2.0 us and decrypt 1.1 us;
   v2 encrypt 4.8-4.9 us and decrypt 3.8 us, the difference being the
   per-call HKDF subkey. `kura_db:load_row/2` on a schema without encrypted
-  fields measured 1.1-1.4 us before and after this change.
+  fields went from 1.45-1.49 us to 1.53-1.63 us per row.
 - `kura_types:dump/3` and `load/3` take the column context
   `{Table, Column}`, and `kura_schema:encryption_specs/1` returns
   `#{Field => #{context => {Table, Column}}}` for each stored encrypted

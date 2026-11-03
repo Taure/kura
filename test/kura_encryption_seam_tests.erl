@@ -23,6 +23,7 @@ seam_test_() ->
         {"load_row decrypts v1 and v2 frames", fun t_load_row/0},
         {"load_row refuses a frame from another column", fun t_load_row_transplant/0},
         {"load_row of an array field", fun t_load_row_array/0},
+        {"load_row keeps a value its type cannot load", fun t_load_row_unloadable/0},
         {"dump_field threads the context", fun t_dump_field/0},
         {"audit redacts a field loaded from a v2 frame", fun t_audit_redaction/0}
     ]}.
@@ -162,6 +163,11 @@ t_load_row_array() ->
         #{id => 1, tags => [~"a", ~"b"]},
         kura_db:load_row(kura_test_enc_array_schema, #{id => 1, tags => Tags})
     ).
+
+t_load_row_unloadable() ->
+    ?assertEqual(#{id => ~"x"}, kura_db:load_row(?SCHEMA, #{id => ~"x"})),
+    ?assertEqual(#{tags => 42}, kura_db:load_row(kura_test_enc_array_schema, #{tags => 42})),
+    ?assertEqual(#{age => ~"x"}, kura_db:load_row(kura_test_schema, #{age => ~"x"})).
 
 t_dump_field() ->
     write_v2(),

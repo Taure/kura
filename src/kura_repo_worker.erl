@@ -986,9 +986,7 @@ dump_change_fields([{K, V} | Rest], {Types, Encryption} = Specs, NonVirtual, Acc
             case dump_field(Type, V, field_context(K, Encryption)) of
                 {ok, Dumped} -> dump_change_fields(Rest, Specs, NonVirtual, Acc#{K => Dumped});
                 {error, Msg} -> {error, {K, Msg}}
-            end;
-        {true, #{}} ->
-            dump_change_fields(Rest, Specs, NonVirtual, Acc#{K => V})
+            end
     end.
 
 dump_error_changeset(CS, Action, {Field, Msg}) ->

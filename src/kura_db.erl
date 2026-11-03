@@ -834,22 +834,6 @@ load_row(SchemaMod, Row) when is_atom(SchemaMod) ->
             Row
     end.
 
-load_fields(Row, Types, Specs) when map_size(Specs) =:= 0 ->
-    maps:fold(
-        fun(K, V, Acc) ->
-            case Types of
-                #{K := Type} ->
-                    case kura_types:load(Type, V) of
-                        {ok, Loaded} -> Acc#{K => Loaded};
-                        {error, _} -> Acc#{K => V}
-                    end;
-                #{} ->
-                    Acc#{K => V}
-            end
-        end,
-        #{},
-        Row
-    );
 load_fields(Row, Types, Specs) ->
     maps:fold(
         fun(K, V, Acc) ->
