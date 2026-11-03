@@ -1,7 +1,5 @@
 -module(kura_test_cold_dialect).
 
--include("kura.hrl").
-
 -export([to_sql/1, convert_values/1]).
 
 to_sql(Query) ->
