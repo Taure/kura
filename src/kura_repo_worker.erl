@@ -61,8 +61,10 @@ ok = kura_repo_worker:start(MyRepo),
 -endif.
 
 -type write_error() :: {error, read_only}.
+-doc "What a failing `after_insert/1` or `after_update/1` hook returns.".
+-type hook_error() :: {error, term()}.
 -type assoc_change() :: #kura_changeset{} | [#kura_changeset{}].
--export_type([write_error/0]).
+-export_type([write_error/0, hook_error/0]).
 
 %%----------------------------------------------------------------------
 %% Pool management
@@ -290,59 +292,60 @@ guard_write(RepoMod, Fun) ->
 
 -doc "Insert a record from a changeset. Returns `{error, Changeset}` with errors on failure.".
 -spec insert(module(), #kura_changeset{}) ->
-    {ok, map()} | {error, #kura_changeset{}} | write_error().
+    {ok, map()} | {error, #kura_changeset{}} | hook_error() | write_error().
 insert(RepoMod, CS) ->
-    guard_write(RepoMod, fun() -> do_insert(RepoMod, CS) end).
+    insert(RepoMod, CS, #{}).
 
-do_insert(_RepoMod, CS = #kura_changeset{valid = false}) ->
-    {error, CS#kura_changeset{action = insert}};
-do_insert(RepoMod, CS = #kura_changeset{assoc_changes = AC}) when map_size(AC) > 0 ->
-    atomically(RepoMod, fun() ->
-        case insert_record(RepoMod, CS) of
-            {ok, ParentRow} ->
-                persist_assoc_changes(RepoMod, CS#kura_changeset{action = insert}, ParentRow);
-            {error, _} = Err ->
-                Err
-        end
-    end);
-do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
-    case needs_transaction(SchemaMod, insert) of
-        true -> atomically(RepoMod, fun() -> insert_record(RepoMod, CS) end);
-        false -> insert_record(RepoMod, CS)
-    end.
+-doc """
+Insert a record from a changeset with options, such as
+`#{on_conflict => {Target, Action}}` for an upsert.
 
+Runs the same pipeline as `insert/2`: `prepare_changes/2` functions,
+`before_insert/1` and `after_insert/1`, and the changeset's associations, in
+one transaction when there are any. When the conflict leaves the row as it
+was (`nothing`, or a row the tenant guard refuses), no row comes back: the
+result is the changeset's data with its changes applied, `after_insert/1`
+does not run and no association is written.
+""".
 -spec insert(module(), #kura_changeset{}, map()) ->
-    {ok, map()} | {error, #kura_changeset{}} | write_error().
+    {ok, map()} | {error, #kura_changeset{}} | hook_error() | write_error().
 insert(RepoMod, CS, Opts) ->
     guard_write(RepoMod, fun() -> do_insert(RepoMod, CS, Opts) end).
 
 do_insert(_RepoMod, CS = #kura_changeset{valid = false}, _Opts) ->
     {error, CS#kura_changeset{action = insert}};
-do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opts0) ->
+do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}, Opts0) when
+    map_size(AC) > 0
+->
     Opts = guard_upsert(SchemaMod, Opts0),
-    Changes0 = maybe_generate_pk(RepoMod, SchemaMod, maybe_apply_tenant_changes(Changes)),
-    Changes1 = maybe_add_timestamps(SchemaMod, Changes0, insert),
-    case dump_changes(SchemaMod, Changes1) of
-        {error, DumpErr} ->
-            dump_error_changeset(CS, insert, DumpErr);
-        {ok, DumpedChanges} ->
-            Fields = maps:keys(DumpedChanges),
-            {SQL, Params} = kura_query_compiler:insert(
-                RepoMod, SchemaMod, Fields, DumpedChanges, Opts
-            ),
-            case kura_db:query(RepoMod, SQL, Params) of
-                #{command := insert, rows := [Row]} ->
-                    {ok, kura_db:load_row(SchemaMod, Row)};
-                #{command := insert, rows := []} ->
-                    {ok, kura_changeset:apply_changes(CS)};
-                {error, PgError} ->
-                    {error, handle_pg_error(CS#kura_changeset{action = insert}, PgError)}
-            end
+    atomically(RepoMod, fun() ->
+        case insert_record(RepoMod, CS, Opts) of
+            {ok, ParentRow} ->
+                persist_assoc_changes(RepoMod, CS#kura_changeset{action = insert}, ParentRow);
+            {unchanged, Data} ->
+                {ok, Data};
+            {error, _} = Err ->
+                Err
+        end
+    end);
+do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod}, Opts0) ->
+    Opts = guard_upsert(SchemaMod, Opts0),
+    case needs_transaction(SchemaMod, insert) of
+        true -> atomically(RepoMod, fun() -> inserted(insert_record(RepoMod, CS, Opts)) end);
+        false -> inserted(insert_record(RepoMod, CS, Opts))
     end.
 
--doc "Update a record from a changeset. No-op if there are no changes.".
+inserted({unchanged, Data}) -> {ok, Data};
+inserted(Result) -> Result.
+
+-doc """
+Update a record from a changeset. No-op if there are no changes.
+
+With `kura_changeset:optimistic_lock/2` set, a row whose lock field no longer
+matches returns `{error, stale}`.
+""".
 -spec update(module(), #kura_changeset{}) ->
-    {ok, map()} | {error, #kura_changeset{}} | write_error().
+    {ok, map()} | {error, #kura_changeset{}} | {error, stale} | hook_error() | write_error().
 update(RepoMod, CS) ->
     guard_write(RepoMod, fun() -> do_update(RepoMod, CS) end).
 
@@ -543,7 +546,7 @@ build_telemetry_metadata(RepoMod, SQL, Params, Result) ->
 extract_source(SQL) ->
     kura_db:extract_source(SQL).
 
-insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}) ->
+insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}, Opts) ->
     CS1 = run_prepare(CS0),
     case kura_schema:run_before_insert(SchemaMod, CS1) of
         {error, ErrCS} ->
@@ -556,19 +559,23 @@ insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}) ->
                 {error, DumpErr} ->
                     dump_error_changeset(CS, insert, DumpErr);
                 {ok, DumpedChanges} ->
-                    Fields = maps:keys(DumpedChanges),
-                    {SQL, Params} = kura_query_compiler:insert(
-                        RepoMod, SchemaMod, Fields, DumpedChanges
-                    ),
+                    {SQL, Params} = insert_sql(RepoMod, SchemaMod, DumpedChanges, Opts),
                     case kura_db:query(RepoMod, SQL, Params) of
                         #{command := insert, rows := [Row]} ->
                             Row1 = kura_db:load_row(SchemaMod, Row),
                             kura_schema:run_after_insert(SchemaMod, Row1);
+                        #{command := insert, rows := []} ->
+                            {unchanged, kura_changeset:apply_changes(CS)};
                         {error, PgError} ->
                             {error, handle_pg_error(CS#kura_changeset{action = insert}, PgError)}
                     end
             end
     end.
+
+insert_sql(RepoMod, SchemaMod, DumpedChanges, Opts) when map_size(Opts) =:= 0 ->
+    kura_query_compiler:insert(RepoMod, SchemaMod, maps:keys(DumpedChanges), DumpedChanges);
+insert_sql(RepoMod, SchemaMod, DumpedChanges, Opts) ->
+    kura_query_compiler:insert(RepoMod, SchemaMod, maps:keys(DumpedChanges), DumpedChanges, Opts).
 
 update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) ->
     CS1 = run_prepare(CS0),
@@ -780,7 +787,7 @@ set_owned_fk(CS, [{Col, Value} | Rest]) ->
     set_owned_fk(kura_changeset:put_change(CS, Col, Value), Rest).
 
 persist_child(RepoMod, _Kind, CS = #kura_changeset{action = insert}) ->
-    insert_record(RepoMod, CS);
+    insert_record(RepoMod, CS, #{});
 persist_child(RepoMod, _Kind, CS = #kura_changeset{action = update}) ->
     update_record(RepoMod, CS);
 persist_child(_RepoMod, many_to_many, CS = #kura_changeset{action = undefined}) ->

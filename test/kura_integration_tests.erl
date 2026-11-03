@@ -165,6 +165,11 @@ integration_test_() ->
             {"before_insert rejects changeset", fun t_before_insert_reject/0},
             {"after_insert receives record", fun t_after_insert_hook/0},
             {"after_insert failure rolls back", fun t_after_insert_failure/0},
+            {"insert/3 runs the insert hooks", fun t_insert_opts_runs_hooks/0},
+            {"insert/3 after_insert failure rolls back", fun t_insert_opts_after_failure/0},
+            {"insert/3 before_insert rejects changeset", fun t_insert_opts_before_reject/0},
+            {"insert/3 conflict nothing skips after_insert",
+                fun t_insert_opts_conflict_skips_after/0},
             {"before_update modifies changeset", fun t_before_update_hook/0},
             {"before_update rejects changeset", fun t_before_update_reject/0},
             {"after_update receives record", fun t_after_update_hook/0},
@@ -1713,6 +1718,10 @@ insert_hook_item(Name) ->
     CS1 = kura_changeset:validate_required(CS, [name]),
     kura_test_repo:insert(CS1).
 
+insert_hook_item(Name, Opts) ->
+    CS = kura_changeset:cast(kura_test_hook_schema, #{}, #{<<"name">> => Name}, [name, status]),
+    kura_repo_worker:insert(kura_test_repo, kura_changeset:validate_required(CS, [name]), Opts).
+
 flush_hooks() ->
     receive
         {hook, _, _} -> flush_hooks()
@@ -1752,6 +1761,55 @@ t_after_insert_failure() ->
     %% Verify the insert was rolled back
     Q = kura_query:where(kura_query:from(kura_test_hook_schema), {name, <<"fail_after_insert">>}),
     {ok, []} = kura_test_repo:all(Q).
+
+t_insert_opts_runs_hooks() ->
+    erlang:put(hook_test_pid, self()),
+    flush_hooks(),
+    {ok, Item} = insert_hook_item(<<"opts_hooks">>, #{on_conflict => {id, nothing}}),
+    ?assertEqual(<<"hook_inserted">>, maps:get(status, Item)),
+    receive
+        {hook, before_insert, _} -> ok
+    after 100 -> error(before_insert_not_called)
+    end,
+    receive
+        {hook, after_insert, Record} -> ?assertEqual(<<"opts_hooks">>, maps:get(name, Record))
+    after 100 -> error(after_insert_not_called)
+    end,
+    flush_hooks(),
+    erlang:erase(hook_test_pid).
+
+t_insert_opts_after_failure() ->
+    ?assertEqual(
+        {error, after_insert_failed},
+        insert_hook_item(<<"fail_after_insert">>, #{on_conflict => {id, nothing}})
+    ),
+    Q = kura_query:where(kura_query:from(kura_test_hook_schema), {name, <<"fail_after_insert">>}),
+    ?assertEqual({ok, []}, kura_test_repo:all(Q)).
+
+t_insert_opts_before_reject() ->
+    {error, CS} = insert_hook_item(<<"reject_insert">>, #{on_conflict => {id, nothing}}),
+    ?assertMatch([{name, <<"insert rejected by hook">>} | _], CS#kura_changeset.errors).
+
+t_insert_opts_conflict_skips_after() ->
+    {ok, Item} = insert_hook_item(<<"opts_conflict">>),
+    erlang:put(hook_test_pid, self()),
+    flush_hooks(),
+    CS = kura_changeset:cast(
+        kura_test_hook_schema,
+        #{},
+        #{<<"id">> => maps:get(id, Item), <<"name">> => <<"opts_conflict_again">>},
+        [id, name]
+    ),
+    {ok, _} = kura_repo_worker:insert(kura_test_repo, CS, #{on_conflict => {id, nothing}}),
+    receive
+        {hook, after_insert, _} -> error(after_insert_called)
+    after 50 -> ok
+    end,
+    flush_hooks(),
+    erlang:erase(hook_test_pid),
+    ?assertMatch(
+        {ok, #{name := <<"opts_conflict">>}}, kura_test_repo:reload(kura_test_hook_schema, Item)
+    ).
 
 t_before_update_hook() ->
     erlang:put(hook_test_pid, self()),
