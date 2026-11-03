@@ -495,6 +495,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Encryption v2 ciphertext frame, bound to its column (#137):
+  `<<2, Mode:8, KeyId:16, IV:12, Tag:16, CT>>`, Mode `0` (randomized).
+  Each value is encrypted under a per-column subkey,
+  HKDF-SHA256 of the root key with the context `{Table, Field}` (the
+  schema's unprefixed `table()` and the field name), and the context,
+  mode and key id are authenticated as AAD. A v2 value copied to another
+  encrypted column or table raises `{kura_crypto, {bad_tag, KeyId}}` on
+  load instead of decrypting as that column's value. Subkeys are derived
+  per operation, never cached. Reads accept v1 and v2 on every path.
+  Writes stay v1 unless `{kura, [{encryption_write_format, v2}]}` is set,
+  so a rolling deploy can upgrade every node before any node writes v2;
+  a later release makes v2 the default. Neither the row nor the tenant is
+  bound, so ciphertexts can still be swapped between rows of the same
+  column. Renaming the table or the field makes its v2 values
+  undecryptable. See the README and the rolling deployments guide.
+- `kura_types:dump/3` and `load/3` take the column context
+  `{Table, Column}`, and `kura_schema:encryption_contexts/1` returns it for
+  each encrypted field. The insert, update, `update_all`, `insert_all` and
+  row-loading seams use them. `dump/2` raises `{kura_crypto, no_context}`
+  for an encrypted value when the write format is `v2`, and `load/2`
+  raises it on a v2 frame, rather than guessing a context. `kura_crypto`
+  gains `encrypt/2`, `decrypt/2` and `write_format/0`; a frame version
+  other than 1 or 2 raises `{kura_crypto, {unsupported_version, V}}`, an
+  unknown v2 mode `{kura_crypto, {unsupported_mode, Mode}}`, and an
+  invalid context `{kura_crypto, invalid_context}`. A keyring key that is
+  not 32 bytes now raises `no_active_key` or `{unknown_key_id, KeyId}`
+  for v1 as well.
 - Non-transactional migrations (#139). A migration exporting
   `transactional() -> false` runs outside a transaction, statement by
   statement, on one connection holding the session-level advisory lock.

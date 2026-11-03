@@ -248,6 +248,39 @@ carries its key id, so existing rows keep decrypting under their original
 key - no backfill. A custom keyring (KMS/Vault) can replace the default by
 implementing the `kura_keyring` behaviour and setting `{kura, [{keyring, my_keyring}]}`.
 
+**Frame versions and column binding:** every ciphertext starts with a
+version byte, and reads accept every version, so stored data never needs a
+backfill to stay readable.
+
+| Version | Layout | Bound to |
+|---|---|---|
+| v1 | `<<1, KeyId:8, Nonce:12, Tag:16, CT>>` | nothing: encrypted under the root key |
+| v2 | `<<2, Mode:8, KeyId:16, IV:12, Tag:16, CT>>` | its `{Table, Field}` |
+
+A v2 ciphertext is encrypted under a per-column subkey derived with
+HKDF-SHA256 from the root key and the column context (the schema's
+`table()` and the field name), and the context, mode and key id are
+authenticated as AAD. A v2 value copied by a database-level writer into
+another encrypted column or table fails to decrypt (`{kura_crypto,
+{bad_tag, KeyId}}`) instead of being shown as that column's value. The
+binding is to names, so renaming the table or the field makes its v2
+values undecryptable; a `column` mapping can change freely. Neither the
+row nor the tenant is bound: a writer with database access can still swap
+two ciphertexts of the same column between rows, or between tenants that
+share a table. Mode is `0` (randomized) for now.
+
+**Write format:** kura writes v1 by default and reads both. Opt in to v2
+with:
+
+```erlang
+[{kura, [{encryption_write_format, v2}]}].
+```
+
+Turn it on only once every node runs a kura that reads v2, since an older
+node cannot read a v2 value (see the rolling deployments guide). A later
+release makes v2 the default. Existing v1 rows stay v1 until they are
+written again; there is no in-place re-encryption yet.
+
 **Constraints:** encrypted columns are **not queryable** and cannot carry a
 unique constraint (each write has a random nonce, so equal plaintexts
 produce different ciphertexts). `kura_query:where/2` and `having/2` raise
@@ -267,9 +300,7 @@ be encrypted: `kura_schema` raises when it first reads such a schema. An
 Schema introspection (`rebar3 kura gen_schemas`) cannot detect that a
 `BYTEA` column was encrypted - annotate it by hand. The audit trail
 redacts encrypted fields to `[encrypted]` (it keeps the "changed" signal
-but never logs the value). Ciphertext is not yet bound to its row/column,
-so a database-level actor could copy a ciphertext between rows of the same
-column; per-column binding is planned.
+but never logs the value).
 
 ## Configuration
 
