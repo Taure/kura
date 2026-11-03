@@ -540,6 +540,39 @@ cast_time_invalid_hm_test() ->
 cast_time_no_colon_test() ->
     ?assertMatch({error, _}, kura_types:cast(utc_datetime, <<"2024-01-15T1030">>)).
 
+cast_rejects_out_of_range_dates_and_times_test_() ->
+    [
+        ?_assertMatch({error, _}, kura_types:cast(Type, V))
+     || {Type, V} <- [
+            {utc_datetime, ~"2024-01-01T24:59:60Z"},
+            {utc_datetime, ~"2024-01-01T24:00:01Z"},
+            {utc_datetime, ~"2024-01-01T24:00:00.5Z"},
+            {utc_datetime, ~"2024-01-01T23:60:00Z"},
+            {utc_datetime, ~"2024-01-01T23:59:61Z"},
+            {utc_datetime, ~"2024-01-01T+1:00:00Z"},
+            {time, ~"25:00:00"},
+            {time, ~"00000000001:00:00"},
+            {date, ~"0000-01-01"},
+            {date, ~"+202-01-01"},
+            {date, ~"-001-01-01"},
+            {date, ~"2024-02-30"},
+            {date, ~"2024-13-01"},
+            {date, ~"2024-00-10"},
+            {naive_datetime, ~"0000-01-01 00:00:00"}
+        ]
+    ].
+
+cast_accepts_the_end_of_day_and_a_leap_second_test_() ->
+    [
+        ?_assertEqual(
+            {ok, {{2024, 1, 1}, {24, 0, 0}}}, kura_types:cast(utc_datetime, ~"2024-01-01T24:00:00Z")
+        ),
+        ?_assertEqual({ok, {24, 0, 0}}, kura_types:cast(time, ~"24:00:00.000")),
+        ?_assertEqual({ok, {23, 59, 60}}, kura_types:cast(time, ~"23:59:60")),
+        ?_assertEqual({ok, {9999, 12, 31}}, kura_types:cast(date, ~"9999-12-31")),
+        ?_assertEqual({ok, {2024, 2, 29}}, kura_types:cast(date, ~"2024-02-29"))
+    ].
+
 %%----------------------------------------------------------------------
 %% embed load through kura_types
 %%----------------------------------------------------------------------

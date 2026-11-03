@@ -664,13 +664,20 @@ try_parse_float(Bin) ->
     end.
 
 parse_date(<<Y:4/binary, $-, M:2/binary, $-, D:2/binary>>) ->
-    try
-        {ok, {binary_to_integer(Y), binary_to_integer(M), binary_to_integer(D)}}
-    catch
-        error:badarg -> {error, ~"is not a valid date"}
+    case {digits(Y), digits(M), digits(D)} of
+        {{ok, Year}, {ok, Month}, {ok, Day}} when Year >= 1, Year =< 9999 ->
+            valid_date({Year, Month, Day});
+        _ ->
+            {error, ~"is not a valid date"}
     end;
 parse_date(_) ->
     {error, ~"is not a valid date"}.
+
+valid_date(Date) ->
+    case calendar:valid_date(Date) of
+        true -> {ok, Date};
+        false -> {error, ~"is not a valid date"}
+    end.
 
 parse_datetime(Bin) ->
     case binary:split(Bin, [~"T", ~" "]) of
@@ -689,28 +696,48 @@ parse_datetime(Bin) ->
     end.
 
 parse_time(Bin) ->
-    Stripped = strip_tz(Bin),
-    case binary:split(Stripped, ~":", [global]) of
+    case binary:split(strip_tz(Bin), ~":", [global]) of
         [H, M, S] ->
-            try
-                Sec =
-                    case binary:split(S, ~".") of
-                        [SecWhole, _Frac] -> binary_to_integer(SecWhole);
-                        [SecWhole] -> binary_to_integer(SecWhole)
-                    end,
-                {ok, {binary_to_integer(H), binary_to_integer(M), Sec}}
-            catch
-                error:badarg -> {error, ~"is not a valid time"}
+            case binary:split(S, ~".") of
+                [Whole, Frac] -> valid_time(H, M, Whole, Frac);
+                [Whole] -> valid_time(H, M, Whole, ~"")
             end;
         [H, M] ->
-            try
-                {ok, {binary_to_integer(H), binary_to_integer(M), 0}}
-            catch
-                error:badarg -> {error, ~"is not a valid time"}
-            end;
+            valid_time(H, M, ~"0", ~"");
         _ ->
             {error, ~"is not a valid time"}
     end.
+
+%% 24:00:00 is the end of a day, which PostgreSQL accepts; a leap second
+%% is 60.
+valid_time(H, M, S, Frac) ->
+    case {digits(H), digits(M), digits(S), Frac =:= ~"" orelse all_digits(Frac)} of
+        {{ok, 24}, {ok, 0}, {ok, 0}, true} ->
+            end_of_day(Frac);
+        {{ok, Hour}, {ok, Min}, {ok, Sec}, true} when Hour =< 23, Min =< 59, Sec =< 60 ->
+            {ok, {Hour, Min, Sec}};
+        _ ->
+            {error, ~"is not a valid time"}
+    end.
+
+end_of_day(Frac) ->
+    case binary:replace(Frac, ~"0", ~"", [global]) of
+        ~"" -> {ok, {24, 0, 0}};
+        _ -> {error, ~"is not a valid time"}
+    end.
+
+%% A date or time field has at most four digits, so a longer one is
+%% refused before it is parsed.
+digits(Bin) when byte_size(Bin) >= 1, byte_size(Bin) =< 4 ->
+    case all_digits(Bin) of
+        true -> {ok, binary_to_integer(Bin)};
+        false -> error
+    end;
+digits(_Bin) ->
+    error.
+
+all_digits(Bin) ->
+    lists:all(fun(C) -> C >= $0 andalso C =< $9 end, binary_to_list(Bin)).
 
 strip_tz(Bin) ->
     case binary:last(Bin) of
