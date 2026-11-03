@@ -33,6 +33,7 @@ v2_test_() ->
         {"key id swap raises", fun t_key_id_swap/0},
         {"key id above 255 raises without a lookup", fun t_wide_key_id/0},
         {"key id 255 round trips", fun t_key_id_255/0},
+        {"key ids 0 to 255 are the only active ids", fun t_active_key_id_range/0},
         {"truncated v2 frame raises", fun t_truncated/0},
         {"unknown versions raise", fun t_unknown_version/0},
         {"rotation reads old v2 frames", fun t_rotation/0},
@@ -203,6 +204,27 @@ t_key_id_255() ->
     Frame = kura_crypto:encrypt(~"x", ?CTX),
     ?assertMatch(<<2, 0, 255:16, _/binary>>, Frame),
     ?assertEqual(~"x", kura_crypto:decrypt(Frame, ?CTX)).
+
+t_active_key_id_range() ->
+    application:set_env(kura, keyring, kura_test_lenient_keyring),
+    try
+        [
+            begin
+                application:set_env(kura, test_active_key_id, Id),
+                ?assertMatch(<<1, Id, _/binary>>, kura_crypto:encrypt(~"x"))
+            end
+         || Id <- [0, 255]
+        ],
+        [
+            begin
+                application:set_env(kura, test_active_key_id, Id),
+                ?assertError({kura_crypto, no_active_key}, kura_crypto:encrypt(~"x"))
+            end
+         || Id <- [-1, 256, one]
+        ]
+    after
+        application:unset_env(kura, test_active_key_id)
+    end.
 
 t_truncated() ->
     write_v2(),

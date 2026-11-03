@@ -156,13 +156,16 @@ decrypt_frame(
     <<?V2:8, Mode:8, KeyId:16, IV:?NONCE_BYTES/binary, Tag:?TAG_BYTES/binary, CipherText/binary>>,
     Ctx
 ) ->
-    Mode =:= ?MODE_RANDOMIZED orelse erlang:error({kura_crypto, {unsupported_mode, Mode}}),
+    ok = check_mode(Mode),
     Key = randomized_subkey(fetch_key(KeyId), Ctx),
     open(Key, IV, CipherText, v2_aad(Mode, KeyId, Ctx), Tag, KeyId);
 decrypt_frame(<<Version:8, _/binary>>, _Ctx) when Version =/= ?V1, Version =/= ?V2 ->
     erlang:error({kura_crypto, {unsupported_version, Version}});
 decrypt_frame(_Frame, _Ctx) ->
     erlang:error({kura_crypto, malformed_frame}).
+
+check_mode(?MODE_RANDOMIZED) -> ok;
+check_mode(Mode) -> erlang:error({kura_crypto, {unsupported_mode, Mode}}).
 
 open(Key, IV, CipherText, Aad, Tag, KeyId) ->
     case crypto:crypto_one_time_aead(aes_256_gcm, Key, IV, CipherText, Aad, Tag, false) of

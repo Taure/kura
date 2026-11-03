@@ -933,7 +933,7 @@ dump_field(Type, V, Context) ->
             %% dump raises rather than returning {error, _} - so the crypto
             %% fail-loud guarantee does not depend on this catch being narrow.
             %% The `of` body is unprotected, so a raise from the re-dump in
-            %% dump_cast/3 still propagates.
+            %% dump_cast/4 still propagates.
             try kura_types:cast(Type, V) of
                 {ok, Cast} -> dump_cast(Type, Cast, Context, Msg);
                 {error, CastMsg} -> {error, CastMsg}
