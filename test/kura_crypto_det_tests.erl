@@ -57,6 +57,7 @@ det_test_() ->
         {"invalid key ids raise", fun t_invalid_key_ids/0},
         {"an unresolvable key id raises", fun t_unresolvable_key_id/0},
         {"is_deterministic_frame/1", fun t_is_deterministic_frame/0},
+        {"are_deterministic_frames/1", fun t_are_deterministic_frames/0},
         {"errors carry no key material or plaintext", fun t_no_secrets_in_errors/0}
     ]}.
 
@@ -354,6 +355,18 @@ t_unresolvable_key_id() ->
     application:set_env(kura, keyring, kura_test_det_keyring),
     application:set_env(kura, test_det_key_ids, [1, 99]),
     ?assertError({kura_crypto, {unknown_key_id, 99}}, kura_crypto:lookup([~"x"], ?CTX)).
+
+t_are_deterministic_frames() ->
+    Frame = det(~"x"),
+    Other = det(~"y"),
+    ?assert(kura_crypto:are_deterministic_frames([])),
+    ?assert(kura_crypto:are_deterministic_frames([Frame])),
+    ?assert(kura_crypto:are_deterministic_frames([Frame, Other, Frame])),
+    ?assertNot(kura_crypto:are_deterministic_frames([~"x"])),
+    ?assertNot(kura_crypto:are_deterministic_frames([Frame, ~"x"])),
+    ?assertNot(kura_crypto:are_deterministic_frames([~"x", Frame])),
+    ?assertNot(kura_crypto:are_deterministic_frames(improper(Frame, Other))),
+    ?assertNot(kura_crypto:are_deterministic_frames(Frame)).
 
 t_is_deterministic_frame() ->
     Frame = det(~"x"),
