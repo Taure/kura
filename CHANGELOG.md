@@ -172,7 +172,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decided by the new `kura_dialect:qualified_columns/1`. kura_sqlite
   delegates to this dialect and inherits the qualification; a where on a
   byte field of the `from` schema under a join needs the kura_sqlite
-  release that uses `kura_dialect:qualified_columns/1`.
+  release that uses `kura_dialect:qualified_columns/1`. A deterministic
+  lookup on a field of the `from` schema is offered only by the `from`
+  schema, so a plain `from` field with a deterministic namesake in a
+  joined schema raises `{kura, {encrypted_field_in_where, Field}}`
+  instead of comparing the joined schema's ciphertexts with the plain
+  column.
 - `kura_changeset:validate_length/3` measures a binary in characters
   (Unicode code points, the unit of `VARCHAR(N)`) rather than bytes, so a
   multibyte string counts fewer units than before. A value that is not
@@ -632,6 +637,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`+HH:MM`, `+HHMM` or `+HH`) is now applied, giving 08:00 UTC; a
   malformed one is a cast error. A `naive_datetime` and a `time` keep
   their wall-clock value, as before.
+- A time fraction longer than nine digits is refused, and the digits are
+  checked over the binary, so a very long fraction no longer allocates a
+  list of its bytes.
 - A parsed datetime is normalised through gregorian seconds, so
   `24:00:00` and a leap second (`:60`) become the next day or minute, the
   value a read returns. A `time` keeps `{24, 0, 0}`.
