@@ -27,6 +27,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is itself a condition's value with
   `{kura, {distance_not_supported_here, Clause}}`. A distance in any other
   condition still raises that from `where/2` and `having/2`.
+- Map-form `create_index` takes `using` (access method, such as `hnsw`,
+  `ivfflat`, `gin`), `opclass` (operator class, one column only) and
+  `with` (storage parameters, atom keys to integers), for pgvector HNSW
+  and IVFFlat indexes among others. `using`, `opclass` and the `with`
+  keys must match `^[a-z][a-z0-9_]*$` and are emitted quoted. A bad
+  identifier, a non-integer `with` value, an empty `with` map, `opclass`
+  on several columns or a `name` that is not a binary of 1 to 63 bytes
+  raises `{invalid_index_option, Option, Value}`. A migration run checks
+  every map-form `create_index` before it applies anything, and fails
+  with `{invalid_index_option, Version, Option, Value}`. On a repo whose
+  dialect is not PostgreSQL, `using`, `opclass` and `with` raise
+  `{invalid_index_option, Option, {unsupported_dialect, Dialect}}`.
+- `kura_migration:index_name/3` resolves the name of an index from its
+  options: the declared `name`, or `index_name/2`.
+- `kura_schema_verify` compares the access method (`pg_am.amname`) of a
+  declared index that names one with `using`, so a btree no longer
+  satisfies a declared `hnsw` index. Without `using` any method counts.
 
 ### Changed
 
@@ -65,7 +82,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `binary` it still counts bytes, and the messages say byte(s).
 - `cast/4` looks up `table/0` only when the schema declares constraints
   or indexes, so an embedded schema module needs only `fields/0`.
+- Map-form `create_index` honours `name`. It used to be ignored, the
+  index always taking `kura_migration:index_name/2`. A migration that
+  passed `name` now creates the index under that name, and a unique
+  index declared in `indexes/0` with a `name` maps its constraint
+  violations under both that name and the generated one, so an index
+  created earlier under the generated name keeps mapping without a
+  rename. Renaming it to the declared name is optional. Without `name`,
+  naming is unchanged.
 
+  **Breaking:** a `name` that is not a binary of 1 to 63 bytes (an atom,
+  `~""`, `undefined`, a longer binary) used to be ignored. It now raises
+  `{invalid_index_option, name, Name}`. On a unique index in `indexes/0`
+  it raises from `kura_changeset:cast/4` on every write to that schema.
+  In a migration's `create_index` it aborts the run, including an
+  applied migration replayed on a fresh database. Write `name => ~"users_email_index"`, not an atom.
 - `{Field, is_nil}` and `{Field, is_not_nil}` on an encrypted field are
   accepted by `where/2`. They bind nothing, and `NULL` is stored
   unencrypted.

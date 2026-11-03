@@ -351,11 +351,13 @@ Run `CREATE EXTENSION IF NOT EXISTS vector` as a superuser when the
 cluster or database is set up, for example in CNPG's
 `postInitApplicationSQL`.
 
-Until `create_index` takes an access method and an operator class, add
-an HNSW index with an `execute` step in a migration:
+Add an HNSW or IVFFlat index with `create_index` in a migration (see
+the [migrations guide](migrations.md#vector-indexes-pgvector)):
 
 ```erlang
-{execute, ~"CREATE INDEX memories_embedding_cos_index ON memories USING hnsw (embedding vector_cosine_ops)"}
+{create_index, ~"memories", [embedding], #{
+    using => hnsw, opclass => vector_cosine_ops, name => ~"memories_embedding_cos_index"
+}}
 ```
 
 ### Search-time settings

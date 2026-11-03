@@ -3,6 +3,7 @@
 -include("kura.hrl").
 
 -define(REPO, kura_migrator_test_dialect_repo).
+-define(LONG_NAME, ~"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn").
 -on_load(setup_dialect/0).
 
 setup_dialect() ->
@@ -564,6 +565,201 @@ create_composite_index_map_test() ->
         SQL
     ).
 
+%%----------------------------------------------------------------------
+%% Map-based create_index: name, using, opclass, with
+%%----------------------------------------------------------------------
+
+create_index_map_honours_name_test() ->
+    ?assertEqual(
+        ~"CREATE INDEX \"memories_embedding_cos_index\" ON \"memories\" (\"embedding\")",
+        kura_migrator:compile_operation(
+            ?REPO,
+            {create_index, ~"memories", [embedding], #{name => ~"memories_embedding_cos_index"}}
+        )
+    ).
+
+create_index_map_quotes_a_custom_name_test() ->
+    ?assertEqual(
+        ~"CREATE INDEX \"odd\"\"name\" ON \"t\" (\"c\")",
+        kura_migrator:compile_operation(?REPO, {create_index, ~"t", [c], #{name => ~"odd\"name"}})
+    ).
+
+create_index_map_hnsw_test() ->
+    ?assertEqual(
+        <<
+            "CREATE INDEX \"memories_embedding_cos_index\" ON \"memories\" USING \"hnsw\" "
+            "(\"embedding\" \"vector_cosine_ops\") WITH (\"ef_construction\" = 64, \"m\" = 16)"
+        >>,
+        kura_migrator:compile_operation(
+            ?REPO,
+            {create_index, ~"memories", [embedding], #{
+                using => hnsw,
+                opclass => vector_cosine_ops,
+                with => #{m => 16, ef_construction => 64},
+                name => ~"memories_embedding_cos_index"
+            }}
+        )
+    ).
+
+create_index_map_ivfflat_test() ->
+    ?assertEqual(
+        <<
+            "CREATE INDEX \"memories_embedding_index\" ON \"memories\" USING \"ivfflat\" "
+            "(\"embedding\" \"vector_l2_ops\") WITH (\"lists\" = 100)"
+        >>,
+        kura_migrator:compile_operation(
+            ?REPO,
+            {create_index, ~"memories", [embedding], #{
+                using => ivfflat, opclass => vector_l2_ops, with => #{lists => 100}
+            }}
+        )
+    ).
+
+create_index_map_using_alone_test() ->
+    ?assertEqual(
+        ~"CREATE INDEX \"docs_tags_index\" ON \"docs\" USING \"gin\" (\"tags\")",
+        kura_migrator:compile_operation(?REPO, {create_index, ~"docs", [tags], #{using => gin}})
+    ).
+
+create_index_map_opclass_without_using_test() ->
+    ?assertEqual(
+        ~"CREATE INDEX \"users_name_index\" ON \"users\" (\"name\" \"text_pattern_ops\")",
+        kura_migrator:compile_operation(
+            ?REPO, {create_index, ~"users", [name], #{opclass => text_pattern_ops}}
+        )
+    ).
+
+create_index_map_using_with_unique_and_where_test() ->
+    ?assertEqual(
+        <<
+            "CREATE UNIQUE INDEX \"by_code\" ON \"items\" USING \"btree\" (\"code\") "
+            "WITH (\"fillfactor\" = 90) WHERE code IS NOT NULL"
+        >>,
+        kura_migrator:compile_operation(
+            ?REPO,
+            {create_index, ~"items", [code], #{
+                unique => true,
+                using => btree,
+                with => #{fillfactor => 90},
+                where => ~"code IS NOT NULL",
+                name => ~"by_code"
+            }}
+        )
+    ).
+
+create_index_map_using_with_several_columns_test() ->
+    ?assertEqual(
+        ~"CREATE INDEX \"t_a_b_index\" ON \"t\" USING \"brin\" (\"a\", \"b\")",
+        kura_migrator:compile_operation(?REPO, {create_index, ~"t", [a, b], #{using => brin}})
+    ).
+
+create_index_map_rejections_test_() ->
+    Compile = fun(Columns, Opts) ->
+        fun() -> kura_migrator:compile_operation(?REPO, {create_index, ~"t", Columns, Opts}) end
+    end,
+    [
+        ?_assertError(
+            {invalid_index_option, using, 'Hnsw'}, (Compile([c], #{using => 'Hnsw'}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, using, 'hnsw; DROP TABLE t'},
+            (Compile([c], #{using => 'hnsw; DROP TABLE t'}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, using, '9hnsw'}, (Compile([c], #{using => '9hnsw'}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, using, '_hnsw'}, (Compile([c], #{using => '_hnsw'}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, using, ''}, (Compile([c], #{using => ''}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, using, 'a\nb'}, (Compile([c], #{using => 'a\nb'}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, using, ~"hnsw"}, (Compile([c], #{using => ill_typed(~"hnsw")}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, opclass, 'vector-ops'},
+            (Compile([c], #{opclass => 'vector-ops'}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, opclass, "ops"}, (Compile([c], #{opclass => ill_typed("ops")}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, opclass, {columns, [a, b]}},
+            (Compile([a, b], #{opclass => vector_l2_ops}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, opclass, {columns, []}},
+            (Compile([], #{opclass => vector_l2_ops}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, with, {m, 1.5}}, (Compile([c], #{with => #{m => 1.5}}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, with, {lists, ~"100"}},
+            (Compile([c], #{with => #{lists => ill_typed(~"100")}}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, with, 'Bad'}, (Compile([c], #{with => #{'Bad' => 1}}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, with, ~"m"},
+            (Compile([c], #{with => ill_typed(#{~"m" => 1})}))()
+        ),
+        ?_assertError({invalid_index_option, with, #{}}, (Compile([c], #{with => #{}}))()),
+        ?_assertError(
+            {invalid_index_option, with, [{m, 1}]}, (Compile([c], #{with => ill_typed([{m, 1}])}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, using, 'hnsw\n'}, (Compile([c], #{using => 'hnsw\n'}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, opclass, 'vector_l2_ops\n'},
+            (Compile([c], #{opclass => 'vector_l2_ops\n'}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, with, 'm\n'}, (Compile([c], #{with => #{'m\n' => 16}}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, name, ?LONG_NAME}, (Compile([c], #{name => ?LONG_NAME}))()
+        ),
+        ?_assertError({invalid_index_option, name, ~""}, (Compile([c], #{name => ~""}))()),
+        ?_assertError(
+            {invalid_index_option, name, idx}, (Compile([c], #{name => ill_typed(idx)}))()
+        )
+    ].
+
+-spec ill_typed(term()) -> dynamic().
+ill_typed(Term) -> Term.
+
+create_index_map_takes_a_63_byte_name_test() ->
+    Name = binary:copy(~"n", 63),
+    ?assertEqual(
+        <<"CREATE INDEX \"", Name/binary, "\" ON \"t\" (\"c\")">>,
+        kura_migrator:compile_operation(?REPO, {create_index, ~"t", [c], #{name => Name}})
+    ).
+
+index_name_3_resolves_the_declared_or_generated_name_test_() ->
+    [
+        ?_assertEqual(~"t_c_index", kura_migration:index_name(~"t", [c], #{})),
+        ?_assertEqual(~"t_c_index", kura_migration:index_name(~"t", [c], #{unique => true})),
+        ?_assertEqual(~"mine", kura_migration:index_name(~"t", [c], #{name => ~"mine"})),
+        ?_assertError(
+            {invalid_index_option, name, ~""}, kura_migration:index_name(~"t", [c], #{name => ~""})
+        ),
+        ?_assertError(
+            {invalid_index_option, name, mine},
+            kura_migration:index_name(~"t", [c], #{name => ill_typed(mine)})
+        ),
+        ?_assertError(
+            {invalid_index_option, name, ?LONG_NAME},
+            kura_migration:index_name(~"t", [c], #{name => ?LONG_NAME})
+        )
+    ].
+
 index_name_test() ->
     ?assertEqual(<<"users_email_index">>, kura_migration:index_name(<<"users">>, [email])),
     ?assertEqual(
@@ -835,7 +1031,11 @@ concurrent_index_compile_test_() ->
         fun concurrently_on_a_pool_without_the_capability_is_plain/0,
         fun concurrently_on_a_postgres_pool_without_the_capability_is_refused/0,
         fun concurrently_without_a_dialect_is_taken_as_postgres/0,
-        fun unsupported_concurrently_is_refused_while_planning/0
+        fun unsupported_concurrently_is_refused_while_planning/0,
+        fun postgres_index_options_are_refused_on_another_dialect/0,
+        fun invalid_indexes_are_refused_while_planning/0,
+        fun index_options_are_checked_without_compiling/0,
+        fun postgres_index_options_are_compiled_on_postgres/0
     ]}.
 
 setup_pool_repos() ->
@@ -930,6 +1130,60 @@ unsupported_concurrently_is_refused_while_planning() ->
     ?assertEqual(ok, kura_migrator:refuse_unsupported_concurrently(?OLD_PG_POOL_REPO, [Note], up)),
     ?assertEqual(ok, kura_migrator:refuse_unsupported_concurrently(?LITE_POOL_REPO, [Index], up)),
     ?assertEqual(ok, kura_migrator:refuse_unsupported_concurrently(?PG_POOL_REPO, [Index], up)).
+
+postgres_index_options_are_refused_on_another_dialect() ->
+    Compile = fun(Opts) ->
+        kura_migrator:compile_operation(?LITE_POOL_REPO, {create_index, ~"t", [c], Opts})
+    end,
+    ?assertError(
+        {invalid_index_option, using, {unsupported_dialect, kura_dialect_sqlite}},
+        Compile(#{using => hnsw})
+    ),
+    ?assertError(
+        {invalid_index_option, opclass, {unsupported_dialect, kura_dialect_sqlite}},
+        Compile(#{opclass => vector_l2_ops})
+    ),
+    ?assertError(
+        {invalid_index_option, with, {unsupported_dialect, kura_dialect_sqlite}},
+        Compile(#{with => #{m => 16}})
+    ),
+    ?assertEqual(~"CREATE INDEX \"t_c_index\" ON \"t\" (\"c\")", Compile(#{})).
+
+invalid_indexes_are_refused_while_planning() ->
+    Good = {2, m20250301110000_nontx_index_items},
+    Bad = {7, m20250307100000_nontx_bad_index},
+    ?assertError(
+        {migration_aborted, {invalid_index_option, 7, using, 'Hash'}},
+        kura_migrator:refuse_invalid_indexes(?PG_POOL_REPO, [Good, Bad], up)
+    ),
+    ?assertEqual(ok, kura_migrator:refuse_invalid_indexes(?PG_POOL_REPO, [Good, Good], up)),
+    ?assertEqual(ok, kura_migrator:refuse_invalid_indexes(?PG_POOL_REPO, [], up)).
+
+index_options_are_checked_without_compiling() ->
+    Check = fun(Columns, Opts) ->
+        kura_migrator:check_index_options(?PG_POOL_REPO, ~"t", Columns, Opts)
+    end,
+    ?assertEqual(ok, Check([c], #{using => hnsw, opclass => vector_l2_ops, with => #{m => 16}})),
+    ?assertError({invalid_index_option, name, ~""}, Check([c], #{name => ~""})),
+    ?assertError({invalid_index_option, using, 'Hash'}, Check([c], #{using => 'Hash'})),
+    ?assertError(
+        {invalid_index_option, opclass, {columns, [a, b]}}, Check([a, b], #{opclass => ops})
+    ),
+    ?assertError({invalid_index_option, with, #{}}, Check([c], #{with => #{}})).
+
+postgres_index_options_are_compiled_on_postgres() ->
+    ?assertEqual(
+        ~"CREATE INDEX \"t_c_index\" ON \"t\" USING \"hnsw\" (\"c\")",
+        kura_migrator:compile_operation(
+            ?OLD_PG_POOL_REPO, {create_index, ~"t", [c], #{using => hnsw}}
+        )
+    ),
+    ?assertEqual(
+        ~"CREATE INDEX \"t_c_index\" ON \"t\" USING \"hnsw\" (\"c\")",
+        kura_migrator:compile_operation(
+            ?NO_DIALECT_POOL_REPO, {create_index, ~"t", [c], #{using => hnsw}}
+        )
+    ).
 
 runs_in_transaction_test() ->
     ?assertNot(kura_migrator:runs_in_transaction(m20250301110000_nontx_index_items)),

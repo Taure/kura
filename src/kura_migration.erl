@@ -84,7 +84,15 @@ transactional.
     | {modify_column, atom(), kura_types:kura_type()}.
 
 -type index_opts() :: [unique | concurrently | {where, binary()}].
--type index_opts_map() :: #{unique => boolean(), where => binary(), concurrently => boolean()}.
+-type index_opts_map() :: #{
+    unique => boolean(),
+    where => binary(),
+    concurrently => boolean(),
+    name => binary(),
+    using => atom(),
+    opclass => atom(),
+    with => #{atom() => integer()}
+}.
 -type index_def() :: {[atom()], index_opts_map()}.
 
 -type table_constraint() ::
@@ -102,7 +110,7 @@ transactional.
     | {drop_index, binary()}
     | {execute, binary()}.
 
--export([index_name/2]).
+-export([index_name/2, index_name/3]).
 
 -export_type([
     operation/0,
@@ -120,6 +128,22 @@ transactional.
 index_name(Table, Cols) ->
     ColsBin = join_with_sep([atom_to_binary(C, utf8) || C <- Cols], ~"_"),
     iolist_to_binary([Table, ~"_", ColsBin, ~"_index"]).
+
+-doc """
+The name of an index declared with the map options `Opts`: its `name`
+when given, otherwise `index_name/2`. A `name` that is not a binary of 1
+to 63 bytes (PostgreSQL's identifier limit) raises
+`{invalid_index_option, name, Name}`.
+""".
+-spec index_name(binary(), [atom()], index_opts_map()) -> binary().
+index_name(_Table, _Cols, #{name := Name}) when
+    is_binary(Name), byte_size(Name) > 0, byte_size(Name) =< 63
+->
+    Name;
+index_name(_Table, _Cols, #{name := Name}) ->
+    error({invalid_index_option, name, Name});
+index_name(Table, Cols, #{}) ->
+    index_name(Table, Cols).
 
 -spec join_with_sep([binary()], binary()) -> [binary()].
 join_with_sep([], _Sep) -> [];

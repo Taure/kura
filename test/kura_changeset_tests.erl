@@ -802,6 +802,62 @@ build_index_constraints_unique_index_test() ->
     ?assertEqual(code, C#kura_constraint.field),
     ?assertEqual(<<"has already been taken">>, C#kura_constraint.message).
 
+build_index_constraints_take_the_generated_name_test() ->
+    [C] = kura_changeset:build_index_constraints([{[code], #{unique => true}}], ~"items"),
+    ?assertEqual(~"items_code_index", C#kura_constraint.constraint).
+
+%% An index created before kura honoured `name` still carries the
+%% generated one, so a violation under either name maps to the field.
+named_unique_index_maps_generated_name_too_test() ->
+    [Named, Generated] = kura_changeset:build_index_constraints(
+        [{[code], #{unique => true, name => ~"items_by_code"}}], ~"items"
+    ),
+    ?assertEqual(~"items_by_code", Named#kura_constraint.constraint),
+    ?assertEqual(~"items_code_index", Generated#kura_constraint.constraint),
+    ?assertEqual(
+        Named#kura_constraint{constraint = ~"items_code_index"}, Generated
+    ),
+    ?assertEqual({unique, code, ~"has already been taken"}, {
+        Named#kura_constraint.type, Named#kura_constraint.field, Named#kura_constraint.message
+    }).
+
+named_unique_index_name_is_checked_as_the_migrator_checks_it_test_() ->
+    Build = fun(Name) ->
+        kura_changeset:build_index_constraints(
+            [{[code], #{unique => true, name => Name}}], ~"items"
+        )
+    end,
+    Long = binary:copy(~"n", 64),
+    [
+        ?_assertError({invalid_index_option, name, ~""}, Build(~"")),
+        ?_assertError({invalid_index_option, name, Long}, Build(Long)),
+        ?_assertError({invalid_index_option, name, idx}, Build(ill_typed(idx)))
+    ].
+
+-spec ill_typed(term()) -> dynamic().
+ill_typed(Term) -> Term.
+
+named_unique_index_under_the_generated_name_is_registered_once_test() ->
+    ?assertMatch(
+        [#kura_constraint{constraint = ~"items_code_index"}],
+        kura_changeset:build_index_constraints(
+            [{[code], #{unique => true, name => ~"items_code_index"}}], ~"items"
+        )
+    ).
+
+named_unique_index_after_another_keeps_both_test() ->
+    ?assertMatch(
+        [
+            #kura_constraint{constraint = ~"items_by_code"},
+            #kura_constraint{constraint = ~"items_code_index"},
+            #kura_constraint{constraint = ~"items_sku_index", field = sku}
+        ],
+        kura_changeset:build_index_constraints(
+            [{[code], #{unique => true, name => ~"items_by_code"}}, {[sku], #{unique => true}}],
+            ~"items"
+        )
+    ).
+
 build_index_constraints_non_unique_skipped_test() ->
     Result = kura_changeset:build_index_constraints([{[code], #{unique => false}}], <<"t">>),
     ?assertEqual([], Result).
