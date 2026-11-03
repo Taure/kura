@@ -381,8 +381,12 @@ declared_shape(Cols, Opts) ->
     }.
 
 -spec declared_method(kura_migration:index_opts_map()) -> binary() | any.
-declared_method(#{using := Method}) when is_atom(Method) -> atom_to_binary(Method, utf8);
+declared_method(#{using := Method}) -> method_name(Method);
 declared_method(#{}) -> any.
+
+-spec method_name(term()) -> binary().
+method_name(Method) when is_atom(Method) -> atom_to_binary(Method, utf8);
+method_name(Method) -> error({invalid_index_option, using, Method}).
 
 -spec ensure_binary(binary() | string()) -> binary().
 ensure_binary(B) when is_binary(B) -> B;

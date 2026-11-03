@@ -649,11 +649,8 @@ build_table_constraints([_ | Rest], Table) ->
 build_index_constraints([], _Table) ->
     [];
 build_index_constraints([{[First | _] = Cols, #{unique := true} = Opts} | Rest], Table) ->
-    Name =
-        case Opts of
-            #{name := Named} when is_binary(Named) -> Named;
-            #{} -> kura_migration:index_name(Table, Cols)
-        end,
+    Declared = kura_migration:index_name(Table, Cols, Opts),
+    Generated = kura_migration:index_name(Table, Cols),
     [
         #kura_constraint{
             type = unique,
@@ -661,8 +658,8 @@ build_index_constraints([{[First | _] = Cols, #{unique := true} = Opts} | Rest],
             field = First,
             message = ~"has already been taken"
         }
-        | build_index_constraints(Rest, Table)
-    ];
+     || Name <- [Declared | [Generated || Generated =/= Declared]]
+    ] ++ build_index_constraints(Rest, Table);
 build_index_constraints([_ | Rest], Table) ->
     build_index_constraints(Rest, Table).
 

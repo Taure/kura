@@ -15,8 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and IVFFlat indexes among others. `using`, `opclass` and the `with`
   keys must match `^[a-z][a-z0-9_]*$` and are emitted quoted. A bad
   identifier, a non-integer `with` value, an empty `with` map, `opclass`
-  on several columns or a `name` that is not a non-empty binary raises
-  `{invalid_index_option, Option, Value}`.
+  on several columns or a `name` that is not a binary of 1 to 63 bytes
+  raises `{invalid_index_option, Option, Value}`. A migration run checks
+  every map-form `create_index` before it applies anything, and fails
+  with `{invalid_index_option, Version, Option, Value}`. On a repo whose
+  dialect is not PostgreSQL, `using`, `opclass` and `with` raise
+  `{invalid_index_option, Option, {unsupported_dialect, Dialect}}`.
+- `kura_migration:index_name/3` resolves the name of an index from its
+  options: the declared `name`, or `index_name/2`.
 - `kura_schema_verify` compares the access method (`pg_am.amname`) of a
   declared index that names one with `using`, so a btree no longer
   satisfies a declared `hnsw` index. Without `using` any method counts.
@@ -27,9 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   index always taking `kura_migration:index_name/2`. A migration that
   passed `name` now creates the index under that name, and a unique
   index declared in `indexes/0` with a `name` maps its constraint
-  violations by that name. An index created earlier under the generated
-  name keeps it: rename it with `{execute, ~"ALTER INDEX ... RENAME TO
-  ..."}` if the code now refers to the declared name. Without `name`,
+  violations under both that name and the generated one, so an index
+  created earlier under the generated name keeps mapping without a
+  rename. Renaming it to the declared name is optional. Without `name`,
   naming is unchanged.
 - `{Field, is_nil}` and `{Field, is_not_nil}` on an encrypted field are
   accepted by `where/2`. They bind nothing, and `NULL` is stored

@@ -3,6 +3,7 @@
 -include("kura.hrl").
 
 -define(REPO, kura_migrator_test_dialect_repo).
+-define(LONG_NAME, ~"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn").
 -on_load(setup_dialect/0).
 
 setup_dialect() ->
@@ -712,6 +713,19 @@ create_index_map_rejections_test_() ->
         ?_assertError(
             {invalid_index_option, with, [{m, 1}]}, (Compile([c], #{with => ill_typed([{m, 1}])}))()
         ),
+        ?_assertError(
+            {invalid_index_option, using, 'hnsw\n'}, (Compile([c], #{using => 'hnsw\n'}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, opclass, 'vector_l2_ops\n'},
+            (Compile([c], #{opclass => 'vector_l2_ops\n'}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, with, 'm\n'}, (Compile([c], #{with => #{'m\n' => 16}}))()
+        ),
+        ?_assertError(
+            {invalid_index_option, name, ?LONG_NAME}, (Compile([c], #{name => ?LONG_NAME}))()
+        ),
         ?_assertError({invalid_index_option, name, ~""}, (Compile([c], #{name => ~""}))()),
         ?_assertError(
             {invalid_index_option, name, idx}, (Compile([c], #{name => ill_typed(idx)}))()
@@ -720,6 +734,31 @@ create_index_map_rejections_test_() ->
 
 -spec ill_typed(term()) -> dynamic().
 ill_typed(Term) -> Term.
+
+create_index_map_takes_a_63_byte_name_test() ->
+    Name = binary:copy(~"n", 63),
+    ?assertEqual(
+        <<"CREATE INDEX \"", Name/binary, "\" ON \"t\" (\"c\")">>,
+        kura_migrator:compile_operation(?REPO, {create_index, ~"t", [c], #{name => Name}})
+    ).
+
+index_name_3_resolves_the_declared_or_generated_name_test_() ->
+    [
+        ?_assertEqual(~"t_c_index", kura_migration:index_name(~"t", [c], #{})),
+        ?_assertEqual(~"t_c_index", kura_migration:index_name(~"t", [c], #{unique => true})),
+        ?_assertEqual(~"mine", kura_migration:index_name(~"t", [c], #{name => ~"mine"})),
+        ?_assertError(
+            {invalid_index_option, name, ~""}, kura_migration:index_name(~"t", [c], #{name => ~""})
+        ),
+        ?_assertError(
+            {invalid_index_option, name, mine},
+            kura_migration:index_name(~"t", [c], #{name => ill_typed(mine)})
+        ),
+        ?_assertError(
+            {invalid_index_option, name, ?LONG_NAME},
+            kura_migration:index_name(~"t", [c], #{name => ?LONG_NAME})
+        )
+    ].
 
 index_name_test() ->
     ?assertEqual(<<"users_email_index">>, kura_migration:index_name(<<"users">>, [email])),
@@ -992,7 +1031,9 @@ concurrent_index_compile_test_() ->
         fun concurrently_on_a_pool_without_the_capability_is_plain/0,
         fun concurrently_on_a_postgres_pool_without_the_capability_is_refused/0,
         fun concurrently_without_a_dialect_is_taken_as_postgres/0,
-        fun unsupported_concurrently_is_refused_while_planning/0
+        fun unsupported_concurrently_is_refused_while_planning/0,
+        fun postgres_index_options_are_refused_on_another_dialect/0,
+        fun postgres_index_options_are_compiled_on_postgres/0
     ]}.
 
 setup_pool_repos() ->
@@ -1087,6 +1128,38 @@ unsupported_concurrently_is_refused_while_planning() ->
     ?assertEqual(ok, kura_migrator:refuse_unsupported_concurrently(?OLD_PG_POOL_REPO, [Note], up)),
     ?assertEqual(ok, kura_migrator:refuse_unsupported_concurrently(?LITE_POOL_REPO, [Index], up)),
     ?assertEqual(ok, kura_migrator:refuse_unsupported_concurrently(?PG_POOL_REPO, [Index], up)).
+
+postgres_index_options_are_refused_on_another_dialect() ->
+    Compile = fun(Opts) ->
+        kura_migrator:compile_operation(?LITE_POOL_REPO, {create_index, ~"t", [c], Opts})
+    end,
+    ?assertError(
+        {invalid_index_option, using, {unsupported_dialect, kura_dialect_sqlite}},
+        Compile(#{using => hnsw})
+    ),
+    ?assertError(
+        {invalid_index_option, opclass, {unsupported_dialect, kura_dialect_sqlite}},
+        Compile(#{opclass => vector_l2_ops})
+    ),
+    ?assertError(
+        {invalid_index_option, with, {unsupported_dialect, kura_dialect_sqlite}},
+        Compile(#{with => #{m => 16}})
+    ),
+    ?assertEqual(~"CREATE INDEX \"t_c_index\" ON \"t\" (\"c\")", Compile(#{})).
+
+postgres_index_options_are_compiled_on_postgres() ->
+    ?assertEqual(
+        ~"CREATE INDEX \"t_c_index\" ON \"t\" USING \"hnsw\" (\"c\")",
+        kura_migrator:compile_operation(
+            ?OLD_PG_POOL_REPO, {create_index, ~"t", [c], #{using => hnsw}}
+        )
+    ),
+    ?assertEqual(
+        ~"CREATE INDEX \"t_c_index\" ON \"t\" USING \"hnsw\" (\"c\")",
+        kura_migrator:compile_operation(
+            ?NO_DIALECT_POOL_REPO, {create_index, ~"t", [c], #{using => hnsw}}
+        )
+    ).
 
 runs_in_transaction_test() ->
     ?assertNot(kura_migrator:runs_in_transaction(m20250301110000_nontx_index_items)),

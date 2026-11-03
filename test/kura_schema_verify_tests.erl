@@ -13,7 +13,8 @@ access_method_test_() ->
             {"a unique btree satisfies a plain declared btree", fun unique_btree_for_btree/0},
             {"a hash index does not satisfy a declared btree", fun hash_for_btree/0},
             {"unique and partial still match beside a method", fun unique_and_partial_match/0},
-            {"a plain btree does not satisfy a declared unique one", fun plain_for_unique/0}
+            {"a plain btree does not satisfy a declared unique one", fun plain_for_unique/0},
+            {"a non-atom using is refused", fun refuses_non_atom_using/0}
         ]
     end}.
 
@@ -97,6 +98,13 @@ create_table(Indexes) ->
     ),
     [{ok, _} = kura_test_repo:query(SQL, []) || SQL <- Indexes],
     ok.
+
+refuses_non_atom_using() ->
+    create_table([~"CREATE INDEX e ON kura_index_method_items USING hash (email)"]),
+    ?assertError(
+        {invalid_index_option, using, ~"hash"},
+        kura_schema_verify:verify(kura_test_repo, [kura_test_bad_using_schema])
+    ).
 
 drop_table() ->
     {ok, _} = kura_test_repo:query(~"DROP TABLE IF EXISTS kura_index_method_items CASCADE", []),

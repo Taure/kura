@@ -21,6 +21,7 @@ unless its own session holds the migration advisory lock.
 -define(SIDE_APP, kura_nontx_side).
 -define(NONTX_DUP_APP, kura_nontx_dup).
 -define(TX_DUP_APP, kura_tx_dup).
+-define(BAD_INDEX_APP, kura_nontx_bad_index).
 -define(LOCK_TIMEOUT_POOL, kura_migrator_nontx_tests_lock_timeout_pool).
 
 -define(LOCK_KEY, 571629482).
@@ -36,6 +37,7 @@ unless its own session holds the migration advisory lock.
 -define(SIDE, 20250305100000).
 -define(NONTX_DUP, 20250306100000).
 -define(TX_DUP, 20250306110000).
+-define(BAD_INDEX, 20250307100000).
 
 -define(TABLES, [
     ~"nontx_items",
@@ -44,7 +46,8 @@ unless its own session holds the migration advisory lock.
     ~"nontx_refuse_items",
     ~"nontx_side_effects",
     ~"nontx_dups",
-    ~"tx_dups"
+    ~"tx_dups",
+    ~"nontx_bad_index_items"
 ]).
 
 nontx_test_() ->
@@ -68,6 +71,8 @@ nontx_test_() ->
                 fun no_connection_stops_the_step/0},
             {"concurrently in a transactional migration is refused before anything runs",
                 fun concurrently_in_transactional_migration_is_refused/0},
+            {"a bad create_index option is refused before anything runs",
+                fun bad_index_option_is_refused_while_planning/0},
             {"a non-transactional up/0 that raises stops the run while planning",
                 fun raising_up_stops_the_run_while_planning/0},
             {"a non-transactional step skips what another node did meanwhile",
@@ -125,6 +130,7 @@ setup() ->
     load_app(?SIDE_APP, [m20250305100000_nontx_side_effect]),
     load_app(?NONTX_DUP_APP, [m20250306100000_nontx_dup_unique]),
     load_app(?TX_DUP_APP, [m20250306110000_tx_dup_unique]),
+    load_app(?BAD_INDEX_APP, [m20250307100000_nontx_bad_index]),
     application:set_env(?BASE, ?REPO, repo_config()),
     case kura_pool_minato:start_pool(?POOL, pool_config()) of
         {ok, _} -> ok;
@@ -148,6 +154,7 @@ cleanup(_) ->
             ?SIDE_APP,
             ?NONTX_DUP_APP,
             ?TX_DUP_APP,
+            ?BAD_INDEX_APP,
             ?BASE
         ]
     ],
@@ -294,6 +301,17 @@ concurrently_in_transactional_migration_is_refused() ->
     ),
     ?assertEqual([], applied_versions()),
     ?assertNot(table_exists(~"nontx_refuse_items")).
+
+%% Without the planning check, the create_table would commit before the
+%% create_index failed to compile.
+bad_index_option_is_refused_while_planning() ->
+    declare([?BAD_INDEX_APP]),
+    ?assertEqual(
+        {error, {invalid_index_option, ?BAD_INDEX, using, 'Hash'}}, kura_migrator:migrate(?REPO)
+    ),
+    ?assertEqual([], applied_versions()),
+    ?assertNot(table_exists(~"nontx_bad_index_items")),
+    ?assertEqual(false, lock_held()).
 
 raising_up_stops_the_run_while_planning() ->
     declare([?RAISE_APP]),

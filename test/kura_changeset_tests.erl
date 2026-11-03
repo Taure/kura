@@ -760,11 +760,41 @@ build_index_constraints_take_the_generated_name_test() ->
     [C] = kura_changeset:build_index_constraints([{[code], #{unique => true}}], ~"items"),
     ?assertEqual(~"items_code_index", C#kura_constraint.constraint).
 
-build_index_constraints_honour_a_declared_name_test() ->
-    [C] = kura_changeset:build_index_constraints(
+%% An index created before kura honoured `name` still carries the
+%% generated one, so a violation under either name maps to the field.
+named_unique_index_maps_generated_name_too_test() ->
+    [Named, Generated] = kura_changeset:build_index_constraints(
         [{[code], #{unique => true, name => ~"items_by_code"}}], ~"items"
     ),
-    ?assertEqual(~"items_by_code", C#kura_constraint.constraint).
+    ?assertEqual(~"items_by_code", Named#kura_constraint.constraint),
+    ?assertEqual(~"items_code_index", Generated#kura_constraint.constraint),
+    ?assertEqual(
+        Named#kura_constraint{constraint = ~"items_code_index"}, Generated
+    ),
+    ?assertEqual({unique, code, ~"has already been taken"}, {
+        Named#kura_constraint.type, Named#kura_constraint.field, Named#kura_constraint.message
+    }).
+
+named_unique_index_under_the_generated_name_is_registered_once_test() ->
+    ?assertMatch(
+        [#kura_constraint{constraint = ~"items_code_index"}],
+        kura_changeset:build_index_constraints(
+            [{[code], #{unique => true, name => ~"items_code_index"}}], ~"items"
+        )
+    ).
+
+named_unique_index_after_another_keeps_both_test() ->
+    ?assertMatch(
+        [
+            #kura_constraint{constraint = ~"items_by_code"},
+            #kura_constraint{constraint = ~"items_code_index"},
+            #kura_constraint{constraint = ~"items_sku_index", field = sku}
+        ],
+        kura_changeset:build_index_constraints(
+            [{[code], #{unique => true, name => ~"items_by_code"}}, {[sku], #{unique => true}}],
+            ~"items"
+        )
+    ).
 
 build_index_constraints_non_unique_skipped_test() ->
     Result = kura_changeset:build_index_constraints([{[code], #{unique => false}}], <<"t">>),

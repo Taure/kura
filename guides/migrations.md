@@ -126,7 +126,9 @@ The map form takes three more options, for PostgreSQL:
 - `opclass`: the operator class of the column. Only for an index on one column; with more it raises `{invalid_index_option, opclass, {columns, Columns}}`.
 - `with`: storage parameters, a map of atom keys to integers, emitted in key order.
 
-`using`, `opclass` and the `with` keys are atoms matching `^[a-z][a-z0-9_]*$`, emitted quoted. Anything else, a `with` value that is not an integer, an empty `with` map or a `name` that is not a non-empty binary raises `{invalid_index_option, Option, Value}` when the migration is compiled.
+`using`, `opclass` and the `with` keys are atoms matching `^[a-z][a-z0-9_]*$`, emitted quoted. Anything else, a `with` value that is not an integer, an empty `with` map or a `name` that is not a binary of 1 to 63 bytes raises `{invalid_index_option, Option, Value}`. The migrator checks these before it runs any statement, so a bad index fails the run as `{invalid_index_option, Version, Option, Value}` with nothing applied.
+
+These options are PostgreSQL only. On a repo with another dialect, such as `kura_dialect_sqlite`, they raise `{invalid_index_option, Option, {unsupported_dialect, Dialect}}`.
 
 ```erlang
 %% GIN index on an array column
