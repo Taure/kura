@@ -47,7 +47,7 @@ Q3 = kura_query:limit(Q2, 10).
     min/2,
     max/2,
     check_encrypted/1,
-    scope_where/2
+    where_unrewritten/2
 ]).
 
 -export_type([window_fn/0, window_spec/0, distance/0, distance_metric/0, order/0]).
@@ -522,7 +522,12 @@ built by kura: passing one to `where/2` raises
 `{kura, {reserved_operator, Op}}`.
 
 The lookup reveals which rows share the value, and the ciphertexts bound as
-parameters are a stable pseudonym of it in telemetry and logged parameters. Fields of the `from` schema and of every joined schema are
+parameters are a stable pseudonym of it in telemetry and logged parameters.
+
+For a deterministic field `where/2` reads the keyring, so it can raise a
+keyring error such as `{kura_crypto, no_deterministic_key}`.
+
+Fields of the `from` schema and of every joined schema are
 checked. So are the conditions of an `in` or `exists` subquery, against the
 subquery's own schemas and against the outer query's encrypted fields that
 its schemas do not declare: the database resolves such a name to the outer
@@ -540,8 +545,8 @@ where(Q = #kura_query{from = From, wheres = W}, Condition) ->
 %% where/2 without deterministic lookups: kura_tenant scopes with it, as
 %% writes refuse an encrypted tenant field in either mode.
 -doc false.
--spec scope_where(#kura_query{}, term()) -> #kura_query{}.
-scope_where(Q = #kura_query{from = From, wheres = W}, Condition) ->
+-spec where_unrewritten(#kura_query{}, term()) -> #kura_query{}.
+where_unrewritten(Q = #kura_query{from = From, wheres = W}, Condition) ->
     check_thresholds(From, cond_thresholds(where, Condition)),
     refuse_each([Condition], guard_scope(Q, [], []), [], encrypted_field_in_where),
     Q#kura_query{wheres = W ++ [Condition]}.
@@ -581,10 +586,13 @@ rewrite_each(Tail, _Lookups) ->
 
 %% A subquery value is left for the guard, which refuses it.
 rewrite_lookup(Cond, Field, Op, Values, Lookups) ->
-    case {Lookups, has_subquery(Values)} of
-        {#{Field := Spec}, false} ->
-            {Field, lookup_op(Op), kura_encryption:lookup(Field, Spec, Values)};
-        _ ->
+    case Lookups of
+        #{Field := Spec} ->
+            case has_subquery(Values) of
+                false -> {Field, lookup_op(Op), kura_encryption:lookup(Field, Spec, Values)};
+                true -> Cond
+            end;
+        #{} ->
             Cond
     end.
 
@@ -600,6 +608,8 @@ lookup_op(Op) when Op =:= '!='; Op =:= not_in -> encrypted_not_in.
 %% reads a CTE holds whatever the CTE selects, and a CTE whose encrypted
 %% columns cannot be named may hold ciphertext under any name, so neither
 %% offers a lookup.
+lookup_specs(_Q, {[], _Ctes}) ->
+    #{};
 lookup_specs(Q, {Encrypted, Ctes}) ->
     case lists:member(?ANY_COLUMN, Encrypted) of
         true ->
@@ -1118,7 +1128,7 @@ position that is not a column, such as a distance, is reported as
 A deterministic lookup (`{Field, encrypted_in | encrypted_not_in, Frames}`)
 passes only on a field the query's scope may look up (as `where/2` decides)
 and only when `Frames` is a list of binaries laid out as deterministic
-frames (`kura_crypto:is_deterministic_frame/1`); anything else raises
+frames (version 2, mode 1, a full header); anything else raises
 `{kura, {invalid_encrypted_lookup, Field}}`. That keeps a lookup off a
 randomized or plain field and keeps any non-binary value out of one. It
 does not prove the frames are ciphertexts of that column: bytes in the

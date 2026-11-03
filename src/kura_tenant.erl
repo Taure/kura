@@ -95,7 +95,7 @@ scope_query(_Strategy, Query) ->
 
 -spec scoped(#kura_query{}, {atom(), term()}) -> #kura_query{}.
 scoped(Query, Condition) ->
-    kura_query:scope_where(
+    kura_query:where_unrewritten(
         Query#kura_query{
             wheres = conditions(Query#kura_query.wheres, Condition),
             havings = conditions(Query#kura_query.havings, Condition),

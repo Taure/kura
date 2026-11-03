@@ -385,7 +385,9 @@ t_scope_thresholds() ->
     Q = kura_query:from(kura_test_vector_schema),
     Bad = {{distance, embedding, l2, ~"[1.0,2.0,3.0]"}, '<', ~"x"},
     ?assertError({kura, {invalid_distance_threshold, embedding}}, kura_query:where(Q, Bad)),
-    ?assertError({kura, {invalid_distance_threshold, embedding}}, kura_query:scope_where(Q, Bad)).
+    ?assertError(
+        {kura, {invalid_distance_threshold, embedding}}, kura_query:where_unrewritten(Q, Bad)
+    ).
 
 t_tenant() ->
     kura_tenant:put_tenant({attribute, {ssn, ?P1}}),
