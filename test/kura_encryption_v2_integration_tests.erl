@@ -19,7 +19,9 @@ integration_test_() ->
             {"a v2 frame copied to another column raises", fun t_column_transplant/0},
             {"a v2 frame copied to another table raises", fun t_table_transplant/0},
             {"a v1 frame copied to another column still decrypts", fun t_v1_transplant/0},
-            {"a v2 frame swapped between rows of a column decrypts", fun t_row_swap/0}
+            {"a v2 frame swapped between rows of a column decrypts", fun t_row_swap/0},
+            {"a joined encrypted column of the same name never loads as this one",
+                fun t_join_colliding_column/0}
         ]
     end}.
 
@@ -78,7 +80,7 @@ raw(Table, Column, Id) ->
     ),
     maps:get(v, Row).
 
-assert_v2(Frame, Plain) ->
+assert_v2(Frame, Plain) when byte_size(Plain) >= 8 ->
     ?assertMatch(<<2, 0, 1:16, _/binary>>, Frame),
     ?assertEqual(nomatch, binary:match(Frame, Plain)).
 
@@ -94,54 +96,59 @@ t_insert_v2() ->
 
 t_update_v2() ->
     write(v2),
-    #{id := Id} = Record = insert(?SCHEMA, #{name => ~"b", ssn => ~"old"}),
-    CS = kura_changeset:cast(?SCHEMA, Record, #{nickname => ~"nick"}, [nickname]),
+    #{id := Id} = Record = insert(?SCHEMA, #{name => ~"b", ssn => ~"old-ssn-value"}),
+    CS = kura_changeset:cast(?SCHEMA, Record, #{nickname => ~"nickname-value"}, [nickname]),
     {ok, Updated} = kura_test_repo:update(CS),
-    ?assertEqual(~"nick", maps:get(nickname, Updated)),
-    assert_v2(raw(~"enc_bound", ~"nickname", Id), ~"nick"),
+    ?assertEqual(~"nickname-value", maps:get(nickname, Updated)),
+    assert_v2(raw(~"enc_bound", ~"nickname", Id), ~"nickname-value"),
     {ok, Fetched} = kura_test_repo:get(?SCHEMA, Id),
-    ?assertMatch(#{ssn := ~"old", nickname := ~"nick"}, Fetched).
+    ?assertMatch(#{ssn := ~"old-ssn-value", nickname := ~"nickname-value"}, Fetched).
 
 t_update_all_v2() ->
     write(v2),
-    #{id := Id} = insert(?SCHEMA, #{name => ~"c", ssn => ~"before"}),
+    #{id := Id} = insert(?SCHEMA, #{name => ~"c", ssn => ~"before-update-value"}),
     Q = kura_query:where(kura_query:from(?SCHEMA), {id, Id}),
-    {ok, 1} = kura_test_repo:update_all(Q, #{ssn => ~"after"}),
-    assert_v2(raw(~"enc_bound", ~"ssn", Id), ~"after"),
+    {ok, 1} = kura_test_repo:update_all(Q, #{ssn => ~"after-update-value"}),
+    assert_v2(raw(~"enc_bound", ~"ssn", Id), ~"after-update-value"),
     {ok, Fetched} = kura_test_repo:get(?SCHEMA, Id),
-    ?assertEqual(~"after", maps:get(ssn, Fetched)).
+    ?assertEqual(~"after-update-value", maps:get(ssn, Fetched)).
 
 t_update_all_raw_column() ->
     write(v2),
-    #{id := Id} = insert(?SCHEMA, #{name => ~"c2", ssn => ~"s"}),
+    #{id := Id} = insert(?SCHEMA, #{name => ~"c2", ssn => ~"virtual-ssn-value"}),
     Q = kura_query:where(kura_query:from(?SCHEMA), {id, Id}),
-    {ok, 1} = kura_test_repo:update_all(Q, #{extra => ~"raw", ssn => ~"t"}),
+    {ok, 1} = kura_test_repo:update_all(Q, #{extra => ~"raw", ssn => ~"updated-ssn-value"}),
     ?assertEqual(~"raw", raw(~"enc_bound", ~"extra", Id)),
-    assert_v2(raw(~"enc_bound", ~"ssn", Id), ~"t").
+    assert_v2(raw(~"enc_bound", ~"ssn", Id), ~"updated-ssn-value").
 
 t_insert_virtual_field() ->
     write(v2),
-    #{id := Id} = insert(?SCHEMA, #{name => ~"v", ssn => ~"s", ssn_confirmation => ~"s"}),
-    assert_v2(raw(~"enc_bound", ~"ssn", Id), ~"s"),
+    #{id := Id} = insert(?SCHEMA, #{
+        name => ~"v", ssn => ~"virtual-ssn-value", ssn_confirmation => ~"virtual-ssn-value"
+    }),
+    assert_v2(raw(~"enc_bound", ~"ssn", Id), ~"virtual-ssn-value"),
     {ok, Fetched} = kura_test_repo:get(?SCHEMA, Id),
-    ?assertEqual(~"s", maps:get(ssn, Fetched)).
+    ?assertEqual(~"virtual-ssn-value", maps:get(ssn, Fetched)).
 
 t_insert_all_v2() ->
     write(v2),
     {ok, 2} = kura_test_repo:insert_all(?SCHEMA, [
-        #{name => ~"bulk1", ssn => ~"s1"}, #{name => ~"bulk2", ssn => ~"s2"}
+        #{name => ~"bulk1", ssn => ~"bulk-ssn-one"}, #{name => ~"bulk2", ssn => ~"bulk-ssn-two"}
     ]),
     Q = kura_query:where(kura_query:from(?SCHEMA), {name, in, [~"bulk1", ~"bulk2"]}),
     {ok, Rows} = kura_test_repo:all(Q),
-    ?assertEqual([~"s1", ~"s2"], lists:sort([S || #{ssn := S} <- Rows])),
+    ?assertEqual([~"bulk-ssn-one", ~"bulk-ssn-two"], lists:sort([S || #{ssn := S} <- Rows])),
     [assert_v2(raw(~"enc_bound", ~"ssn", Id), S) || #{id := Id, ssn := S} <- Rows].
 
 t_array_v2() ->
     write(v2),
-    #{id := Id} = insert(?SCHEMA, #{name => ~"d", tags => [~"t1", ~"t2"]}),
-    [assert_v2(F, P) || {F, P} <- lists:zip(raw(~"enc_bound", ~"tags", Id), [~"t1", ~"t2"])],
+    #{id := Id} = insert(?SCHEMA, #{name => ~"d", tags => [~"tag-value-one", ~"tag-value-two"]}),
+    [
+        assert_v2(F, P)
+     || {F, P} <- lists:zip(raw(~"enc_bound", ~"tags", Id), [~"tag-value-one", ~"tag-value-two"])
+    ],
     {ok, Fetched} = kura_test_repo:get(?SCHEMA, Id),
-    ?assertEqual([~"t1", ~"t2"], maps:get(tags, Fetched)).
+    ?assertEqual([~"tag-value-one", ~"tag-value-two"], maps:get(tags, Fetched)).
 
 t_rolling() ->
     write(v1),
@@ -191,3 +198,16 @@ t_row_swap() ->
     ),
     {ok, Fetched} = kura_test_repo:get(?SCHEMA, A),
     ?assertEqual(~"bob", maps:get(ssn, Fetched)).
+
+t_join_colliding_column() ->
+    write(v2),
+    Name = ~"join-collision",
+    {ok, _} = kura_test_repo:query("DELETE FROM enc_bound_other", []),
+    insert(?SCHEMA, #{name => Name, ssn => ~"from-enc-bound"}),
+    insert(?OTHER, #{name => Name, ssn => ~"from-enc-bound-other"}),
+    Q = kura_query:join(kura_query:from(?SCHEMA), inner, ?OTHER, {name, name}, o),
+    try kura_test_repo:all(Q) of
+        {ok, [Row]} -> ?assertEqual(~"from-enc-bound", maps:get(ssn, Row))
+    catch
+        error:Reason -> ?assertEqual({kura_crypto, {bad_tag, 1}}, Reason)
+    end.
