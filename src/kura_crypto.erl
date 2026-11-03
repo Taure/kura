@@ -57,11 +57,11 @@ Deterministic encryption reveals which rows hold equal values (frequency
 analysis) and its ciphertext is a stable pseudonym wherever it appears,
 including telemetry and logged query parameters. Equality is visible
 across tenants in both tenancy modes, since the context is the unprefixed
-table. Both modes reveal the
-length of a value and whether it is `NULL`. A synthetic IV collision
-between two distinct values of one column under one key breaks GCM's
-confidentiality for that pair, so keep a deterministic column under 2^32
-distinct values per key (a collision probability of about 2^-33).
+table. Both modes reveal the length of a value and whether it is `NULL`. A
+synthetic IV collision between two distinct values of one column under one
+key breaks GCM's confidentiality for that pair, so keep a deterministic
+column under 2^32 distinct values per key (a collision probability of about
+2^-33).
 
 The write format of `encrypt/1` and `encrypt/2` comes from the `kura`
 application environment, `{encryption_write_format, v1 | v2}` (default
@@ -70,7 +70,8 @@ application environment, `{encryption_write_format, v1 | v2}` (default
 A column reads with a `t:policy/0`: its mode and its `legacy` setting.
 With `legacy => accept`, a v1 frame and a v2 frame of the other mode are
 read too; with `legacy => reject` they raise `{refused_version, 1}` and
-`{refused_mode, Mode}`. `decrypt/2` reads as
+`{refused_mode, ModeByte}`, `ModeByte` being the frame's mode byte.
+`decrypt/2` reads as
 `#{mode => randomized, legacy => accept}`.
 
 Every failure **raises** `error({kura_crypto, Reason})` - it never returns
@@ -94,6 +95,7 @@ logs. Writing or reading a v2 frame without a column context raises
     decrypt/3,
     lookup/2,
     is_deterministic_frame/1,
+    are_deterministic_frames/1,
     write_format/0
 ]).
 
@@ -206,8 +208,8 @@ decrypt(Frame, Context) ->
 -doc """
 Decrypt a frame read from the column `Context`, which accepts what `Policy`
 allows (see `t:policy/0`). Raises on any failure, and with
-`{refused_version, 1}` or `{refused_mode, Mode}` on a frame the policy does
-not accept.
+`{refused_version, 1}` or `{refused_mode, ModeByte}` (the frame's mode byte)
+on a frame the policy does not accept.
 """.
 -spec decrypt(binary(), context(), policy()) -> binary().
 decrypt(Frame, Context, Policy) ->
@@ -232,6 +234,18 @@ is_deterministic_frame(
 ) ->
     true;
 is_deterministic_frame(_Term) ->
+    false.
+
+%% A proper list whose every element is laid out as a deterministic frame.
+%% The query guard and the shape split both decide a lookup with it: the
+%% cache is sound only while the two agree.
+-doc false.
+-spec are_deterministic_frames(term()) -> boolean().
+are_deterministic_frames([]) ->
+    true;
+are_deterministic_frames([Frame | Rest]) ->
+    is_deterministic_frame(Frame) andalso are_deterministic_frames(Rest);
+are_deterministic_frames(_Improper) ->
     false.
 
 -doc """

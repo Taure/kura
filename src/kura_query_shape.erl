@@ -191,10 +191,13 @@ condition({Field, in, {subquery, SubQ}}, Acc0) ->
 condition({Field, Op, {subquery, #kura_query{}} = Value}, Acc0) ->
     {Shape, Acc1} = value(Value, Acc0),
     {{Field, Op, Shape}, Acc1};
+%% The guard accepts a lookup only when every value is laid out as a
+%% deterministic frame, so the values are replaced only then: a lookup that
+%% would fail the guard keeps its values in its shape and is checked anew.
 condition({Field, Op, Frames} = Condition, Acc0) when
     is_atom(Field), is_list(Frames), ?KURA_IS_LOOKUP_OP(Op)
 ->
-    case lookup_frames(Frames) of
+    case kura_crypto:are_deterministic_frames(Frames) of
         true ->
             {Markers, Acc1} = values(Frames, Acc0),
             {{Field, Op, Markers}, Acc1};
@@ -227,17 +230,6 @@ condition({Field, Value}, Acc0) when is_atom(Field) ->
     {{Field, Marker}, Acc1};
 condition(Condition, Acc) ->
     {Condition, Acc}.
-
-%% The guard accepts a lookup only when every value is laid out as a
-%% deterministic frame, so the values are replaced only then: a lookup that
-%% would fail the guard keeps its values in its shape and is checked anew.
--spec lookup_frames(term()) -> boolean().
-lookup_frames([]) ->
-    true;
-lookup_frames([Frame | Rest]) ->
-    kura_crypto:is_deterministic_frame(Frame) andalso lookup_frames(Rest);
-lookup_frames(_Improper) ->
-    false.
 
 -spec subquery(term(), acc()) -> {{subquery, term()}, acc()}.
 subquery(#kura_query{} = SubQ, Acc0) ->

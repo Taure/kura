@@ -18,8 +18,8 @@ encrypt equally, so the field can be looked up by equality and carry a
 unique index, but which rows share a value is revealed, and the
 ciphertext bound in a lookup is a stable pseudonym in telemetry and logs.
 Equality is visible across tenants in both tenancy modes, since the context
-is the unprefixed table. Both modes reveal a value's length and whether it is `NULL`, and the value
-stays personal data under the GDPR.
+is the unprefixed table. Both modes reveal a value's length and whether it
+is `NULL`, and the value stays personal data under the GDPR.
 """.
 
 -export([
@@ -642,10 +642,9 @@ hold the same value (frequency analysis), and its ciphertext, which
 `where/2` binds as a query parameter and so appears in telemetry and logged
 parameters, is a stable pseudonym of the value. Equality is visible across
 tenants in both tenancy modes, since the context is the unprefixed table.
-Both modes reveal a value's
-length and whether it is `NULL`. The value is still personal data under the
-GDPR: pseudonymised, not anonymised. Use it only where an equality lookup or
-uniqueness is needed. A column holds at most 2^32 distinct values per key.
+Both modes reveal a value's length and whether it is `NULL`. The value is
+still personal data under the GDPR: pseudonymised, not anonymised. Use it
+only where an equality lookup or uniqueness is needed. A column holds at most 2^32 distinct values per key.
 A unique index holds within one key generation: the same value written
 under two deterministic keys is two different ciphertexts. The binding
 context defaults to the table and column name, so renaming either without
@@ -814,17 +813,13 @@ deterministic_inner(_) -> false.
 -doc false.
 -spec lookup_payload(encryption_spec(), term()) -> {ok, binary()} | error.
 lookup_payload(#{inner := Inner} = Spec, Value) ->
-    try cast_encrypted({ok, Spec}, Value) of
-        {ok, Cast} when Cast =/= undefined -> deterministic_payload(Inner, Spec, Cast);
-        _ -> error
+    try
+        {ok, Cast} = cast_encrypted({ok, Spec}, Value),
+        true = Cast =/= undefined,
+        {ok, Wire} = dump(Inner, Cast),
+        {ok, encode_inner(Inner, canonical_wire(Spec, Wire))}
     catch
         _:_ -> error
-    end.
-
-deterministic_payload(Inner, Spec, Cast) ->
-    case dump(Inner, Cast) of
-        {ok, Wire} -> {ok, encode_inner(Inner, canonical_wire(Spec, Wire))};
-        {error, _} -> error
     end.
 
 %% A deterministic value has one encoding, so equal values encrypt equally:
@@ -880,14 +875,12 @@ is_hex(<<C, Rest/binary>>) when C >= $A, C =< $F -> is_hex(Rest);
 is_hex(_) -> false.
 
 %% Checked to be UTF-8 first: string:casefold/1 raises on anything else,
-%% with the value in its reason.
-normalize(Normalize, Value) when is_binary(Value) ->
+%% with the value in its reason. Cast and dump only pass a binary here.
+normalize(Normalize, Value) ->
     case unicode:characters_to_binary(Value) of
         Value -> {ok, normalized(Normalize, Value)};
         _ -> error
-    end;
-normalize(_Normalize, _Value) ->
-    error.
+    end.
 
 normalized(nfc, Value) -> nfc(Value);
 normalized(casefold, Value) -> casefold(Value);

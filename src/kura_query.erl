@@ -623,9 +623,12 @@ lookup_specs(Q, {Encrypted, Ctes}) ->
              || Source <- sources(Q),
                 not reads_cte(Source, Ctes),
                 F := #{mode := deterministic} = Spec <- source_specs(Source),
-                length([E || E <- Encrypted, E =:= F]) =:= 1
+                declared_once(F, Encrypted)
             ])
     end.
+
+declared_once(Field, Encrypted) ->
+    length([E || E <- Encrypted, E =:= Field]) =:= 1.
 
 source_specs(Source) when is_atom(Source), Source =/= undefined ->
     kura_schema:encryption_specs(Source);
@@ -808,19 +811,12 @@ refuse_encrypted_cond(_Cond, _Scope, _Lookup, _Reason) ->
 %% refuse one passed to them, so a lookup that binds anything else is one
 %% written into a #kura_query{} record by hand, like a fragment.
 refuse_lookup(Field, Frames, Lookup) when is_atom(Field) ->
-    case lists:member(Field, Lookup) andalso lookup_frames(Frames) of
+    case lists:member(Field, Lookup) andalso kura_crypto:are_deterministic_frames(Frames) of
         true -> ok;
         false -> erlang:error({kura, {invalid_encrypted_lookup, Field}})
     end;
 refuse_lookup(_Field, _Frames, _Lookup) ->
     erlang:error({kura, {invalid_encrypted_lookup, not_a_column}}).
-
-lookup_frames([]) ->
-    true;
-lookup_frames([Frame | Rest]) ->
-    kura_crypto:is_deterministic_frame(Frame) andalso lookup_frames(Rest);
-lookup_frames(_Improper) ->
-    false.
 
 %% Ordering, windowing and aggregating by an encrypted field bind nothing,
 %% but would order or compute over ciphertexts, so they are refused too.
@@ -966,11 +962,7 @@ sources(#kura_query{from = From, joins = Joins}) ->
     [From | [T || {_, T, _, _} <- Joins]].
 
 columns(Source, Ctes) when is_atom(Source) ->
-    Names = source_names(Source),
-    case
-        kura_schema:is_schema(Source) andalso
-            [N || {N, _} <- Ctes, lists:member(N, Names)] =:= []
-    of
+    case kura_schema:is_schema(Source) andalso not reads_cte(Source, Ctes) of
         true -> kura_schema:non_virtual_fields(Source);
         false -> []
     end;
