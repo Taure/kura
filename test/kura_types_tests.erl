@@ -558,15 +558,30 @@ cast_rejects_out_of_range_dates_and_times_test_() ->
             {date, ~"2024-02-30"},
             {date, ~"2024-13-01"},
             {date, ~"2024-00-10"},
-            {naive_datetime, ~"0000-01-01 00:00:00"}
+            {naive_datetime, ~"0000-01-01 00:00:00"},
+            {time, ~"12::00"},
+            {time, ~"10:00:00000"},
+            {date, ~"02024-01-01"},
+            {time, ~""},
+            {utc_datetime, ~"2024-01-01T"},
+            {naive_datetime, ~"2024-01-01 "},
+            {utc_datetime, ~"2024-01-01T10:00:00+25:00"},
+            {utc_datetime, ~"2024-01-01T10:00:00+02:60"},
+            {utc_datetime, ~"2024-01-01T10:00:00+2"},
+            {time, ~"10:00:00+aa:00"}
         ]
     ].
 
 cast_accepts_the_end_of_day_and_a_leap_second_test_() ->
     [
         ?_assertEqual(
-            {ok, {{2024, 1, 1}, {24, 0, 0}}}, kura_types:cast(utc_datetime, ~"2024-01-01T24:00:00Z")
+            {ok, {{2024, 1, 2}, {0, 0, 0}}}, kura_types:cast(utc_datetime, ~"2024-01-01T24:00:00Z")
         ),
+        ?_assertEqual(
+            {ok, {{2025, 1, 1}, {0, 0, 0}}},
+            kura_types:cast(naive_datetime, ~"2024-12-31 23:59:60")
+        ),
+        ?_assertEqual({ok, {1, 1, 1}}, kura_types:cast(date, ~"0001-01-01")),
         ?_assertEqual({ok, {24, 0, 0}}, kura_types:cast(time, ~"24:00:00.000")),
         ?_assertEqual({ok, {23, 59, 60}}, kura_types:cast(time, ~"23:59:60")),
         ?_assertEqual({ok, {9999, 12, 31}}, kura_types:cast(date, ~"9999-12-31")),
@@ -666,3 +681,27 @@ encrypted_type_errors_test_() ->
 encrypted_options_form_errors_test() ->
     V2 = kura_test_enc_v2_schema:v2_type(),
     ?assertError({kura_crypto, malformed_frame}, kura_types:load({array, V2}, ~"secret-value")).
+
+cast_utc_datetime_applies_the_offset_test_() ->
+    [
+        ?_assertEqual({ok, Expected}, kura_types:cast(utc_datetime, V))
+     || {V, Expected} <- [
+            {~"2024-01-01T10:00:00+02:00", {{2024, 1, 1}, {8, 0, 0}}},
+            {~"2024-01-01T10:00:00-05:00", {{2024, 1, 1}, {15, 0, 0}}},
+            {~"2024-01-01T10:00:00+0530", {{2024, 1, 1}, {4, 30, 0}}},
+            {~"2024-01-01T10:00:00+01", {{2024, 1, 1}, {9, 0, 0}}},
+            {~"2024-01-01T01:00:00+02:00", {{2023, 12, 31}, {23, 0, 0}}},
+            {~"2024-01-01 10:00:00.250+02:00", {{2024, 1, 1}, {8, 0, 0}}},
+            {~"2024-01-01T10:00:00Z", {{2024, 1, 1}, {10, 0, 0}}}
+        ]
+    ].
+
+cast_naive_datetime_and_time_keep_the_wall_clock_test_() ->
+    [
+        ?_assertEqual(
+            {ok, {{2024, 1, 1}, {10, 0, 0}}},
+            kura_types:cast(naive_datetime, ~"2024-01-01T10:00:00+02:00")
+        ),
+        ?_assertEqual({ok, {10, 0, 0}}, kura_types:cast(time, ~"10:00:00+02:00")),
+        ?_assertEqual({ok, {24, 0, 0}}, kura_types:cast(time, ~"24:00:00"))
+    ].

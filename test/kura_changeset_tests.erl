@@ -166,6 +166,25 @@ validate_length_counts_bytes_on_an_encrypted_binary_field_test() ->
     CS2 = kura_changeset:validate_length(CS, secret, [{max, 2}]),
     ?assertEqual([{secret, ~"should be at most 2 byte(s)"}], CS2#kura_changeset.errors).
 
+validate_length_measures_a_list_by_its_length_test() ->
+    CS = kura_changeset:cast(#{tags => {array, string}}, #{}, #{tags => [~"a", ~"b", ~"c"]}, [tags]),
+    ?assert((kura_changeset:validate_length(CS, tags, [{is, 3}]))#kura_changeset.valid),
+    CS2 = kura_changeset:validate_length(CS, tags, [{max, 2}]),
+    ?assertEqual([{tags, ~"should be at most 2 character(s)"}], CS2#kura_changeset.errors).
+
+validate_length_is_reports_the_exact_length_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{name => ~"Alice"}, [name]),
+    CS2 = kura_changeset:validate_length(CS, name, [{is, 3}]),
+    ?assertEqual([{name, ~"should be 3 character(s)"}], CS2#kura_changeset.errors).
+
+cast_of_an_empty_or_offset_form_time_test() ->
+    Types = #{at => utc_datetime, starts => time},
+    CS = kura_changeset:cast(Types, #{}, #{at => ~"2024-01-01T", starts => ~"12::00"}, [at, starts]),
+    ?assertNot(CS#kura_changeset.valid),
+    ?assertMatch([_, _], CS#kura_changeset.errors),
+    CS2 = kura_changeset:cast(Types, #{}, #{at => ~"2024-01-01T10:00:00+02:00"}, [at]),
+    ?assertEqual(#{at => {{2024, 1, 1}, {8, 0, 0}}}, CS2#kura_changeset.changes).
+
 delete_change_removes_only_the_change_test() ->
     Types = #{password => string, password_hash => string, email => string},
     CS = kura_changeset:cast(
