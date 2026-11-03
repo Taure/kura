@@ -15,6 +15,9 @@ subquery it contains:
   `matches`, and of `{Field, Value}`;
 - the elements of an `in`/`not_in` list, and of each row tuple in a
   row-value `in` whose tuples all match the column count;
+- the elements of a deterministic lookup (`?KURA_IS_LOOKUP_OP`) whose
+  elements are all laid out as deterministic frames
+  (`kura_crypto:is_deterministic_frame/1`);
 - both ends of a `between`;
 - the parameters of a condition fragment, in `wheres` or `havings`;
 - the parameters of a select-expression fragment;
@@ -33,8 +36,11 @@ value set rather than correctness.
 Invariant: the encrypted filter guard's verdict
 (`kura_query:check_encrypted/1`) on a query equals its verdict on the
 query's shape. Every bound position above is one the guard never reads,
-so `kura_query_compiler:to_sql_cached/2` checks on a miss only. A new
-bound position, or a guard rule that reads a value, breaks that.
+except the elements of a lookup, where the guard reads only whether each
+is laid out as a deterministic frame, and a lookup's elements are replaced
+only when all of them are, so that fact is in the shape. So
+`kura_query_compiler:to_sql_cached/2` checks on a miss only. A new bound
+position, or a guard rule that reads a value, breaks that.
 
 A dialect is free to emit any SQL for a shape, but it must pass a bound
 value through to the parameter list untouched. `valid_template/2` checks
@@ -185,6 +191,16 @@ condition({Field, in, {subquery, SubQ}}, Acc0) ->
 condition({Field, Op, {subquery, #kura_query{}} = Value}, Acc0) ->
     {Shape, Acc1} = value(Value, Acc0),
     {{Field, Op, Shape}, Acc1};
+condition({Field, Op, Frames} = Condition, Acc0) when
+    is_atom(Field), is_list(Frames), ?KURA_IS_LOOKUP_OP(Op)
+->
+    case lookup_frames(Frames) of
+        true ->
+            {Markers, Acc1} = values(Frames, Acc0),
+            {{Field, Op, Markers}, Acc1};
+        false ->
+            {Condition, Acc0}
+    end;
 condition({Field, In, Values}, Acc0) when
     is_atom(Field), is_list(Values), (In =:= in orelse In =:= not_in)
 ->
@@ -211,6 +227,17 @@ condition({Field, Value}, Acc0) when is_atom(Field) ->
     {{Field, Marker}, Acc1};
 condition(Condition, Acc) ->
     {Condition, Acc}.
+
+%% The guard accepts a lookup only when every value is laid out as a
+%% deterministic frame, so the values are replaced only then: a lookup that
+%% would fail the guard keeps its values in its shape and is checked anew.
+-spec lookup_frames(term()) -> boolean().
+lookup_frames([]) ->
+    true;
+lookup_frames([Frame | Rest]) ->
+    kura_crypto:is_deterministic_frame(Frame) andalso lookup_frames(Rest);
+lookup_frames(_Improper) ->
+    false.
 
 -spec subquery(term(), acc()) -> {{subquery, term()}, acc()}.
 subquery(#kura_query{} = SubQ, Acc0) ->
