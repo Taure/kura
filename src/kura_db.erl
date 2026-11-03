@@ -280,7 +280,10 @@ with. A pool stopped outside kura stays owned;
 Starts and stops of one pool name are serialised by a node-local `global`
 lock that waits without a limit: a pool module whose `start_pool/2` or
 `stop_pool/1` hangs holds up every other start or stop of that name. Queries
-never take the lock.
+never take the lock. The record of which pool a repo is on is changed under a
+second lock, per repo and held only for that change, so two starts of one repo
+on two pool names each find the pool the other moved it to, and the one moved
+from is stopped.
 
 A start that fails leaves the stored settings as they were when the repo's
 pool is the one it was started on before, or when only `init/1` failed. When
@@ -394,23 +397,22 @@ retire(Repo, Pool, PoolMod) ->
 -spec retired(module(), atom(), module()) -> ok.
 retired(Repo, Pool, PoolMod) ->
     case {owner(Pool), held(Repo)} of
-        {Repo, {Pool, _MovedBack}} -> no_longer_retiring(Repo, Pool);
-        {Repo, _HeldElsewhereOrStopped} -> stopped_previous(Repo, Pool, PoolMod);
-        _NotOwned -> no_longer_retiring(Repo, Pool)
+        {Repo, {Pool, _MovedBack}} -> ok;
+        {Repo, _HeldElsewhereOrStopped} -> stopped_owned(Repo, Pool, PoolMod);
+        _NotOwned -> ok
     end.
 
-%% The new pool is running, so a previous pool that will not stop is logged
-%% and stays owned and recorded for stop_pool/1 rather than failing the start.
--spec stopped_previous(module(), atom(), module()) -> ok.
-stopped_previous(Repo, Pool, PoolMod) ->
+%% A pool that will not stop is logged and stays owned, so the stop that
+%% failed can be tried again with stop_pool/1 rather than failing the start
+%% or stop that ran into it.
+-spec stopped_owned(module(), atom(), module()) -> ok.
+stopped_owned(Repo, Pool, PoolMod) ->
     try PoolMod:stop_pool(Pool) of
-        _Stopped ->
-            ok = released(Repo, Pool),
-            no_longer_retiring(Repo, Pool)
+        _Stopped -> released(Repo, Pool)
     catch
         Class:Reason:Stack ->
             ?LOG_ERROR(#{
-                msg => ~"kura: previous pool did not stop",
+                msg => ~"kura: pool did not stop",
                 repo => Repo,
                 pool => Pool,
                 pool_module => PoolMod,
@@ -420,18 +422,14 @@ stopped_previous(Repo, Pool, PoolMod) ->
             ok
     end.
 
--spec no_longer_retiring(module(), atom()) -> ok.
-no_longer_retiring(Repo, Pool) ->
-    _ = persistent_term:erase({?MODULE, pool_retiring, Repo, Pool}),
-    ok.
-
-%% Pools a repo moved away from and has not stopped yet, recorded so that
-%% stop_pool/1 still reaches one whose retire never ran.
--spec retiring(module()) -> [{atom(), module()}].
-retiring(Repo) ->
+%% Every pool whose owner record names the repo. A start that died after
+%% it claimed its pool, or before it retired the one it left, leaves a pool
+%% the repo owns but no longer holds, and stop_pool/1 still reaches it here.
+-spec owned_by(module()) -> [{atom(), module()}].
+owned_by(Repo) ->
     [
         {Pool, PoolMod}
-     || {{?MODULE, pool_retiring, R, Pool}, PoolMod} <- persistent_term:get(),
+     || {{?MODULE, pool_owner, Pool}, {R, PoolMod}} <- persistent_term:get(),
         R =:= Repo,
         is_atom(Pool),
         is_atom(PoolMod)
@@ -498,19 +496,41 @@ not_running(Repo, Pool) ->
     end.
 
 %% A repo holds the pool it started last; one it held before is retired.
+%% The pool is claimed before the repo is recorded on it, so every pool a
+%% repo's queries can reach is owned, and a start that dies between the two
+%% leaves a pool owned_by/1 finds.
 -spec owned(module(), atom(), module(), map()) -> claim().
 owned(Repo, Pool, PoolMod, Config) ->
-    Previous = held(Repo),
-    ok = persistent_term:put({?MODULE, pool_held, Repo}, {Pool, PoolMod}),
-    ok = persistent_term:put({?MODULE, pool_owner, Pool}, Repo),
-    ok = kura_repo_settings:started(Repo, Config#{pool => Pool}),
-    case Previous of
+    ok = persistent_term:put({?MODULE, pool_owner, Pool}, {Repo, PoolMod}),
+    case moved(Repo, Pool, PoolMod, Config) of
         {PreviousPool, PreviousMod} when PreviousPool =/= Pool ->
-            ok = persistent_term:put({?MODULE, pool_retiring, Repo, PreviousPool}, PreviousMod),
             {moved_from, PreviousPool, PreviousMod};
         _SamePoolOrNone ->
             ok
     end.
+
+%% The pool locks of two starts of one repo on two pool names do not
+%% exclude each other, so the read of the pool the repo was on and the
+%% write of the new one happen under the repo's lock.
+-spec moved(module(), atom(), module(), map()) -> {atom(), module()} | none.
+moved(Repo, Pool, PoolMod, Config) ->
+    case
+        repo_locked(Repo, fun() ->
+            Previous = held(Repo),
+            ok = persistent_term:put({?MODULE, pool_held, Repo}, {Pool, PoolMod}),
+            ok = kura_repo_settings:started(Repo, Config#{pool => Pool}),
+            Previous
+        end)
+    of
+        {PreviousPool, PreviousMod} when is_atom(PreviousPool), is_atom(PreviousMod) ->
+            {PreviousPool, PreviousMod};
+        none ->
+            none
+    end.
+
+-spec repo_locked(module(), fun(() -> term())) -> term().
+repo_locked(Repo, Run) ->
+    global:trans({{kura_repo_pool, Repo}, self()}, Run, [node()]).
 
 -spec released(module(), atom()) -> ok.
 released(Repo, Pool) ->
@@ -532,7 +552,7 @@ held(Repo) ->
 -spec owner(atom()) -> module() | undefined.
 owner(Pool) ->
     case persistent_term:get({?MODULE, pool_owner, Pool}, undefined) of
-        Repo when is_atom(Repo) -> Repo;
+        {Repo, PoolMod} when is_atom(Repo), is_atom(PoolMod) -> Repo;
         _Unclaimed -> undefined
     end.
 
@@ -542,10 +562,14 @@ Stop the pool `Repo` last started through `start_pool/1` and release it.
 The pool module's `stop_pool/1` stops the pool, the pool name is no longer
 owned by `Repo`, so another repo can start it, and `Repo`'s stored settings
 are dropped: its queries read its config on each call again, as for a repo
-kura has not started. A pool the repo moved away from that is still owned,
-because the start that moved it died or its stop failed, is stopped and
+kura has not started. Any other pool `Repo` still owns, one it moved away from
+whose stop failed or whose start died before stopping it, is stopped and
 released too. A repo that does not own a running pool, one refused another
 repo's pool among them, stops nothing and only has its stored state dropped.
+
+A stop that raises is logged with only the shape of its reason, and that pool
+stays owned, with the repo's settings kept when it is the pool the repo is
+on, until a later `stop_pool/1` stops it. The other pools are still stopped.
 
 A stopped repo should not keep issuing queries. If another repo starts the
 same pool name, they raise `{pool_owned_by, Owner}`; otherwise they fail in
@@ -557,34 +581,43 @@ stop_pool(Repo) ->
         {Pool, PoolMod} -> ok = locked(Pool, fun() -> stopped(Repo, Pool, PoolMod) end);
         none -> ok = kura_repo_settings:forget(Repo)
     end,
-    lists:foreach(
-        fun({Previous, PreviousMod}) -> retire(Repo, Previous, PreviousMod) end, retiring(Repo)
-    ).
+    lists:foreach(fun({Pool, PoolMod}) -> retire(Repo, Pool, PoolMod) end, owned_by(Repo)).
 
 %% A start of the same repo can move it to another pool while this runs; the
 %% pool it moved to stays held, so a later stop_pool/1 still reaches it.
 -spec stopped(module(), atom(), module()) -> ok.
 stopped(Repo, Pool, PoolMod) ->
-    case held(Repo) of
-        {Pool, PoolMod} ->
-            case owner(Pool) of
-                Repo -> ok = PoolMod:stop_pool(Pool);
-                _NotOwned -> ok
-            end,
-            ok = released(Repo, Pool),
+    case {held(Repo), owner(Pool)} of
+        {{Pool, PoolMod}, Repo} ->
+            ok = stopped_owned(Repo, Pool, PoolMod),
+            unheld_when_released(Repo, Pool, PoolMod);
+        {{Pool, PoolMod}, _NotOwned} ->
             unheld(Repo, Pool, PoolMod);
         _Moved ->
             ok
     end.
 
+-spec unheld_when_released(module(), atom(), module()) -> ok.
+unheld_when_released(Repo, Pool, PoolMod) ->
+    case owner(Pool) of
+        Repo -> ok;
+        _Released -> unheld(Repo, Pool, PoolMod)
+    end.
+
 -spec unheld(module(), atom(), module()) -> ok.
 unheld(Repo, Pool, PoolMod) ->
-    case held(Repo) of
-        {Pool, PoolMod} ->
-            _ = persistent_term:erase({?MODULE, pool_held, Repo}),
-            kura_repo_settings:forget(Repo);
-        _Moved ->
-            ok
+    case
+        repo_locked(Repo, fun() ->
+            case held(Repo) of
+                {Pool, PoolMod} ->
+                    _ = persistent_term:erase({?MODULE, pool_held, Repo}),
+                    kura_repo_settings:forget(Repo);
+                _Moved ->
+                    ok
+            end
+        end)
+    of
+        ok -> ok
     end.
 
 -ifdef(TEST).
@@ -592,7 +625,6 @@ forget_pools() ->
     All = persistent_term:get(),
     _ = [persistent_term:erase(Key) || {{?MODULE, pool_owner, _} = Key, _} <- All],
     _ = [persistent_term:erase(Key) || {{?MODULE, pool_held, _} = Key, _} <- All],
-    _ = [persistent_term:erase(Key) || {{?MODULE, pool_retiring, _, _} = Key, _} <- All],
     kura_repo_settings:forget().
 -endif.
 

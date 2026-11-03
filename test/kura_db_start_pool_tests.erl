@@ -12,6 +12,9 @@
 %% on a lock, which in a passing run is a matter of microseconds.
 -define(SETTLE, 1000).
 
+%% Rounds of two moves of one repo racing each other.
+-define(RACES, 2).
+
 %%----------------------------------------------------------------------
 %% start_repo_pool/1 reports a pool that did not start
 %%----------------------------------------------------------------------
@@ -1062,7 +1065,7 @@ an_old_pool_that_does_not_stop_stays_owned_until_stop_pool_test() ->
                     level := error,
                     msg :=
                         {report, #{
-                            msg := ~"kura: previous pool did not stop",
+                            msg := ~"kura: pool did not stop",
                             repo := kura_db_owner_repo,
                             pool := shared_pool,
                             pool_module := ?MODULE,
@@ -1125,9 +1128,11 @@ a_stop_between_a_move_and_its_retire_still_frees_the_old_pool_test() ->
         ok = moved_to(moved_pool),
         holding_lock(shared_pool, fun(Release) ->
             Moving = spawned(fun() -> kura_repo_worker:start(kura_db_owner_repo) end),
-            ok = until(fun() -> kura_db:get_pool(kura_db_owner_repo) =:= moved_pool end, Moving),
+            ok = blocked(Moving),
+            ?assertEqual(moved_pool, kura_db:get_pool(kura_db_owner_repo)),
             Stopping = spawned(fun() -> kura_db:stop_pool(kura_db_owner_repo) end),
-            ok = until(fun() -> kura_db:held(kura_db_owner_repo) =:= none end, Stopping),
+            ok = blocked(Stopping),
+            ?assertEqual(none, kura_db:held(kura_db_owner_repo)),
             ok = Release(),
             ?assertEqual({returned, ok}, outcome(Moving)),
             ?assertEqual({returned, ok}, outcome(Stopping))
@@ -1142,9 +1147,9 @@ a_move_whose_caller_dies_before_the_retire_leaves_the_old_pool_stoppable_test() 
         ok = moved_to(moved_pool),
         holding_lock(shared_pool, fun(Release) ->
             {Mover, Moving} = spawn_monitor(fun() -> kura_repo_worker:start(kura_db_owner_repo) end),
-            ok = until(
-                fun() -> kura_db:get_pool(kura_db_owner_repo) =:= moved_pool end, {Mover, Moving}
-            ),
+            ok = blocked({Mover, Moving}),
+            ?assertEqual({moved_pool, ?MODULE}, kura_db:held(kura_db_owner_repo)),
+            ?assertEqual([moved_pool, shared_pool], owned_pools(kura_db_owner_repo)),
             exit(Mover, kill),
             ?assertEqual(killed, down(Moving)),
             Release()
@@ -1156,7 +1161,53 @@ a_move_whose_caller_dies_before_the_retire_leaves_the_old_pool_stoppable_test() 
             )
         end),
         ?assertEqual(ok, kura_db:stop_pool(kura_db_owner_repo)),
+        ?assertEqual([], owned_pools(kura_db_owner_repo)),
         ?assertEqual(ok, kura_repo_worker:start(kura_db_other_repo))
+    end).
+
+stop_pool_logs_a_pool_that_will_not_stop_and_still_stops_the_others_test() ->
+    with_two_repos(fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        ok = moved_to(moved_pool),
+        holding_lock(shared_pool, fun(Release) ->
+            {Mover, Moving} = spawn_monitor(fun() -> kura_repo_worker:start(kura_db_owner_repo) end),
+            ok = blocked({Mover, Moving}),
+            ?assertEqual({moved_pool, ?MODULE}, kura_db:held(kura_db_owner_repo)),
+            exit(Mover, kill),
+            ?assertEqual(killed, down(Moving)),
+            Release()
+        end),
+        put({?MODULE, stop_answer}, {raise, moved_pool, {stuck, "s3cret"}}),
+        Events = with_captured_logs(fun() ->
+            ?assertEqual(ok, kura_db:stop_pool(kura_db_owner_repo))
+        end),
+        ?assertMatch(
+            [
+                #{
+                    level := error,
+                    msg :=
+                        {report, #{
+                            msg := ~"kura: pool did not stop",
+                            repo := kura_db_owner_repo,
+                            pool := moved_pool,
+                            pool_module := ?MODULE,
+                            reason := {error, {stuck, redacted}}
+                        }}
+                }
+            ],
+            Events
+        ),
+        ?assertEqual(nomatch, string:find(io_lib:format("~p", [Events]), "s3cret")),
+        ?assertEqual(shared_pool, get({?MODULE, stopped})),
+        ?assertEqual([moved_pool], owned_pools(kura_db_owner_repo)),
+        ?assertEqual({moved_pool, ?MODULE}, kura_db:held(kura_db_owner_repo)),
+        ?assertEqual(moved_pool, kura_db:get_pool(kura_db_owner_repo)),
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_other_repo)),
+        erase({?MODULE, stop_answer}),
+        ?assertEqual(ok, kura_db:stop_pool(kura_db_owner_repo)),
+        ?assertEqual(moved_pool, get({?MODULE, stopped})),
+        ?assertEqual([], owned_pools(kura_db_owner_repo)),
+        ?assertEqual(none, kura_db:held(kura_db_owner_repo))
     end).
 
 a_repo_moved_back_before_its_retire_keeps_the_pool_test() ->
@@ -1165,7 +1216,8 @@ a_repo_moved_back_before_its_retire_keeps_the_pool_test() ->
         ok = moved_to(moved_pool),
         holding_lock(shared_pool, fun(Release) ->
             Moving = spawned(fun() -> kura_repo_worker:start(kura_db_owner_repo) end),
-            ok = until(fun() -> kura_db:get_pool(kura_db_owner_repo) =:= moved_pool end, Moving),
+            ok = blocked(Moving),
+            ?assertEqual(moved_pool, kura_db:get_pool(kura_db_owner_repo)),
             ok = moved_to(shared_pool),
             ?assertEqual(ok, reentered(fun() -> kura_repo_worker:start(kura_db_owner_repo) end)),
             ?assertEqual(moved_pool, get({?MODULE, stopped})),
@@ -1174,7 +1226,7 @@ a_repo_moved_back_before_its_retire_keeps_the_pool_test() ->
         end),
         ?assertEqual(shared_pool, kura_db:get_pool(kura_db_owner_repo)),
         ?assertEqual({shared_pool, ?MODULE}, kura_db:held(kura_db_owner_repo)),
-        ?assertEqual([], retiring(kura_db_owner_repo)),
+        ?assertEqual([shared_pool], owned_pools(kura_db_owner_repo)),
         _ = with_captured_logs(fun() ->
             ?assertEqual(
                 {error, {pool_owned_by, kura_db_owner_repo}},
@@ -1183,39 +1235,38 @@ a_repo_moved_back_before_its_retire_keeps_the_pool_test() ->
         end)
     end).
 
-a_retire_record_a_killed_move_left_is_dropped_by_stop_pool_test() ->
+moving_back_after_a_killed_move_stops_the_pool_it_moved_to_test() ->
     with_two_repos(fun() ->
         ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
         ok = moved_to(moved_pool),
         holding_lock(shared_pool, fun(Release) ->
             {Mover, Moving} = spawn_monitor(fun() -> kura_repo_worker:start(kura_db_owner_repo) end),
-            ok = until(
-                fun() -> kura_db:get_pool(kura_db_owner_repo) =:= moved_pool end, {Mover, Moving}
-            ),
+            ok = blocked({Mover, Moving}),
+            ?assertEqual(moved_pool, kura_db:get_pool(kura_db_owner_repo)),
             exit(Mover, kill),
             ?assertEqual(killed, down(Moving)),
             Release()
         end),
-        ?assertEqual([shared_pool], retiring(kura_db_owner_repo)),
+        ?assertEqual([moved_pool, shared_pool], owned_pools(kura_db_owner_repo)),
         ok = moved_to(shared_pool),
         ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
         ?assertEqual(moved_pool, get({?MODULE, stopped})),
-        ?assertEqual([shared_pool], retiring(kura_db_owner_repo)),
+        ?assertEqual([shared_pool], owned_pools(kura_db_owner_repo)),
         ?assertEqual(ok, kura_db:stop_pool(kura_db_owner_repo)),
         ?assertEqual(shared_pool, get({?MODULE, stopped})),
         ?assertEqual(none, kura_db:held(kura_db_owner_repo)),
-        ?assertEqual([], retiring(kura_db_owner_repo)),
+        ?assertEqual([], owned_pools(kura_db_owner_repo)),
         ?assertEqual(ok, kura_repo_worker:start(kura_db_other_repo))
     end).
 
-a_move_releases_the_old_pool_and_keeps_no_retire_record_test() ->
+a_move_releases_the_old_pool_and_owns_only_the_new_one_test() ->
     with_two_repos(fun() ->
         ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
         ok = moved_to(moved_pool),
         ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
         ?assertEqual(shared_pool, get({?MODULE, stopped})),
         ?assertEqual({moved_pool, ?MODULE}, kura_db:held(kura_db_owner_repo)),
-        ?assertEqual([], retiring(kura_db_owner_repo))
+        ?assertEqual([moved_pool], owned_pools(kura_db_owner_repo))
     end).
 
 a_start_inside_the_pool_stop_keeps_the_pool_it_moved_to_test() ->
@@ -1227,7 +1278,7 @@ a_start_inside_the_pool_stop_keeps_the_pool_it_moved_to_test() ->
         ?assertEqual(undefined, get({?MODULE, stop_answer})),
         ?assertEqual(moved_pool, kura_db:get_pool(kura_db_owner_repo)),
         ?assertEqual({moved_pool, ?MODULE}, kura_db:held(kura_db_owner_repo)),
-        ?assertEqual([], retiring(kura_db_owner_repo)),
+        ?assertEqual([moved_pool], owned_pools(kura_db_owner_repo)),
         ?assertEqual(ok, kura_repo_worker:start(kura_db_other_repo)),
         ?assertEqual(shared_pool, kura_db:get_pool(kura_db_other_repo))
     end).
@@ -1237,7 +1288,7 @@ a_stop_waiting_while_the_repo_moves_keeps_the_pool_it_moved_to_test() ->
         ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
         holding_lock(shared_pool, fun(Release) ->
             Stopping = spawned(fun() -> kura_db:stop_pool(kura_db_owner_repo) end),
-            ok = until(fun() -> waiting_on_lock(Stopping) end, Stopping),
+            ok = blocked(Stopping),
             ok = moved_to(moved_pool),
             ?assertEqual(ok, reentered(fun() -> kura_repo_worker:start(kura_db_owner_repo) end)),
             ok = Release(),
@@ -1254,31 +1305,123 @@ forget_pools_drops_every_pool_record_test() ->
         ok = moved_to(moved_pool),
         holding_lock(shared_pool, fun(Release) ->
             {Mover, Moving} = spawn_monitor(fun() -> kura_repo_worker:start(kura_db_owner_repo) end),
-            ok = until(
-                fun() -> kura_db:get_pool(kura_db_owner_repo) =:= moved_pool end, {Mover, Moving}
-            ),
+            ok = blocked({Mover, Moving}),
+            ?assertEqual(moved_pool, kura_db:get_pool(kura_db_owner_repo)),
             exit(Mover, kill),
             ?assertEqual(killed, down(Moving)),
             Release()
         end),
         ?assertEqual(ok, kura_db:forget_pools()),
         ?assertEqual(none, kura_db:held(kura_db_owner_repo)),
-        ?assertEqual([], retiring(kura_db_owner_repo)),
+        ?assertEqual([], owned_pools(kura_db_owner_repo)),
         ?assertEqual(none, kura_repo_settings:lookup(kura_db_owner_repo)),
         ?assertEqual(ok, kura_repo_worker:start(kura_db_other_repo))
     end).
 
-%% The pools a repo moved away from that kura_db still has to retire.
-retiring(Repo) ->
-    [Pool || {{kura_db, pool_retiring, R, Pool}, _PoolMod} <- persistent_term:get(), R =:= Repo].
+%% Two starts of one repo on two new pool names, let through the pool module
+%% at the same moment, both find the repo on its old pool. Whichever pool the
+%% repo ends up on is the only one it still owns: the other is free for
+%% another repo to start. A pool owned but no longer held is one stop_pool/1
+%% would never stop, so another repo would be refused it for good.
+%% The pool is claimed before the repo is recorded on it, and the record is
+%% changed under the repo's own lock: a start that waits for that lock has
+%% already claimed its pool, while the repo is still on the old one.
+a_start_claims_its_pool_before_it_records_the_repo_on_it_test() ->
+    with_two_repos(fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_owner_repo)),
+        ok = moved_to(moved_pool),
+        holding_repo_lock(kura_db_owner_repo, fun(Release) ->
+            Moving = spawned(fun() -> kura_repo_worker:start(kura_db_owner_repo) end),
+            ok = blocked(Moving),
+            ?assertEqual([moved_pool, shared_pool], owned_pools(kura_db_owner_repo)),
+            ?assertEqual({shared_pool, ?MODULE}, kura_db:held(kura_db_owner_repo)),
+            ?assertEqual(shared_pool, kura_db:get_pool(kura_db_owner_repo)),
+            ok = Release(),
+            ?assertEqual({returned, ok}, outcome(Moving))
+        end),
+        ?assertEqual({moved_pool, ?MODULE}, kura_db:held(kura_db_owner_repo)),
+        ?assertEqual([moved_pool], owned_pools(kura_db_owner_repo))
+    end).
 
-%% A start or stop of a pool name whose lock another requester holds waits in
-%% global until it is let go.
-waiting_on_lock({Pid, Monitor}) ->
-    case process_info(Pid, current_stacktrace) of
-        {current_stacktrace, Stack} -> lists:keymember(global, 1, Stack);
-        undefined -> error({exited_without_waiting, outcome({Pid, Monitor})})
+%% A stop that died after it released the pool and before it dropped the
+%% repo's record of it leaves a held pool nobody owns.
+stop_pool_drops_a_held_pool_the_repo_no_longer_owns_test() ->
+    with_pool_answer({ok, self()}, #{read_only => false}, fun() ->
+        ?assertEqual(ok, kura_repo_worker:start(kura_db_failing_repo)),
+        _ = persistent_term:erase({kura_db, pool_owner, kura_db_failing_repo}),
+        application:set_env(kura, repos, #{
+            kura_db_failing_repo => #{read_only => true, pool_module => ?MODULE}
+        }),
+        ?assertEqual(false, kura_repo:read_only(kura_db_failing_repo)),
+        ?assertEqual(ok, kura_db:stop_pool(kura_db_failing_repo)),
+        ?assertEqual(undefined, get({?MODULE, stopped})),
+        ?assertEqual(none, kura_db:held(kura_db_failing_repo)),
+        ?assertEqual(true, kura_repo:read_only(kura_db_failing_repo))
+    end).
+
+two_concurrent_moves_of_one_repo_leave_one_pool_owned_test() ->
+    with_two_repos(fun() ->
+        _ = with_captured_logs(fun() ->
+            lists:foreach(fun raced_moves/1, lists:seq(1, ?RACES))
+        end)
+    end).
+
+raced_moves(Round) ->
+    [Old, B, C] = [round_pool(Round, Name) || Name <- ["old", "b", "c"]],
+    Config = #{pool_module => ?MODULE},
+    ok = kura_db:start_pool(kura_db_owner_repo, Old, Config),
+    Gate = spawn(fun() ->
+        receive
+            open -> ok
+        end
+    end),
+    Gated = Config#{gate => {Gate, self()}},
+    Movers = [
+        spawned(fun() -> kura_db:start_pool(kura_db_owner_repo, P, Gated) end)
+     || P <- [B, C]
+    ],
+    ok = at_gate(B),
+    ok = at_gate(C),
+    Gate ! open,
+    ?assertEqual([{returned, ok}, {returned, ok}], [outcome(Mover) || Mover <- Movers]),
+    Held = kura_db:get_pool(kura_db_owner_repo),
+    ?assert(lists:member(Held, [B, C])),
+    [Other] = [B, C] -- [Held],
+    ?assertEqual(
+        {{error, {pool_owned_by, kura_db_owner_repo}}, ok},
+        {
+            kura_db:start_pool(kura_db_other_repo, Held, Config),
+            kura_db:start_pool(kura_db_other_repo, Other, Config)
+        },
+        {round, Round}
+    ),
+    ok = kura_db:stop_pool(kura_db_other_repo),
+    ok = kura_db:stop_pool(kura_db_owner_repo).
+
+round_pool(Round, Name) ->
+    list_to_atom("kura_db_raced_move_" ++ integer_to_list(Round) ++ "_" ++ Name).
+
+at_gate(Pool) ->
+    receive
+        {at_gate, Pool} -> ok
+    after ?WAIT -> error({not_at_gate, Pool})
     end.
+
+%% The pools whose owner record names Repo, which stop_pool/1 stops.
+owned_pools(Repo) ->
+    lists:sort([
+        Pool
+     || {{kura_db, pool_owner, Pool}, {R, _PoolMod}} <- persistent_term:get(), R =:= Repo
+    ]).
+
+%% Wait until the watched start or stop is held up by a lock the test
+%% holds. One taking a free lock runs inside global too, so only the sleep
+%% between attempts at a lock someone else holds counts.
+blocked(Watched) ->
+    until(fun() -> waiting_on_lock(Watched) end, Watched).
+
+waiting_on_lock({Pid, _Monitor}) ->
+    process_info(Pid, current_function) =:= {current_function, {global, random_sleep, 1}}.
 
 %% Run Fun in a monitored process that exits with what Fun returned, so
 %% outcome/1 sees a crash as soon as it happens instead of waiting out a reply.
@@ -1318,7 +1461,14 @@ reentered(Run) ->
 %% Hold the lock kura_db takes on a pool name, from this process, so another
 %% process's start or stop of it waits until Release() is called.
 holding_lock(Pool, Run) ->
-    Lock = {{kura_pool_start, Pool}, self()},
+    holding({kura_pool_start, Pool}, Run).
+
+%% The same for the lock kura_db changes a repo's held pool under.
+holding_repo_lock(Repo, Run) ->
+    holding({kura_repo_pool, Repo}, Run).
+
+holding(Resource, Run) ->
+    Lock = {Resource, self()},
     true = global:set_lock(Lock, [node()]),
     Release = fun() ->
         true = global:del_lock(Lock, [node()]),
@@ -1336,9 +1486,9 @@ moved_to(Pool) ->
         kura_db_other_repo => #{pool => shared_pool, pool_module => ?MODULE}
     }).
 
-%% Poll for a step the watched process takes. It is blocked on a lock the
-%% test holds once the step is taken, so one that has exited without taking
-%% it never will, and the test fails then rather than at the poll's limit.
+%% Poll Done while the watched process runs. One that has exited without
+%% getting there never will, so the test fails then rather than at the
+%% poll's limit.
 until(Done, Watched) ->
     until(Done, Watched, ?SETTLE div 5).
 
@@ -1415,6 +1565,10 @@ stop_pool(Pool) ->
     case get({?MODULE, stop_answer}) of
         {raise, Reason} ->
             error(Reason);
+        {raise, Pool, Reason} ->
+            error(Reason);
+        {raise, _OtherPool, _Reason} ->
+            ok;
         {start, Repo} ->
             erase({?MODULE, stop_answer}),
             ok = kura_repo_worker:start(Repo);
@@ -1424,6 +1578,12 @@ stop_pool(Pool) ->
     put({?MODULE, stopped}, Pool),
     ok.
 
+start_pool(Pool, #{gate := {Gate, Test}}) ->
+    Monitor = erlang:monitor(process, Gate),
+    Test ! {at_gate, Pool},
+    receive
+        {'DOWN', Monitor, process, Gate, _Opened} -> {ok, self()}
+    end;
 start_pool(Pool, Config) ->
     put({?MODULE, pool_name}, Pool),
     put({?MODULE, pool_config}, Config),
