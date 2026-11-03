@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   created earlier under the generated name keeps mapping without a
   rename. Renaming it to the declared name is optional. Without `name`,
   naming is unchanged.
+
+  **Breaking:** a `name` that is not a binary of 1 to 63 bytes (an atom,
+  `~""`, `undefined`, a longer binary) used to be ignored. It now raises
+  `{invalid_index_option, name, Name}`. On a unique index in `indexes/0`
+  it raises from `kura_changeset:cast/4` on every write to that schema.
+  In a migration's `create_index` it aborts the run, including an
+  applied migration replayed on a fresh database. Write `name => ~"users_email_index"`, not an atom.
 - `{Field, is_nil}` and `{Field, is_not_nil}` on an encrypted field are
   accepted by `where/2`. They bind nothing, and `NULL` is stored
   unencrypted.
