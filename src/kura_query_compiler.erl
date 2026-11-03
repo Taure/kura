@@ -199,6 +199,7 @@ delete(RepoMod, SchemaOrTable, KeyClauses) ->
 update_all(RepoMod, Query, SetMap) ->
     ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
+    ok = check_bulk_write(Query),
     Dialect = dialect(RepoMod),
     Dialect:update_all(prepare(Dialect, scope(Query)), SetMap).
 
@@ -206,6 +207,7 @@ update_all(RepoMod, Query, SetMap) ->
 delete_all(RepoMod, Query) ->
     ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
+    ok = check_bulk_write(Query),
     Dialect = dialect(RepoMod),
     Dialect:delete_all(prepare(Dialect, scope(Query))).
 
@@ -226,6 +228,30 @@ prepare(Dialect, Query) ->
     case erlang:function_exported(Dialect, prepare_query, 1) of
         true -> Dialect:prepare_query(Query);
         false -> Query
+    end.
+
+%% A bulk write compiles only the from table, the where conditions and the
+%% prefix, so a clause that narrows or widens the rows a SELECT would read
+%% must be refused rather than dropped: a dropped join or limit turns
+%% `DELETE ... WHERE <joined condition>` into a delete of every row.
+%% select, lock, preloads and include_deleted (applied by the repo worker
+%% before this) do not change which rows are written.
+-spec check_bulk_write(#kura_query{}) -> ok.
+check_bulk_write(#kura_query{} = Q) ->
+    Clauses = [
+        {joins, Q#kura_query.joins =/= []},
+        {order_bys, Q#kura_query.order_bys =/= []},
+        {group_bys, Q#kura_query.group_bys =/= []},
+        {havings, Q#kura_query.havings =/= []},
+        {limit, Q#kura_query.limit =/= undefined},
+        {offset, Q#kura_query.offset =/= undefined},
+        {distinct, Q#kura_query.distinct =/= false},
+        {ctes, Q#kura_query.ctes =/= []},
+        {combinations, Q#kura_query.combinations =/= []}
+    ],
+    case [Clause || {Clause, true} <- Clauses] of
+        [] -> ok;
+        [Clause | _] -> erlang:error({kura, {unsupported_in_bulk_write, Clause}})
     end.
 
 -spec scope(#kura_query{}) -> #kura_query{}.

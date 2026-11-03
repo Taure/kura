@@ -407,7 +407,15 @@ atomically(RepoMod, Fun) ->
         throw:{Rollback, Reason} -> {error, Reason}
     end.
 
--doc "Bulk update all rows matching the query, returning the count of affected rows.".
+-doc """
+Bulk update all rows matching the query, returning the count of affected rows.
+
+The statement is built from the query's `from`, its where conditions and its
+prefix. A query with a join, an `order_by`, a `group_by`, a having, a limit,
+an offset, a distinct, a CTE or a combination raises
+`{kura, {unsupported_in_bulk_write, Clause}}`, since the write would
+otherwise ignore the clause and touch rows the query does not select.
+""".
 -spec update_all(module(), #kura_query{}, map()) -> {ok, non_neg_integer()} | {error, term()}.
 update_all(RepoMod, Query, Updates) ->
     guard_write(RepoMod, fun() -> do_update_all(RepoMod, Query, Updates) end).
@@ -426,7 +434,12 @@ do_update_all(RepoMod, Query, Updates) ->
             end
     end.
 
--doc "Bulk delete all rows matching the query, returning the count of deleted rows.".
+-doc """
+Bulk delete all rows matching the query, returning the count of deleted rows.
+
+Raises `{kura, {unsupported_in_bulk_write, Clause}}` for the same clauses as
+`update_all/3`.
+""".
 -spec delete_all(module(), #kura_query{}) -> {ok, non_neg_integer()} | {error, term()}.
 delete_all(RepoMod, Query) ->
     guard_write(RepoMod, fun() -> do_delete_all(RepoMod, Query) end).
