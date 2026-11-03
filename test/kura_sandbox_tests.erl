@@ -7,9 +7,10 @@
 %% Test fixture
 %%----------------------------------------------------------------------
 
-%% Each test runs in its own process: a checkout a failing test never checks
-%% in goes back to the pool when that process exits, rather than holding a
-%% connection until the pool runs dry and every later checkout waits.
+%% Each test runs in its own process. A failing test that never checks in
+%% leaves its sandbox entry behind, but the pool takes back the connection
+%% when that process exits, rather than the pool running dry and every later
+%% checkout waiting out its timeout.
 sandbox_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(_) ->
         [{spawn, Test} || Test <- tests()]
