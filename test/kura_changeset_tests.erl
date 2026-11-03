@@ -129,6 +129,19 @@ validate_length_is_test() ->
     CS2 = kura_changeset:validate_length(CS, name, [{is, 3}]),
     ?assert(CS2#kura_changeset.valid).
 
+validate_length_counts_code_points_not_bytes_test() ->
+    Name = <<"日本語"/utf8>>,
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{name => Name}, [name]),
+    ?assert((kura_changeset:validate_length(CS, name, [{max, 3}]))#kura_changeset.valid),
+    ?assert((kura_changeset:validate_length(CS, name, [{is, 3}]))#kura_changeset.valid),
+    ?assertNot((kura_changeset:validate_length(CS, name, [{min, 4}]))#kura_changeset.valid).
+
+validate_length_counts_bytes_of_invalid_utf8_test() ->
+    CS = kura_changeset:put_change(
+        kura_changeset:cast(kura_test_schema, #{}, #{}, []), name, <<255, 254, 253>>
+    ),
+    ?assert((kura_changeset:validate_length(CS, name, [{is, 3}]))#kura_changeset.valid).
+
 validate_length_ok_test() ->
     CS = kura_changeset:cast(kura_test_schema, #{}, #{name => <<"Alice">>}, [name]),
     CS2 = kura_changeset:validate_length(CS, name, [{min, 1}, {max, 100}]),

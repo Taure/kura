@@ -135,7 +135,13 @@ validate_format(CS, Field, Pattern) ->
             CS
     end.
 
--doc "Validate length of `Field`. Opts: `{min, N}`, `{max, N}`, `{is, N}`.".
+-doc """
+Validate length of `Field`. Opts: `{min, N}`, `{max, N}`, `{is, N}`.
+
+A binary is measured in Unicode code points, the unit PostgreSQL's
+`VARCHAR(N)` limit counts, so `~"日本語"` has length 3. A binary that is not
+valid UTF-8 is measured in bytes. A list is measured by its length.
+""".
 -spec validate_length(#kura_changeset{}, atom(), [{atom(), non_neg_integer()}]) ->
     #kura_changeset{}.
 validate_length(CS, Field, Opts) ->
@@ -143,8 +149,7 @@ validate_length(CS, Field, Opts) ->
         undefined ->
             CS;
         Val when is_binary(Val) ->
-            Len = byte_size(Val),
-            check_length(CS, Field, Len, Opts);
+            check_length(CS, Field, codepoints(Val, 0, Val), Opts);
         Val when is_list(Val) ->
             Len = length(Val),
             check_length(CS, Field, Len, Opts);
@@ -521,6 +526,13 @@ group_errors([{F, M} | Rest], Acc) ->
             #{} -> Acc#{F => [M]}
         end,
     group_errors(Rest, NewAcc).
+
+codepoints(<<_/utf8, Rest/binary>>, N, Val) ->
+    codepoints(Rest, N + 1, Val);
+codepoints(<<>>, N, _Val) ->
+    N;
+codepoints(_Invalid, _N, Val) ->
+    byte_size(Val).
 
 check_length(CS, Field, Len, Opts) ->
     lists:foldl(
