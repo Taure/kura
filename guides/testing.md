@@ -138,6 +138,24 @@ constraint_test(_Config) ->
     [{username, ~"has already been taken"}] = ErrCS#kura_changeset.errors.
 ```
 
+In a sandboxed test, the failed insert aborts the sandbox's transaction
+on PostgreSQL, so any later statement in the same test fails with
+`25P02` (`in_failed_sql_transaction`). To check the error and keep using
+the database, run the failing call in a transaction that is rolled back.
+The savepoint is undone and the sandbox stays usable:
+
+```erlang
+rolled_back(Fun) ->
+    try
+        kura_repo_worker:transaction(my_repo, fun() -> throw({rolled_back, Fun()}) end)
+    catch
+        throw:{rolled_back, Result} -> Result
+    end.
+
+{error, ErrCS} = rolled_back(fun() -> kura_repo_worker:insert(my_repo, CS) end),
+{ok, _} = kura_repo_worker:all(my_repo, kura_query:from(user)).
+```
+
 ## Testing with Docker Compose
 
 For local development and CI, use Docker Compose to run PostgreSQL:

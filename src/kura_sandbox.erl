@@ -42,6 +42,25 @@ their transactions must run one after another: a transaction opened
 while another process has one open on the same connection raises
 `{kura_sandbox, overlapping_transactions}`.
 
+A statement that fails outside a transaction, such as an insert that
+breaks a unique index, aborts the sandbox's transaction on PostgreSQL:
+every later statement in the test fails with `25P02`
+(`in_failed_sql_transaction`) until checkin. Statements are not wrapped
+in a savepoint each, since that is two more round trips per statement and
+processes sharing the connection would interleave them. To keep going
+after an expected failure, run it in a transaction that is rolled back:
+
+```erlang
+rolled_back(Fun) ->
+    try
+        kura_repo_worker:transaction(my_repo, fun() -> throw({rolled_back, Fun()}) end)
+    catch
+        throw:{rolled_back, Result} -> Result
+    end.
+
+{error, CS} = rolled_back(fun() -> kura_repo_worker:insert(my_repo, Dup) end).
+```
+
 A `COMMIT`, `END` or `ROLLBACK` run through a query ends the sandbox's
 transaction, and what it committed stays in the database. With a driver
 that checks for it (see `c:kura_driver:query_on/4`), the statement
