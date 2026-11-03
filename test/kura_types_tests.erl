@@ -700,6 +700,33 @@ cast_utc_datetime_applies_the_offset_test_() ->
         ]
     ].
 
+cast_accepts_a_fraction_of_up_to_nine_digits_test_() ->
+    [
+        ?_assertEqual({ok, {{2024, 1, 1}, {10, 0, 0}}}, kura_types:cast(utc_datetime, V))
+     || V <- [~"2024-01-01T10:00:00.123456789Z", ~"2024-01-01T10:00:00.Z"]
+    ] ++ [?_assertEqual({ok, {10, 0, 0}}, kura_types:cast(time, ~"10:00:00.123456789"))].
+
+cast_refuses_a_fraction_over_nine_digits_test_() ->
+    [
+        ?_assertMatch(
+            {error, _}, kura_types:cast(utc_datetime, ~"2024-01-01T10:00:00.1234567890Z")
+        ),
+        ?_assertMatch({error, _}, kura_types:cast(time, ~"10:00:00.1234567890")),
+        ?_assertMatch(
+            {error, _}, kura_types:cast(naive_datetime, ~"2024-01-01 10:00:00.0000000000")
+        )
+    ].
+
+%% A long fraction is refused by its size, before any per-digit work.
+cast_refuses_a_large_fraction_cheaply_test() ->
+    Frac = binary:copy(~"1", 8 * 1024 * 1024),
+    Input = <<"2024-01-01T10:00:00.", Frac/binary, "Z">>,
+    erlang:garbage_collect(),
+    {memory, Before} = process_info(self(), memory),
+    ?assertMatch({error, _}, kura_types:cast(utc_datetime, Input)),
+    {memory, After} = process_info(self(), memory),
+    ?assert(After - Before < 1024 * 1024).
+
 cast_refuses_a_malformed_offset_or_fraction_test_() ->
     [
         ?_assertMatch({error, _}, kura_types:cast(Type, V))

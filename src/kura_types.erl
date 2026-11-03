@@ -1098,9 +1098,9 @@ parse_clock(Bin) ->
     end.
 
 %% 24:00:00 is the end of a day, which PostgreSQL accepts; a leap second
-%% is 60.
+%% is 60. A fraction has at most nine digits (nanoseconds).
 valid_time(H, M, S, Frac) ->
-    case {digits(H), digits(M), digits(S), Frac =:= ~"" orelse all_digits(Frac)} of
+    case {digits(H), digits(M), digits(S), byte_size(Frac) =< 9 andalso all_digits(Frac)} of
         {{ok, 24}, {ok, 0}, {ok, 0}, true} ->
             end_of_day(Frac);
         {{ok, Hour}, {ok, Min}, {ok, Sec}, true} when Hour =< 23, Min =< 59, Sec =< 60 ->
@@ -1125,8 +1125,9 @@ digits(Bin) when byte_size(Bin) >= 1, byte_size(Bin) =< 4 ->
 digits(_Bin) ->
     error.
 
-all_digits(Bin) ->
-    lists:all(fun(C) -> C >= $0 andalso C =< $9 end, binary_to_list(Bin)).
+all_digits(<<C, Rest/binary>>) when C >= $0, C =< $9 -> all_digits(Rest);
+all_digits(<<>>) -> true;
+all_digits(_) -> false.
 
 %% Splits a trailing `Z` or `+HH:MM`, `+HHMM` or `+HH` (or `-`) off a time,
 %% returning the offset in seconds east of UTC.
