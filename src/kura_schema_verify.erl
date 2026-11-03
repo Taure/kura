@@ -38,8 +38,13 @@ A declared index is satisfied by a live one over the same key columns,
 in order. A declared unique index needs a unique one that is partial
 exactly when the declaration is. A declared plain index is also
 satisfied by a unique one, and a partial declaration by a full index,
-since either serves the same lookups. Expression columns never match a
-declared column, and `INCLUDE` columns are not key columns. A partial
+since either serves the same lookups. When the declaration names an
+access method with `using`, the live index must be built with it
+(`pg_am.amname`), so a btree on a column does not satisfy a declared
+`hnsw` index; without `using` any method counts. The operator class
+and `with` storage parameters are not compared. Expression columns
+never match a declared column, and `INCLUDE` columns are not key
+columns. A partial
 index's predicate is not compared, because PostgreSQL stores its own
 rewrite of the `WHERE` text (`status = 'active'` comes back as
 `((status)::text = 'active'::text)`). An index left invalid by a failed
@@ -77,7 +82,12 @@ issue this *does* report is a real, blocking problem.
     | {missing_column, binary(), binary()}
     | {missing_index, binary(), [atom()], map()}.
 
--type index_shape() :: {KeyColumns :: [binary()], Unique :: boolean(), Partial :: boolean()}.
+-type index_shape() :: {
+    KeyColumns :: [binary()],
+    Unique :: boolean(),
+    Partial :: boolean(),
+    Method :: binary() | any
+}.
 
 %%----------------------------------------------------------------------
 %% Public API
@@ -234,9 +244,11 @@ load_indexes(RepoMod) ->
            i.relname::text AS indexname,
            ix.indisunique AS is_unique,
            ix.indpred IS NOT NULL AS is_partial,
+           am.amname::text AS method,
            COALESCE(a.attname::text, '') AS column_name
     FROM pg_catalog.pg_index ix
     JOIN pg_catalog.pg_class i ON i.oid = ix.indexrelid
+    JOIN pg_catalog.pg_am am ON am.oid = i.relam
     JOIN pg_catalog.pg_class c ON c.oid = ix.indrelid
     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
     CROSS JOIN LATERAL pg_catalog.unnest(ix.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)
@@ -264,6 +276,7 @@ group_index_columns(
             indexname := IdxBin,
             is_unique := Unique,
             is_partial := Partial,
+            method := MethodBin,
             column_name := ColBin
         }
         | Rest
@@ -271,8 +284,11 @@ group_index_columns(
     Acc
 ) when is_boolean(Unique), is_boolean(Partial) ->
     Key = {ensure_binary(TableBin), ensure_binary(IdxBin)},
-    {Cols, _, _} = maps:get(Key, Acc, {[], Unique, Partial}),
-    group_index_columns(Rest, Acc#{Key => {Cols ++ [ensure_binary(ColBin)], Unique, Partial}});
+    Method = ensure_binary(MethodBin),
+    {Cols, _, _, _} = maps:get(Key, Acc, {[], Unique, Partial, Method}),
+    group_index_columns(Rest, Acc#{
+        Key => {Cols ++ [ensure_binary(ColBin)], Unique, Partial, Method}
+    });
 group_index_columns([_ | Rest], Acc) ->
     group_index_columns(Rest, Acc).
 
@@ -346,17 +362,31 @@ satisfied(_Declared, []) -> false;
 satisfied(Declared, [Live | Rest]) -> satisfies(Live, Declared) orelse satisfied(Declared, Rest).
 
 -spec satisfies(index_shape(), index_shape()) -> boolean().
-satisfies({Cols, true, Partial}, {Cols, true, Partial}) -> true;
-satisfies({Cols, _Unique, LivePartial}, {Cols, false, Partial}) -> Partial orelse not LivePartial;
-satisfies(_Live, _Declared) -> false.
+satisfies({_, _, _, Method}, {_, _, _, Declared}) when Declared =/= any, Declared =/= Method ->
+    false;
+satisfies({Cols, true, Partial, _}, {Cols, true, Partial, _}) ->
+    true;
+satisfies({Cols, _Unique, LivePartial, _}, {Cols, false, Partial, _}) ->
+    Partial orelse not LivePartial;
+satisfies(_Live, _Declared) ->
+    false.
 
 -spec declared_shape([atom()], kura_migration:index_opts_map()) -> index_shape().
 declared_shape(Cols, Opts) ->
     {
         [atom_to_binary(C, utf8) || C <- Cols],
         maps:get(unique, Opts, false) =:= true,
-        is_binary(maps:get(where, Opts, undefined))
+        is_binary(maps:get(where, Opts, undefined)),
+        declared_method(Opts)
     }.
+
+-spec declared_method(kura_migration:index_opts_map()) -> binary() | any.
+declared_method(#{using := Method}) -> method_name(Method);
+declared_method(#{}) -> any.
+
+-spec method_name(term()) -> binary().
+method_name(Method) when is_atom(Method) -> atom_to_binary(Method, utf8);
+method_name(Method) -> error({invalid_index_option, using, Method}).
 
 -spec ensure_binary(binary() | string()) -> binary().
 ensure_binary(B) when is_binary(B) -> B;

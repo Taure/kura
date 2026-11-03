@@ -160,6 +160,8 @@ one.
     release_session_lock/1,
     run_non_transactional/3,
     refuse_unsupported_concurrently/3,
+    refuse_invalid_indexes/3,
+    check_index_options/4,
     lock_retry_interval/0,
     without_row_values/1
 ]).
@@ -1123,6 +1125,7 @@ run_plan(RepoMod, Dir, PlanFun) ->
         refuse_non_transactional_when_enclosed(Enclosed, Todo),
         refuse_concurrently_in_transaction(Todo, Dir),
         refuse_unsupported_concurrently(RepoMod, Todo, Dir),
+        ok = refuse_invalid_indexes(RepoMod, Todo, Dir),
         emit_migrate_start(RepoMod, Dir, length(Todo)),
         run_transactional_prefix(Todo, Dir, RepoMod)
     end),
@@ -1253,6 +1256,32 @@ refuse_unsupported_concurrently(RepoMod, Todo, Dir) ->
         [_ | _] ->
             _ = concurrently(RepoMod, true),
             ok
+    end.
+
+%% Checked while planning, like refuse_unsupported_concurrently/3, so a
+%% non-transactional migration is not stopped after its earlier
+%% statements have committed.
+-spec refuse_invalid_indexes(module(), [migration()], up | down) -> ok.
+refuse_invalid_indexes(_RepoMod, [], _Dir) ->
+    ok;
+refuse_invalid_indexes(RepoMod, [{Version, Module} | Rest], Dir) ->
+    try
+        [
+            check_index_options(RepoMod, Table, Columns, Opts)
+         || {create_index, Table, Columns, Opts} <- get_migration_ops(Module, Dir), is_map(Opts)
+        ]
+    of
+        _ -> refuse_invalid_indexes(RepoMod, Rest, Dir)
+    catch
+        error:{invalid_index_option, Option, Value} ->
+            ?LOG_ERROR(#{
+                msg => ~"kura: a create_index option cannot compile",
+                version => Version,
+                module => Module,
+                option => Option,
+                value => Value
+            }),
+            error({migration_aborted, {invalid_index_option, Version, Option, Value}})
     end.
 
 -spec has_concurrent_index([kura_migration:operation()]) -> boolean().
@@ -1487,13 +1516,13 @@ compile_operation(RepoMod, {alter_table, Name, AlterOps}) ->
         iolist_to_binary(lists:join(~", ", Ops))
     ]);
 compile_operation(RepoMod, {create_index, Table, Columns, Opts}) when is_map(Opts) ->
-    IdxName = kura_migration:index_name(Table, Columns),
+    ok = check_index_options(RepoMod, Table, Columns, Opts),
+    IdxName = kura_migration:index_name(Table, Columns, Opts),
     Unique =
         case maps:get(unique, Opts, false) of
             true -> ~"UNIQUE ";
             false -> <<>>
         end,
-    Cols = iolist_to_binary(lists:join(~", ", [quote(atom_to_binary(C, utf8)) || C <- Columns])),
     Where =
         case maps:get(where, Opts, undefined) of
             undefined -> <<>>;
@@ -1507,9 +1536,11 @@ compile_operation(RepoMod, {create_index, Table, Columns, Opts}) when is_map(Opt
         quote(IdxName),
         ~" ON ",
         quote(Table),
+        index_method(Opts),
         ~" (",
-        Cols,
+        index_columns(Columns, Opts),
         ~")",
+        index_storage(Opts),
         Where
     ]);
 compile_operation(RepoMod, {create_index, IdxName, Table, Columns, Opts}) ->
@@ -1541,6 +1572,81 @@ compile_operation(_RepoMod, {drop_index, Name}) ->
     iolist_to_binary([~"DROP INDEX ", quote(Name)]);
 compile_operation(_RepoMod, {execute, SQL}) ->
     SQL.
+
+%% Raises {invalid_index_option, Option, Value} for the first option that
+%% cannot compile: the planner checks every migration with it before any
+%% statement runs, and compile_operation/2 again for a direct caller.
+-spec check_index_options(module(), binary(), [atom()], kura_migration:index_opts_map()) -> ok.
+check_index_options(RepoMod, Table, Columns, Opts) ->
+    _ = kura_migration:index_name(Table, Columns, Opts),
+    ok = check_index_dialect(RepoMod, Opts),
+    _ = index_method(Opts),
+    _ = index_columns(Columns, Opts),
+    _ = index_storage(Opts),
+    ok.
+
+-spec check_index_dialect(module(), kura_migration:index_opts_map()) -> ok.
+check_index_dialect(RepoMod, Opts) ->
+    case [O || O <- [using, opclass, with], maps:is_key(O, Opts)] of
+        [] ->
+            ok;
+        [Option | _] ->
+            case postgres_ddl(RepoMod) of
+                true ->
+                    ok;
+                false ->
+                    error({invalid_index_option, Option, {unsupported_dialect, dialect(RepoMod)}})
+            end
+    end.
+
+-spec dialect(module()) -> module() | none.
+dialect(RepoMod) ->
+    case ddl_dialect(RepoMod) of
+        {ok, Dialect} -> Dialect;
+        none -> none
+    end.
+
+-spec index_method(kura_migration:index_opts_map()) -> iodata().
+index_method(#{using := Method}) ->
+    [~" USING ", index_identifier(using, Method)];
+index_method(#{}) ->
+    [].
+
+-spec index_columns([atom()], kura_migration:index_opts_map()) -> iodata().
+index_columns([Column], #{opclass := OpClass}) ->
+    [quote(atom_to_binary(Column, utf8)), ~" ", index_identifier(opclass, OpClass)];
+index_columns(Columns, #{opclass := _}) ->
+    error({invalid_index_option, opclass, {columns, Columns}});
+index_columns(Columns, #{}) ->
+    lists:join(~", ", [quote(atom_to_binary(C, utf8)) || C <- Columns]).
+
+-spec index_storage(kura_migration:index_opts_map()) -> iodata().
+index_storage(#{with := With}) when is_map(With), map_size(With) > 0 ->
+    Params = [storage_param(Key, Value) || {Key, Value} <- lists:sort(maps:to_list(With))],
+    [~" WITH (", lists:join(~", ", Params), ~")"];
+index_storage(#{with := With}) ->
+    error({invalid_index_option, with, With});
+index_storage(#{}) ->
+    [].
+
+-spec storage_param(term(), term()) -> iodata().
+storage_param(Key, Value) when is_integer(Value) ->
+    [index_identifier(with, Key), ~" = ", integer_to_binary(Value)];
+storage_param(Key, Value) ->
+    error({invalid_index_option, with, {Key, Value}}).
+
+%% Only plain lowercase names, so a quoted name is the name PostgreSQL
+%% folds the unquoted one to. `$` alone would also match before a
+%% trailing newline.
+-spec index_identifier(using | opclass | with, term()) -> binary().
+index_identifier(Option, Name) when is_atom(Name) ->
+    Bin = atom_to_binary(Name, utf8),
+    case re:run(Bin, ~"^[a-z][a-z0-9_]*$", [dollar_endonly, {capture, none}]) of
+        match -> quote(Bin);
+        nomatch -> error({invalid_index_option, Option, Name})
+    end;
+index_identifier(Option, Name) ->
+    error({invalid_index_option, Option, Name}).
 
 %% A non-Postgres backend without `concurrent_indexes` (SQLite) has no
 %% online index build, and a plain `CREATE INDEX` is what it would run

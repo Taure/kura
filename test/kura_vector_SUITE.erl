@@ -25,7 +25,9 @@ cannot create the `vector` extension the suite skips, or fails when the
     large_vector_round_trips_and_ranks/1,
     distance_threshold_keeps_the_rows_within_it/1,
     distance_threshold_binds_with_order_by_and_limit/1,
-    distance_threshold_in_having/1
+    distance_threshold_in_having/1,
+    create_index_builds_an_hnsw_index_the_planner_uses/1,
+    create_index_builds_an_ivfflat_index_the_planner_uses/1
 ]).
 
 -define(REPO, kura_vector_test_repo).
@@ -44,7 +46,9 @@ all() ->
         large_vector_round_trips_and_ranks,
         distance_threshold_keeps_the_rows_within_it,
         distance_threshold_binds_with_order_by_and_limit,
-        distance_threshold_in_having
+        distance_threshold_in_having,
+        create_index_builds_an_hnsw_index_the_planner_uses,
+        create_index_builds_an_ivfflat_index_the_planner_uses
     ].
 
 init_per_suite(Config) ->
@@ -243,9 +247,74 @@ distance_threshold_in_having(_Config) ->
     {ok, Rows} = kura_repo_worker:all(?REPO, kura_query:order_by(Q1, [{content, asc}])),
     ?assertEqual([~"x", ~"y"], [C || #{content := C} <- Rows]).
 
+create_index_builds_an_hnsw_index_the_planner_uses(_Config) ->
+    seed(),
+    run_operation(
+        {create_index, ~"kura_vector_items", [embedding], #{
+            using => hnsw,
+            opclass => vector_cosine_ops,
+            with => #{m => 16, ef_construction => 64},
+            name => ~"kura_vector_items_embedding_hnsw_cos"
+        }}
+    ),
+    ?assertEqual(
+        [
+            #{
+                amname => ~"hnsw",
+                opcname => ~"vector_cosine_ops",
+                reloptions => ~"ef_construction=64,m=16"
+            }
+        ],
+        index_catalog(~"kura_vector_items_embedding_hnsw_cos")
+    ),
+    D = kura_query:distance(embedding, cosine, [1, 0, 0]),
+    Q = kura_query:limit(kura_query:order_by(kura_query:from(?SCHEMA), [{D, asc}]), 2),
+    ?assertNotEqual(
+        nomatch, binary:match(plan(Q), ~"Index Scan using kura_vector_items_embedding_hnsw_cos")
+    ),
+    {ok, Rows} = kura_repo_worker:all(?REPO, Q),
+    ?assertEqual([~"x", ~"y"], [C || #{content := C} <- Rows]).
+
+create_index_builds_an_ivfflat_index_the_planner_uses(_Config) ->
+    seed(),
+    run_operation(
+        {create_index, ~"kura_vector_items", [embedding], #{
+            using => ivfflat, opclass => vector_l2_ops, with => #{lists => 1}
+        }}
+    ),
+    ?assertEqual(
+        [#{amname => ~"ivfflat", opcname => ~"vector_l2_ops", reloptions => ~"lists=1"}],
+        index_catalog(~"kura_vector_items_embedding_index")
+    ),
+    D = kura_query:distance(embedding, l2, [1, 0, 0]),
+    Q = kura_query:limit(kura_query:order_by(kura_query:from(?SCHEMA), [{D, asc}]), 2),
+    ?assertNotEqual(
+        nomatch, binary:match(plan(Q), ~"Index Scan using kura_vector_items_embedding_index")
+    ).
+
 %%----------------------------------------------------------------------
 %% Helpers
 %%----------------------------------------------------------------------
+
+run_operation(Op) ->
+    {ok, _} = kura_repo_worker:query(?REPO, kura_migrator:compile_operation(?REPO, Op), []),
+    ok.
+
+index_catalog(Name) ->
+    {ok, Rows} = kura_repo_worker:query(
+        ?REPO,
+        ~"""
+        SELECT am.amname::text AS amname, opc.opcname::text AS opcname,
+               array_to_string(i.reloptions, ',') AS reloptions
+        FROM pg_catalog.pg_class i
+        JOIN pg_catalog.pg_am am ON am.oid = i.relam
+        JOIN pg_catalog.pg_index ix ON ix.indexrelid = i.oid
+        JOIN pg_catalog.pg_opclass opc ON opc.oid = ix.indclass[0]
+        WHERE i.relname = $1
+        """,
+        [Name]
+    ),
+    Rows.
 
 %% Seeds the table, builds the HNSW index and returns the plan for Q with
 %% sequential scans off, under the settings the guide recommends.
@@ -256,6 +325,9 @@ index_plan(Q) ->
         ~"CREATE INDEX kura_vector_items_embedding_cos ON kura_vector_items USING hnsw (embedding vector_cosine_ops)",
         []
     ),
+    plan(Q).
+
+plan(Q) ->
     {SQL, Params} = kura_query_compiler:to_sql(?REPO, Q),
     Plan = kura_repo_worker:transaction(?REPO, fun() ->
         {ok, _} = kura_repo_worker:query(?REPO, ~"SET LOCAL enable_seqscan = off", []),
