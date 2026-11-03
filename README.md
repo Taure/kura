@@ -209,8 +209,8 @@ SQLite values round-trip transparently via `kura_types:cast/2` (booleans 0/1 →
 `{vector, N}` (and dimensionless `vector`) map to [pgvector](https://github.com/pgvector/pgvector)
 columns for embeddings; requires `CREATE EXTENSION vector` and a backend
 declaring the `vector` capability. A value is a list of numbers, dimension-checked
-on cast. Distance-query operators (`<->` / `<=>`) are not yet a first-class query
-form - use a `{fragment, SQL, Params}` for nearest-neighbour ordering meanwhile.
+on cast. `kura_query:distance/3` orders and selects by `<->`, `<=>` or `<#>`
+distance; see the vector search section of the query builder guide.
 Elements are stored as `float4`, so a value read back from a column is the
 single-precision approximation of what was written, not the exact double.
 

@@ -26,7 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{kura, {encrypted_field_in_join, Field}}`: equal values encrypt to
   different ciphertexts, so they never group or join. ORDER BY, GROUP BY
   and DISTINCT ON on a `select_expr/2` alias of an encrypted field raise
-  too.
+  too. A `select_expr/2` distance over a column that may hold ciphertext
+  raises `{kura, {encrypted_field_in_select, Field}}`. A term in a column
+  position that is not a column is reported as `not_a_column`, so its
+  values stay out of the reason.
 - `kura_schema` refuses an encrypted primary key, association key
   (foreign key, referenced key or join-table key) or a field of an
   embedded schema, raising `{kura, {encrypted_primary_key, Mod, Field}}`,
@@ -376,6 +379,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The compiled-query cache replaces select-expression fragment
+  parameters with markers. They stayed in the shape, so every new value
+  interned another entry.
+- The query cache's entry-size and memory limits count the bytes of
+  off-heap binaries. Neither `erts_debug:flat_size/1` nor
+  `ets:info(Tab, memory)` sees them, so an entry holding a large binary
+  counted as a few words.
 - `kura_types:cast/2`, `dump/2` and `load/2` crashed with
   `function_clause` instead of returning `{error, _}` when the error
   message had to name a `{vector, N}` type or an encrypted type, for
@@ -470,6 +480,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flushes the compiled-query cache, for tools that reload schema modules
   in one VM. The cache never expired before, so a reloaded module kept
   answering with the old module's key and associations (#169).
+- `kura_query:distance(Field, Metric, Vector)` for pgvector
+  nearest-neighbour search (#122). Metrics are `l2`, `cosine` and
+  `inner_product`, emitted as `<->`, `<=>` and `<#>`; a smaller value is
+  nearer for all three. A distance goes in `order_by/2`, whose spec
+  widens from `{atom(), Dir}` to `{atom() | distance(), Dir}`, and in
+  `select_expr/2`. `ORDER BY` now carries bind parameters, numbered
+  after `HAVING` and before `LIMIT`. The vector is cast and dumped to text when
+  the distance is built, and the query must be `from/1` a schema in which
+  the field is a `vector` or `{vector, N}` of matching dimension. A
+  distance in `where/2`, `having/2`, `group_by/2`, `distinct/2`,
+  `select/2` (and the aggregate helpers), `count/2`, a `join` column or
+  `over/2` raises `{kura, {distance_not_supported_here, Clause}}`, in a
+  condition also as a list element or a `between` end. A vector over
+  16000 dimensions raises, and every compiler entry point applies the
+  same checks to a `#kura_query{}` written by hand. No error reason
+  carries the query vector. Requires pgvector >= 0.8.2
+  (CVE-2026-3172). The
+  query builder guide covers search-time settings (`SET LOCAL
+  hnsw.ef_search` in a transaction) and leaves `CREATE EXTENSION` to the
+  cluster bootstrap.
 
 
 ### Added

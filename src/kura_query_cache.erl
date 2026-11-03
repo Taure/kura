@@ -23,6 +23,10 @@ limits bound it regardless, both counted in words and both configurable:
 - `query_cache_max_entry_size` (default 4096 words) - a single entry
   bigger than this is never interned.
 
+Both limits count the bytes of every off-heap binary an entry holds,
+such as its SQL text. A term's flat size leaves those bytes out, and so
+does `ets:info(Tab, memory)`.
+
 An `in` list is one shape per list length, so a caller-supplied array
 of arbitrary length still interns an entry per length. The per-entry
 ceiling keeps those entries small.
@@ -32,7 +36,7 @@ The ETS table is owned by `kura_query_cache_owner` (a gen_server under
 """.
 -behaviour(gen_server).
 
--export([init/0, get/1, put/2, flush/0]).
+-export([init/0, get/1, put/2, flush/0, entry_count/0]).
 -export([start_link/0, init/1, handle_call/3, handle_cast/2]).
 -export_type([entry/0]).
 
@@ -42,6 +46,11 @@ The ETS table is owned by `kura_query_cache_owner` (a gen_server under
 -define(TABLE, kura_query_cache).
 -define(DEFAULT_MAX_MEMORY_WORDS, 8000000).
 -define(DEFAULT_MAX_ENTRY_WORDS, 4096).
+%% A reserved row, in the cache table itself so that dropping the entries
+%% drops their count with them. A real key is a `{Repo, Tenant, Shape}'
+%% tuple, never this atom.
+-define(BINARY_WORDS, '$kura_binary_words').
+-define(HEAP_BINARY_LIMIT, 64).
 
 -doc """
 Initialize the query cache ETS table. No-op when the cache owner is
@@ -89,19 +98,74 @@ put(Key, Result) ->
     end.
 
 maybe_insert(Key, Result) ->
-    Words = erts_debug:flat_size(Key) + erts_debug:flat_size(Result),
+    BinaryWords = binary_words(Key) + binary_words(Result),
+    Words = erts_debug:flat_size(Key) + erts_debug:flat_size(Result) + BinaryWords,
     case Words > max_entry_words() of
         true ->
             ok;
         false ->
             _ =
-                case ets:info(?TABLE, memory) >= max_memory_words() of
-                    true -> ets:delete_all_objects(?TABLE);
+                case table_words() >= max_memory_words() of
+                    true -> drop_all();
                     false -> ok
                 end,
-            ets:insert(?TABLE, {Key, Result}),
-            ok
+            count_new(ets:insert_new(?TABLE, {Key, Result}), BinaryWords)
     end.
+
+%% Two processes that miss on the same key both put it; only the one whose
+%% insert landed adds to the count.
+count_new(true, BinaryWords) when BinaryWords > 0 ->
+    _ = ets:update_counter(?TABLE, ?BINARY_WORDS, BinaryWords, {?BINARY_WORDS, 0}),
+    ok;
+count_new(_Inserted, _BinaryWords) ->
+    ok.
+
+drop_all() ->
+    ets:delete_all_objects(?TABLE),
+    ok.
+
+-doc false.
+-spec entry_count() -> non_neg_integer().
+entry_count() ->
+    case ets:info(?TABLE, size) of
+        Size when is_integer(Size) ->
+            case ets:member(?TABLE, ?BINARY_WORDS) of
+                true -> Size - 1;
+                false -> Size
+            end;
+        _ ->
+            0
+    end.
+
+-spec table_words() -> non_neg_integer().
+table_words() ->
+    Binaries =
+        case ets:lookup(?TABLE, ?BINARY_WORDS) of
+            [{_, N}] when is_integer(N) -> N;
+            _ -> 0
+        end,
+    case ets:info(?TABLE, memory) of
+        Words when is_integer(Words) -> Words + Binaries;
+        _ -> Binaries
+    end.
+
+%% A binary over the heap limit lives outside the term, so its bytes are
+%% missing from flat_size and from the table's memory. A sub-binary keeps
+%% its whole parent alive, so the parent's size is what counts.
+-spec binary_words(term()) -> non_neg_integer().
+binary_words(B) when is_binary(B) ->
+    case binary:referenced_byte_size(B) of
+        Size when Size > ?HEAP_BINARY_LIMIT -> Size div erlang:system_info(wordsize) + 1;
+        _ -> 0
+    end;
+binary_words(T) when is_tuple(T) ->
+    binary_words(tuple_to_list(T));
+binary_words([H | T]) ->
+    binary_words(H) + binary_words(T);
+binary_words(M) when is_map(M) ->
+    binary_words(maps:to_list(M));
+binary_words(_) ->
+    0.
 
 -doc """
 Drop every cached entry. Required after swapping a repo's dialect at
@@ -114,8 +178,7 @@ flush() ->
         undefined ->
             ok;
         _ ->
-            ets:delete_all_objects(?TABLE),
-            ok
+            drop_all()
     end.
 
 -spec max_memory_words() -> pos_integer().

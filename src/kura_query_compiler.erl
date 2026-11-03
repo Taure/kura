@@ -56,16 +56,21 @@ module, is first confined to the ambient tenant with
 `kura_tenant:scope_query/2`, so no caller of this module can compile a query that
 skips it.
 
-Each of those entry points first runs the encrypted filter guard over the
-whole query with `kura_query:check_encrypted/1`, so a `#kura_query{}` record
-built or updated without `kura_query:where/2` cannot bind an encrypted
-field's plaintext either.
+Each of those entry points first runs both guards over the whole query:
+the distance checks that `kura_query:order_by/2` and
+`kura_query:select_expr/2` apply, and the encrypted filter guard with
+`kura_query:check_encrypted/1`, so a `#kura_query{}` record built or
+updated without `kura_query:where/2` cannot bind an encrypted field's
+plaintext either.
 """.
 -spec to_sql(module(), #kura_query{}) -> {iodata(), [term()]}.
 to_sql(RepoMod, Query) ->
+    ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
     compile_query(RepoMod, Query).
 
+%% Compiles without the distance and encrypted checks; every caller has
+%% run them on the query.
 -spec compile_query(module(), #kura_query{}) -> {iodata(), [term()]}.
 compile_query(RepoMod, Query) ->
     (dialect(RepoMod)):to_sql(scope(Query)).
@@ -127,12 +132,14 @@ split(Query) ->
 
 -spec cached(module(), #kura_query{}, #kura_query{}, tuple()) -> {iodata(), [term()]}.
 cached(RepoMod, Query, Shape, Values) ->
+    ok = kura_query:check_distances(Query),
     Key = {RepoMod, kura_tenant:get_tenant(), Shape},
     case kura_query_cache:get(Key) of
         {ok, {SQL, Template}} ->
             {SQL, kura_query_shape:bind(Template, Values)};
         {ok, uncacheable} ->
-            to_sql(RepoMod, Query);
+            ok = kura_query:check_encrypted(Query),
+            compile_query(RepoMod, Query);
         miss ->
             ok = kura_query:check_encrypted(Query),
             case compile_shape(RepoMod, Shape, tuple_size(Values)) of
@@ -164,6 +171,7 @@ compile_shape(RepoMod, Shape, Arity) ->
 -spec to_sql_from(module(), #kura_query{}, pos_integer()) ->
     {iodata(), [term()], pos_integer()}.
 to_sql_from(RepoMod, Query, StartCounter) ->
+    ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
     (dialect(RepoMod)):to_sql_from(scope(Query), StartCounter).
 
@@ -186,11 +194,13 @@ delete(RepoMod, SchemaOrTable, KeyClauses) ->
 
 -spec update_all(module(), #kura_query{}, map()) -> {iodata(), [term()]}.
 update_all(RepoMod, Query, SetMap) ->
+    ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
     (dialect(RepoMod)):update_all(scope(Query), SetMap).
 
 -spec delete_all(module(), #kura_query{}) -> {iodata(), [term()]}.
 delete_all(RepoMod, Query) ->
+    ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
     (dialect(RepoMod)):delete_all(scope(Query)).
 

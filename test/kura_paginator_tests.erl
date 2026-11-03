@@ -217,3 +217,14 @@ t_cursor_with_where() ->
         end,
         Entries
     ).
+
+%% cursor_paginate/3 replaces order_bys with the cursor field, so a
+%% distance ordering would be dropped without a word. It raises before
+%% any query runs.
+cursor_paginate_refuses_a_distance_order_by_test() ->
+    D = kura_query:distance(embedding, cosine, [1, 2, 3]),
+    Q = kura_query:order_by(kura_query:from(kura_test_vector_schema), [{D, asc}]),
+    ?assertError(
+        {kura, {distance_not_supported_here, cursor_paginate}},
+        kura_paginator:cursor_paginate(no_such_repo, Q, #{limit => 10})
+    ).

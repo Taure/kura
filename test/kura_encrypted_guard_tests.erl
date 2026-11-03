@@ -1168,6 +1168,117 @@ union_cte_test_() ->
 assert_refused(Reason, Q, Cond) ->
     ?assertError(Reason, kura_query:where(Q, Cond)).
 
+%% The distance checks and the encrypted guard both run on every builder.
+distance_and_encryption_guards_both_apply_test_() ->
+    D = kura_query:distance(embedding, cosine, [1, 2, 3]),
+    Joined = kura_query:join(kura_query:from(kura_test_vector_schema), inner, ?ENC, {id, id}),
+    FailClosed = fail_closed_vector_cte(),
+    [
+        {"order_by a distance beside an encrypted schema",
+            ?_assertMatch(#kura_query{}, kura_query:order_by(Joined, [{D, asc}]))},
+        {"select a distance beside an encrypted schema",
+            ?_assertMatch(#kura_query{}, kura_query:select_expr(Joined, [{id, id}, {dist, D}]))},
+        {"order_by a distance, then an encrypted field",
+            ?_assertError(?ORDER_SSN, kura_query:order_by(Joined, [{D, asc}, {ssn, desc}]))},
+        {"select a distance beside a window over an encrypted field",
+            ?_assertError(
+                ?WINDOW_SSN,
+                kura_query:select_expr(Joined, [
+                    {dist, D}, {r, kura_query:over(row_number, #{partition_by => [ssn]})}
+                ])
+            )},
+        {"select a distance of a joined schema's field",
+            ?_assertError(
+                {kura, {not_a_vector_field, ssn}},
+                kura_query:select_expr(Joined, [{dist, kura_query:distance(ssn, l2, [1])}])
+            )},
+        {"where on an encrypted field after selecting a distance",
+            ?_assertError(
+                ?WHERE_SSN,
+                kura_query:where(kura_query:select_expr(Joined, [{dist, D}]), {ssn, ?PLAIN})
+            )},
+        {"a distance in where",
+            ?_assertError(
+                {kura, {distance_not_supported_here, where}}, kura_query:where(Joined, {D, ?PLAIN})
+            )},
+        {"a distance in having",
+            ?_assertError(
+                {kura, {distance_not_supported_here, having}},
+                kura_query:having(Joined, {D, ?PLAIN})
+            )},
+        {"a distance in group_by",
+            ?_assertError(
+                {kura, {distance_not_supported_here, group_by}},
+                kura_query:group_by(Joined, [ill_typed(D)])
+            )},
+        {"order_by a distance over a fail-closed CTE names the column, not the vector",
+            ?_assertError(
+                {kura, {encrypted_field_in_order_by, embedding}},
+                kura_query:order_by(
+                    kura_query:with_cte(
+                        kura_query:from(kura_test_vector_schema),
+                        kura_test_vector_schema:table(),
+                        kura_query:union(
+                            kura_query:from(kura_test_plain_ssn_schema), kura_query:from(?ENC)
+                        )
+                    ),
+                    [{D, asc}]
+                )
+            )},
+        {"select_expr a distance over a fail-closed CTE names the column, not the vector",
+            ?_assertError(
+                {kura, {encrypted_field_in_select, embedding}},
+                kura_query:select_expr(FailClosed, [{id, id}, {dist, D}])
+            )},
+        {"a distance in select, distinct, count or a join over a fail-closed CTE", [
+            ?_assertError(
+                {kura, {distance_not_supported_here, select}},
+                kura_query:select(FailClosed, [{sum, ill_typed(D)}])
+            ),
+            ?_assertError(
+                {kura, {distance_not_supported_here, distinct}},
+                kura_query:distinct(FailClosed, [ill_typed(D)])
+            ),
+            ?_assertError(
+                {kura, {distance_not_supported_here, count}},
+                kura_query:count(FailClosed, ill_typed(D))
+            ),
+            ?_assertError(
+                {kura, {distance_not_supported_here, join}},
+                kura_query:join(FailClosed, inner, ?ENC, {ill_typed(D), id})
+            )
+        ]},
+        {"a hand-built distance in a column position over a fail-closed CTE is not a column", [
+            ?_assertError(
+                {kura, {Reason, not_a_column}},
+                kura_query:check_encrypted(Q)
+            )
+         || {Reason, Q} <- [
+                {encrypted_field_in_distinct, FailClosed#kura_query{distinct = [ill_typed(D)]}},
+                {encrypted_field_in_group_by, FailClosed#kura_query{group_bys = [ill_typed(D)]}},
+                {encrypted_field_in_aggregate, FailClosed#kura_query{select = [{sum, D}]}},
+                {encrypted_field_in_join, FailClosed#kura_query{
+                    joins = [{inner, ?ENC, {D, id}, undefined}]
+                }},
+                {encrypted_field_in_window, FailClosed#kura_query{
+                    select = {exprs, [{r, {over, row_number, #{partition_by => [D]}}}]}
+                }},
+                {encrypted_field_in_window, FailClosed#kura_query{
+                    select = {exprs, [{r, {over, rank, #{order_by => [{D, asc}]}}}]}
+                }}
+            ]
+        ]}
+    ].
+
+%% A CTE over the vector schema's table whose union's encrypted column
+%% cannot be named, so every column of it counts as ciphertext.
+fail_closed_vector_cte() ->
+    kura_query:with_cte(
+        kura_query:from(kura_test_vector_schema),
+        kura_test_vector_schema:table(),
+        kura_query:union(kura_query:from(kura_test_plain_ssn_schema), kura_query:from(?ENC))
+    ).
+
 forget_test_schemas_after_test() ->
     forget_test_schemas().
 

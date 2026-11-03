@@ -226,7 +226,7 @@ cache_is_bounded_by_max_memory_test() ->
     try
         Q = fun(N) -> #kura_query{from = bounded_schema, wheres = [{id, in, lists:seq(1, N)}]} end,
         _ = [kura_query_compiler:to_sql_cached(?REPO, Q(N)) || N <- lists:seq(1, 60)],
-        ?assert(ets:info(kura_query_cache, size) < 60),
+        ?assert(kura_query_cache:entry_count() < 60),
         ?assert(ets:info(kura_query_cache, memory) < 2000 * 2),
         %% Eviction must never change what a query compiles to. This is what
         %% stops a future LRU from evicting by anything other than whole key.
@@ -253,7 +253,7 @@ oversized_entries_are_never_interned_test() ->
         },
         Expected = kura_query_compiler:to_sql(?REPO, Big),
         ?assertEqual(Expected, kura_query_compiler:to_sql_cached(?REPO, Big)),
-        ?assertEqual(0, ets:info(kura_query_cache, size)),
+        ?assertEqual(0, kura_query_cache:entry_count()),
         %% Still correct on every subsequent call, just uncached.
         ?assertEqual(Expected, kura_query_compiler:to_sql_cached(?REPO, Big))
     after
@@ -363,3 +363,219 @@ update_all(_Q, _M) -> {~"FAKE_UPDATE_ALL", []}.
 delete_all(_Q) -> {~"FAKE_DELETE_ALL", []}.
 insert_all(_S, _F, _R) -> {~"FAKE_INSERT_ALL", []}.
 insert_all(_S, _F, _R, _O) -> {~"FAKE_INSERT_ALL", []}.
+
+%%----------------------------------------------------------------------
+%% Off-heap binaries count against both limits. Neither flat_size nor
+%% ets:info(memory) sees the bytes of a binary over 64 bytes.
+%%----------------------------------------------------------------------
+
+entry_holding_a_large_binary_is_never_interned_test() ->
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        Key = {?REPO, undefined, binary:copy(~"x", 64 * 1024)},
+        ok = kura_query_cache:put(Key, {~"SELECT 1", []}),
+        ?assertEqual(miss, kura_query_cache:get(Key))
+    after
+        kura_query_cache:flush()
+    end.
+
+memory_cap_counts_off_heap_binaries_test() ->
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    application:set_env(kura, query_cache_max_memory, 5000),
+    try
+        Keys = [{?REPO, undefined, binary:copy(<<N>>, 16 * 1024)} || N <- lists:seq(1, 10)],
+        _ = [ok = kura_query_cache:put(K, {~"SELECT 1", []}) || K <- Keys],
+        ?assert(kura_query_cache:entry_count() < 10)
+    after
+        application:unset_env(kura, query_cache_max_memory),
+        kura_query_cache:flush()
+    end.
+
+flush_resets_the_off_heap_count_test() ->
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    application:set_env(kura, query_cache_max_memory, 6000),
+    try
+        Key = fun(N) -> {?REPO, undefined, binary:copy(<<N>>, 16 * 1024)} end,
+        ok = kura_query_cache:put(Key(1), {~"SELECT 1", []}),
+        ok = kura_query_cache:put(Key(2), {~"SELECT 1", []}),
+        kura_query_cache:flush(),
+        ok = kura_query_cache:put(Key(3), {~"SELECT 1", []}),
+        ok = kura_query_cache:put(Key(4), {~"SELECT 1", []}),
+        ?assertEqual(2, kura_query_cache:entry_count())
+    after
+        application:unset_env(kura, query_cache_max_memory),
+        kura_query_cache:flush()
+    end.
+
+%% Concurrent misses on one shape each put it. The count must take the
+%% entry once, or the cap drops the cache early.
+repeated_put_of_one_key_counts_it_once_test() ->
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    application:set_env(kura, query_cache_max_memory, 6000),
+    try
+        Key = fun(N) -> {?REPO, undefined, binary:copy(<<N>>, 16 * 1024)} end,
+        _ = [ok = kura_query_cache:put(Key(1), {~"SELECT 1", []}) || _ <- [1, 2, 3]],
+        ok = kura_query_cache:put(Key(2), {~"SELECT 1", []}),
+        ?assertEqual(2, kura_query_cache:entry_count())
+    after
+        application:unset_env(kura, query_cache_max_memory),
+        kura_query_cache:flush()
+    end.
+
+%% The count is a row of the cache table, and entry_count/0 leaves it out.
+count_lives_in_the_cache_table_test() ->
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        Key = {?REPO, undefined, binary:copy(~"k", 1024)},
+        ok = kura_query_cache:put(Key, {~"SELECT 1", []}),
+        ?assertEqual(2, ets:info(kura_query_cache, size)),
+        ?assertEqual(1, kura_query_cache:entry_count()),
+        ?assertEqual({ok, {~"SELECT 1", []}}, kura_query_cache:get(Key)),
+        ok = kura_query_cache:flush(),
+        ?assertEqual(0, ets:info(kura_query_cache, size))
+    after
+        kura_query_cache:flush()
+    end.
+
+%% A table written by a version without the count row starts counting at
+%% zero instead of failing.
+table_without_a_count_row_still_caches_test() ->
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        ets:insert(kura_query_cache, {{?REPO, undefined, old_entry}, {~"SELECT 1", []}}),
+        Key = {?REPO, undefined, binary:copy(~"k", 1024)},
+        ok = kura_query_cache:put(Key, {~"SELECT 2", []}),
+        ?assertEqual(2, kura_query_cache:entry_count()),
+        ?assertEqual({ok, {~"SELECT 2", []}}, kura_query_cache:get(Key))
+    after
+        kura_query_cache:flush()
+    end.
+
+%%----------------------------------------------------------------------
+%% A #kura_query{} written by hand skips the builder's distance checks,
+%% so every compile entry point runs them, the cached one before the
+%% shape is split. No reason carries the query vector.
+%%----------------------------------------------------------------------
+
+hand_built_distance_queries_raise_before_compiling_test_() ->
+    Iodata = {distance, embedding, l2, [~"[1,2,3]"]},
+    BadMetric = {distance, embedding, l1, ~"[1.0,2.0,3.0]"},
+    WrongDim = {distance, embedding, l2, ~"[1.0,2.0]"},
+    Vec = kura_test_vector_schema,
+    Cases = [
+        {
+            #kura_query{from = Vec, order_bys = [{Iodata, asc}]},
+            {kura, {invalid_distance, embedding}}
+        },
+        {
+            #kura_query{from = Vec, select = {exprs, [{d, BadMetric}]}},
+            {kura, {invalid_distance, embedding}}
+        },
+        {
+            #kura_query{from = Vec, order_bys = [{{distance, "embedding", l2, ~"[1.0]"}, asc}]},
+            {kura, invalid_distance}
+        },
+        {
+            #kura_query{from = Vec, order_bys = [{id, asc} | improper({WrongDim, asc})]},
+            {kura, malformed_order_by}
+        },
+        {
+            #kura_query{from = Vec, select = {exprs, [{id, id} | improper({d, WrongDim})]}},
+            {kura, malformed_select}
+        },
+        {
+            #kura_query{from = Vec, order_bys = [{WrongDim, asc}]},
+            {kura, {vector_dimension_mismatch, embedding, 3, 2}}
+        },
+        {
+            #kura_query{from = items, order_bys = [{WrongDim, asc}]},
+            {kura, {distance_requires_schema, items}}
+        },
+        {
+            #kura_query{
+                from = Vec, select = {exprs, [{r, {over, rank, #{order_by => [{WrongDim, asc}]}}}]}
+            },
+            {kura, {distance_not_supported_here, over}}
+        },
+        {
+            kura_query:with_cte(#kura_query{from = Vec}, ~"c", #kura_query{
+                from = Vec, order_bys = [{BadMetric, asc}]
+            }),
+            {kura, {invalid_distance, embedding}}
+        },
+        {
+            kura_query:union(#kura_query{from = Vec}, #kura_query{
+                from = Vec, select = {exprs, [{d, BadMetric}]}
+            }),
+            {kura, {invalid_distance, embedding}}
+        }
+    ],
+    {setup,
+        fun() ->
+            set_repo_dialect(kura_dialect_pg),
+            kura_query_cache:init(),
+            kura_query_cache:flush()
+        end,
+        fun(_) ->
+            kura_query_cache:flush(),
+            unset_repo()
+        end,
+        lists:append([
+            [
+                ?_assertError(Reason, kura_query_compiler:to_sql(?REPO, Q)),
+                ?_assertError(Reason, kura_query_compiler:to_sql_cached(?REPO, Q)),
+                ?_assertError(Reason, kura_query_compiler:to_sql_from(?REPO, Q, 1)),
+                ?_assertError(Reason, kura_query_compiler:update_all(?REPO, Q, #{content => ~"x"})),
+                ?_assertError(Reason, kura_query_compiler:delete_all(?REPO, Q)),
+                ?_assertEqual(0, kura_query_cache:entry_count())
+            ]
+         || {Q, Reason} <- Cases
+        ])}.
+
+%% An improper list, which the record's field types do not allow.
+-spec improper(term()) -> dynamic().
+improper(Term) -> Term.
+
+%% Pins the accounting: a binary counts only over 64 bytes, as
+%% `Bytes div WordSize + 1', wherever it sits in the key or the result,
+%% inside maps and at any list position; every other term counts 0.
+binary_count_is_exact_for_key_result_and_maps_test() ->
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        W = erlang:system_info(wordsize),
+        Big = binary:copy(~"b", 1024),
+        AtLimit = binary:copy(~"s", 64),
+        JustOver = binary:copy(~"o", 65),
+        Sql = binary:copy(~"q", 200),
+        Key = {?REPO, Big, #{m => Big}, [AtLimit, 7, JustOver]},
+        ok = kura_query_cache:put(Key, {Sql, []}),
+        Expected = 2 * (1024 div W + 1) + (65 div W + 1) + (200 div W + 1),
+        ?assertEqual(Expected, binary_count()),
+        ok = kura_query_cache:put({?REPO, undefined, small}, {~"SELECT 1", [a, 1]}),
+        ?assertEqual(Expected, binary_count())
+    after
+        kura_query_cache:flush()
+    end.
+
+binary_count() ->
+    [{_, Words}] = ets:lookup(kura_query_cache, '$kura_binary_words'),
+    Words.
+
+%% The entry ceiling counts the result as well as the key.
+large_result_is_never_interned_test() ->
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        Key = {?REPO, undefined, small_key},
+        ok = kura_query_cache:put(Key, {~"SELECT 1", lists:seq(1, 5000)}),
+        ?assertEqual(miss, kura_query_cache:get(Key))
+    after
+        kura_query_cache:flush()
+    end.
