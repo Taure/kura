@@ -130,6 +130,11 @@ Email = kura_changeset:get_field(CS, email).
 %% Manually set a change
 CS1 = kura_changeset:put_change(CS, role, ~"admin").
 
+%% Remove a change, e.g. a virtual password once it is hashed
+CS2 = kura_changeset:delete_change(
+    kura_changeset:put_change(CS, password_hash, Hash), password
+).
+
 %% Add a custom error
 CS1 = kura_changeset:add_error(CS, email, ~"is not allowed").
 ```

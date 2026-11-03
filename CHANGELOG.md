@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `kura_changeset:delete_change/2` removes a field from a changeset's
+  changes, leaving data and params as they are (as Ecto does), for example
+  to drop a virtual password once it is hashed.
 - A pgvector distance threshold in `where/2` and `having/2`:
   `{kura_query:distance(Field, Metric, Vector), Op, Number}` with `Op`
   one of `'<'`, `'<='`, `'>'`, `'>='`, also under `'and'`, `'or'` and

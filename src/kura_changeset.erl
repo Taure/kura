@@ -44,6 +44,7 @@ CS3 = kura_changeset:unique_constraint(CS2, email).
     get_field/2,
     get_field/3,
     put_change/3,
+    delete_change/2,
     apply_changes/1,
     apply_action/2,
     traverse_errors/2,
@@ -385,6 +386,33 @@ get_field(#kura_changeset{changes = Changes, data = Data}, Field, Default) ->
 -spec put_change(#kura_changeset{}, atom(), term()) -> #kura_changeset{}.
 put_change(CS = #kura_changeset{changes = Changes}, Field, Value) ->
     CS#kura_changeset{changes = Changes#{Field => Value}}.
+
+-doc """
+Remove `Field` from the changeset's changes. Data, params and errors are
+left as they are, as in Ecto's `delete_change/2`, so `get_field/2` falls
+back to the field's value in the data. Removing a field that has no change
+is a no-op.
+
+Scrub a virtual secret once it has been used:
+
+```erlang
+hash_password(CS) ->
+    case kura_changeset:get_change(CS, password) of
+        undefined ->
+            CS;
+        Password ->
+            CS1 = kura_changeset:put_change(CS, password_hash, hash(Password)),
+            kura_changeset:delete_change(CS1, password)
+    end.
+```
+
+The plain password is then not in `changes`, so neither `apply_changes/1`
+nor a hook sees it. `params` still holds the raw input: do not log or
+return the changeset itself.
+""".
+-spec delete_change(#kura_changeset{}, atom()) -> #kura_changeset{}.
+delete_change(CS = #kura_changeset{changes = Changes}, Field) ->
+    CS#kura_changeset{changes = maps:remove(Field, Changes)}.
 
 -doc "Merge changes into data, returning the resulting map (does not validate).".
 -spec apply_changes(#kura_changeset{}) -> map().

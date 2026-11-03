@@ -157,6 +157,24 @@ validate_length_counts_bytes_on_a_binary_field_test() ->
     CS2 = kura_changeset:validate_length(CS, digest, [{max, 2}]),
     ?assertEqual([{digest, ~"should be at most 2 byte(s)"}], CS2#kura_changeset.errors).
 
+delete_change_removes_only_the_change_test() ->
+    Types = #{password => string, password_hash => string, email => string},
+    CS = kura_changeset:cast(
+        Types,
+        #{email => ~"old@x.io"},
+        #{password => ~"hunter22", email => ~"new@x.io"},
+        [password, email]
+    ),
+    CS1 = kura_changeset:delete_change(
+        kura_changeset:put_change(CS, password_hash, ~"h"), password
+    ),
+    ?assertEqual(#{email => ~"new@x.io", password_hash => ~"h"}, CS1#kura_changeset.changes),
+    ?assertEqual(CS#kura_changeset.params, CS1#kura_changeset.params),
+    ?assertNot(maps:is_key(password, kura_changeset:apply_changes(CS1))),
+    CS2 = kura_changeset:delete_change(CS1, email),
+    ?assertEqual(~"old@x.io", kura_changeset:get_field(CS2, email)),
+    ?assertEqual(CS2, kura_changeset:delete_change(CS2, email)).
+
 validate_length_ok_test() ->
     CS = kura_changeset:cast(kura_test_schema, #{}, #{name => <<"Alice">>}, [name]),
     CS2 = kura_changeset:validate_length(CS, name, [{min, 1}, {max, 100}]),
