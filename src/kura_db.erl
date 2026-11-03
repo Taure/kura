@@ -825,27 +825,36 @@ load_row(SchemaMod, Row) when is_atom(SchemaMod) ->
         {module, SchemaMod} ->
             case erlang:function_exported(SchemaMod, fields, 0) of
                 true ->
-                    Types = kura_schema:field_types(SchemaMod),
-                    maps:fold(
-                        fun(K, V, Acc) ->
-                            case Types of
-                                #{K := Type} ->
-                                    case kura_types:load(Type, V) of
-                                        {ok, Loaded} -> Acc#{K => Loaded};
-                                        {error, _} -> Acc#{K => V}
-                                    end;
-                                #{} ->
-                                    Acc#{K => V}
-                            end
-                        end,
-                        #{},
-                        Row
-                    );
+                    {Types, Specs} = kura_schema:field_specs(SchemaMod),
+                    load_fields(Row, Types, Specs);
                 false ->
                     Row
             end;
         _ ->
             Row
+    end.
+
+load_fields(Row, Types, Specs) ->
+    maps:fold(
+        fun(K, V, Acc) ->
+            case Types of
+                #{K := Type} ->
+                    case load_field(Type, V, Specs, K) of
+                        {ok, Loaded} -> Acc#{K => Loaded};
+                        {error, _} -> Acc#{K => V}
+                    end;
+                #{} ->
+                    Acc#{K => V}
+            end
+        end,
+        #{},
+        Row
+    ).
+
+load_field(Type, V, Specs, K) ->
+    case Specs of
+        #{K := #{context := Context}} -> kura_types:load(Type, V, Context);
+        #{} -> kura_types:load(Type, V)
     end.
 
 %%----------------------------------------------------------------------

@@ -116,6 +116,35 @@ up() -> [{alter_table, ~"users", [{modify_column, age, text}]}].
 3. Deploy code that reads from the new column
 4. Drop the old column
 
+### Switch Encrypted Fields to the v2 Frame
+
+kura reads both ciphertext frame versions but writes v1 unless
+`encryption_write_format` is `v2` (see Encryption at rest in the README).
+A node running a kura older than the v2 reader raises on every v2 value it
+loads, so the switch is two deployments:
+
+1. Deploy a kura that reads v2 to every node, still writing v1 (the
+   default). Wait until no node runs an older release.
+2. Set `{kura, [{encryption_write_format, v2}]}` and deploy. Values
+   written from then on are v2; an existing v1 value stays v1, and keeps
+   decrypting, until that field is written again.
+
+To roll back step 2, set the write format back to `v1`: the v2 values
+already written stay readable by every node from step 1, but not by a
+release older than it.
+
+After step 2 the column binding is still not complete: every encrypted
+column keeps accepting v1 frames on read, and a v1 frame is bound to
+nothing, so a v1 ciphertext copied into a column decrypts there. That gap
+stays open until a release can refuse v1 reads, after every stored value
+has been rewritten as v2.
+
+A v2 value is bound to its table name and column name. Renaming either, or
+copying ciphertexts between columns in SQL (`UPDATE t SET new = old`),
+makes them undecryptable. To rename an encrypted v2 column or its table,
+add the new column, rewrite each row through kura so it is encrypted for
+the new name, then drop the old one.
+
 ## Suppressing Warnings
 
 When you've followed the expand-contract pattern and are ready for the final

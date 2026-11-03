@@ -8,9 +8,22 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
 - `cast/2` - coerce external input to Erlang terms
 - `dump/2` - convert Erlang terms to values the driver can bind
 - `load/2` - convert driver results back to Erlang terms
+- `dump/3`, `load/3` - the same for a value of a known column
+  `{Table, Column}`, which an encrypted value needs to be written or read
+  as a column-bound v2 frame (see `kura_crypto`)
 """.
 
--export([to_pg_type/1, from_pg_type/2, cast/2, dump/2, load/2, encryption/1, encryptable_inner/1]).
+-export([
+    to_pg_type/1,
+    from_pg_type/2,
+    cast/2,
+    dump/2,
+    dump/3,
+    load/2,
+    load/3,
+    encryption/1,
+    encryptable_inner/1
+]).
 
 -export_type([kura_type/0, encryption/0, encryption_spec/0]).
 
@@ -351,17 +364,13 @@ dump(jsonb, V) when is_binary(V) ->
 dump({enum, _}, V) when is_atom(V) ->
     {ok, atom_to_binary(V, utf8)};
 dump({array, Inner}, V) when is_list(V) ->
-    dump_array(Inner, V, []);
+    dump_array(Inner, V, no_context, []);
 dump({embed, embeds_one, Mod}, V) when is_map(V) ->
     json_encode(dump_embed_to_term(Mod, V));
 dump({embed, embeds_many, Mod}, V) when is_list(V) ->
     json_encode([dump_embed_to_term(Mod, Item) || Item <- V]);
 dump(Type, V) when ?IS_ENCRYPTED_TAG(Type) ->
-    %% Raise (never return {error}) so no caller can substitute plaintext
-    %% for an encrypted field by treating a dump failure as recoverable.
-    Inner = encryptable(encryption(Type)),
-    {ok, Wire} = dump(Inner, V),
-    {ok, kura_crypto:encrypt(encode_inner(Inner, Wire))};
+    dump_encrypted(Type, V, no_context);
 dump(vector, V) when is_list(V) ->
     {ok, vector_to_text(V)};
 dump({vector, _}, V) when is_list(V) ->
@@ -370,6 +379,36 @@ dump({custom, Mod}, V) ->
     Mod:dump(V);
 dump(Type, _V) ->
     {error, <<"cannot dump ", (format_type(Type))/binary>>}.
+
+-doc """
+Like `dump/2`, for a value of the column `Context` (`{Table, Column}`). An
+encrypted value is encrypted for that column, so it can be written in either
+frame version (see `kura_crypto`); `dump/2` writes v1 only and raises
+`{kura_crypto, no_context}` when the write format is `v2`. Any other type
+dumps as with `dump/2`.
+""".
+-spec dump(kura_type(), term(), kura_crypto:context()) -> {ok, term()} | {error, binary()}.
+dump(Type, V, Context) ->
+    dump_value(Type, V, Context).
+
+dump_value(_Type, V, _Context) when V =:= undefined; V =:= null ->
+    {ok, null};
+dump_value(Type, V, Context) when ?IS_ENCRYPTED_TAG(Type) ->
+    dump_encrypted(Type, V, Context);
+dump_value({array, Inner}, V, Context) when is_list(V) ->
+    dump_array(Inner, V, Context, []);
+dump_value(Type, V, _Context) ->
+    dump(Type, V).
+
+%% Raise (never return {error}) so no caller can substitute plaintext for an
+%% encrypted field by treating a dump failure as recoverable.
+dump_encrypted(Type, V, Context) ->
+    Inner = encryptable(encryption(Type)),
+    {ok, Wire} = dump(Inner, V),
+    {ok, encrypt_payload(encode_inner(Inner, Wire), Context)}.
+
+encrypt_payload(Payload, no_context) -> kura_crypto:encrypt(Payload);
+encrypt_payload(Payload, Context) -> kura_crypto:encrypt(Payload, Context).
 
 %%----------------------------------------------------------------------
 %% Load: driver result → Erlang term
@@ -433,7 +472,7 @@ load({enum, Values}, V) when is_binary(V) ->
         error:badarg -> {error, ~"unknown enum value"}
     end;
 load({array, Inner}, V) when is_list(V) ->
-    load_array(Inner, V, []);
+    load_array(Inner, V, no_context, []);
 load({embed, embeds_one, Mod}, V) when is_binary(V) ->
     case json_decode(V) of
         {ok, Map} when is_map(Map) -> {ok, load_embed_map(Mod, Map)};
@@ -450,24 +489,58 @@ load({embed, embeds_many, Mod}, V) when is_binary(V) ->
     end;
 load({embed, embeds_many, Mod}, V) when is_list(V) ->
     {ok, [load_embed_map(Mod, M) || M <- V]};
-load(Type, Bytes) when ?IS_ENCRYPTED_TAG(Type), is_binary(Bytes) ->
-    %% Raise (never return {error}) so the fail-open load seam can't
-    %% substitute raw ciphertext for the field value.
-    Inner = encryptable(encryption(Type)),
-    {ok, Loaded} = load(Inner, decode_inner(Inner, kura_crypto:decrypt(Bytes))),
-    {ok, Loaded};
-load(Type, undefined) when ?IS_ENCRYPTED_TAG(Type) ->
-    {ok, undefined};
-load(Type, _V) when ?IS_ENCRYPTED_TAG(Type) ->
-    erlang:error({kura_crypto, malformed_frame});
+load(Type, V) when ?IS_ENCRYPTED_TAG(Type) ->
+    load_encrypted(Type, V, no_context);
 load(vector, V) when is_binary(V) ->
     {ok, parse_vector(V)};
 load({vector, _}, V) when is_binary(V) ->
     {ok, parse_vector(V)};
 load({custom, Mod}, V) ->
     Mod:load(V);
+load({array, Inner} = Type, _V) ->
+    case encryption(Inner) of
+        none -> cannot_load(Type);
+        _ -> erlang:error({kura_crypto, malformed_frame})
+    end;
 load(Type, _V) ->
+    cannot_load(Type).
+
+cannot_load(Type) ->
     {error, <<"cannot load ", (format_type(Type))/binary>>}.
+
+-doc """
+Like `load/2`, for a value read from the column `Context` (`{Table,
+Column}`). An encrypted value may be a v1 or a v2 frame; a v2 frame only
+decrypts for the column it was written for. `load/2` raises
+`{kura_crypto, no_context}` on a v2 frame. Any other type loads as with
+`load/2`.
+""".
+-spec load(kura_type(), term(), kura_crypto:context()) -> {ok, term()} | {error, binary()}.
+load(Type, V, Context) ->
+    load_value(Type, V, Context).
+
+load_value(_Type, null, _Context) ->
+    {ok, undefined};
+load_value(Type, V, Context) when ?IS_ENCRYPTED_TAG(Type) ->
+    load_encrypted(Type, V, Context);
+load_value({array, Inner}, V, Context) when is_list(V) ->
+    load_array(Inner, V, Context, []);
+load_value(Type, V, _Context) ->
+    load(Type, V).
+
+%% Raise (never return {error}) so the fail-open load seam can't substitute
+%% raw ciphertext for the field value.
+load_encrypted(Type, Bytes, Context) when is_binary(Bytes) ->
+    Inner = encryptable(encryption(Type)),
+    {ok, Loaded} = load(Inner, decode_inner(Inner, decrypt_payload(Bytes, Context))),
+    {ok, Loaded};
+load_encrypted(_Type, undefined, _Context) ->
+    {ok, undefined};
+load_encrypted(_Type, _V, _Context) ->
+    erlang:error({kura_crypto, malformed_frame}).
+
+decrypt_payload(Bytes, no_context) -> kura_crypto:decrypt(Bytes);
+decrypt_payload(Bytes, Context) -> kura_crypto:decrypt(Bytes, Context).
 
 %%----------------------------------------------------------------------
 %% Encrypted-field inner codec
@@ -777,19 +850,19 @@ cast_array(Inner, [H | T], Acc) ->
         {error, _} = Err -> Err
     end.
 
-dump_array(_Inner, [], Acc) ->
+dump_array(_Inner, [], _Context, Acc) ->
     {ok, lists:reverse(Acc)};
-dump_array(Inner, [H | T], Acc) ->
-    case dump(Inner, H) of
-        {ok, V} -> dump_array(Inner, T, [V | Acc]);
+dump_array(Inner, [H | T], Context, Acc) ->
+    case dump_value(Inner, H, Context) of
+        {ok, V} -> dump_array(Inner, T, Context, [V | Acc]);
         {error, _} = Err -> Err
     end.
 
-load_array(_Inner, [], Acc) ->
+load_array(_Inner, [], _Context, Acc) ->
     {ok, lists:reverse(Acc)};
-load_array(Inner, [H | T], Acc) ->
-    case load(Inner, H) of
-        {ok, V} -> load_array(Inner, T, [V | Acc]);
+load_array(Inner, [H | T], Context, Acc) ->
+    case load_value(Inner, H, Context) of
+        {ok, V} -> load_array(Inner, T, Context, [V | Acc]);
         {error, _} = Err -> Err
     end.
 
