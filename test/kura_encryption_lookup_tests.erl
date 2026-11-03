@@ -53,6 +53,8 @@ lookup_test_() ->
                 {"a field of two sources raises", fun t_ambiguous_join/0},
                 {"a join after the lookup raises", fun t_join_after_lookup/0},
                 {"a field of a joined schema is looked up", fun t_joined_field/0},
+                {"a from field looked up under a join names the from table",
+                    fun t_lookup_under_a_join_is_qualified/0},
                 {"a source read through a CTE raises", fun t_cte/0},
                 {"a subquery looks up in its own scope", fun t_subquery/0},
                 {"an outer deterministic field in a subquery raises", fun t_outer_field/0},
@@ -321,6 +323,19 @@ t_joined_field() ->
     ),
     ?assertEqual(Stored, hd(Frames)),
     ?assertEqual(ok, kura_query:check_encrypted(Q1)).
+
+t_lookup_under_a_join_is_qualified() ->
+    Joined = kura_query:join(kura_query:from(?DET), inner, ?INVITE, {id, user_id}),
+    [
+        begin
+            {SQL, _} = kura_query_compiler:to_sql(?REPO, kura_query:where(Joined, Cond)),
+            ?assertNotEqual(nomatch, binary:match(iolist_to_binary(SQL), Expect))
+        end
+     || {Cond, Expect} <- [
+            {{ssn, ?P1}, ~"\"det_users\".\"ssn\" IN ($"},
+            {{ssn, '!=', ?P1}, ~"\"det_users\".\"ssn\" NOT IN ($"}
+        ]
+    ].
 
 t_cte() ->
     Cte = kura_query:from(?DET),
