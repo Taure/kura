@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{encrypted, Inner, Opts}` takes a closed set of options, checked when a
   schema is first read: `mode` (`randomized` | `deterministic`, default
   `randomized`), `normalize` (`none` | `casefold` | `nfc` |
-  `nfc_casefold`, deterministic `string`/`text` only), `context`
+  `nfc_casefold`, deterministic `string`/`text` only; `nfc_casefold`
+  decomposes before folding, so canonically equivalent forms store and look
+  up equally), `context`
   (`{Table, Column}`, pins the binding so a rename keeps values readable,
   or lets two columns share ciphertexts) and `legacy` (`accept` |
   `reject`, default `reject`). A bad options map raises
@@ -121,6 +123,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{kura, {encrypted_field_in_where, Field}}` when a query is scoped, as on
   a randomized field: writes refuse an encrypted tenant field in either
   mode.
+- `kura_keyring_env` raises `{kura_crypto, invalid_keyring_config}` when
+  the `encryption` config is not a map or its `keys` is not a proper list.
+  It used to raise a `badmap` or `badarg` whose reason or stack arguments
+  held the whole config, base64 keys included, on any encrypted read,
+  write or lookup.
 
 - Map-form `create_index` honours `name`. It used to be ignored, the
   index always taking `kura_migration:index_name/2`. A migration that

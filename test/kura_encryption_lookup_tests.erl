@@ -62,7 +62,9 @@ lookup_test_() ->
                 {"cached lookups share one entry", fun t_cache_shared/0},
                 {"an attribute tenant on a deterministic field raises", fun t_tenant/0},
                 {"the tenant scope checks distance thresholds", fun t_scope_thresholds/0},
-                {"a raw table is not looked up", fun t_raw_table/0}
+                {"a raw table is not looked up", fun t_raw_table/0},
+                {"an empty in compiles as on a plain field", fun t_empty_in/0},
+                {"a malformed keyring config raises without key material", fun t_malformed_config/0}
             ]}.
 
 %% {Name, Field, Kind, Condition, Expect}: Expect is rewritten (the
@@ -160,6 +162,60 @@ t_ciphertexts() ->
 
 %% Frames come key by key: every value under the first key, then the second.
 interleave([A1, A2], [B1, B2]) -> [A1, B1, A2, B2].
+
+t_empty_in() ->
+    [
+        begin
+            Q = kura_query:where(kura_query:from(?DET), {ssn, Op, []}),
+            ?assertEqual([{ssn, Lookup, []}], Q#kura_query.wheres),
+            ?assertEqual(ok, kura_query:check_encrypted(Q)),
+            {SQL, Params} = kura_query_compiler:to_sql(?REPO, Q),
+            {PlainSQL, PlainParams} = kura_query_compiler:to_sql(
+                ?REPO, kura_query:where(kura_query:from(?DET), {name, Op, []})
+            ),
+            ?assertEqual(
+                binary:replace(iolist_to_binary(PlainSQL), ~"\"name\"", ~"\"ssn\""),
+                iolist_to_binary(SQL)
+            ),
+            ?assertEqual({[], []}, {PlainParams, Params}),
+            ?assertMatch({_, _}, binary:match(iolist_to_binary(SQL), Text))
+        end
+     || {Op, Lookup, Text} <- [
+            {in, encrypted_in, ~"\"ssn\" IN ()"}, {not_in, encrypted_not_in, ~"\"ssn\" NOT IN ()"}
+        ]
+    ].
+
+t_malformed_config() ->
+    B64 = ~"S2V5T25lLi4uMzIgcmF3IGJ5dGVzLi4uYmFzZTY0ISE=",
+    Raw = base64:decode(B64),
+    Writes = [
+        fun() -> kura_query:where(kura_query:from(?DET), {ssn, ?P1}) end,
+        fun() ->
+            kura_types:dump({encrypted, string, #{mode => deterministic}}, ?P1, {~"t", ~"c"})
+        end,
+        fun() -> kura_types:dump({encrypted, string, #{}}, ?P1, {~"t", ~"c"}) end,
+        fun() -> kura_types:dump({encrypted, string}, ?P1) end
+    ],
+    Configs = [
+        [{active, 1}, {deterministic_active, 1}, {keys, [{1, B64}]}],
+        #{active => 1, deterministic_active => 1, keys => #{1 => B64}},
+        #{active => 1, deterministic_active => 1, keys => improper({2, B64}, B64)}
+    ],
+    [
+        begin
+            application:set_env(kura, encryption, Config),
+            try Write() of
+                Result -> ?assertEqual(raised, Result)
+            catch
+                Class:Reason:Stack ->
+                    ?assertEqual({kura_crypto, invalid_keyring_config}, Reason),
+                    Bin = term_to_binary({Class, Reason, Stack}),
+                    ?assertEqual(nomatch, binary:match(Bin, B64)),
+                    ?assertEqual(nomatch, binary:match(Bin, Raw))
+            end
+        end
+     || Config <- Configs, Write <- Writes
+    ].
 
 t_sql() ->
     {SQL, Params} = kura_query_compiler:to_sql(
