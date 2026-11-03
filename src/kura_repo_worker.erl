@@ -302,10 +302,17 @@ Insert a record from a changeset with options, such as
 
 Runs the same pipeline as `insert/2`: `prepare_changes/2` functions,
 `before_insert/1` and `after_insert/1`, and the changeset's associations, in
-one transaction when there are any. When the conflict leaves the row as it
-was (`nothing`, or a row the tenant guard refuses), no row comes back: the
-result is the changeset's data with its changes applied, `after_insert/1`
-does not run and no association is written.
+one transaction when there are any.
+
+`after_insert/1` runs whenever the statement returns a row, so on an upsert
+it also runs when the conflict updated an existing row. When the conflict
+leaves the row as it was (`nothing`, or a row the tenant guard refuses), no
+row comes back: the result is the changeset's data with its changes applied,
+`after_insert/1` does not run and no association is written.
+
+A changeset with associations takes no `on_conflict` action but `nothing`,
+since an upsert that updates a row would insert its children again: it
+raises `{kura, on_conflict_with_assocs}`.
 """.
 -spec insert(module(), #kura_changeset{}, map()) ->
     {ok, map()} | {error, #kura_changeset{}} | hook_error() | write_error().
@@ -317,6 +324,7 @@ do_insert(_RepoMod, CS = #kura_changeset{valid = false}, _Opts) ->
 do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}, Opts0) when
     map_size(AC) > 0
 ->
+    ok = refuse_upsert_with_assocs(Opts0),
     Opts = guard_upsert(SchemaMod, Opts0),
     atomically(RepoMod, fun() ->
         case insert_record(RepoMod, CS, Opts) of
@@ -334,6 +342,15 @@ do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod}, Opts0) ->
         true -> atomically(RepoMod, fun() -> inserted(insert_record(RepoMod, CS, Opts)) end);
         false -> inserted(insert_record(RepoMod, CS, Opts))
     end.
+
+refuse_upsert_with_assocs(#{on_conflict := {_Target, nothing}}) ->
+    ok;
+refuse_upsert_with_assocs(#{on_conflict := {_Target, nothing, _Opts}}) ->
+    ok;
+refuse_upsert_with_assocs(#{on_conflict := _}) ->
+    erlang:error({kura, on_conflict_with_assocs});
+refuse_upsert_with_assocs(#{}) ->
+    ok.
 
 inserted({unchanged, Data}) -> {ok, Data};
 inserted(Result) -> Result.

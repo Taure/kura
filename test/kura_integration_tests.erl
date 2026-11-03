@@ -170,6 +170,8 @@ integration_test_() ->
             {"insert/3 before_insert rejects changeset", fun t_insert_opts_before_reject/0},
             {"insert/3 conflict nothing skips after_insert",
                 fun t_insert_opts_conflict_skips_after/0},
+            {"insert/3 runs after_insert when an upsert updates a row",
+                fun t_insert_opts_upsert_update_runs_after/0},
             {"before_update modifies changeset", fun t_before_update_hook/0},
             {"before_update rejects changeset", fun t_before_update_reject/0},
             {"after_update receives record", fun t_after_update_hook/0},
@@ -1810,6 +1812,25 @@ t_insert_opts_conflict_skips_after() ->
     ?assertMatch(
         {ok, #{name := <<"opts_conflict">>}}, kura_test_repo:reload(kura_test_hook_schema, Item)
     ).
+
+t_insert_opts_upsert_update_runs_after() ->
+    {ok, Item} = insert_hook_item(<<"opts_upsert">>),
+    erlang:put(hook_test_pid, self()),
+    flush_hooks(),
+    CS = kura_changeset:cast(
+        kura_test_hook_schema,
+        #{},
+        #{<<"id">> => maps:get(id, Item), <<"name">> => <<"opts_upserted">>},
+        [id, name]
+    ),
+    {ok, Row} = kura_repo_worker:insert(kura_test_repo, CS, #{on_conflict => {id, replace_all}}),
+    ?assertEqual(<<"opts_upserted">>, maps:get(name, Row)),
+    receive
+        {hook, after_insert, Record} -> ?assertEqual(<<"opts_upserted">>, maps:get(name, Record))
+    after 100 -> error(after_insert_not_called)
+    end,
+    flush_hooks(),
+    erlang:erase(hook_test_pid).
 
 t_before_update_hook() ->
     erlang:put(hook_test_pid, self()),

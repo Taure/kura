@@ -41,6 +41,8 @@ assoc_test_() ->
             %% cast_assoc / put_assoc
             {"cast_assoc has_many inserts children", fun t_cast_assoc_has_many/0},
             {"insert/3 persists cast_assoc children", fun t_insert_opts_cast_assoc/0},
+            {"insert/3 refuses an updating upsert with associations",
+                fun t_insert_opts_upsert_with_assocs_refused/0},
             {"cast_assoc single child via has_many", fun t_cast_assoc_single_child/0},
             {"put_assoc many_to_many", fun t_put_assoc_many_to_many/0},
             {"put_assoc many_to_many via composite keys", fun t_put_assoc_many_to_many_composite/0},
@@ -697,6 +699,31 @@ t_insert_opts_cast_assoc() ->
     ?assertMatch([#{body := <<"opts child">>}], maps:get(comments, Post)),
     [Loaded] = kura_test_repo:preload(kura_test_post_schema, [Post], [comments]),
     ?assertMatch([#{body := <<"opts child">>}], maps:get(comments, Loaded)).
+
+t_insert_opts_upsert_with_assocs_refused() ->
+    {ok, User} = insert_user(<<"CAU_Author">>, <<"cau_author@test.com">>),
+    UserId = maps:get(id, User),
+    CS = kura_changeset:cast(
+        kura_test_post_schema,
+        #{},
+        #{
+            title => <<"CAU Post">>,
+            author_id => UserId,
+            comments => [#{body => <<"upsert child">>, author_id => UserId}]
+        },
+        [title, author_id]
+    ),
+    CS1 = kura_changeset:cast_assoc(CS, comments),
+    ?assertError(
+        {kura, on_conflict_with_assocs},
+        kura_repo_worker:insert(kura_test_repo, CS1, #{on_conflict => {id, replace_all}})
+    ),
+    ?assertError(
+        {kura, on_conflict_with_assocs},
+        kura_repo_worker:insert(kura_test_repo, CS1, #{on_conflict => {id, {replace, [title]}}})
+    ),
+    Q = kura_query:where(kura_query:from(kura_test_post_schema), {title, <<"CAU Post">>}),
+    ?assertEqual({ok, []}, kura_test_repo:all(Q)).
 
 t_cast_assoc_single_child() ->
     {ok, User} = insert_user(<<"CO_Author">>, <<"co_author@test.com">>),
