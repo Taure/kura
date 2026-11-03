@@ -1,7 +1,9 @@
 -module(kura_crypto_bench).
 -moduledoc """
 Per-value cost of field encryption (kura#137): `kura_crypto` v1 against v2,
-which derives an HKDF subkey on every call, and `kura_db:load_row/2` on a
+which derives an HKDF subkey on every call, deterministic v2 (two subkeys,
+an HMAC and the IV recheck on decrypt) against randomized v2, a
+deterministic lookup under one and two keys, and `kura_db:load_row/2` on a
 schema with no encrypted fields, which the v2 seams also touch. No database.
 Each figure is the best of six runs. Skipped unless `KURA_BENCH=1`:
 
@@ -22,7 +24,9 @@ bench_test_() ->
 
 run() ->
     application:set_env(kura, encryption, #{
-        active => 1, keys => [{1, base64:encode(crypto:strong_rand_bytes(32))}]
+        active => 1,
+        deterministic_active => 1,
+        keys => [{1, base64:encode(crypto:strong_rand_bytes(32))}]
     }),
     try
         report(measure_all())
@@ -35,9 +39,21 @@ measure_all() ->
     V1 = kura_crypto:encrypt(?PLAIN),
     application:set_env(kura, encryption_write_format, v2),
     V2 = kura_crypto:encrypt(?PLAIN, ?CTX),
+    Det = kura_crypto:encrypt(?PLAIN, ?CTX, deterministic),
+    OneKey = time_per_call(lookup),
+    {ok, #{keys := Keys} = Encryption} = application:get_env(kura, encryption),
+    application:set_env(kura, encryption, Encryption#{
+        deterministic_keys => [2],
+        keys => Keys ++ [{2, base64:encode(crypto:strong_rand_bytes(32))}]
+    }),
+    TwoKeys = time_per_call(lookup),
     V2Results = [
         {"encrypt v2", time_per_call(encrypt_v2)},
-        {"decrypt v2", time_per_call({decrypt_v2, V2})}
+        {"decrypt v2", time_per_call({decrypt_v2, V2})},
+        {"encrypt v2 deterministic", time_per_call(encrypt_det)},
+        {"decrypt v2 deterministic", time_per_call({decrypt_det, Det})},
+        {"lookup, one key", OneKey},
+        {"lookup, two keys", TwoKeys}
     ],
     application:set_env(kura, encryption_write_format, v1),
     V2Results ++
@@ -68,6 +84,12 @@ call(encrypt_v1) ->
     kura_crypto:encrypt(?PLAIN);
 call(encrypt_v2) ->
     kura_crypto:encrypt(?PLAIN, ?CTX);
+call(encrypt_det) ->
+    kura_crypto:encrypt(?PLAIN, ?CTX, deterministic);
+call({decrypt_det, Frame}) ->
+    kura_crypto:decrypt(Frame, ?CTX, #{mode => deterministic, legacy => reject});
+call(lookup) ->
+    kura_crypto:lookup([?PLAIN], ?CTX);
 call({decrypt_v1, Frame}) ->
     kura_crypto:decrypt(Frame);
 call({decrypt_v2, Frame}) ->

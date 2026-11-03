@@ -86,6 +86,35 @@ Raw SQL fragments with `?` placeholders:
 kura_query:where(Q, {fragment, ~"lower(?) = ?", [~"Email", ~"alice@example.com"]}).
 ```
 
+### Encrypted Fields
+
+A randomized encrypted field (`{encrypted, Inner}`) cannot be compared to a
+value: `where/2` and `having/2` raise `{kura, {encrypted_field_in_where,
+Field}}`. A deterministic one (`{encrypted, Inner, #{mode =>
+deterministic}}`) can be looked up by `=`, `in`, `!=` and `not_in`:
+
+```erlang
+Q = kura_query:where(kura_query:from(user), {email, ~"ada@example.com"}).
+%% wheres: [{email, encrypted_in, [Ciphertext1, ...]}]
+```
+
+The value is cast, normalised and encrypted under every lookup key
+(`deterministic_active` and each id in `deterministic_keys`) when the
+condition is added, so only ciphertexts enter the query, its cache entry,
+telemetry and logs. `!=` and `not_in` are correct only while every key a
+stored value is encrypted under is a lookup key. The dialect compiles
+`encrypted_in` and `encrypted_not_in` to `IN` and `NOT IN`. They are kura's own operators:
+passing one to `where/2` raises `{kura, {reserved_operator, Op}}`, and the
+compile-time check refuses one on a field that is not deterministic, or
+whose values are not laid out as deterministic frames. It cannot tell a
+ciphertext of the column from other bytes in that layout, so a lookup
+written into a `#kura_query{}` record by hand is trusted like a fragment.
+
+A lookup reveals which rows share the value, and the ciphertexts in the
+query's parameters are a stable pseudonym of it wherever parameters are
+recorded. See Encryption at rest in the README for what each mode gives
+away.
+
 ## SELECT
 
 ```erlang

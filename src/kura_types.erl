@@ -11,6 +11,15 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
 - `dump/3`, `load/3` - the same for a value of a known column
   `{Table, Column}`, which an encrypted value needs to be written or read
   as a column-bound v2 frame (see `kura_crypto`)
+
+`{encrypted, Inner}` and `{encrypted, Inner, Opts}` store `Inner`
+encrypted (see `encryption/1`). With `#{mode => deterministic}` equal values
+encrypt equally, so the field can be looked up by equality and carry a
+unique index, but which rows share a value is revealed, and the
+ciphertext bound in a lookup is a stable pseudonym in telemetry and logs.
+Equality is visible across tenants in both tenancy modes, since the context
+is the unprefixed table. Both modes reveal a value's length and whether it
+is `NULL`, and the value stays personal data under the GDPR.
 """.
 
 -export([
@@ -22,10 +31,19 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
     load/2,
     load/3,
     encryption/1,
-    encryptable_inner/1
+    validate_encryption/1,
+    encryptable_inner/1,
+    deterministic_inner/1,
+    lookup_payload/2
 ]).
 
--export_type([kura_type/0, encryption/0, encryption_spec/0]).
+-export_type([
+    kura_type/0,
+    encryption/0,
+    encryption_spec/0,
+    encryption_opts/0,
+    normalize/0
+]).
 
 -type kura_type() ::
     id
@@ -47,13 +65,46 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
     | {enum, [atom()]}
     | {array, kura_type()}
     | {encrypted, kura_type()}
+    | {encrypted, kura_type(), encryption_opts()}
     | vector
     | {vector, pos_integer()}
     | {embed, embeds_one | embeds_many, module()}
     | {custom, module()}.
 
+-doc """
+The options of an `{encrypted, Inner, Opts}` field. Every key is optional:
+
+- `mode` - `randomized` (the default) or `deterministic`;
+- `normalize` - `none` (the default), `casefold`, `nfc` or `nfc_casefold`,
+  applied to a deterministic `string` or `text` value before it is
+  encrypted or compared. `casefold` is Unicode full case folding
+  (`string:casefold/1`) without the Turkic mappings, so dotless `ı` and `I`
+  stay distinct. `nfc_casefold` decomposes, folds and recomposes, so
+  canonically equivalent forms of a value compare equal;
+- `context` - the `{Table, Column}` the ciphertext is bound to, in place of
+  the schema's table and the field's column;
+- `legacy` - `reject` (the default) or `accept`: whether the column reads a
+  v1 frame or a v2 frame of the other mode.
+""".
+-type encryption_opts() :: #{
+    mode => kura_crypto:mode(),
+    normalize => normalize(),
+    context => kura_crypto:context(),
+    legacy => kura_crypto:legacy()
+}.
+-doc "How a deterministic `string` or `text` value is normalised.".
+-type normalize() :: none | casefold | nfc | nfc_casefold.
 -type encryption() :: none | {ok, encryption_spec()} | unsupported.
--type encryption_spec() :: #{inner := kura_type(), array => pos_integer()}.
+-type encryption_spec() :: #{
+    inner := kura_type(),
+    mode := kura_crypto:mode(),
+    legacy := kura_crypto:legacy(),
+    normalize := normalize(),
+    context => kura_crypto:context(),
+    array => pos_integer()
+}.
+
+-define(OPTION_KEYS, [mode, normalize, context, legacy]).
 
 %% Any tuple tagged `encrypted`, whatever its arity, so a form this release
 %% does not support is still treated as encrypted and fails closed.
@@ -403,12 +454,23 @@ dump_value(Type, V, _Context) ->
 %% Raise (never return {error}) so no caller can substitute plaintext for an
 %% encrypted field by treating a dump failure as recoverable.
 dump_encrypted(Type, V, Context) ->
-    Inner = encryptable(encryption(Type)),
+    #{inner := Inner} = Spec = encryptable(encryption(Type)),
     {ok, Wire} = dump(Inner, V),
-    {ok, encrypt_payload(encode_inner(Inner, Wire), Context)}.
+    Payload = encode_inner(Inner, canonical_wire(Spec, Wire)),
+    {ok, encrypt_payload(Type, Spec, Payload, Context)}.
 
-encrypt_payload(Payload, no_context) -> kura_crypto:encrypt(Payload);
-encrypt_payload(Payload, Context) -> kura_crypto:encrypt(Payload, Context).
+%% The two-element form keeps its v1-era semantics: the write format decides
+%% the frame. The options form is always written as v2 under its own mode.
+encrypt_payload({encrypted, _Inner}, _Spec, Payload, no_context) ->
+    kura_crypto:encrypt(Payload);
+encrypt_payload({encrypted, _Inner}, _Spec, Payload, Context) ->
+    kura_crypto:encrypt(Payload, Context);
+encrypt_payload(_Type, #{mode := Mode} = Spec, Payload, Context) ->
+    kura_crypto:encrypt(Payload, spec_context(Spec, Context), Mode).
+
+spec_context(#{context := Context}, _Context) -> Context;
+spec_context(_Spec, no_context) -> erlang:error({kura_crypto, no_context});
+spec_context(_Spec, Context) -> Context.
 
 %%----------------------------------------------------------------------
 %% Load: driver result → Erlang term
@@ -531,16 +593,20 @@ load_value(Type, V, _Context) ->
 %% Raise (never return {error}) so the fail-open load seam can't substitute
 %% raw ciphertext for the field value.
 load_encrypted(Type, Bytes, Context) when is_binary(Bytes) ->
-    Inner = encryptable(encryption(Type)),
-    {ok, Loaded} = load(Inner, decode_inner(Inner, decrypt_payload(Bytes, Context))),
+    #{inner := Inner} = Spec = encryptable(encryption(Type)),
+    {ok, Loaded} = load(Inner, decode_inner(Inner, decrypt_payload(Type, Spec, Bytes, Context))),
     {ok, Loaded};
 load_encrypted(_Type, undefined, _Context) ->
     {ok, undefined};
 load_encrypted(_Type, _V, _Context) ->
     erlang:error({kura_crypto, malformed_frame}).
 
-decrypt_payload(Bytes, no_context) -> kura_crypto:decrypt(Bytes);
-decrypt_payload(Bytes, Context) -> kura_crypto:decrypt(Bytes, Context).
+decrypt_payload({encrypted, _Inner}, _Spec, Bytes, no_context) ->
+    kura_crypto:decrypt(Bytes);
+decrypt_payload({encrypted, _Inner}, _Spec, Bytes, Context) ->
+    kura_crypto:decrypt(Bytes, Context);
+decrypt_payload(_Type, #{mode := Mode, legacy := Legacy} = Spec, Bytes, Context) ->
+    kura_crypto:decrypt(Bytes, spec_context(Spec, Context), #{mode => Mode, legacy => Legacy}).
 
 %%----------------------------------------------------------------------
 %% Encrypted-field inner codec
@@ -556,27 +622,140 @@ Recognise an encrypted field type. Every check for "is this field
 encrypted" goes through here: the query guard, audit redaction, schema
 validation and the cast, dump and load seams.
 
-Returns `{ok, #{inner => Inner}}` for `{encrypted, Inner}`, `unsupported`
-for any other tuple tagged `encrypted` (such as a future `{encrypted,
-Inner, Opts}`), and `none` for every other type. An array of an encrypted
-type is encrypted element by element and stored as `BYTEA[]`; it returns
-the element's spec with `array => Depth`, or `unsupported` if the element
-type is. An `unsupported` type is still encrypted: it is redacted and
-refused in filters, a schema that declares one raises when it is first
-read, and cast, dump and load raise on a tagged one rather than handle it
-as plaintext.
+Returns `{ok, Spec}` for `{encrypted, Inner}` and for a valid
+`{encrypted, Inner, Opts}` (see `validate_encryption/1`), `unsupported` for
+any other tuple tagged `encrypted`, and `none` for every other type.
+`{encrypted, Inner}` is `#{mode => randomized, legacy => accept}`; the
+options form defaults to `randomized` and `legacy => reject`. An array of
+an encrypted type is encrypted element by element and stored as
+`BYTEA[]`; it returns the element's spec with `array => Depth`, or
+`unsupported` if the element type is unsupported or deterministic. An
+`unsupported` type is still encrypted: it is redacted and refused in
+filters, a schema that declares one raises when it is first read, and
+cast, dump and load raise on a tagged one rather than handle it as
+plaintext.
 
-The spec is a map so that later encryption options can be added as keys
-without changing the return shape; only `inner` and `array` exist today.
+A deterministic field (`mode => deterministic`) encrypts equal values of
+the column to equal ciphertexts, so `kura_query:where/2` can look it up by
+equality and a unique index on it works. In exchange it reveals which rows
+hold the same value (frequency analysis), and its ciphertext, which
+`where/2` binds as a query parameter and so appears in telemetry and logged
+parameters, is a stable pseudonym of the value. Equality is visible across
+tenants in both tenancy modes, since the context is the unprefixed table.
+Both modes reveal a value's length and whether it is `NULL`. The value is
+still personal data under the GDPR: pseudonymised, not anonymised. Use it
+only where an equality lookup or uniqueness is needed. A column holds at most 2^32 distinct values per key.
+A unique index holds within one key generation: the same value written
+under two deterministic keys is two different ciphertexts. The binding
+context defaults to the table and column name, so renaming either without
+pinning `context` makes stored values undecryptable.
 """.
--spec encryption(kura_type() | {encrypted, kura_type(), term()}) -> encryption().
-encryption({encrypted, Inner}) -> {ok, #{inner => Inner}};
-encryption(Type) when ?IS_ENCRYPTED_TAG(Type) -> unsupported;
-encryption({array, Inner}) -> array_encryption(encryption(Inner));
-encryption(_Type) -> none.
+-spec encryption(kura_type()) -> encryption().
+encryption({encrypted, Inner}) ->
+    {ok, #{inner => Inner, mode => randomized, legacy => accept, normalize => none}};
+encryption({encrypted, Inner, Opts}) ->
+    case encryption_options(Inner, Opts) of
+        {ok, Spec} -> {ok, Spec};
+        {error, _Reason} -> unsupported
+    end;
+encryption({array, Inner}) ->
+    array_encryption(encryption(Inner));
+encryption(Type) ->
+    case ?IS_ENCRYPTED_TAG(Type) of
+        true -> unsupported;
+        false -> none
+    end.
 
+array_encryption({ok, #{mode := deterministic}}) -> unsupported;
 array_encryption({ok, Spec}) -> {ok, Spec#{array => maps:get(array, Spec, 0) + 1}};
 array_encryption(Encryption) -> Encryption.
+
+-doc """
+Check an encrypted field type, as `kura_schema` does when it first reads a
+schema. Returns `ok` for a type that is not encrypted or is a valid
+encrypted type, and otherwise `{error, Reason}`:
+
+- `unsupported_encrypted_type` - an `Inner` that cannot be encrypted (see
+  `encryptable_inner/1`), or a tuple tagged `encrypted` of another shape;
+- `invalid_encryption_options` - `Opts` is not a map;
+- `{unknown_encryption_option, Key}` - a key other than `mode`,
+  `normalize`, `context` and `legacy`;
+- `{invalid_encryption_option, Key}` - a value that key does not take, or
+  a `normalize` other than `none` on a field that is not a deterministic
+  `string` or `text`;
+- `unsupported_deterministic_type` - a deterministic `Inner` outside
+  `deterministic_inner/1`, or an array of deterministic values.
+""".
+-spec validate_encryption(kura_type()) -> ok | {error, term()}.
+validate_encryption({array, Inner}) ->
+    case {validate_encryption(Inner), encryption(Inner)} of
+        {ok, {ok, #{mode := deterministic}}} -> {error, unsupported_deterministic_type};
+        {Result, _} -> Result
+    end;
+validate_encryption({encrypted, Inner}) ->
+    case encryptable_inner(Inner) of
+        true -> ok;
+        false -> {error, unsupported_encrypted_type}
+    end;
+validate_encryption({encrypted, Inner, Opts}) ->
+    case encryption_options(Inner, Opts) of
+        {ok, _Spec} -> ok;
+        {error, Reason} -> {error, Reason}
+    end;
+validate_encryption(Type) ->
+    case ?IS_ENCRYPTED_TAG(Type) of
+        true -> {error, unsupported_encrypted_type};
+        false -> ok
+    end.
+
+encryption_options(Inner, Opts) when is_map(Opts) ->
+    case maps:keys(Opts) -- ?OPTION_KEYS of
+        [] -> options_spec(Inner, Opts);
+        [Key | _] -> {error, {unknown_encryption_option, Key}}
+    end;
+encryption_options(_Inner, _Opts) ->
+    {error, invalid_encryption_options}.
+
+options_spec(Inner, Opts) ->
+    Mode = maps:get(mode, Opts, randomized),
+    Normalize = maps:get(normalize, Opts, none),
+    Legacy = maps:get(legacy, Opts, reject),
+    Checks = [
+        {lists:member(Mode, [randomized, deterministic]), {invalid_encryption_option, mode}},
+        {lists:member(Legacy, [accept, reject]), {invalid_encryption_option, legacy}},
+        {
+            lists:member(Normalize, [none, casefold, nfc, nfc_casefold]),
+            {invalid_encryption_option, normalize}
+        },
+        {valid_context_option(Opts), {invalid_encryption_option, context}},
+        {encryptable_inner(Inner), unsupported_encrypted_type},
+        {Mode =:= randomized orelse deterministic_inner(Inner), unsupported_deterministic_type},
+        {
+            Normalize =:= none orelse (Mode =:= deterministic andalso is_text(Inner)),
+            {invalid_encryption_option, normalize}
+        }
+    ],
+    case [Reason || {false, Reason} <- Checks] of
+        [] ->
+            Spec = #{inner => Inner, mode => Mode, legacy => Legacy, normalize => Normalize},
+            {ok, maps:merge(Spec, maps:with([context], Opts))};
+        [Reason | _] ->
+            {error, Reason}
+    end.
+
+valid_context_option(#{context := {Table, Column}}) ->
+    valid_context_name(Table) andalso valid_context_name(Column);
+valid_context_option(#{context := _}) ->
+    false;
+valid_context_option(#{}) ->
+    true.
+
+valid_context_name(Name) ->
+    is_binary(Name) andalso byte_size(Name) >= 1 andalso byte_size(Name) =< 65535.
+
+is_text(string) -> true;
+is_text(text) -> true;
+is_text(_) -> false.
 
 array_pg_type(unsupported, _Inner) -> erlang:error({kura_crypto, unsupported_encrypted_type});
 array_pg_type(_, Inner) -> <<(to_pg_type(Inner))/binary, "[]">>.
@@ -584,19 +763,19 @@ array_pg_type(_, Inner) -> <<(to_pg_type(Inner))/binary, "[]">>.
 encrypted_pg_type({ok, #{}}) -> ~"BYTEA";
 encrypted_pg_type(_) -> erlang:error({kura_crypto, unsupported_encrypted_type}).
 
-cast_encrypted({ok, #{inner := Inner}}, V) ->
+cast_encrypted({ok, #{inner := Inner} = Spec}, V) ->
     case encryptable_inner(Inner) of
         true ->
-            cast(Inner, V);
+            canonical_cast(Spec, cast(Inner, V));
         false ->
             {error, <<"cannot use ", (format_type(Inner))/binary, " as an encrypted inner type">>}
     end;
 cast_encrypted(_, _V) ->
     erlang:error({kura_crypto, unsupported_encrypted_type}).
 
-encryptable({ok, #{inner := Inner}}) ->
+encryptable({ok, #{inner := Inner} = Spec}) ->
     encryptable_inner(Inner) orelse erlang:error({kura_crypto, {not_encryptable, Inner}}),
-    Inner;
+    Spec;
 encryptable(_) ->
     erlang:error({kura_crypto, unsupported_encrypted_type}).
 
@@ -612,6 +791,117 @@ encryptable_inner(bigint) -> true;
 encryptable_inner(smallint) -> true;
 encryptable_inner(boolean) -> true;
 encryptable_inner(_) -> false.
+
+-doc """
+Return `true` if `Inner` may be used as the inner type of a deterministic
+field: `string`, `text`, `binary`, `uuid`, `integer`, `bigint` or
+`smallint`. `boolean` has two values, so its ciphertexts reveal it, and a
+`jsonb` document has many encodings of one value.
+""".
+-spec deterministic_inner(kura_type()) -> boolean().
+deterministic_inner(string) -> true;
+deterministic_inner(text) -> true;
+deterministic_inner(binary) -> true;
+deterministic_inner(uuid) -> true;
+deterministic_inner(integer) -> true;
+deterministic_inner(bigint) -> true;
+deterministic_inner(smallint) -> true;
+deterministic_inner(_) -> false.
+
+%% The plaintext a deterministic field encrypts Value to, as a write of it
+%% would. Never raises, so Value stays out of crash reports.
+-doc false.
+-spec lookup_payload(encryption_spec(), term()) -> {ok, binary()} | error.
+lookup_payload(#{inner := Inner} = Spec, Value) ->
+    try
+        {ok, Cast} = cast_encrypted({ok, Spec}, Value),
+        true = Cast =/= undefined,
+        {ok, Wire} = dump(Inner, Cast),
+        {ok, encode_inner(Inner, canonical_wire(Spec, Wire))}
+    catch
+        _:_ -> error
+    end.
+
+%% A deterministic value has one encoding, so equal values encrypt equally:
+%% normalised in cast so the record shows what is stored, and again in dump
+%% for a write that skips cast.
+canonical_cast(#{mode := deterministic} = Spec, {ok, Value}) when Value =/= undefined ->
+    canonical_value(Spec, Value);
+canonical_cast(_Spec, Cast) ->
+    Cast.
+
+canonical_wire(#{mode := deterministic} = Spec, Wire) ->
+    case canonical_value(Spec, Wire) of
+        {ok, Canonical} -> Canonical;
+        {error, _} -> erlang:error({kura_crypto, malformed_plaintext})
+    end;
+canonical_wire(_Spec, Wire) ->
+    Wire.
+
+canonical_value(#{inner := uuid}, Value) ->
+    case canonical_uuid(Value) of
+        {ok, Uuid} -> {ok, Uuid};
+        error -> {error, ~"is not a valid UUID"}
+    end;
+canonical_value(#{inner := Inner, normalize := Normalize}, Value) when
+    Normalize =/= none, (Inner =:= string orelse Inner =:= text)
+->
+    case normalize(Normalize, Value) of
+        {ok, Normalized} -> {ok, Normalized};
+        error -> {error, ~"is not valid UTF-8"}
+    end;
+canonical_value(_Spec, Value) ->
+    {ok, Value}.
+
+canonical_uuid(<<Raw:16/binary>>) ->
+    {ok, format_uuid(binary:encode_hex(Raw, lowercase))};
+canonical_uuid(<<Hex:32/binary>>) ->
+    lowercase_uuid(Hex);
+canonical_uuid(<<A:8/binary, $-, B:4/binary, $-, C:4/binary, $-, D:4/binary, $-, E:12/binary>>) ->
+    lowercase_uuid(<<A/binary, B/binary, C/binary, D/binary, E/binary>>);
+canonical_uuid(_Value) ->
+    error.
+
+lowercase_uuid(Hex) ->
+    case is_hex(Hex) of
+        true -> {ok, format_uuid(string:lowercase(Hex))};
+        false -> error
+    end.
+
+is_hex(<<>>) -> true;
+is_hex(<<C, Rest/binary>>) when C >= $0, C =< $9 -> is_hex(Rest);
+is_hex(<<C, Rest/binary>>) when C >= $a, C =< $f -> is_hex(Rest);
+is_hex(<<C, Rest/binary>>) when C >= $A, C =< $F -> is_hex(Rest);
+is_hex(_) -> false.
+
+%% Checked to be UTF-8 first: string:casefold/1 raises on anything else,
+%% with the value in its reason. Cast and dump only pass a binary here.
+normalize(Normalize, Value) ->
+    case unicode:characters_to_binary(Value) of
+        Value -> {ok, normalized(Normalize, Value)};
+        _ -> error
+    end.
+
+normalized(nfc, Value) -> nfc(Value);
+normalized(casefold, Value) -> casefold(Value);
+%% Decomposed first, as Unicode's canonical caseless match requires: folding
+%% a precomposed character and its decomposed form can differ.
+normalized(nfc_casefold, Value) -> nfc(casefold(nfd(Value))).
+
+nfc(Value) ->
+    case unicode:characters_to_nfc_binary(Value) of
+        Nfc when is_binary(Nfc) -> Nfc
+    end.
+
+nfd(Value) ->
+    case unicode:characters_to_nfd_binary(Value) of
+        Nfd when is_binary(Nfd) -> Nfd
+    end.
+
+casefold(Value) ->
+    case string:casefold(Value) of
+        Folded when is_binary(Folded) -> Folded
+    end.
 
 %% dump(Inner, _) already produced a binary for the binary-y types (jsonb
 %% included), so those are identity here.

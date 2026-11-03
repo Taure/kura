@@ -46,7 +46,8 @@ Q3 = kura_query:limit(Q2, 10).
     avg/2,
     min/2,
     max/2,
-    check_encrypted/1
+    check_encrypted/1,
+    where_unrewritten/2
 ]).
 
 -export_type([window_fn/0, window_spec/0, distance/0, distance_metric/0, order/0]).
@@ -497,10 +498,39 @@ A condition that compares an encrypted field (see
 `kura_types:encryption/1`) to a value raises
 `{kura, {encrypted_field_in_where, Field}}`, wherever the field appears: under
 `and`, `or` or `not`, in an `in` list, or as one column of a row-value `in`.
-Encryption uses a random nonce, so a freshly encrypted value never equals the
-stored ciphertext: the condition cannot match, and it would ship the plaintext
-to the server as a bind parameter, into `pg_stat_statements`, the query log
-and telemetry. Fields of the `from` schema and of every joined schema are
+Randomized encryption uses a random nonce, so a freshly encrypted value never
+equals the stored ciphertext: the condition cannot match, and it would ship
+the plaintext to the server as a bind parameter, into `pg_stat_statements`,
+the query log and telemetry.
+
+A deterministic field (`{encrypted, Inner, #{mode => deterministic}}`) can be
+looked up by equality. `{Field, Value}`, `{Field, '=', Value}` and
+`{Field, in, Values}` become `{Field, encrypted_in, Ciphertexts}`, and
+`{Field, '!=', Value}` and `{Field, not_in, Values}` become
+`{Field, encrypted_not_in, Ciphertexts}`, here, before the condition is
+stored: each value is cast and normalised as a write of it would be and
+encrypted under every lookup key (see `kura_encryption`), so the plaintext
+never enters the query, its cache key, telemetry or logs. The dialect
+compiles them to `IN` and `NOT IN`. A value that does not cast to a non-null
+value raises `{kura, {invalid_lookup_value, Field}}`; use `is_nil` for
+`NULL`. Every other operator on a deterministic field raises as on a
+randomized one, and so do a row-value `in` and an `in` subquery. A field is
+looked up only when exactly one source of the query (the `from` schema or a
+joined one, not one read through a CTE) declares it encrypted; otherwise it
+raises as on a randomized field. `encrypted_in` and `encrypted_not_in` are
+built by kura: passing one to `where/2` raises
+`{kura, {reserved_operator, Op}}`.
+
+The lookup reveals which rows share the value, and the ciphertexts bound as
+parameters are a stable pseudonym of it in telemetry and logged parameters.
+
+For a deterministic field `where/2` reads the keyring, so it can raise a
+keyring error such as `{kura_crypto, no_deterministic_key}`. `!=` and
+`not_in` on a deterministic field return the rows stored under a key
+generation missing from `deterministic_keys`, since those never equal the
+excluded value.
+
+Fields of the `from` schema and of every joined schema are
 checked. So are the conditions of an `in` or `exists` subquery, against the
 subquery's own schemas and against the outer query's encrypted fields that
 its schemas do not declare: the database resolves such a name to the outer
@@ -513,8 +543,101 @@ single-column `in` raises `{kura, unrecognised_condition}`.
 -spec where(#kura_query{}, term()) -> #kura_query{}.
 where(Q = #kura_query{from = From, wheres = W}, Condition) ->
     check_thresholds(From, cond_thresholds(where, Condition)),
-    refuse_each([Condition], guard_scope(Q, [], []), encrypted_field_in_where),
+    Q#kura_query{wheres = W ++ [lookup_condition(Q, Condition, encrypted_field_in_where)]}.
+
+%% where/2 without deterministic lookups: kura_tenant scopes with it, as
+%% writes refuse an encrypted tenant field in either mode.
+-doc false.
+-spec where_unrewritten(#kura_query{}, term()) -> #kura_query{}.
+where_unrewritten(Q = #kura_query{from = From, wheres = W}, Condition) ->
+    check_thresholds(From, cond_thresholds(where, Condition)),
+    refuse_each([Condition], guard_scope(Q, [], []), [], encrypted_field_in_where),
     Q#kura_query{wheres = W ++ [Condition]}.
+
+%% The plaintext of a deterministic lookup is replaced by its ciphertexts
+%% before the condition is checked or stored.
+lookup_condition(Q, Condition, Reason) ->
+    Scope = guard_scope(Q, [], []),
+    Lookups = lookup_specs(Q, Scope),
+    Rewritten = rewrite_lookups(Condition, Lookups),
+    refuse_each([Rewritten], Scope, maps:keys(Lookups), Reason),
+    Rewritten.
+
+rewrite_lookups({Op, Conds}, Lookups) when (Op =:= 'and' orelse Op =:= 'or'), is_list(Conds) ->
+    {Op, rewrite_each(Conds, Lookups)};
+rewrite_lookups({'not', Cond}, Lookups) ->
+    {'not', rewrite_lookups(Cond, Lookups)};
+rewrite_lookups({_Field, Op, _Frames}, _Lookups) when ?KURA_IS_LOOKUP_OP(Op) ->
+    erlang:error({kura, {reserved_operator, Op}});
+rewrite_lookups({Field, Op, Value} = Cond, Lookups) when Op =:= '='; Op =:= '!=' ->
+    rewrite_lookup(Cond, Field, Op, [Value], Lookups);
+rewrite_lookups({Field, Op, Values} = Cond, Lookups) when
+    (Op =:= in orelse Op =:= not_in), is_list(Values)
+->
+    rewrite_lookup(Cond, Field, Op, Values, Lookups);
+rewrite_lookups({Field, Value} = Cond, Lookups) when
+    is_atom(Field), not ?KURA_IS_UNARY_OP(Value)
+->
+    rewrite_lookup(Cond, Field, '=', [Value], Lookups);
+rewrite_lookups(Cond, _Lookups) ->
+    Cond.
+
+rewrite_each([Cond | Rest], Lookups) ->
+    [rewrite_lookups(Cond, Lookups) | rewrite_each(Rest, Lookups)];
+rewrite_each(Tail, _Lookups) ->
+    Tail.
+
+%% A subquery value is left for the guard, which refuses it.
+rewrite_lookup(Cond, Field, Op, Values, Lookups) ->
+    case Lookups of
+        #{Field := Spec} ->
+            case has_subquery(Values) of
+                false -> {Field, lookup_op(Op), kura_encryption:lookup(Field, Spec, Values)};
+                true -> Cond
+            end;
+        #{} ->
+            Cond
+    end.
+
+has_subquery([{subquery, _} | _]) -> true;
+has_subquery([_ | Rest]) -> has_subquery(Rest);
+has_subquery(_) -> false.
+
+lookup_op(Op) when Op =:= '='; Op =:= in -> encrypted_in;
+lookup_op(Op) when Op =:= '!='; Op =:= not_in -> encrypted_not_in.
+
+%% The deterministic fields a condition of Q may look up: a field exactly one
+%% source of Q declares encrypted, and declares deterministic. A source that
+%% reads a CTE holds whatever the CTE selects, and a CTE whose encrypted
+%% columns cannot be named may hold ciphertext under any name, so neither
+%% offers a lookup.
+lookup_specs(_Q, {[], _Ctes}) ->
+    #{};
+lookup_specs(Q, {Encrypted, Ctes}) ->
+    case lists:member(?ANY_COLUMN, Encrypted) of
+        true ->
+            #{};
+        false ->
+            maps:from_list([
+                {F, Spec}
+             || Source <- sources(Q),
+                not reads_cte(Source, Ctes),
+                F := #{mode := deterministic} = Spec <- source_specs(Source),
+                declared_once(F, Encrypted)
+            ])
+    end.
+
+declared_once(Field, Encrypted) ->
+    length([E || E <- Encrypted, E =:= Field]) =:= 1.
+
+source_specs(Source) when is_atom(Source), Source =/= undefined ->
+    kura_schema:encryption_specs(Source);
+source_specs(_Source) ->
+    #{}.
+
+reads_cte(Source, Ctes) ->
+    Names = source_names(Source),
+    [Name || {Name, _Body} <- Ctes, lists:member(Name, Names)] =/= [].
 
 %% A nested query reads its own CTEs before those of the queries around it.
 guard_scope(#kura_query{ctes = Own} = Q, OuterEncrypted, OuterCtes) ->
@@ -615,63 +738,85 @@ ciphertext_column(Field, Encrypted) ->
 
 %% Explicit recursion rather than lists:foreach/2, so an improper list raises
 %% a reason of its own instead of a function_clause carrying the values.
-refuse_each([], _Scope, _Reason) ->
+refuse_each([], _Scope, _Lookup, _Reason) ->
     ok;
-refuse_each([Cond | Rest], Scope, Reason) ->
-    refuse_encrypted_cond(Cond, Scope, Reason),
-    refuse_each(Rest, Scope, Reason);
-refuse_each(_Improper, _Scope, _Reason) ->
+refuse_each([Cond | Rest], Scope, Lookup, Reason) ->
+    refuse_encrypted_cond(Cond, Scope, Lookup, Reason),
+    refuse_each(Rest, Scope, Lookup, Reason);
+refuse_each(_Improper, _Scope, _Lookup, _Reason) ->
     erlang:error({kura, unrecognised_condition}).
 
 %% An allow-list over the condition grammar kura_dialect_pg compiles. Every
 %% form that names a field is checked; a shape not listed here is refused
 %% rather than passed, so a new form cannot slip a value past the check.
-refuse_encrypted_cond({Op, Conds}, Scope, Reason) when Op =:= 'and'; Op =:= 'or' ->
-    refuse_each(Conds, Scope, Reason);
-refuse_encrypted_cond({'not', Cond}, Scope, Reason) ->
-    refuse_encrypted_cond(Cond, Scope, Reason);
-refuse_encrypted_cond({fragment, _SQL, _Params}, _Scope, _Reason) ->
+%% Lookup is the deterministic fields a lookup may name (lookup_specs/2).
+refuse_encrypted_cond({Op, Conds}, Scope, Lookup, Reason) when Op =:= 'and'; Op =:= 'or' ->
+    refuse_each(Conds, Scope, Lookup, Reason);
+refuse_encrypted_cond({'not', Cond}, Scope, Lookup, Reason) ->
+    refuse_encrypted_cond(Cond, Scope, Lookup, Reason);
+refuse_encrypted_cond({fragment, _SQL, _Params}, _Scope, _Lookup, _Reason) ->
     ok;
-refuse_encrypted_cond({Exists, {subquery, #kura_query{} = Sub}}, Scope, _Reason) when
+refuse_encrypted_cond({Exists, {subquery, #kura_query{} = Sub}}, Scope, _Lookup, _Reason) when
     Exists =:= exists; Exists =:= not_exists
 ->
     refuse_encrypted_subquery(Sub, Scope);
-refuse_encrypted_cond({Field, in, {subquery, #kura_query{} = Sub}}, Scope, Reason) when
+refuse_encrypted_cond({Field, in, {subquery, #kura_query{} = Sub}}, Scope, _Lookup, Reason) when
     is_atom(Field)
 ->
     refuse_field(Field, Scope, Reason),
     refuse_encrypted_subquery(Sub, Scope);
-refuse_encrypted_cond({Field, Op}, _Scope, _Reason) when
+refuse_encrypted_cond({Field, Op}, _Scope, _Lookup, _Reason) when
     is_atom(Field), ?KURA_IS_UNARY_OP(Op)
 ->
     ok;
-refuse_encrypted_cond({{distance, Field, _Metric, _Vector}, Op, _Threshold}, Scope, Reason) when
+refuse_encrypted_cond({Field, Op, Frames}, _Scope, Lookup, _Reason) when ?KURA_IS_LOOKUP_OP(Op) ->
+    refuse_lookup(Field, Frames, Lookup);
+refuse_encrypted_cond(
+    {{distance, Field, _Metric, _Vector}, Op, _Threshold}, Scope, _Lookup, Reason
+) when
     is_atom(Field), ?KURA_IS_THRESHOLD_OP(Op)
 ->
     refuse_field(Field, Scope, Reason);
-refuse_encrypted_cond({Field, Value}, Scope, Reason) when is_atom(Field) ->
+refuse_encrypted_cond({Field, Value}, Scope, _Lookup, Reason) when is_atom(Field) ->
     refuse_field(Field, Scope, Reason),
     refuse_subquery_value(Value);
-refuse_encrypted_cond({Field, between, {Low, High}}, Scope, Reason) when is_atom(Field) ->
+refuse_encrypted_cond({Field, between, {Low, High}}, Scope, _Lookup, Reason) when is_atom(Field) ->
     refuse_field(Field, Scope, Reason),
     refuse_subquery_value(Low),
     refuse_subquery_value(High);
-refuse_encrypted_cond({Field, _Op, Values}, Scope, Reason) when is_atom(Field), is_list(Values) ->
+refuse_encrypted_cond({Field, _Op, Values}, Scope, _Lookup, Reason) when
+    is_atom(Field), is_list(Values)
+->
     refuse_field(Field, Scope, Reason),
     refuse_subquery_values(Values);
-refuse_encrypted_cond({Field, _Op, Value}, Scope, Reason) when is_atom(Field) ->
+refuse_encrypted_cond({Field, _Op, Value}, Scope, _Lookup, Reason) when is_atom(Field) ->
     refuse_field(Field, Scope, Reason),
     refuse_subquery_value(Value);
-refuse_encrypted_cond({Fields, _Op, Rows}, Scope, Reason) when is_list(Fields), is_list(Rows) ->
+refuse_encrypted_cond({Fields, _Op, Rows}, Scope, _Lookup, Reason) when
+    is_list(Fields), is_list(Rows)
+->
     refuse_fields(Fields, Scope, Reason),
     refuse_subquery_rows(Rows);
-refuse_encrypted_cond({Fields, _Op, Value}, Scope, Reason) when is_list(Fields) ->
+refuse_encrypted_cond({Fields, _Op, Value}, Scope, _Lookup, Reason) when is_list(Fields) ->
     refuse_fields(Fields, Scope, Reason),
     refuse_subquery_value(Value);
-refuse_encrypted_cond(_Cond, {[], _Ctes}, _Reason) ->
+refuse_encrypted_cond(_Cond, {[], _Ctes}, _Lookup, _Reason) ->
     ok;
-refuse_encrypted_cond(_Cond, _Scope, _Reason) ->
+refuse_encrypted_cond(_Cond, _Scope, _Lookup, _Reason) ->
     erlang:error({kura, unrecognised_condition}).
+
+%% A lookup must name a field this scope may look up and hold only values
+%% laid out as deterministic frames. Whether those frames are ciphertexts of
+%% this column is not checked: only where/2 and having/2 build a lookup, and
+%% refuse one passed to them, so a lookup that binds anything else is one
+%% written into a #kura_query{} record by hand, like a fragment.
+refuse_lookup(Field, Frames, Lookup) when is_atom(Field) ->
+    case lists:member(Field, Lookup) andalso kura_crypto:are_deterministic_frames(Frames) of
+        true -> ok;
+        false -> erlang:error({kura, {invalid_encrypted_lookup, Field}})
+    end;
+refuse_lookup(_Field, _Frames, _Lookup) ->
+    erlang:error({kura, {invalid_encrypted_lookup, not_a_column}}).
 
 %% Ordering, windowing and aggregating by an encrypted field bind nothing,
 %% but would order or compute over ciphertexts, so they are refused too.
@@ -789,8 +934,9 @@ refuse_encrypted_query(
     OuterCtes
 ) ->
     {_, Ctes} = Scope = guard_scope(Q, OuterEncrypted, OuterCtes),
-    refuse_each(W, Scope, encrypted_field_in_where),
-    refuse_each(H, Scope, encrypted_field_in_having),
+    Lookup = maps:keys(lookup_specs(Q, Scope)),
+    refuse_each(W, Scope, Lookup, encrypted_field_in_where),
+    refuse_each(H, Scope, Lookup, encrypted_field_in_having),
     refuse_output(Q, Scope),
     refuse_select(Q#kura_query.select, Scope),
     refuse_joins(Q#kura_query.joins, Q#kura_query.from, Ctes),
@@ -816,11 +962,7 @@ sources(#kura_query{from = From, joins = Joins}) ->
     [From | [T || {_, T, _, _} <- Joins]].
 
 columns(Source, Ctes) when is_atom(Source) ->
-    Names = source_names(Source),
-    case
-        kura_schema:is_schema(Source) andalso
-            [N || {N, _} <- Ctes, lists:member(N, Names)] =:= []
-    of
+    case kura_schema:is_schema(Source) andalso not reads_cte(Source, Ctes) of
         true -> kura_schema:non_virtual_fields(Source);
         false -> []
     end;
@@ -902,13 +1044,13 @@ group_by(Q, Fields) ->
 -doc """
 Add a HAVING condition, in the same forms as `where/2`. A condition that
 compares an encrypted field to a value raises
-`{kura, {encrypted_field_in_having, Field}}`, as `where/2` does.
+`{kura, {encrypted_field_in_having, Field}}`, as `where/2` does, and an
+equality on a deterministic field becomes a lookup, as in `where/2`.
 """.
 -spec having(#kura_query{}, term()) -> #kura_query{}.
 having(Q = #kura_query{from = From, havings = H}, Condition) ->
     check_thresholds(From, cond_thresholds(having, Condition)),
-    refuse_each([Condition], guard_scope(Q, [], []), encrypted_field_in_having),
-    Q#kura_query{havings = H ++ [Condition]}.
+    Q#kura_query{havings = H ++ [lookup_condition(Q, Condition, encrypted_field_in_having)]}.
 
 -spec limit(#kura_query{}, non_neg_integer()) -> #kura_query{}.
 limit(Q, N) ->
@@ -978,11 +1120,24 @@ encrypted field or an alias of one, and on selecting a distance of one
 position that is not a column, such as a distance, is reported as
 `not_a_column` in place of the field.
 
+A deterministic lookup (`{Field, encrypted_in | encrypted_not_in, Frames}`)
+passes only on a field the query's scope may look up (as `where/2` decides)
+and only when `Frames` is a list of binaries laid out as deterministic
+frames (version 2, mode 1, a full header); anything else raises
+`{kura, {invalid_encrypted_lookup, Field}}`. That keeps a lookup off a
+randomized or plain field and keeps any non-binary value out of one. It
+does not prove the frames are ciphertexts of that column: bytes in the
+frame layout pass. Only `where/2` and `having/2` build a lookup, and they
+refuse one passed to them, so such a value can only come from a record
+written by hand, which is trusted like a `{fragment, SQL, Params}`.
+
 The verdict depends only on the query's structure (sources, selects, CTEs and
-the shape of every condition), never on a bound value. `kura_query_compiler`
-relies on that: it calls this on every query it compiles, except a cache hit
-in `to_sql_cached/2`, whose shape already passed. So a `#kura_query{}` built
-or updated without `where/2` is checked too.
+the shape of every condition), never on a bound value, except whether a
+lookup's values are in the frame layout, which the query's shape records
+(see `kura_query_shape`). `kura_query_compiler` relies on that: it calls
+this on every query it compiles, except a cache hit in `to_sql_cached/2`,
+whose shape already passed. So a `#kura_query{}` built or updated without
+`where/2` is checked too.
 """.
 -spec check_encrypted(#kura_query{}) -> ok.
 check_encrypted(Q) ->

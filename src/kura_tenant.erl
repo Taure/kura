@@ -82,8 +82,10 @@ a table without it fails. An `in` or `exists` subquery over such a table does
 not: the database resolves `Field` to the outer query's column, and the inner
 table is not scoped. Any other strategy leaves `Query` as it is.
 
-The condition goes through `kura_query:where/2`, so a `Field` that is
-encrypted in a schema of the query raises instead of binding the tenant value.
+The condition goes through the guard of `kura_query:where/2`, so a `Field`
+that is encrypted in a schema of the query raises instead of binding the
+tenant value, also when it is deterministic: writes refuse an encrypted
+tenant field, so reads do too.
 """.
 -spec scope_query(undefined | strategy(), #kura_query{}) -> #kura_query{}.
 scope_query({attribute, {Field, Value}}, Query) when is_atom(Field) ->
@@ -93,7 +95,7 @@ scope_query(_Strategy, Query) ->
 
 -spec scoped(#kura_query{}, {atom(), term()}) -> #kura_query{}.
 scoped(Query, Condition) ->
-    kura_query:where(
+    kura_query:where_unrewritten(
         Query#kura_query{
             wheres = conditions(Query#kura_query.wheres, Condition),
             havings = conditions(Query#kura_query.havings, Condition),

@@ -184,8 +184,9 @@ t_wrong_context() ->
 t_mode_swap() ->
     write_v2(),
     <<2, 0, Rest/binary>> = kura_crypto:encrypt(~"x", ?CTX),
+    ?assertError({kura_crypto, {bad_tag, 1}}, kura_crypto:decrypt(<<2, 1, Rest/binary>>, ?CTX)),
     ?assertError(
-        {kura_crypto, {unsupported_mode, 1}}, kura_crypto:decrypt(<<2, 1, Rest/binary>>, ?CTX)
+        {kura_crypto, {unsupported_mode, 2}}, kura_crypto:decrypt(<<2, 2, Rest/binary>>, ?CTX)
     ),
     ?assertError(
         {kura_crypto, {unsupported_mode, 255}}, kura_crypto:decrypt(<<2, 255, Rest/binary>>, ?CTX)

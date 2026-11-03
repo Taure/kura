@@ -42,6 +42,9 @@ teardown(_) ->
     application:unset_env(kura, encryption),
     application:unset_env(kura, encryption_write_format).
 
+legacy_spec(Inner, Extra) ->
+    maps:merge(#{inner => Inner, legacy => accept, mode => randomized, normalize => none}, Extra).
+
 write_v2() ->
     application:set_env(kura, encryption_write_format, v2).
 
@@ -51,9 +54,12 @@ v2(Plain, Ctx) ->
     Frame.
 
 t_specs() ->
-    ?assertEqual(#{ssn => #{context => ?SSN_CTX}}, kura_schema:encryption_specs(?SCHEMA)),
     ?assertEqual(
-        #{tags => #{context => {~"enc_array", ~"tags"}}},
+        #{ssn => legacy_spec(string, #{context => ?SSN_CTX})},
+        kura_schema:encryption_specs(?SCHEMA)
+    ),
+    ?assertEqual(
+        #{tags => legacy_spec(string, #{context => {~"enc_array", ~"tags"}, array => 1})},
         kura_schema:encryption_specs(kura_test_enc_array_schema)
     ),
     ?assertEqual(#{}, kura_schema:encryption_specs(kura_test_schema)),
@@ -62,7 +68,8 @@ t_specs() ->
 t_specs_use_the_column_name() ->
     Ctx = {~"enc_column", ~"ssn_ciphertext"},
     ?assertEqual(
-        #{ssn => #{context => Ctx}}, kura_schema:encryption_specs(kura_test_enc_column_schema)
+        #{ssn => legacy_spec(string, #{context => Ctx})},
+        kura_schema:encryption_specs(kura_test_enc_column_schema)
     ),
     Frame = v2(~"x", Ctx),
     ?assertEqual(

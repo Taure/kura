@@ -103,8 +103,8 @@ column_name_accepted(Column) ->
     ?assertMatch(
         #{ssn := {encrypted, string}}, kura_schema:field_types(kura_test_enc_column_name_schema)
     ),
-    ?assertEqual(
-        #{ssn => #{context => {~"enc_column_name", Column}}},
+    ?assertMatch(
+        #{ssn := #{context := {~"enc_column_name", Column}}},
         kura_schema:encryption_specs(kura_test_enc_column_name_schema)
     ).
 
@@ -122,20 +122,20 @@ column_name_refused(Column) ->
 encryption_test_() ->
     V2 = kura_test_enc_v2_schema:v2_type(),
     [
-        ?_assertEqual({ok, #{inner => string}}, kura_types:encryption({encrypted, string})),
+        ?_assertEqual({ok, legacy(string)}, kura_types:encryption({encrypted, string})),
         ?_assertEqual(
-            {ok, #{inner => {array, string}}}, kura_types:encryption({encrypted, {array, string}})
+            {ok, legacy({array, string})}, kura_types:encryption({encrypted, {array, string}})
         ),
         ?_assertEqual(unsupported, kura_types:encryption(V2)),
         ?_assertEqual(none, kura_types:encryption(string)),
         ?_assertEqual(none, kura_types:encryption({array, string})),
         ?_assertEqual(none, kura_types:encryption({array, {array, string}})),
         ?_assertEqual(
-            {ok, #{inner => string, array => 1}},
+            {ok, (legacy(string))#{array => 1}},
             kura_types:encryption({array, {encrypted, string}})
         ),
         ?_assertEqual(
-            {ok, #{inner => string, array => 2}},
+            {ok, (legacy(string))#{array => 2}},
             kura_types:encryption({array, {array, {encrypted, string}}})
         ),
         ?_assertEqual(unsupported, kura_types:encryption({array, V2})),
@@ -159,9 +159,12 @@ unencryptable_inner_type_test() ->
         kura_schema:field_types(kura_test_enc_float_schema)
     ).
 
-%% The options form is not supported yet. Every seam must treat it as
-%% encrypted and raise rather than handle the value as plaintext.
-options_form_fails_closed_test_() ->
+legacy(Inner) ->
+    #{inner => Inner, legacy => accept, mode => randomized, normalize => none}.
+
+%% A form no release supports. Every seam must treat it as encrypted and
+%% raise rather than handle the value as plaintext.
+unknown_form_fails_closed_test_() ->
     V2 = kura_test_enc_v2_schema:v2_type(),
     Unsupported = {kura_crypto, unsupported_encrypted_type},
     {setup, fun setup_keys/0, fun teardown_keys/1, [
@@ -220,7 +223,7 @@ array_of_encrypted_is_encrypted_test_() ->
             )},
         {"migration column type",
             ?_assertEqual(~"BYTEA[]", kura_dialect_pg:column_type({array, {encrypted, string}}))},
-        {"an array of the options form is refused",
+        {"an array of an unknown form is refused",
             ?_assertError(
                 {kura_crypto, unsupported_encrypted_type},
                 kura_types:to_pg_type({array, kura_test_enc_v2_schema:v2_type()})
