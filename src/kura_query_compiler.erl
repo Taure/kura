@@ -220,15 +220,21 @@ insert_all(RepoMod, SchemaOrTable, Fields, Rows) ->
 insert_all(RepoMod, SchemaOrTable, Fields, Rows, Opts) ->
     (dialect(RepoMod)):insert_all(SchemaOrTable, Fields, Rows, Opts).
 
-%% A dialect's prepare_query/1 is optional (see kura_dialect), and
-%% function_exported/3 is false for a module not yet loaded.
+%% A dialect's prepare_query/1 is optional (see kura_dialect).
 -spec prepare(module(), #kura_query{}) -> #kura_query{}.
 prepare(Dialect, Query) ->
-    _ = code:ensure_loaded(Dialect),
-    case erlang:function_exported(Dialect, prepare_query, 1) of
+    case has_prepare(Dialect) of
         true -> Dialect:prepare_query(Query);
         false -> Query
     end.
+
+%% function_exported/3 is false for a module not yet loaded.
+-spec has_prepare(module()) -> boolean().
+has_prepare(Dialect) ->
+    erlang:function_exported(Dialect, prepare_query, 1) orelse
+        (not erlang:module_loaded(Dialect) andalso
+            code:ensure_loaded(Dialect) =:= {module, Dialect} andalso
+            erlang:function_exported(Dialect, prepare_query, 1)).
 
 %% A bulk write compiles only the from table, the where conditions and the
 %% prefix, so a clause that narrows or widens the rows a SELECT would read
