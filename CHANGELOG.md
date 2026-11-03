@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `count/2`, `aggregate/3,4` and `kura_stream:stream/3,4` leave out
+  soft-deleted rows, as `all/2`, `update_all/3` and `delete_all/2`
+  already did; mark the query with `kura_query:with_deleted/1` to keep
+  them. `all/2` on a query `from` a CTE name or a bare table atom no
+  longer crashes.
+- `insert/3` (an insert with options such as `on_conflict`) runs
+  `prepare_changes/2`, `before_insert/1`, `after_insert/1` and the
+  changeset's associations, like `insert/2`. `after_insert/1` runs
+  whenever the statement returns a row, including when an upsert updated
+  one. A changeset with associations refuses any `on_conflict` action but
+  `nothing`, raising `{kura, on_conflict_with_assocs}`.
+- `kura_query:where/2` converts a value compared to a field of the `from`
+  schema where the conversion cannot change what matches: an enum atom
+  binds its binary, and a binary in cast form binds the scalar it spells
+  on `id`, `integer`, `bigint`, `smallint`, `float`, `decimal`,
+  `boolean`, `date` and `time` fields, and on datetimes without an offset
+  other than `Z` or a fraction. Every other value is bound as given.
+- After a join, the PostgreSQL dialect qualifies a bare field of the
+  `from` schema with the `from` table in select, where, having, order_by,
+  group_by, distinct and window specs, so a column both tables have is no
+  longer ambiguous. The attribute-tenancy field and `order_by` names that
+  are `select_expr/2` aliases stay bare.
+- `kura_changeset:validate_length/3` measures a binary in Unicode code
+  points rather than bytes; invalid UTF-8 is still measured in bytes.
+- `cast/4` looks up `table/0` only when the schema declares constraints
+  or indexes, so an embedded schema module needs only `fields/0`.
+
 - `{Field, is_nil}` and `{Field, is_not_nil}` on an encrypted field are
   accepted by `where/2`. They bind nothing, and `NULL` is stored
   unencrypted.
