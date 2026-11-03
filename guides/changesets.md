@@ -41,7 +41,11 @@ CS1 = kura_changeset:validate_length(CS, name, [{min, 2}, {max, 100}]).
 CS2 = kura_changeset:validate_length(CS, code, [{is, 6}]).
 ```
 
-Options: `{min, N}`, `{max, N}`, `{is, N}`. Works on binaries (byte size) and lists (length).
+Options: `{min, N}`, `{max, N}`, `{is, N}`. A binary is measured in
+characters (Unicode code points, the unit `VARCHAR(N)` counts), so four
+emoji have length 4; a value that is not valid UTF-8 gets the error
+`is not valid UTF-8`. On a `binary` field the length is the byte size. A
+list is measured by its length.
 
 ### Number
 

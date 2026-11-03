@@ -55,8 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   delegates to this dialect and inherits the qualification; a where on a
   byte field of the `from` schema under a join needs the kura_sqlite
   release that uses `kura_dialect:qualified_columns/1`.
-- `kura_changeset:validate_length/3` measures a binary in Unicode code
-  points rather than bytes; invalid UTF-8 is still measured in bytes.
+- `kura_changeset:validate_length/3` measures a binary in characters
+  (Unicode code points, the unit of `VARCHAR(N)`) rather than bytes, so a
+  multibyte string counts fewer units than before. A value that is not
+  valid UTF-8 gets the error `is not valid UTF-8`. On a field typed
+  `binary` it still counts bytes, and the messages say byte(s).
 - `cast/4` looks up `table/0` only when the schema declares constraints
   or indexes, so an embedded schema module needs only `fields/0`.
 

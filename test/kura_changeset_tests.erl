@@ -136,11 +136,26 @@ validate_length_counts_code_points_not_bytes_test() ->
     ?assert((kura_changeset:validate_length(CS, name, [{is, 3}]))#kura_changeset.valid),
     ?assertNot((kura_changeset:validate_length(CS, name, [{min, 4}]))#kura_changeset.valid).
 
-validate_length_counts_bytes_of_invalid_utf8_test() ->
+validate_length_counts_each_emoji_once_test() ->
+    Name = <<"😀😃😄😁"/utf8>>,
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{name => Name}, [name]),
+    ?assert((kura_changeset:validate_length(CS, name, [{is, 4}]))#kura_changeset.valid),
+    CS2 = kura_changeset:validate_length(CS, name, [{max, 3}]),
+    ?assertEqual([{name, ~"should be at most 3 character(s)"}], CS2#kura_changeset.errors).
+
+validate_length_reports_invalid_utf8_test() ->
     CS = kura_changeset:put_change(
         kura_changeset:cast(kura_test_schema, #{}, #{}, []), name, <<255, 254, 253>>
     ),
-    ?assert((kura_changeset:validate_length(CS, name, [{is, 3}]))#kura_changeset.valid).
+    CS2 = kura_changeset:validate_length(CS, name, [{is, 3}]),
+    ?assertEqual([{name, ~"is not valid UTF-8"}], CS2#kura_changeset.errors).
+
+validate_length_counts_bytes_on_a_binary_field_test() ->
+    Types = #{digest => binary},
+    CS = kura_changeset:cast(Types, #{}, #{digest => <<"日本"/utf8, 255>>}, [digest]),
+    ?assert((kura_changeset:validate_length(CS, digest, [{is, 7}]))#kura_changeset.valid),
+    CS2 = kura_changeset:validate_length(CS, digest, [{max, 2}]),
+    ?assertEqual([{digest, ~"should be at most 2 byte(s)"}], CS2#kura_changeset.errors).
 
 validate_length_ok_test() ->
     CS = kura_changeset:cast(kura_test_schema, #{}, #{name => <<"Alice">>}, [name]),

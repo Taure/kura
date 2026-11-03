@@ -138,9 +138,15 @@ validate_format(CS, Field, Pattern) ->
 -doc """
 Validate length of `Field`. Opts: `{min, N}`, `{max, N}`, `{is, N}`.
 
-A binary is measured in Unicode code points, the unit PostgreSQL's
-`VARCHAR(N)` limit counts, so `~"日本語"` has length 3. A binary that is not
-valid UTF-8 is measured in bytes. A list is measured by its length.
+A binary is measured in characters, counted as Unicode code points: the
+unit PostgreSQL's `VARCHAR(N)` limit counts, so a value that passes always
+fits the column. `~"日本語"` has length 3 and four emoji have length 4. A
+binary that is not valid UTF-8 gets the error `is not valid UTF-8` instead
+of a length check.
+
+On a field typed `binary` the value is bytes, so it is measured with
+`byte_size/1` and the messages say byte(s). A list is measured by its
+length.
 """.
 -spec validate_length(#kura_changeset{}, atom(), [{atom(), non_neg_integer()}]) ->
     #kura_changeset{}.
@@ -149,10 +155,10 @@ validate_length(CS, Field, Opts) ->
         undefined ->
             CS;
         Val when is_binary(Val) ->
-            check_length(CS, Field, codepoints(Val, 0, Val), Opts);
+            binary_length(CS, Field, Val, Opts);
         Val when is_list(Val) ->
             Len = length(Val),
-            check_length(CS, Field, Len, Opts);
+            check_length(CS, Field, Len, ~"character(s)", Opts);
         _ ->
             CS
     end.
@@ -527,14 +533,26 @@ group_errors([{F, M} | Rest], Acc) ->
         end,
     group_errors(Rest, NewAcc).
 
-codepoints(<<_/utf8, Rest/binary>>, N, Val) ->
-    codepoints(Rest, N + 1, Val);
-codepoints(<<>>, N, _Val) ->
-    N;
-codepoints(_Invalid, _N, Val) ->
-    byte_size(Val).
+binary_length(#kura_changeset{types = Types} = CS, Field, Val, Opts) ->
+    case Types of
+        #{Field := binary} -> check_length(CS, Field, byte_size(Val), ~"byte(s)", Opts);
+        #{} -> text_length(CS, Field, Val, Opts)
+    end.
 
-check_length(CS, Field, Len, Opts) ->
+text_length(CS, Field, Val, Opts) ->
+    case codepoints(Val, 0) of
+        invalid -> add_error(CS, Field, ~"is not valid UTF-8");
+        Len -> check_length(CS, Field, Len, ~"character(s)", Opts)
+    end.
+
+codepoints(<<_/utf8, Rest/binary>>, N) ->
+    codepoints(Rest, N + 1);
+codepoints(<<>>, N) ->
+    N;
+codepoints(_Invalid, _N) ->
+    invalid.
+
+check_length(CS, Field, Len, Unit, Opts) ->
     lists:foldl(
         fun
             ({min, Min}, Acc = #kura_changeset{}) when Len < Min ->
@@ -542,7 +560,7 @@ check_length(CS, Field, Len, Opts) ->
                     Acc,
                     Field,
                     iolist_to_binary(
-                        io_lib:format("should be at least ~B character(s)", [Min])
+                        io_lib:format("should be at least ~B ~ts", [Min, Unit])
                     )
                 );
             ({max, Max}, Acc = #kura_changeset{}) when Len > Max ->
@@ -550,7 +568,7 @@ check_length(CS, Field, Len, Opts) ->
                     Acc,
                     Field,
                     iolist_to_binary(
-                        io_lib:format("should be at most ~B character(s)", [Max])
+                        io_lib:format("should be at most ~B ~ts", [Max, Unit])
                     )
                 );
             ({is, Exact}, Acc = #kura_changeset{}) when Len =/= Exact ->
@@ -558,7 +576,7 @@ check_length(CS, Field, Len, Opts) ->
                     Acc,
                     Field,
                     iolist_to_binary(
-                        io_lib:format("should be ~B character(s)", [Exact])
+                        io_lib:format("should be ~B ~ts", [Exact, Unit])
                     )
                 );
             (_, Acc = #kura_changeset{}) ->
