@@ -44,6 +44,7 @@ fields() ->
     field_types/1,
     is_schema/1,
     encrypted_fields/1,
+    encryption_contexts/1,
     column_map/1,
     key/1,
     key_fields/1,
@@ -180,6 +181,23 @@ encrypted_fields(Mod) when is_atom(Mod) ->
         case is_schema(Mod) of
             false -> [];
             true -> [N || N := T <- field_types(Mod), kura_types:encryption(T) =/= none]
+        end
+    end).
+
+-doc """
+Return the column context (see `kura_crypto`) of each of `Mod`'s encrypted
+fields: `#{Field => {Table, FieldName}}`, with `Table` the schema's
+unprefixed `table()` and `FieldName` the field name as a binary. A v2
+ciphertext is bound to it, so renaming the table or the field makes stored
+v2 values undecryptable; a `column` mapping can change freely. `#{}` if
+`Mod` has no encrypted fields or is not a schema.
+""".
+-spec encryption_contexts(atom()) -> #{atom() => kura_crypto:context()}.
+encryption_contexts(Mod) when is_atom(Mod) ->
+    cache({kura_schema, encryption_contexts, Mod}, fun() ->
+        case encrypted_fields(Mod) of
+            [] -> #{};
+            Fields -> #{F => {Mod:table(), atom_to_binary(F)} || F <- Fields}
         end
     end).
 

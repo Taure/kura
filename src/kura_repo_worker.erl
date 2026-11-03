@@ -54,7 +54,7 @@ ok = kura_repo_worker:start(MyRepo),
     key_clauses/2,
     join_delete_sql/3,
     join_insert_sql/3,
-    dump_field/2,
+    dump_field/3,
     join_error/3
 ]).
 -endif.
@@ -888,24 +888,32 @@ delete_record(RepoMod, SchemaMod, Data) ->
     {ok, map()} | {error, {dump_failed, atom(), binary()}}.
 dump_set_map(From, Updates) when is_atom(From), From =/= undefined ->
     case is_schema_module(From) of
-        true -> dump_set_fields(maps:to_list(Updates), kura_schema:field_types(From), #{});
+        true -> dump_set_fields(maps:to_list(Updates), field_dump_specs(From), #{});
         false -> {ok, Updates}
     end;
 dump_set_map(_From, Updates) ->
     {ok, Updates}.
 
-dump_set_fields([], _Types, Acc) ->
+dump_set_fields([], _Specs, Acc) ->
     {ok, Acc};
-dump_set_fields([{K, V} | Rest], Types, Acc) ->
+dump_set_fields([{K, V} | Rest], {Types, Contexts} = Specs, Acc) ->
     case Types of
         #{K := Type} ->
-            case dump_field(Type, V) of
-                {ok, Dumped} -> dump_set_fields(Rest, Types, Acc#{K => Dumped});
+            case dump_field(Type, V, field_context(K, Contexts)) of
+                {ok, Dumped} -> dump_set_fields(Rest, Specs, Acc#{K => Dumped});
                 {error, Msg} -> {error, {dump_failed, K, Msg}}
             end;
         #{} ->
-            dump_set_fields(Rest, Types, Acc#{K => V})
+            dump_set_fields(Rest, Specs, Acc#{K => V})
     end.
+
+field_dump_specs(SchemaMod) ->
+    {kura_schema:field_types(SchemaMod), kura_schema:encryption_contexts(SchemaMod)}.
+
+%% An encrypted field is dumped with its column context, so it can be written
+%% as a column-bound v2 frame; every other field needs none.
+field_context(K, Contexts) ->
+    maps:get(K, Contexts, no_context).
 
 %% The bulk paths take raw maps rather than cast changesets, so a caller
 %% reasonably passes a value in the form `cast/2` accepts - `~"admin"` for an
@@ -913,8 +921,8 @@ dump_set_fields([{K, V} | Rest], Types, Acc) ->
 %% the happy path, and fall back to casting before failing the write. When the
 %% cast also fails its message is the one reported - `dump/2` only knows the
 %% shape is wrong, while `cast/2` knows why the value is invalid.
-dump_field(Type, V) ->
-    case kura_types:dump(Type, V) of
+dump_field(Type, V, Context) ->
+    case dump_value(Type, V, Context) of
         {ok, Dumped} ->
             {ok, Dumped};
         {error, Msg} ->
@@ -927,7 +935,7 @@ dump_field(Type, V) ->
             %% The `of` body is unprotected, so a raise from the re-dump in
             %% dump_cast/3 still propagates.
             try kura_types:cast(Type, V) of
-                {ok, Cast} -> dump_cast(Type, Cast, Msg);
+                {ok, Cast} -> dump_cast(Type, Cast, Context, Msg);
                 {error, CastMsg} -> {error, CastMsg}
             catch
                 error:_ -> {error, Msg};
@@ -935,11 +943,14 @@ dump_field(Type, V) ->
             end
     end.
 
-dump_cast(Type, Cast, Msg) ->
-    case kura_types:dump(Type, Cast) of
+dump_cast(Type, Cast, Context, Msg) ->
+    case dump_value(Type, Cast, Context) of
         {ok, Dumped} -> {ok, Dumped};
         {error, _} -> {error, Msg}
     end.
+
+dump_value(Type, V, no_context) -> kura_types:dump(Type, V);
+dump_value(Type, V, Context) -> kura_types:dump(Type, V, Context).
 
 is_schema_module(Mod) ->
     case code:ensure_loaded(Mod) of
@@ -964,23 +975,22 @@ dump_entries(SchemaMod, NonVirtual, [Entry | Rest], Acc) ->
 
 -spec dump_changes(module(), map()) -> {ok, map()} | {error, {atom(), binary()}}.
 dump_changes(SchemaMod, Changes) ->
-    Types = kura_schema:field_types(SchemaMod),
     NonVirtual = kura_schema:non_virtual_fields(SchemaMod),
-    dump_change_fields(maps:to_list(Changes), Types, NonVirtual, #{}).
+    dump_change_fields(maps:to_list(Changes), field_dump_specs(SchemaMod), NonVirtual, #{}).
 
-dump_change_fields([], _Types, _NonVirtual, Acc) ->
+dump_change_fields([], _Specs, _NonVirtual, Acc) ->
     {ok, Acc};
-dump_change_fields([{K, V} | Rest], Types, NonVirtual, Acc) ->
+dump_change_fields([{K, V} | Rest], {Types, Contexts} = Specs, NonVirtual, Acc) ->
     case {lists:member(K, NonVirtual), Types} of
         {false, _} ->
-            dump_change_fields(Rest, Types, NonVirtual, Acc);
+            dump_change_fields(Rest, Specs, NonVirtual, Acc);
         {true, #{K := Type}} ->
-            case dump_field(Type, V) of
-                {ok, Dumped} -> dump_change_fields(Rest, Types, NonVirtual, Acc#{K => Dumped});
+            case dump_field(Type, V, field_context(K, Contexts)) of
+                {ok, Dumped} -> dump_change_fields(Rest, Specs, NonVirtual, Acc#{K => Dumped});
                 {error, Msg} -> {error, {K, Msg}}
             end;
         {true, #{}} ->
-            dump_change_fields(Rest, Types, NonVirtual, Acc#{K => V})
+            dump_change_fields(Rest, Specs, NonVirtual, Acc#{K => V})
     end.
 
 dump_error_changeset(CS, Action, {Field, Msg}) ->

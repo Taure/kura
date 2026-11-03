@@ -826,11 +826,12 @@ load_row(SchemaMod, Row) when is_atom(SchemaMod) ->
             case erlang:function_exported(SchemaMod, fields, 0) of
                 true ->
                     Types = kura_schema:field_types(SchemaMod),
+                    Contexts = kura_schema:encryption_contexts(SchemaMod),
                     maps:fold(
                         fun(K, V, Acc) ->
                             case Types of
                                 #{K := Type} ->
-                                    case kura_types:load(Type, V) of
+                                    case load_field(Type, V, Contexts, K) of
                                         {ok, Loaded} -> Acc#{K => Loaded};
                                         {error, _} -> Acc#{K => V}
                                     end;
@@ -846,6 +847,12 @@ load_row(SchemaMod, Row) when is_atom(SchemaMod) ->
             end;
         _ ->
             Row
+    end.
+
+load_field(Type, V, Contexts, K) ->
+    case Contexts of
+        #{K := Context} -> kura_types:load(Type, V, Context);
+        #{} -> kura_types:load(Type, V)
     end.
 
 %%----------------------------------------------------------------------

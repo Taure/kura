@@ -36,7 +36,8 @@ keys() ->
 decrypts(KeyId, Inner, Plain, Hex) ->
     Frame = binary:decode_hex(Hex),
     ?assertMatch(<<1, KeyId, _/binary>>, Frame),
-    ?assertEqual({ok, Plain}, kura_types:load({encrypted, Inner}, Frame)).
+    ?assertEqual({ok, Plain}, kura_types:load({encrypted, Inner}, Frame)),
+    ?assertEqual({ok, Plain}, kura_types:load({encrypted, Inner}, Frame, {~"secrets", ~"ssn"})).
 
 covers_every_inner(Corpus) ->
     Inners = lists:usort([Inner || {_, Inner, _, _} <- Corpus]),

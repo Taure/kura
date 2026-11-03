@@ -112,7 +112,7 @@ assert_badarg(Call, Secret) ->
             ?assertEqual(nomatch, binary:match(term_to_binary(Stack), Secret))
     end.
 
-hidden_until_used_test() ->
+hidden_from_docs_test() ->
     {ok, {docs_v1, _, _, _, ModuleDoc, _, _}} = code:get_doc(kura_hkdf),
     ?assertEqual(hidden, ModuleDoc).
 
