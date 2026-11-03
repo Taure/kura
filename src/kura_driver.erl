@@ -97,6 +97,28 @@ and returns the result.
 Run SQL on a specific connection the caller already owns. Used by
 the sandbox path where a test process holds a checked-out conn for
 its lifetime.
+
+## The `transaction` option
+
+`m:kura_sandbox` runs its own transaction on `Conn` and says so in
+`Opts`, so that a driver can catch user SQL that ends it:
+
+- `transaction => starts`: `SQL` is a plain `BEGIN`, and later
+  statements marked `inside` run in the transaction it begins. `Params`
+  is `[]`. A driver may open the transaction its own way, to record
+  what it needs to recognise it later.
+- `transaction => inside`: `Conn` is expected to be inside that
+  transaction. A statement that ends it (a `COMMIT`, `END` or
+  `ROLLBACK`, however spelled) raises
+  `error({DriverMod, transaction_ended_by_statement})` once it has run.
+  Whatever it committed stays committed. A statement run after the
+  database rolled the transaction back itself raises
+  `error(transaction_rolled_back)`, as in `c:transaction/4`.
+
+Without the key, the statement runs in whatever state `Conn` is in, as
+before. The key is optional for a driver: one that does not check
+ignores it, and statements after an ended transaction run in
+autocommit.
 """.
 -callback query_on(Conn, SQL, Params, Opts) -> query_result() when
     Conn :: kura_pool:conn(),
@@ -183,10 +205,16 @@ inside `Fun`. kura core passes the statement to the driver unchanged and
 does not detect it. Whatever the statement committed stays committed,
 and the statements after it are no longer in the transaction. A driver
 should raise `{DriverMod, transaction_ended_by_statement}` once it
-notices: `kura_driver_sqlite` checks after every statement. A driver
-that cannot tell may let the outermost transaction return normally, with
-the work after the statement run in autocommit, and a nested one fail
-its `RELEASE`.
+notices, and raise the same for every statement meant for the
+transaction after it, including the `SAVEPOINT`, `RELEASE` and `COMMIT`
+the driver would send itself, rather than run them in autocommit. That
+label, not `transaction_rolled_back`, is what a statement after an ended
+transaction gets. A driver that cannot tell may let the outermost
+transaction return normally, with the work after the statement run in
+autocommit, and a nested one fail its `RELEASE`.
+
+A sandboxed test is covered the same way through the `transaction`
+option of `c:query_on/4`.
 
 ## Options
 

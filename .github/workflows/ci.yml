@@ -46,6 +46,8 @@ jobs:
       enable-mutate: true
       mutate-diff: true
       mutate-min-score: 75
+      # kura_db's mapped suites take about 8 s locally; 5 s timed out its mutants.
+      mutate-args: '--timeout 20000'
       enable-elp-lint: true
       enable-elp-eqwalize: true
 

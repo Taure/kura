@@ -75,7 +75,7 @@ query(RepoMod, SQL, Params) ->
     Result =
         case kura_sandbox:get_conn(Pool) of
             {ok, Conn} ->
-                DriverMod:query_on(Conn, SQL, Params, #{decode_opts => ?DECODE_OPTS});
+                in_sandbox(DriverMod, Conn, SQL, Params);
             not_found ->
                 PoolMod = get_pool_module(RepoMod),
                 DriverMod:query(PoolMod, Pool, SQL, Params, #{decode_opts => ?DECODE_OPTS})
@@ -134,7 +134,9 @@ connection is already inside a transaction, so `Fun` runs under a
 `SAVEPOINT` on it instead, the way a driver runs a nested transaction:
 an exception rolls back to the savepoint and is re-raised, and a
 savepoint the database will not release raises
-`transaction_rolled_back` after rolling back to it. Another process
+`transaction_rolled_back` after rolling back to it. A statement that ended
+the sandbox's transaction raises `{DriverMod, transaction_ended_by_statement}`
+here too, when the driver checks for it (see `m:kura_sandbox`). Another process
 opening a transaction on the same sandbox connection while this one is
 open raises `{kura_sandbox, overlapping_transactions}`.
 """.
@@ -187,6 +189,8 @@ savepointed(DriverMod, Conn, Fun) ->
         ~"kura_savepoint_", integer_to_binary(erlang:unique_integer([positive, monotonic]))
     ],
     case on_sandbox(DriverMod, Conn, [~"SAVEPOINT ", Savepoint]) of
+        ended -> error({DriverMod, transaction_ended_by_statement});
+        rolled_back -> error(transaction_rolled_back);
         {error, Refused} -> error({DriverMod, {savepoint_failed, reduced(Refused)}});
         _Started -> ok
     end,
@@ -201,6 +205,8 @@ savepointed(DriverMod, Conn, Fun) ->
 -spec released(module(), kura_pool:conn(), iodata(), Result) -> Result.
 released(DriverMod, Conn, Savepoint, Value) ->
     case on_sandbox(DriverMod, Conn, [~"RELEASE SAVEPOINT ", Savepoint]) of
+        ended ->
+            error({DriverMod, transaction_ended_by_statement});
         {error, _} ->
             ok = rolled_back_to(DriverMod, Conn, Savepoint),
             error(transaction_rolled_back);
@@ -221,12 +227,33 @@ reduced({pgsql_error, Fields}) when is_map(Fields) ->
 reduced(Reason) ->
     Reason.
 
+%% Once a statement has ended the sandbox's transaction, nothing meant for it
+%% runs: it would run in autocommit and keep its work.
+-spec in_sandbox(module(), kura_pool:conn(), iodata(), [term()]) -> dynamic().
+in_sandbox(DriverMod, Conn, SQL, Params) ->
+    case kura_sandbox:ended(Conn) of
+        true ->
+            error({DriverMod, transaction_ended_by_statement});
+        false ->
+            try
+                DriverMod:query_on(Conn, SQL, Params, #{
+                    decode_opts => ?DECODE_OPTS, transaction => inside
+                })
+            catch
+                error:{DriverMod, transaction_ended_by_statement} = Ended:Stack ->
+                    ok = kura_sandbox:note_ended(Conn),
+                    erlang:raise(error, Ended, Stack)
+            end
+    end.
+
 %% A raise here would replace the exception being cleaned up after.
 -spec on_sandbox(module(), kura_pool:conn(), iodata()) -> dynamic().
 on_sandbox(DriverMod, Conn, SQL) ->
     try
-        DriverMod:query_on(Conn, SQL, [], #{})
+        in_sandbox(DriverMod, Conn, SQL, [])
     catch
+        error:{DriverMod, transaction_ended_by_statement} -> ended;
+        error:transaction_rolled_back -> rolled_back;
         Class:_ -> {error, {raised, Class}}
     end.
 
