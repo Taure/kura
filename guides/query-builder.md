@@ -35,7 +35,20 @@ dialects bind every value as given (see
 `from` table's where conditions match. A query with a join, `order_by`,
 `group_by`, having, limit, offset, distinct, CTE or combination raises
 `{kura, {unsupported_in_bulk_write, Clause}}` there; filter with a subquery
-instead (`{id, in, {subquery, Q}}`).
+instead (`{id, in, {subquery, Q}}`). `Clause` is the first of these atoms,
+in this order, that the query sets:
+
+| Clause | Set by |
+|---|---|
+| `joins` | `join/4,5` |
+| `order_bys` | `order_by/2` |
+| `group_bys` | `group_by/2` |
+| `havings` | `having/2` |
+| `limit` | `limit/2` |
+| `offset` | `offset/2` |
+| `distinct` | `distinct/1,2` |
+| `ctes` | `with_cte/3` |
+| `combinations` | `union/2`, `union_all/2`, `intersect/2`, `except/2` |
 
 ### Equality
 

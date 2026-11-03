@@ -417,6 +417,9 @@ prefix. A query with a join, an `order_by`, a `group_by`, a having, a limit,
 an offset, a distinct, a CTE or a combination raises
 `{kura, {unsupported_in_bulk_write, Clause}}`, since the write would
 otherwise ignore the clause and touch rows the query does not select.
+`Clause` is the first of `joins`, `order_bys`, `group_bys`, `havings`,
+`limit`, `offset`, `distinct`, `ctes` and `combinations`, in that order,
+that the query sets.
 """.
 -spec update_all(module(), #kura_query{}, map()) -> {ok, non_neg_integer()} | {error, term()}.
 update_all(RepoMod, Query, Updates) ->
@@ -440,7 +443,9 @@ do_update_all(RepoMod, Query, Updates) ->
 Bulk delete all rows matching the query, returning the count of deleted rows.
 
 Raises `{kura, {unsupported_in_bulk_write, Clause}}` for the same clauses as
-`update_all/3`.
+`update_all/3`: `Clause` is the first of `joins`, `order_bys`,
+`group_bys`, `havings`, `limit`, `offset`, `distinct`, `ctes` and
+`combinations`, in that order, that the query sets.
 """.
 -spec delete_all(module(), #kura_query{}) -> {ok, non_neg_integer()} | {error, term()}.
 delete_all(RepoMod, Query) ->

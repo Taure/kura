@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `kura_dialect:qualified_columns/1`, public: which bare fields of a joined
+  query a dialect qualifies with the `from` table (see Changed).
+- The exported type `kura_repo_worker:hook_error/0`, a hook's
+  `{error, Reason}` in the specs of `insert/2,3` and `update/2`.
+- `kura_query:from/1` and `join/4,5` specs accept a binary table or CTE
+  name.
 - Optional `kura_dialect` callback `convert_values/1`: a dialect converts
   a query's bound values before it is compiled. `kura_dialect_pg`
   implements it (see Changed).
@@ -533,6 +539,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `kura_types:cast/2` on an empty time (`~""`, `~"2024-01-01T"`) raised
+  `badarg`; it now returns a cast error, so a changeset gets a field error.
+- A `utc_datetime` with an offset other than `Z` dropped the offset, so
+  `~"2024-01-01T10:00:00+02:00"` was stored as 10:00 UTC. The offset
+  (`+HH:MM`, `+HHMM` or `+HH`) is now applied, giving 08:00 UTC; a
+  malformed one is a cast error. A `naive_datetime` and a `time` keep
+  their wall-clock value, as before.
+- A parsed datetime is normalised through gregorian seconds, so
+  `24:00:00` and a leap second (`:60`) become the next day or minute, the
+  value a read returns. A `time` keeps `{24, 0, 0}`.
 - In a sandboxed test, a `COMMIT`, `END` or `ROLLBACK` run through a
   query raises `{DriverMod, transaction_ended_by_statement}` with a driver
   that checks for it, and so does every later statement on that sandbox
