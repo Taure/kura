@@ -1202,3 +1202,100 @@ distance_before_a_select_fragment_keeps_param_order_test() ->
         },
         kura_dialect_pg:to_sql(kura_query:limit(Q0, 3))
     ).
+
+distance_threshold_operator_per_comparison_test_() ->
+    D = kura_query:distance(embedding, cosine, [1, 2, 3]),
+    [
+        ?_assertEqual(
+            {
+                <<"SELECT * FROM \"kura_vector_items\" WHERE \"embedding\" <=> $1 ",
+                    (atom_to_binary(Op))/binary, " $2">>,
+                [~"[1.0,2.0,3.0]", 0.35]
+            },
+            kura_dialect_pg:to_sql(kura_query:where(kura_query:from(?VEC_SCHEMA), {D, Op, 0.35}))
+        )
+     || Op <- ['<', '<=', '>', '>=']
+    ].
+
+distance_threshold_operator_per_metric_test_() ->
+    [
+        ?_assertEqual(
+            {
+                <<"SELECT * FROM \"kura_vector_items\" WHERE \"embedding\" ", Op/binary,
+                    " $1 < $2">>,
+                [~"[1.0,2.0,3.0]", 1]
+            },
+            kura_dialect_pg:to_sql(
+                kura_query:where(
+                    kura_query:from(?VEC_SCHEMA),
+                    {kura_query:distance(embedding, Metric, [1, 2, 3]), '<', 1}
+                )
+            )
+        )
+     || {Metric, Op} <- [{l2, ~"<->"}, {cosine, ~"<=>"}, {inner_product, ~"<#>"}]
+    ].
+
+%% The threshold's two params sit in the where's place in the numbering,
+%% before the having, order by, limit and offset that follow.
+distance_threshold_params_are_numbered_with_order_by_and_limit_test() ->
+    D = kura_query:distance(embedding, l2, [1, 2, 3]),
+    Far = kura_query:distance(any_embedding, inner_product, [4, 5]),
+    Q0 = kura_query:select_expr(kura_query:from(?VEC_SCHEMA), [{content, content}, {dist, D}]),
+    Q1 = kura_query:where(Q0, {content, like, ~"a%"}),
+    Q2 = kura_query:where(Q1, {'and', [{D, '<', 0.5}, {'not', {Far, '>=', -1}}]}),
+    Q3 = kura_query:having(kura_query:group_by(Q2, [content, embedding]), {D, '<=', 0.75}),
+    Q4 = kura_query:order_by(Q3, [{D, asc}]),
+    Q5 = kura_query:offset(kura_query:limit(Q4, 10), 20),
+    ?assertEqual(
+        {
+            <<
+                "SELECT \"content\" AS \"content\", \"embedding\" <-> $1 AS \"dist\" "
+                "FROM \"kura_vector_items\" WHERE \"content\" LIKE $2 AND "
+                "(\"embedding\" <-> $3 < $4 AND NOT (\"any_embedding\" <#> $5 >= $6)) "
+                "GROUP BY \"content\", \"embedding\" HAVING \"embedding\" <-> $7 <= $8 "
+                "ORDER BY \"embedding\" <-> $9 ASC LIMIT $10 OFFSET $11"
+            >>,
+            [
+                ~"[1.0,2.0,3.0]",
+                ~"a%",
+                ~"[1.0,2.0,3.0]",
+                0.5,
+                ~"[4.0,5.0]",
+                -1,
+                ~"[1.0,2.0,3.0]",
+                0.75,
+                ~"[1.0,2.0,3.0]",
+                10,
+                20
+            ]
+        },
+        kura_dialect_pg:to_sql(Q5)
+    ).
+
+distance_threshold_in_a_subquery_continues_the_numbering_test() ->
+    D = kura_query:distance(embedding, cosine, [1, 2, 3]),
+    Near = kura_query:select(kura_query:where(kura_query:from(?VEC_SCHEMA), {D, '<', 0.2}), [id]),
+    Q = kura_query:where(
+        kura_query:where(kura_query:from(?VEC_SCHEMA), {content, ~"x"}),
+        {id, in, {subquery, Near}}
+    ),
+    ?assertEqual(
+        {
+            <<
+                "SELECT * FROM \"kura_vector_items\" WHERE \"content\" = $1 AND \"id\" IN "
+                "(SELECT \"id\" FROM \"kura_vector_items\" WHERE \"embedding\" <=> $2 < $3)"
+            >>,
+            [~"x", ~"[1.0,2.0,3.0]", 0.2]
+        },
+        kura_dialect_pg:to_sql(Q)
+    ).
+
+distance_threshold_in_delete_all_test() ->
+    D = kura_query:distance(embedding, l2, [1, 2, 3]),
+    {SQL, Params} = kura_dialect_pg:delete_all(
+        kura_query:where(kura_query:from(?VEC_SCHEMA), {D, '>', 2})
+    ),
+    ?assertEqual(
+        {~"DELETE FROM \"kura_vector_items\" WHERE \"embedding\" <-> $1 > $2", [~"[1.0,2.0,3.0]", 2]},
+        {iolist_to_binary(SQL), Params}
+    ).

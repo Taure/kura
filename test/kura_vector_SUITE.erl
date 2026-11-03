@@ -23,6 +23,9 @@ cannot create the `vector` extension the suite skips, or fails when the
     hnsw_index_serves_the_ordering/1,
     ordering_by_the_select_alias_uses_the_index/1,
     large_vector_round_trips_and_ranks/1,
+    distance_threshold_keeps_the_rows_within_it/1,
+    distance_threshold_binds_with_order_by_and_limit/1,
+    distance_threshold_in_having/1,
     create_index_builds_an_hnsw_index_the_planner_uses/1,
     create_index_builds_an_ivfflat_index_the_planner_uses/1
 ]).
@@ -41,6 +44,9 @@ all() ->
         hnsw_index_serves_the_ordering,
         ordering_by_the_select_alias_uses_the_index,
         large_vector_round_trips_and_ranks,
+        distance_threshold_keeps_the_rows_within_it,
+        distance_threshold_binds_with_order_by_and_limit,
+        distance_threshold_in_having,
         create_index_builds_an_hnsw_index_the_planner_uses,
         create_index_builds_an_ivfflat_index_the_planner_uses
     ].
@@ -181,6 +187,65 @@ large_vector_round_trips_and_ranks(_Config) ->
     {ok, [First, Second]} = kura_repo_worker:all(?REPO, kura_query:order_by(Q0, [{D, asc}])),
     ?assertMatch(#{content := ~"near", dist := +0.0}, First),
     ?assertMatch(#{content := ~"far"}, Second).
+
+%% Each comparison against a threshold between the seed rows' distances,
+%% for every metric, with a float and an integer threshold.
+distance_threshold_keeps_the_rows_within_it(_Config) ->
+    seed(),
+    Query = [1, 0, 0],
+    [
+        begin
+            Expected = expected(Metric, Query),
+            [{_, Nearest}, {_, Middle}, {_, Farthest}] = Expected,
+            Between = (Nearest + Middle) / 2,
+            Within = fun(Op, Threshold) ->
+                D = kura_query:distance(embedding, Metric, Query),
+                Q = kura_query:where(kura_query:from(?SCHEMA), {D, Op, Threshold}),
+                {ok, Rows} = kura_repo_worker:all(?REPO, kura_query:order_by(Q, [{D, asc}])),
+                [C || #{content := C} <- Rows]
+            end,
+            All = [C || {C, _} <- Expected],
+            [First | Rest] = All,
+            ?assertEqual([First], Within('<', Between)),
+            ?assertEqual([First], Within('<=', Between)),
+            ?assertEqual(Rest, Within('>', Between)),
+            ?assertEqual(Rest, Within('>=', Between)),
+            ?assertEqual(All, Within('<=', Farthest + 1.0e-4)),
+            ?assertEqual([], Within('<', Nearest - 1.0e-4)),
+            ?assertEqual(All, Within('<', 2)),
+            ?assertEqual([], Within('>', 2))
+        end
+     || Metric <- [l2, cosine, inner_product]
+    ].
+
+%% The threshold's vector and number bind between the select and the
+%% order by, and the cached query takes new values for both.
+distance_threshold_binds_with_order_by_and_limit(_Config) ->
+    seed(),
+    _ = insert(~"w", [-1, -1, 0]),
+    Search = fun(Vec, Threshold, Limit, Offset) ->
+        D = kura_query:distance(embedding, l2, Vec),
+        Q0 = kura_query:select_expr(kura_query:from(?SCHEMA), [{content, content}, {dist, D}]),
+        Q1 = kura_query:where(Q0, {'and', [{content, '!=', ~"y"}, {D, '<', Threshold}]}),
+        Q2 = kura_query:order_by(Q1, [{dist, asc}]),
+        {ok, Rows} = kura_repo_worker:all(
+            ?REPO, kura_query:offset(kura_query:limit(Q2, Limit), Offset)
+        ),
+        [{C, Dist} || #{content := C, dist := Dist} <- Rows]
+    end,
+    ?assertMatch([{~"x", +0.0}, {~"z", _}], Search([1, 0, 0], 1.5, 10, 0)),
+    ?assertMatch([{~"z", _}], Search([1, 0, 0], 1.5, 1, 1)),
+    ?assertMatch([{~"z", +0.0}, {~"x", _}], Search([0, 0.6, 0.8], 1.5, 2, 0)),
+    ?assertMatch([{~"w", +0.0}], Search([-1, -1, 0], 1, 10, 0)),
+    ?assertEqual(1, kura_query_cache:entry_count()).
+
+distance_threshold_in_having(_Config) ->
+    seed(),
+    D = kura_query:distance(embedding, cosine, [1, 0, 0]),
+    Q0 = kura_query:select_expr(kura_query:from(?SCHEMA), [{content, content}]),
+    Q1 = kura_query:having(kura_query:group_by(Q0, [content, embedding]), {D, '<', 0.5}),
+    {ok, Rows} = kura_repo_worker:all(?REPO, kura_query:order_by(Q1, [{content, asc}])),
+    ?assertEqual([~"x", ~"y"], [C || #{content := C} <- Rows]).
 
 create_index_builds_an_hnsw_index_the_planner_uses(_Config) ->
     seed(),
