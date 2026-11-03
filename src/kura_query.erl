@@ -66,8 +66,12 @@ Q3 = kura_query:limit(Q2, 10).
 %% pgvector's VECTOR_MAX_DIM.
 -define(MAX_DIMENSIONS, 16000).
 
--doc "Start a query from the given schema module or table atom.".
--spec from(atom() | module()) -> #kura_query{}.
+-doc """
+Start a query from a schema module, a bare table atom, or a binary table or
+CTE name (see `with_cte/3`). Rows read from a schema are loaded through its
+field types; rows read from a name come back as the driver returns them.
+""".
+-spec from(module() | binary()) -> #kura_query{}.
 from(Source) ->
     #kura_query{from = Source}.
 
@@ -921,7 +925,17 @@ except(Q = #kura_query{combinations = C}, Q2) ->
 scope(Query, Fun) when is_function(Fun, 1) ->
     Fun(Query).
 
--doc "Include soft-deleted records in query results.".
+-doc """
+Include soft-deleted records in query results.
+
+A schema with a `deleted_at` field is soft-deletable: `kura_repo_worker`'s
+reads (`all/2`, `get/3`, `one/2`, `exists/2`, `count/2`, `aggregate/3,4`),
+`update_all/3`, `delete_all/2` and `kura_stream:stream/3,4` leave out its
+rows whose `deleted_at` is set unless the query is marked with this
+function. The filter applies to the query's own `from` schema; the bodies
+of its CTEs, subqueries and combined queries are not filtered, so add
+`{deleted_at, is_nil}` to them where needed.
+""".
 -spec with_deleted(#kura_query{}) -> #kura_query{}.
 with_deleted(Q) ->
     Q#kura_query{include_deleted = true}.

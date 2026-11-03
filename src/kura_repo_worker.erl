@@ -40,6 +40,7 @@ ok = kura_repo_worker:start(MyRepo),
     multi/2,
     preload/4,
     query/3,
+    scope_read/1,
     pgo_query/3,
     build_log_event/5,
     build_telemetry_metadata/4,
@@ -100,8 +101,7 @@ start(RepoMod) ->
 -doc "Execute a query and return all matching rows.".
 -spec all(module(), #kura_query{}) -> {ok, [map()]} | {error, term()}.
 all(RepoMod, Query) ->
-    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_prefix(Query)),
-    {SQL, Params} = kura_query_compiler:to_sql_cached(RepoMod, Q1),
+    {SQL, Params} = kura_query_compiler:to_sql_cached(RepoMod, scope_read(Query)),
 
     case kura_db:query(RepoMod, SQL, Params) of
         #{command := select, rows := Rows} ->
@@ -192,6 +192,10 @@ reload(RepoMod, SchemaMod, Record) ->
 -doc """
 Run an aggregate function on a query. Supported: `count`, `sum`, `avg`, `min`, `max`.
 
+The query is scoped as `all/2` scopes it: soft-deleted rows are left out
+unless the query asks for them with `kura_query:with_deleted/1`, and the
+current tenant applies.
+
 ```erlang
 {ok, 42} = kura_repo_worker:aggregate(MyRepo, Q, count).
 {ok, 150.5} = kura_repo_worker:aggregate(MyRepo, Q, {sum, score}).
@@ -210,7 +214,7 @@ aggregate(RepoMod, Query, {Agg, Field}) ->
         preloads = [],
         distinct = false
     },
-    {SQL, Params} = kura_query_compiler:to_sql(RepoMod, AggQ),
+    {SQL, Params} = kura_query_compiler:to_sql(RepoMod, scope_read(AggQ)),
     case kura_db:query(RepoMod, SQL, Params) of
         #{rows := [Row]} -> {ok, maps:get(Agg, Row)};
         #{rows := []} -> {ok, nil};
@@ -391,7 +395,7 @@ update_all(RepoMod, Query, Updates) ->
     guard_write(RepoMod, fun() -> do_update_all(RepoMod, Query, Updates) end).
 
 do_update_all(RepoMod, Query, Updates) ->
-    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_prefix(Query)),
+    Q1 = scope_read(Query),
     case dump_set_map(Q1#kura_query.from, pin_tenant(Updates)) of
         {error, _} = DumpErr ->
             DumpErr;
@@ -410,7 +414,7 @@ delete_all(RepoMod, Query) ->
     guard_write(RepoMod, fun() -> do_delete_all(RepoMod, Query) end).
 
 do_delete_all(RepoMod, Query) ->
-    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_prefix(Query)),
+    Q1 = scope_read(Query),
     {SQL, Params} = kura_query_compiler:delete_all(RepoMod, Q1),
 
     case kura_db:query(RepoMod, SQL, Params) of
@@ -1139,6 +1143,11 @@ needs_transaction(undefined, _Action) ->
 needs_transaction(SchemaMod, Action) ->
     kura_schema:has_after_hook(SchemaMod, Action).
 
+-doc false.
+-spec scope_read(#kura_query{}) -> #kura_query{}.
+scope_read(Query) ->
+    maybe_apply_soft_delete(maybe_apply_tenant_prefix(Query)).
+
 maybe_apply_soft_delete(Query) ->
     case Query#kura_query.include_deleted of
         true ->
@@ -1151,11 +1160,13 @@ maybe_apply_soft_delete(Query) ->
             end
     end.
 
-has_soft_delete(undefined) ->
-    false;
-has_soft_delete(SchemaMod) ->
-    Types = kura_schema:field_types(SchemaMod),
-    maps:is_key(deleted_at, Types).
+%% A table name, a CTE name or a bare table atom has no schema to declare
+%% `deleted_at`.
+has_soft_delete(SchemaMod) when is_atom(SchemaMod), SchemaMod =/= undefined ->
+    kura_schema:is_schema(SchemaMod) andalso
+        maps:is_key(deleted_at, kura_schema:field_types(SchemaMod));
+has_soft_delete(_From) ->
+    false.
 
 maybe_apply_tenant_prefix(Query) ->
     case kura_tenant:get_tenant() of

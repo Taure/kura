@@ -50,7 +50,9 @@ tenant_test_() ->
             {"preloading several associations stays in the tenant",
                 fun parallel_preload_is_scoped/0},
             {"preloading several associations stays in the prefix schema",
-                fun parallel_preload_keeps_prefix/0}
+                fun parallel_preload_keeps_prefix/0},
+            {"count, aggregates and streams stay in the prefix schema",
+                fun prefix_scopes_count_and_stream/0}
         ]}
     end}.
 
@@ -386,6 +388,25 @@ parallel_preload_keeps_prefix() ->
     {ok, [Note]} = as({prefix, ~"tenant_p1"}, fun() -> kura_test_repo:all(Q) end),
     ?assertMatch(#{name := ~"p1-item"}, maps:get(item, Note)),
     ?assertMatch(#{name := ~"p1-item"}, maps:get(parent, Note)).
+
+prefix_scopes_count_and_stream() ->
+    {ok, _} = raw("DROP SCHEMA IF EXISTS tenant_p1 CASCADE", []),
+    {ok, _} = raw("CREATE SCHEMA tenant_p1", []),
+    {ok, _} = raw("CREATE TABLE tenant_p1.tenant_items (LIKE tenant_items INCLUDING ALL)", []),
+    {ok, _} = raw(
+        "INSERT INTO tenant_p1.tenant_items (org_id, name, score) VALUES (1, 'p1-only', 7)", []
+    ),
+    Q = kura_query:from(?ITEMS),
+    Self = self(),
+    as({prefix, ~"tenant_p1"}, fun() ->
+        ?assertEqual({ok, 1}, kura_repo_worker:count(kura_test_repo, Q)),
+        ?assertEqual({ok, 7}, kura_repo_worker:aggregate(kura_test_repo, Q, {sum, score})),
+        ok = kura_stream:stream(kura_test_repo, Q, fun(Batch) ->
+            Self ! {batch, Batch},
+            ok
+        end)
+    end),
+    ?assertEqual([~"p1-only"], names(drain_batches([]))).
 
 %%----------------------------------------------------------------------
 %% Helpers

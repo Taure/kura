@@ -19,6 +19,12 @@ soft_delete_test_() ->
             {"soft-deleted records excluded from one()", fun t_excluded_from_one/0},
             {"soft-deleted records excluded from exists()", fun t_excluded_from_exists/0},
             {"soft-deleted records excluded from count", fun t_excluded_from_count/0},
+            {"count/2 leaves out soft-deleted records", fun t_count_fun_excludes/0},
+            {"aggregate/3,4 leave out soft-deleted records", fun t_aggregate_excludes/0},
+            {"stream leaves out soft-deleted records", fun t_stream_excludes/0},
+            {"stream with_deleted includes soft-deleted records", fun t_stream_with_deleted/0},
+            {"all/2 from a CTE name", fun t_all_from_cte_name/0},
+            {"all/2 from a bare table name", fun t_all_from_bare_table/0},
 
             %% with_deleted
             {"with_deleted includes soft-deleted records", fun t_with_deleted/0},
@@ -133,6 +139,68 @@ t_excluded_from_count() ->
     Q1 = kura_query:count(Q),
     {ok, [#{count := Count}]} = kura_test_repo:all(Q1),
     ?assertEqual(1, Count).
+
+t_count_fun_excludes() ->
+    _Live = insert_item(~"CFLive"),
+    {ok, _} = soft_delete_item(insert_item(~"CFDead")),
+    Q = kura_query:where(kura_query:from(kura_test_soft_delete_schema), {name, like, ~"CF%"}),
+    ?assertEqual({ok, 1}, kura_repo_worker:count(kura_test_repo, Q)),
+    ?assertEqual({ok, 2}, kura_repo_worker:count(kura_test_repo, kura_query:with_deleted(Q))).
+
+t_aggregate_excludes() ->
+    Live = insert_item(~"AGLive"),
+    {ok, _} = soft_delete_item(insert_item(~"AGDead")),
+    Q = kura_query:where(kura_query:from(kura_test_soft_delete_schema), {name, like, ~"AG%"}),
+    ?assertEqual(
+        {ok, maps:get(id, Live)}, kura_repo_worker:aggregate(kura_test_repo, Q, {max, id})
+    ),
+    ?assertEqual({ok, 1}, kura_repo_worker:aggregate(kura_test_repo, Q, count, 0)).
+
+t_stream_excludes() ->
+    _Live = insert_item(~"STLive"),
+    {ok, _} = soft_delete_item(insert_item(~"STDead")),
+    Q = kura_query:where(kura_query:from(kura_test_soft_delete_schema), {name, like, ~"ST%"}),
+    ?assertEqual([~"STLive"], streamed_names(Q)).
+
+t_stream_with_deleted() ->
+    _Live = insert_item(~"SWLive"),
+    {ok, _} = soft_delete_item(insert_item(~"SWDead")),
+    Q = kura_query:where(kura_query:from(kura_test_soft_delete_schema), {name, like, ~"SW%"}),
+    ?assertEqual([~"SWDead", ~"SWLive"], streamed_names(kura_query:with_deleted(Q))).
+
+t_all_from_cte_name() ->
+    _Live = insert_item(~"CTELive"),
+    {ok, _} = soft_delete_item(insert_item(~"CTEDead")),
+    Body = kura_query:select(
+        kura_query:where(
+            kura_query:from(kura_test_soft_delete_schema), {name, like, ~"CTE%"}
+        ),
+        [name, deleted_at]
+    ),
+    Q = kura_query:with_cte(kura_query:from(~"cte_items"), ~"cte_items", Body),
+    {ok, Rows} = kura_test_repo:all(Q),
+    ?assertEqual([~"CTEDead", ~"CTELive"], lists:sort([maps:get(name, R) || R <- Rows])),
+    ?assertEqual({ok, 2}, kura_repo_worker:count(kura_test_repo, Q)).
+
+t_all_from_bare_table() ->
+    _ = insert_item(~"BareTable"),
+    Q = kura_query:where(kura_query:from(soft_items), {name, ~"BareTable"}),
+    ?assertMatch({ok, [#{name := ~"BareTable"}]}, kura_test_repo:all(Q)),
+    ?assertEqual({ok, 1}, kura_repo_worker:count(kura_test_repo, Q)).
+
+streamed_names(Q) ->
+    Self = self(),
+    ok = kura_stream:stream(kura_test_repo, Q, fun(Batch) ->
+        Self ! {batch, [maps:get(name, R) || R <- Batch]},
+        ok
+    end),
+    lists:sort(drain_batches([])).
+
+drain_batches(Acc) ->
+    receive
+        {batch, Names} -> drain_batches(Acc ++ Names)
+    after 0 -> Acc
+    end.
 
 %%----------------------------------------------------------------------
 %% with_deleted
