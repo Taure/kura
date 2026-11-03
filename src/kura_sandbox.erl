@@ -41,6 +41,14 @@ sandbox connection (`allow/3` or `shared`) share its savepoints too, so
 their transactions must run one after another: a transaction opened
 while another process has one open on the same connection raises
 `{kura_sandbox, overlapping_transactions}`.
+
+A `COMMIT`, `END` or `ROLLBACK` run through a query ends the sandbox's
+transaction, and what it committed stays in the database. With a driver
+that checks for it (see `c:kura_driver:query_on/4`), the statement
+raises `{DriverMod, transaction_ended_by_statement}`, and so does every
+statement on the connection after it, from any process sharing it,
+without being run. With a driver that does not check, the statements
+after it run in autocommit and their work is kept.
 """.
 
 -export([
@@ -51,7 +59,9 @@ while another process has one open on the same connection raises
     allow/3,
     get_conn/1,
     enter_transaction/1,
-    leave_transaction/1
+    leave_transaction/1,
+    note_ended/1,
+    ended/1
 ]).
 
 -define(TABLE, kura_sandbox_registry).
@@ -94,7 +104,7 @@ checkout(RepoMod, Opts) ->
             ets:insert(?TABLE, {{Pool, Self}, {PoolMod, Token, Conn}})
     end,
 
-    _ = DriverMod:query_on(Conn, ~"BEGIN", [], #{}),
+    _ = DriverMod:query_on(Conn, ~"BEGIN", [], #{transaction => starts}),
     ok.
 
 -doc "Roll back the sandbox transaction and return the connection to the pool.".
@@ -127,6 +137,7 @@ checkin(RepoMod) ->
             ok = PoolMod:checkin(Pool, Token),
             ets:match_delete(?TABLE, {{Pool, '_', allowed}, Self}),
             ets:delete(?TABLE, {transaction, Conn}),
+            ets:delete(?TABLE, {ended, Conn}),
             ok
     end.
 
@@ -202,6 +213,22 @@ leave_transaction(Conn) ->
         _NotHeld ->
             ok
     end.
+
+-doc """
+Note that a statement ended the transaction on sandbox connection `Conn`.
+
+Called by `m:kura_db` when the driver raises
+`{DriverMod, transaction_ended_by_statement}`. Cleared by `checkin/1`.
+""".
+-spec note_ended(kura_pool:conn()) -> ok.
+note_ended(Conn) ->
+    true = ets:insert(?TABLE, {{ended, Conn}}),
+    ok.
+
+-doc "Whether a statement ended the transaction on sandbox connection `Conn`.".
+-spec ended(kura_pool:conn()) -> boolean().
+ended(Conn) ->
+    ets:member(?TABLE, {ended, Conn}).
 
 %%----------------------------------------------------------------------
 %% Internal

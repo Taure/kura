@@ -422,6 +422,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- In a sandboxed test, a `COMMIT`, `END` or `ROLLBACK` run through a
+  query raises `{DriverMod, transaction_ended_by_statement}` with a driver
+  that checks for it, and so does every later statement on that sandbox
+  connection, from any process sharing it, without being run (#198). A
+  `kura_db:transaction/2` whose function caught that error raises it too,
+  rather than `transaction_rolled_back`. `c:kura_driver:query_on/4` takes
+  a `transaction` option (`starts` or `inside`) for this; a driver that
+  ignores it behaves as before. The driver contract now names
+  `transaction_ended_by_statement` as the error for every statement after
+  a statement ended the transaction.
 - The compiled-query cache replaces select-expression fragment
   parameters with markers. They stayed in the shape, so every new value
   interned another entry.
