@@ -101,7 +101,8 @@ then binds the value the database would parse from it: an atom on an
 binds the value it spells on an `id`, `integer`, `bigint`, `smallint`,
 `float`, `boolean`, `date` or `time` field (`~"42"` binds `42`).
 A datetime or time binary is cast only without a UTC offset other than
-`Z` and without fractional seconds, since the cast would drop them. An
+`Z` and without fractional seconds, since the cast drops a fraction and
+drops the offset of a time or naive datetime. An
 integer binary longer than 20 bytes, or a float binary longer than 64, is
 not parsed. This covers `=`, `!=`, `<`, `>`, `<=`, `>=`, `in`, `not_in`
 and `between`, under `and`, `or` and `not`, in the query and in every CTE,
@@ -231,9 +232,9 @@ convertible_type(Types, Field) ->
 %% Only conversions that bind what the database would parse: an enum
 %% atom to its stored binary, and a binary in cast form to the scalar it
 %% spells. A datetime binary with an offset or a fraction is left alone,
-%% since the cast would drop them. jsonb, embeds, arrays, vectors, strings
+%% since the cast can drop them. jsonb, embeds, arrays, vectors, strings
 %% and custom types are bound as given, as they always were.
-where_value(_Type, Value) when Value =:= undefined; Value =:= null ->
+where_value(_Type, Value) when Value =:= undefined; Value =:= null; Value =:= nil ->
     Value;
 where_value({enum, _}, Value) when is_atom(Value) ->
     atom_to_binary(Value, utf8);

@@ -676,6 +676,12 @@ convert_values_leaves_an_encrypted_field_value_as_given_test() ->
     Q = #kura_query{from = kura_test_enc_scalar_schema, wheres = Wheres},
     ?assertEqual(Wheres, dumped(Q)).
 
+convert_values_keeps_nil_on_an_enum_field_test() ->
+    Q = where_all(kura_query:from(kura_test_schema), [
+        {status, nil}, {status, '!=', nil}, {status, in, [active, nil]}
+    ]),
+    ?assertEqual([{status, nil}, {status, '!=', nil}, {status, in, [~"active", nil]}], dumped(Q)).
+
 convert_values_is_idempotent_test() ->
     Q = where_all(kura_query:from(kura_test_schema), [
         {active, ~"true"}, {status, active}, {age, in, [~"1", 2]}
@@ -695,6 +701,38 @@ where_casts_a_number_binary_at_the_size_limit_test() ->
     Twenty = binary:copy(~"9", 20),
     Q = kura_query:where(kura_query:from(kura_test_schema), {id, Twenty}),
     ?assertEqual([{id, binary_to_integer(Twenty)}], dumped(Q)).
+
+where_converts_time_bigint_smallint_and_each_operator_test() ->
+    Twenty = ~"-9223372036854775808",
+    TwentyOne = binary:copy(~"9", 21),
+    Sub = kura_query:where(kura_query:from(kura_test_time_schema), {small, ~"5"}),
+    Q = where_all(kura_query:from(kura_test_time_schema), [
+        {at, ~"10:00:00"},
+        {at, '=', ~"10:00:01Z"},
+        {at, '<', ~"10:00:00.5"},
+        {big, '<=', Twenty},
+        {big, '>=', TwentyOne},
+        {small, '<', ~"12"},
+        {small, '>=', TwentyOne},
+        {'and', [{big, ~"1"}, {small, ~"2"}]},
+        {not_exists, {subquery, Sub}},
+        {big, in, [1, ~"2"]}
+    ]),
+    ?assertEqual(
+        [
+            {at, {10, 0, 0}},
+            {at, '=', {10, 0, 1}},
+            {at, '<', ~"10:00:00.5"},
+            {big, '<=', -9223372036854775808},
+            {big, '>=', TwentyOne},
+            {small, '<', 12},
+            {small, '>=', TwentyOne},
+            {'and', [{big, 1}, {small, 2}]},
+            {not_exists, {subquery, Sub#kura_query{wheres = [{small, 5}]}}},
+            {big, in, [1, 2]}
+        ],
+        dumped(Q)
+    ).
 
 %%----------------------------------------------------------------------
 %% Distance thresholds in where/2 and having/2

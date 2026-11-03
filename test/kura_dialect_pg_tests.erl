@@ -1450,3 +1450,37 @@ distance_threshold_under_a_join_qualifies_the_vector_column_test() ->
         iolist_to_binary(SQL)
     ),
     ?assertEqual([~"[1.0,2.0,3.0]", 2, ~"[1.0,2.0,3.0]"], Params).
+
+join_qualifies_having_and_window_spec_test() ->
+    Joined = kura_query:join(kura_query:from(kura_test_post_schema), inner, kura_test_schema, {
+        author_id, id
+    }),
+    Grouped = kura_query:having(
+        kura_query:group_by(kura_query:select(Joined, [author_id]), [author_id]),
+        {author_id, '>', 1}
+    ),
+    {GroupedSQL, GroupedParams} = kura_dialect_pg:to_sql(Grouped),
+    ?assertEqual(
+        <<
+            "SELECT \"posts\".\"author_id\" FROM \"posts\" "
+            "INNER JOIN \"users\" ON \"posts\".\"author_id\" = \"users\".\"id\" "
+            "GROUP BY \"posts\".\"author_id\" HAVING \"posts\".\"author_id\" > $1"
+        >>,
+        iolist_to_binary(GroupedSQL)
+    ),
+    ?assertEqual([1], GroupedParams),
+    Window = kura_query:select_expr(Joined, [
+        {total,
+            kura_query:over({sum, id}, #{
+                partition_by => [author_id], order_by => [{inserted_at, desc}]
+            })}
+    ]),
+    {WindowSQL, []} = kura_dialect_pg:to_sql(Window),
+    ?assertEqual(
+        <<
+            "SELECT sum(\"posts\".\"id\") OVER (PARTITION BY \"posts\".\"author_id\" "
+            "ORDER BY \"posts\".\"inserted_at\" DESC) AS \"total\" FROM \"posts\" "
+            "INNER JOIN \"users\" ON \"posts\".\"author_id\" = \"users\".\"id\""
+        >>,
+        iolist_to_binary(WindowSQL)
+    ).
