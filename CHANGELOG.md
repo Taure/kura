@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parameters; both modes reveal length and `NULL`-ness, and the value
   stays personal data under the GDPR. A unique index holds within one
   deterministic key generation. Keep a column under 2^32 distinct values
-  per key.
+  per key. On SQLite the options form needs kura_sqlite 1.2.0 or later.
 - `kura_query:where/2` and `having/2` turn `=`, bare equality, `in`, `!=`
   and `not_in` on a deterministic field into
   `{Field, encrypted_in | encrypted_not_in, Ciphertexts}` before the

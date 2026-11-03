@@ -426,9 +426,9 @@ rewritten. Renaming the table or column without pinning `context` makes the
 stored values undecryptable. A shared `context` gives two columns equal
 ciphertexts for equal values, which raw SQL can compare (`join/5` still
 refuses an encrypted column), at the cost of a value being movable between
-them. On SQLite, `{encrypted, Inner, Opts}` fields are unsupported until a
-kura_sqlite release after 1.1.0, which reads the options form through
-`kura_types:encryption/1` and binds the `encrypted_in` condition as bytes.
+them. On SQLite, `{encrypted, Inner, Opts}` fields need kura_sqlite 1.2.0 or
+later, which reads the options form through `kura_types:encryption/1` and
+binds the `encrypted_in` condition as bytes.
 
 ## Configuration
 
