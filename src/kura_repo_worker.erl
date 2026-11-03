@@ -79,7 +79,19 @@ not start, with any secret in `Reason` replaced by `redacted`. A pool module
 that raises instead makes this raise
 `{pool_start_failed, RepoMod, {Class, Redacted}}`. A repo `init/1` that raises
 returns `{error, {init_failed, {Class, Shape}}}`, keeping only the shape of its
-reason; see `kura_db:start_pool/1`.
+reason; see `kura_db:start_pool/1`. A pool name another repo's running pool
+already has returns `{error, {pool_owned_by, Owner}}`.
+
+Queries then use the settings the pool was started with, without calling
+`init/1` again. Calling `start/1` again on a running pool returns `ok` and
+re-reads them. When they changed, storing them replaces a `persistent_term`,
+which triggers a global garbage collection over every process, so refresh on
+a config change, not per request. Settings that are unchanged cost nothing.
+
+A running pool keeps the connection settings it was started with: calling
+`start/1` again after changing the credentials returns `ok` and changes
+nothing in the pool. Call `kura_db:stop_pool/1` and then `start/1` to apply
+new credentials.
 """.
 -spec start(module()) -> ok | {error, term()}.
 start(RepoMod) ->
@@ -1019,7 +1031,7 @@ maybe_generate_single_pk(RepoMod, SchemaMod, PK, Changes) ->
 
 -spec uuid_version(module()) -> v7 | v4.
 uuid_version(RepoMod) ->
-    case maps:get(uuid_version, kura_repo:config(RepoMod), v4) of
+    case maps:get(uuid_version, kura_repo:settings(RepoMod), v4) of
         v7 -> v7;
         _ -> v4
     end.

@@ -497,12 +497,20 @@ t_update_noop() ->
     ?assertEqual(maps:get(id, User), maps:get(id, Result)).
 
 t_update_timestamps() ->
-    {ok, User} = insert_user(<<"TSUser">>, <<"tsuser@example.com">>),
-    OrigUpdatedAt = maps:get(updated_at, User),
-
-    %% Sleep >1s to ensure timestamp differs (PG timestamp has second resolution)
-    timer:sleep(1100),
-    CS = kura_changeset:cast(kura_test_schema, User, #{<<"name">> => <<"TSUser2">>}, [name]),
+    %% An updated_at in the past makes the bump visible without sleeping past
+    %% the second the insert ran in.
+    OrigUpdatedAt = {{2000, 1, 1}, {0, 0, 0}},
+    Inserted = kura_changeset:cast(
+        kura_test_schema,
+        #{},
+        #{~"name" => ~"TSUser", ~"email" => ~"tsuser@example.com"},
+        [name, email]
+    ),
+    {ok, User} = kura_test_repo:insert(
+        kura_changeset:put_change(Inserted, updated_at, OrigUpdatedAt)
+    ),
+    ?assertEqual(OrigUpdatedAt, maps:get(updated_at, User)),
+    CS = kura_changeset:cast(kura_test_schema, User, #{~"name" => ~"TSUser2"}, [name]),
     {ok, Updated} = kura_test_repo:update(CS),
     NewUpdatedAt = maps:get(updated_at, Updated),
     ?assertNotEqual(OrigUpdatedAt, NewUpdatedAt).

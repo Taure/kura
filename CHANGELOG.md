@@ -101,11 +101,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{Tag, redacted}`, anything else as `redacted`, since `init/1` is the
   consumer's code and its reason may hold a secret it fetched.
   `kura_repo_worker:start/1` returns `{error, {init_failed, {Class,
-  Shape}}}`. This covers pool start only: `init/1` also runs on every
-  config lookup at query time, where a raise is neither caught nor
-  redacted. For a repo in the `repos` map or the flat form, `init/1` runs
-  during kura's own start, before the consuming application, so it must
-  not call that application's processes.
+  Shape}}}`. For a repo in the `repos` map or the flat form, `init/1`
+  runs during kura's own start, before the consuming application, so it
+  must not call that application's processes.
+- A repo's `init/1` no longer runs on every query (#200). The pool start
+  keeps the repo's own settings (`dialect`, `pool`, `pool_module`,
+  `driver_module`, `read_only`, `replicas`, `uuid_version`) in a
+  `persistent_term`, and the query-time lookups (`kura_db:get_pool/1`,
+  the pool and driver module, `kura_repo:read_only/1`, `replica/1`, the
+  dialect and the UUID version) read them from there. An `init/1` that
+  reads a file or a vault does it once per pool start, and one that
+  raises later no longer turns every query into that exception, with the
+  config in the crash report. Connection settings and secrets are not
+  kept. The settings change only when the pool is started again:
+  `kura_repo_worker:start/1` on a running pool re-reads them. A start
+  that moves the repo to another pool name and fails makes its queries
+  raise `{pool_not_started, Pool}` instead of reaching the previous pool;
+  a failed restart on the same pool, or a failing `init/1`, keeps the
+  previous settings. A repo
+  whose pool kura did not start falls back to the old lookup, its config
+  read and `init/1` run on each call. `kura_repo:config/1` still reads
+  the config afresh each call.
+- A started repo's settings are a snapshot taken at pool start (#200).
+  Changing its `read_only`, `replicas`, `uuid_version`, `dialect`,
+  `pool`, `pool_module` or `driver_module` with `application:set_env`
+  no longer takes effect on the next query: queries keep the settings
+  stored at pool start until `kura_repo_worker:start/1` is called again.
+  A repo whose pool kura did not start still sees the change on its
+  next call.
+- **Upgrading:** `read_only` is captured when the repo's pool starts
+  (#200). A started repo switched to `read_only => true` at runtime,
+  with `application:set_env` or by `init/1` reading a flag, keeps
+  accepting writes until `kura_repo_worker:start/1` is called again for
+  it. Call `start/1` after changing it.
+- **Upgrading:** `replicas`, `uuid_version`, `dialect`, `pool`,
+  `pool_module` and `driver_module` are captured the same way (#200). A
+  test or a release task that changes them with `application:set_env`
+  on a started repo must call `kura_repo_worker:start/1` for that repo
+  afterwards; a repo whose pool kura did not start still reads them on
+  each call.
+- **Upgrading:** two repos can no longer share one pool by naming the
+  same `pool` (#201). That includes a repo kura never started that only
+  names another repo's running pool, such as a migration repo pointed at
+  the application repo's pool. Give each repo its own pool name.
+- A repo whose config names a pool another repo started is refused
+  instead of sharing that pool, database and credentials (#201).
+  `kura_repo_worker:start/1` returns
+  `{error, {pool_owned_by, Owner}}`, boot logs it as a pool that did not
+  start and carries on, and the refused repo's queries raise
+  `{pool_owned_by, Owner}`. The check is made before the pool module is
+  called, so it holds for a pool module that answers `{ok, Pid}` for a
+  name already running, as `kura_pool_minato` did. The repo that started
+  a pool can start it again and gets `ok`. A pool already running that
+  kura did not start goes to the first repo that starts it, with a
+  warning naming the repo, the pool and the pool module, since it keeps
+  the connection settings it was started with. Changing a running repo's
+  credentials takes `kura_db:stop_pool/1` and then
+  `kura_repo_worker:start/1`; `start/1` alone returns `ok` and leaves the
+  pool as it is. A pool stays owned by the repo that started it until
+  `kura_db:stop_pool/1` releases it, or until that repo starts on another
+  pool name and the old pool has stopped; a pool stopped outside kura
+  stays owned. A repo whose pool name another repo owns cannot query it
+  either: `kura_db:get_pool/1` raises `{pool_owned_by, Owner}`, which
+  covers a repo kura never started and one stopped with
+  `kura_db:stop_pool/1` whose pool name another repo then started. A repo
+  that starts on another pool name keeps the pool it had until that pool
+  is stopped, which happens right after the new one starts, so no other
+  repo can adopt it while it runs with the first repo's credentials. Two
+  such starts of one repo at once leave it on one of the two new pools
+  and stop the other. If a stop raises, the start still returns `ok`, the
+  failure is logged with only the shape of its reason, and that pool
+  stays owned. `kura_db:stop_pool/1` stops every pool the repo still
+  owns, one whose stop raised or whose start died before stopping it
+  among them; a pool whose stop raises there is logged the same way and
+  stays owned, and the others are still stopped.
 - The many_to_many join-table SQL, the preload read and the `put_assoc` /
   `cast_assoc` DELETE and INSERT, is compiled by the repo's dialect
   (`to_sql/1`, `delete_all/1`, `insert_all/3`) instead of written by hand
@@ -363,6 +432,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `kura_repo:settings/1` returns a repo's own settings as queries see
+  them, without connection settings or secrets (#200).
+- `kura_db:stop_pool/1` stops a repo's pool through its pool module,
+  releases the pool name and drops the repo's stored settings (#201).
+- The `kura_pool` contract states that `start_pool/2` on a name already
+  running returns `{error, {already_started, Pid}}`.
 - `kura_query:check_encrypted/1`, the filter guard over a whole query.
 - `kura_types:encryption/1`, the one place that recognises an encrypted
   type. It returns `none`, `unsupported` or `{ok, #{inner => Inner}}`,

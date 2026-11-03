@@ -389,6 +389,10 @@ call, so a read that must see a just-written row should use the primary.
 The guard covers the changeset write API; raw SQL via `query/3` is not
 guarded, so a raw write on a replica is rejected by PostgreSQL itself.
 
+`read_only` and `replicas` are read when the repo's pool starts. Changing
+them at runtime takes effect after `kura_repo_worker:start/1` is called
+again for that repo.
+
 <details>
 <summary>Legacy v1.x config forms (still supported)</summary>
 

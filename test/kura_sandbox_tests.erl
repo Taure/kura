@@ -7,31 +7,38 @@
 %% Test fixture
 %%----------------------------------------------------------------------
 
+%% Each test runs in its own process. A failing test that never checks in
+%% leaves its sandbox entry behind, but the pool takes back the connection
+%% when that process exits, rather than the pool running dry and every later
+%% checkout waiting out its timeout.
 sandbox_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(_) ->
-        [
-            {"insert is rolled back on checkin", fun t_rollback/0},
-            {"data visible within sandbox", fun t_visible_within/0},
-            {"nested transaction works in sandbox", fun t_nested_transaction/0},
-            {"a raise in a sandboxed transaction undoes only its work",
-                fun t_raised_transaction_undoes_its_work/0},
-            {"a failed statement in a sandboxed transaction leaves the sandbox usable",
-                fun t_failed_statement_keeps_sandbox/0},
-            {"a raise two transactions down undoes only the innermost work",
-                fun t_doubly_nested_raise/0},
-            {"a savepoint refused in an aborted sandbox raises a reduced reason",
-                fun t_refused_savepoint_is_reduced/0},
-            {"a transaction left open by a dead process does not block the next",
-                fun t_dead_holder_does_not_block/0},
-            {"overlapping transactions on a shared sandbox raise",
-                fun t_overlapping_shared_transactions_raise/0},
-            {"overlapping transactions on an allowed sandbox raise",
-                fun t_overlapping_allowed_transactions_raise/0},
-            {"allow lets child process use sandbox", fun t_allow/0},
-            {"shared mode lets any process use sandbox", fun t_shared_mode/0},
-            {"multiple checkouts for different repos", fun t_multiple_repos/0}
-        ]
+        [{spawn, Test} || Test <- tests()]
     end}.
+
+tests() ->
+    [
+        {"insert is rolled back on checkin", fun t_rollback/0},
+        {"data visible within sandbox", fun t_visible_within/0},
+        {"nested transaction works in sandbox", fun t_nested_transaction/0},
+        {"a raise in a sandboxed transaction undoes only its work",
+            fun t_raised_transaction_undoes_its_work/0},
+        {"a failed statement in a sandboxed transaction leaves the sandbox usable",
+            fun t_failed_statement_keeps_sandbox/0},
+        {"a raise two transactions down undoes only the innermost work",
+            fun t_doubly_nested_raise/0},
+        {"a savepoint refused in an aborted sandbox raises a reduced reason",
+            fun t_refused_savepoint_is_reduced/0},
+        {"a transaction left open by a dead process does not block the next",
+            fun t_dead_holder_does_not_block/0},
+        {"overlapping transactions on a shared sandbox raise",
+            fun t_overlapping_shared_transactions_raise/0},
+        {"overlapping transactions on an allowed sandbox raise",
+            fun t_overlapping_allowed_transactions_raise/0},
+        {"allow lets child process use sandbox", fun t_allow/0},
+        {"shared mode lets any process use sandbox", fun t_shared_mode/0},
+        {"multiple checkouts for different repos", fun t_multiple_repos/0}
+    ].
 
 setup() ->
     application:ensure_all_started(minato),
