@@ -111,12 +111,10 @@ cfg() ->
     end.
 
 ring(Cfg) ->
-    case maps:get(keys, Cfg, []) of
-        Keys when is_list(Keys) -> Keys;
-        _ -> erlang:error({kura_crypto, invalid_keyring_config})
-    end.
+    maps:get(keys, Cfg, []).
 
+%% A keys value that is not a proper list ends here, whatever its shape.
 ring_entry(KeyId, [{KeyId, B64} | _]) -> {ok, B64};
 ring_entry(KeyId, [_ | Rest]) -> ring_entry(KeyId, Rest);
 ring_entry(_KeyId, []) -> error;
-ring_entry(_KeyId, _Improper) -> erlang:error({kura_crypto, invalid_keyring_config}).
+ring_entry(_KeyId, _NotAList) -> erlang:error({kura_crypto, invalid_keyring_config}).

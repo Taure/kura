@@ -89,6 +89,46 @@ keyring_env_test_() ->
              || Bad <- [1, [1, 256], [-1], [one], improper(1, 2), #{1 => 1}]
             ]
         end},
+        {"a malformed config raises without key material", fun() ->
+            B64 = base64:encode(crypto:strong_rand_bytes(32)),
+            Raw = base64:decode(B64),
+            Configs = [
+                [{active, 1}, {keys, [{1, B64}]}],
+                #{
+                    active => 1,
+                    deterministic_active => 1,
+                    deterministic_keys => [1],
+                    keys => #{1 => B64}
+                },
+                #{
+                    active => 1,
+                    deterministic_active => 1,
+                    deterministic_keys => [1],
+                    keys => improper({2, B64}, B64)
+                }
+            ],
+            Calls = [
+                fun kura_keyring_env:active/0,
+                fun kura_keyring_env:deterministic_active/0,
+                fun kura_keyring_env:deterministic_key_ids/0,
+                fun() -> kura_keyring_env:fetch(1) end
+            ],
+            [
+                begin
+                    application:set_env(kura, encryption, Config),
+                    try Call() of
+                        Result -> ?assertEqual(raised, Result)
+                    catch
+                        Class:Reason:Stack ->
+                            ?assertEqual({kura_crypto, invalid_keyring_config}, Reason),
+                            Bin = term_to_binary({Class, Reason, Stack}),
+                            ?assertEqual(nomatch, binary:match(Bin, B64)),
+                            ?assertEqual(nomatch, binary:match(Bin, Raw))
+                    end
+                end
+             || Config <- Configs, Call <- Calls
+            ]
+        end},
         {"fetch/1 of an unknown id is error", fun() ->
             application:set_env(kura, encryption, #{keys => []}),
             ?assertEqual(error, kura_keyring_env:fetch(7))
