@@ -57,6 +57,11 @@ belongs_to() ->
         name = author, type = belongs_to, schema = kura_test_schema, foreign_key = author_id
     }.
 
+%% A schema module's associations/0 can return any term in on_delete.
+-spec declaring_on_delete(dynamic()) -> #kura_assoc{}.
+declaring_on_delete(Action) ->
+    (belongs_to())#kura_assoc{on_delete = Action}.
+
 on_delete_defaults_to_no_action_test() ->
     ?assertEqual(no_action, kura_schema:assoc_on_delete(belongs_to())).
 
@@ -83,13 +88,13 @@ on_delete_no_action_test() ->
 on_delete_rejects_set_default_test() ->
     ?assertError(
         {invalid_on_delete, author, set_default},
-        kura_schema:assoc_on_delete((belongs_to())#kura_assoc{on_delete = set_default})
+        kura_schema:assoc_on_delete(declaring_on_delete(set_default))
     ).
 
 on_delete_rejects_typo_test() ->
     ?assertError(
         {invalid_on_delete, author, cascde},
-        kura_schema:assoc_on_delete((belongs_to())#kura_assoc{on_delete = cascde})
+        kura_schema:assoc_on_delete(declaring_on_delete(cascde))
     ).
 
 on_delete_undefined_on_has_many_test() ->

@@ -1,10 +1,6 @@
 -module(kura_pool_ets_tests).
 -include_lib("eunit/include/eunit.hrl").
 
-%% give_away_rejects_non_pid_test deliberately calls with an atom to
-%% exercise the error path; the kura_pool spec types NewOwner as pid().
--eqwalizer({nowarn_function, give_away_rejects_non_pid_test/0}).
-
 %%----------------------------------------------------------------------
 %% start_pool / stop_pool
 %%----------------------------------------------------------------------
@@ -109,7 +105,12 @@ give_away_accepts_pid_test() ->
     ?assertEqual(ok, kura_pool_ets:give_away(erlang:make_ref(), self(), gift)).
 
 give_away_rejects_non_pid_test() ->
-    ?assertEqual({error, badarg}, kura_pool_ets:give_away(erlang:make_ref(), not_a_pid, gift)).
+    ?assertEqual({error, badarg}, kura_pool_ets:give_away(erlang:make_ref(), not_a_pid(), gift)).
+
+%% The kura_pool spec types NewOwner as pid(); a caller can still pass anything.
+-spec not_a_pid() -> dynamic().
+not_a_pid() ->
+    not_a_pid.
 
 %%----------------------------------------------------------------------
 %% resize

@@ -107,12 +107,12 @@ clear_actor() ->
     ok.
 
 -doc "Execute a function with a temporary actor, restoring the previous actor after.".
--spec with_actor(binary(), fun(() -> T)) -> T when T :: term().
+-spec with_actor(binary(), fun(() -> T)) -> T.
 with_actor(ActorId, Fun) ->
     with_actor(ActorId, undefined, Fun).
 
 -doc "Execute a function with a temporary actor and metadata.".
--spec with_actor(binary(), map() | undefined, fun(() -> T)) -> T when T :: term().
+-spec with_actor(binary(), map() | undefined, fun(() -> T)) -> T.
 with_actor(ActorId, Metadata, Fun) ->
     OldActor = erlang:get(kura_audit_actor),
     OldMeta = erlang:get(kura_audit_metadata),
@@ -210,15 +210,15 @@ migration_down() ->
 %%----------------------------------------------------------------------
 
 build_audit_data(SchemaMod, insert, Record) ->
-    Enc = encrypted_fields(SchemaMod),
+    Enc = kura_schema:encrypted_fields(SchemaMod),
     Filtered = redact(sanitize(filter_virtual(SchemaMod, Record)), Enc),
     {undefined, Filtered, undefined};
 build_audit_data(SchemaMod, delete, Record) ->
-    Enc = encrypted_fields(SchemaMod),
+    Enc = kura_schema:encrypted_fields(SchemaMod),
     Filtered = redact(sanitize(filter_virtual(SchemaMod, Record)), Enc),
     {Filtered, undefined, undefined};
 build_audit_data(SchemaMod, update, NewRecord) ->
-    Enc = encrypted_fields(SchemaMod),
+    Enc = kura_schema:encrypted_fields(SchemaMod),
     case erlang:erase({kura_audit_stash, SchemaMod}) of
         undefined ->
             Filtered = redact(sanitize(filter_virtual(SchemaMod, NewRecord)), Enc),
@@ -234,10 +234,6 @@ build_audit_data(SchemaMod, update, NewRecord) ->
 %% Encrypted fields must never reach the audit_log in plaintext - the load
 %% step already decrypted the record, so redact them to a sentinel while
 %% keeping the "field changed" signal.
-encrypted_fields(SchemaMod) ->
-    Types = kura_schema:field_types(SchemaMod),
-    [F || {F, {encrypted, _}} <- maps:to_list(Types)].
-
 redact(Map, EncFields) ->
     maps:map(
         fun(K, V) ->

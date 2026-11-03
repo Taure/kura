@@ -3,8 +3,6 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
--eqwalizer({nowarn_function, t_cursor_with_where/0}).
-
 %%----------------------------------------------------------------------
 %% Test fixture
 %%----------------------------------------------------------------------
@@ -37,6 +35,7 @@ setup() ->
     application:ensure_all_started(minato),
     application:ensure_all_started(kura),
     kura_test_repo:start(),
+    drop_tables(),
     {ok, _} = kura_test_repo:query(
         "CREATE TABLE IF NOT EXISTS users ("
         "  id BIGSERIAL PRIMARY KEY,"
@@ -58,6 +57,9 @@ setup() ->
     ok.
 
 teardown(_) ->
+    drop_tables().
+
+drop_tables() ->
     kura_test_repo:query("DROP TABLE IF EXISTS users CASCADE", []),
     ok.
 
@@ -214,4 +216,15 @@ t_cursor_with_where() ->
             ?assertEqual(true, maps:get(active, E))
         end,
         Entries
+    ).
+
+%% cursor_paginate/3 replaces order_bys with the cursor field, so a
+%% distance ordering would be dropped without a word. It raises before
+%% any query runs.
+cursor_paginate_refuses_a_distance_order_by_test() ->
+    D = kura_query:distance(embedding, cosine, [1, 2, 3]),
+    Q = kura_query:order_by(kura_query:from(kura_test_vector_schema), [{D, asc}]),
+    ?assertError(
+        {kura, {distance_not_supported_here, cursor_paginate}},
+        kura_paginator:cursor_paginate(no_such_repo, Q, #{limit => 10})
     ).

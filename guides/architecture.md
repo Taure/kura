@@ -36,12 +36,12 @@ modules fit together.
     │  / kura_capabilities (behaviours)       │
     └──────┬──────────────────────┬───────────┘
            │                      │
-    ┌──────▼──────┐        ┌──────▼──────┐
-    │ kura_pool_pgo │      │ kura_pool_sqlite │
-    │ kura_driver_pgo │    │ kura_driver_sqlite │
-    │ kura_dialect_pg │    │ kura_dialect_sqlite │
-    │   (via pgo)    │     │  (via esqlite)     │
-    └──────┬──────┘        └──────┬──────┘
+    ┌──────▼─────────────┐ ┌──────▼──────────────┐
+    │ kura_pool_minato   │ │ kura_pool_sqlite    │
+    │ kura_driver_minato │ │ kura_driver_sqlite  │
+    │ kura_dialect_pg    │ │ kura_dialect_sqlite │
+    │   (via minato)     │ │   (via esqlite)     │
+    └──────┬─────────────┘ └──────┬──────────────┘
        Postgres                 SQLite
 ```
 
@@ -190,8 +190,19 @@ argument.
 - **`kura_app`** / **`kura_sup`** - OTP application and root
   supervisor. The application callback resolves the configured backend
   aggregator (sets `dialect`, `pool_module`, `driver_module` from
-  `kura_backend_postgres` / `kura_backend_sqlite`) and starts the
-  configured pool. `pg_types` defaults are seeded only when the active
+  `kura_backend_postgres` / `kura_backend_sqlite`) and starts each
+  configured repo's pool through `kura_db:start_pool/1`, the same path
+  `kura_repo_worker:start/1` takes: the config from `kura_repo:config/1`
+  with the repo's `init/1` applied and the pool named by its `pool` key.
+  The repo's own settings (`dialect`, `pool`, `pool_module`,
+  `driver_module`, `read_only`, `replicas`, `uuid_version`) are kept in a
+  `persistent_term` when its pool starts, so queries do not run `init/1`
+  (`kura_repo:settings/1`). The repo that starts a pool owns it; another
+  repo naming the same pool gets `{error, {pool_owned_by, Owner}}` until
+  `kura_db:stop_pool/1` releases it.
+  Kura adds no connection defaults, except the deprecated `user` and
+  `database` fill for the flat single-repo form on Postgres. A pool that
+  does not start is logged and boot carries on. `pg_types` defaults are seeded only when the active
   dialect is `kura_dialect_pg`.
 - **`kura_capabilities`** - capability flags for backends. A backend
   module implements the optional `capabilities/0` callback to declare

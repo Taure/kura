@@ -1,7 +1,7 @@
 -module(kura_dialect_pg).
 -moduledoc """
 PostgreSQL dialect. Translates a `#kura_query{}` AST into parameterized
-SQL using pgo's `$N` placeholder convention.
+SQL using PostgreSQL's `$N` placeholder convention.
 
 This module is an implementation of `kura_dialect`. Public callers go
 through `kura_query_compiler`, which delegates to the dialect
@@ -27,8 +27,6 @@ configured for the running app.
     format_default/1
 ]).
 
--eqwalizer({nowarn_function, format_default/1}).
-
 -doc "Compile a query record into `{SQL, Params}`.".
 -spec to_sql(#kura_query{}) -> {iodata(), [term()]}.
 to_sql(Query) ->
@@ -48,7 +46,7 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
     {JoinSQL, Params2, Counter2} = compile_joins(Q#kura_query.joins, Table, Prefix, Counter1),
     {GroupSQL, _, Counter3} = compile_group_by(Q#kura_query.group_bys, Counter2),
     {HavingSQL, Params3, Counter4} = compile_havings(Q#kura_query.havings, Counter3),
-    {OrderSQL, _, Counter5} = compile_order_by(Q#kura_query.order_bys, Counter4),
+    {OrderSQL, OrderParams, Counter5} = compile_order_by(Q#kura_query.order_bys, Counter4),
     {LimitSQL, Params4, Counter6} = compile_limit(Q#kura_query.limit, Counter5),
     {OffsetSQL, Params5, Counter7} = compile_offset(Q#kura_query.offset, Counter6),
     LockSQL = compile_lock(Q#kura_query.lock),
@@ -72,7 +70,8 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
         OffsetSQL,
         LockSQL
     ]),
-    MainParams = CteParams ++ Params0 ++ Params2 ++ Params1 ++ Params3 ++ Params4 ++ Params5,
+    MainParams =
+        CteParams ++ Params0 ++ Params2 ++ Params1 ++ Params3 ++ OrderParams ++ Params4 ++ Params5,
 
     %% Combinations (UNION, INTERSECT, EXCEPT)
     {FinalSQL, FinalParams, FinalCounter} = compile_combinations(
@@ -84,7 +83,7 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
 %% INSERT
 %%----------------------------------------------------------------------
 
--spec insert(atom() | module(), [atom()], map()) -> {iodata(), [term()]}.
+-spec insert(kura_dialect:table(), [atom()], map()) -> {iodata(), [term()]}.
 insert(SchemaOrTable, Fields, Data) ->
     Table = resolve_table(SchemaOrTable),
     {Cols, Placeholders, Params, _} = build_insert_parts(Fields, Data, 1),
@@ -99,7 +98,7 @@ insert(SchemaOrTable, Fields, Data) ->
     ]),
     {SQL, Params}.
 
--spec insert(atom() | module(), [atom()], map(), map()) -> {iodata(), [term()]}.
+-spec insert(kura_dialect:table(), [atom()], map(), map()) -> {iodata(), [term()]}.
 insert(SchemaOrTable, Fields, Data, #{on_conflict := OnConflict0}) ->
     Table = resolve_table(SchemaOrTable),
     {OnConflict, Guard} = conflict_guard(OnConflict0),
@@ -125,7 +124,7 @@ insert(SchemaOrTable, Fields, Data, _Opts) ->
 %% UPDATE
 %%----------------------------------------------------------------------
 
--spec update(atom() | module(), [atom()], map(), [{atom(), term()}]) -> {iodata(), [term()]}.
+-spec update(kura_dialect:table(), [atom()], map(), [{atom(), term()}]) -> {iodata(), [term()]}.
 update(SchemaOrTable, Fields, Changes, KeyClauses) ->
     Table = resolve_table(SchemaOrTable),
     {Sets, Params, Counter} = build_set_parts(Fields, Changes, 1),
@@ -182,7 +181,7 @@ row_placeholders(N, Counter, Acc) ->
 %% DELETE
 %%----------------------------------------------------------------------
 
--spec delete(atom() | module(), [{atom(), term()}]) -> {iodata(), [term()]}.
+-spec delete(kura_dialect:table(), [{atom(), term()}]) -> {iodata(), [term()]}.
 delete(SchemaOrTable, KeyClauses) ->
     Table = resolve_table(SchemaOrTable),
     {KeyConds, Params, _} = key_where(KeyClauses, 1),
@@ -235,7 +234,7 @@ delete_all(#kura_query{from = From, wheres = Wheres, prefix = QPrefix}) ->
 %% INSERT ALL (bulk)
 %%----------------------------------------------------------------------
 
--spec insert_all(atom() | module(), [atom()], [map()]) -> {iodata(), [term()]}.
+-spec insert_all(kura_dialect:table(), [atom()], [map()]) -> {iodata(), [term()]}.
 insert_all(SchemaOrTable, Fields, Rows) ->
     Table = resolve_table(SchemaOrTable),
     Cols = [quote_ident(atom_to_binary(F, utf8)) || F <- Fields],
@@ -250,7 +249,7 @@ insert_all(SchemaOrTable, Fields, Rows) ->
     ]),
     {SQL, AllParams}.
 
--spec insert_all(atom() | module(), [atom()], [map()], map()) -> {iodata(), [term()]}.
+-spec insert_all(kura_dialect:table(), [atom()], [map()], map()) -> {iodata(), [term()]}.
 insert_all(SchemaOrTable, Fields, Rows, Opts) ->
     {BaseSQL, Params} = insert_all(SchemaOrTable, Fields, Rows),
     SQL = [
@@ -499,11 +498,33 @@ join_type(full) -> ~"FULL JOIN".
 compile_order_by([], Counter) ->
     {<<>>, [], Counter};
 compile_order_by(Orders, Counter) ->
-    Parts = [
-        [quote_ident(atom_to_binary(Field, utf8)), ~" ", dir_to_sql(Dir)]
-     || {Field, Dir} <- Orders
-    ],
-    {iolist_to_binary([~" ORDER BY ", join_comma(Parts)]), [], Counter}.
+    {Parts, Params, NewCounter} = compile_orders(Orders, Counter),
+    {iolist_to_binary([~" ORDER BY ", join_comma(Parts)]), Params, NewCounter}.
+
+compile_orders([], Counter) ->
+    {[], [], Counter};
+compile_orders([{Expr, Dir} | Rest], Counter) ->
+    {ExprSQL, Params, C1} = compile_order_expr(Expr, Counter),
+    {Parts, MoreParams, C2} = compile_orders(Rest, C1),
+    {[[ExprSQL, ~" ", dir_to_sql(Dir)] | Parts], Params ++ MoreParams, C2}.
+
+compile_order_expr({distance, _Field, _Metric, _Vector} = Distance, Counter) ->
+    compile_distance(Distance, Counter);
+compile_order_expr(Field, Counter) when is_atom(Field) ->
+    {quote_ident(atom_to_binary(Field, utf8)), [], Counter}.
+
+%% No cast on the parameter: the server infers it from the column, so the
+%% same SQL serves any pgvector column type.
+compile_distance({distance, Field, Metric, Vector}, Counter) when is_atom(Field) ->
+    {
+        [quote_ident(atom_to_binary(Field, utf8)), distance_op(Metric), integer_to_binary(Counter)],
+        [Vector],
+        Counter + 1
+    }.
+
+distance_op(l2) -> ~" <-> $";
+distance_op(cosine) -> ~" <=> $";
+distance_op(inner_product) -> ~" <#> $".
 
 dir_to_sql(asc) -> ~"ASC";
 dir_to_sql(desc) -> ~"DESC".
@@ -654,6 +675,8 @@ compile_on_conflict_update(ConflictTarget, UpdateFields, Data, Counter) ->
     SQL = [ConflictTarget, ~" DO UPDATE SET ", join_comma(Sets)],
     {SQL, Params}.
 
+resolve_table(Table) when is_binary(Table) ->
+    Table;
 resolve_table(Mod) when is_atom(Mod) ->
     case code:ensure_loaded(Mod) of
         {module, Mod} ->
@@ -754,6 +777,7 @@ build_row_placeholders([Field | Rest], Row, N) ->
             atom(),
             {fragment, binary(), [term()]}
             | {over, kura_query:window_fn(), kura_query:window_spec()}
+            | kura_query:distance()
             | atom()
         }
     ],
@@ -765,6 +789,11 @@ compile_select_exprs([], Counter) ->
 compile_select_exprs([{Alias, {fragment, SQL, Params}} | Rest], Counter) ->
     {RewrittenSQL, C2} = rewrite_fragment_placeholders(SQL, Counter),
     Part = [RewrittenSQL, ~" AS ", quote_ident(atom_to_binary(Alias, utf8))],
+    {Parts, MoreParams, C3} = compile_select_exprs(Rest, C2),
+    {[Part | Parts], Params ++ MoreParams, C3};
+compile_select_exprs([{Alias, {distance, _, _, _} = Distance} | Rest], Counter) ->
+    {DistanceSQL, Params, C2} = compile_distance(Distance, Counter),
+    Part = [DistanceSQL, ~" AS ", quote_ident(atom_to_binary(Alias, utf8))],
     {Parts, MoreParams, C3} = compile_select_exprs(Rest, C2),
     {[Part | Parts], Params ++ MoreParams, C3};
 compile_select_exprs([{Alias, {over, WindowFn, Spec}} | Rest], Counter) ->
@@ -914,8 +943,14 @@ format_default(false) ->
 format_default(Val) when is_atom(Val) ->
     quote_literal(atom_to_binary(Val));
 format_default(Val) when is_map(Val) ->
-    <<(quote_literal(iolist_to_binary(json:encode(Val))))/binary, "::jsonb">>;
+    jsonb_literal(Val);
 format_default(Val) when is_list(Val) ->
+    jsonb_literal(Val).
+
+%% A jsonb default is whatever term the migration supplied; json:encode/1
+%% raises on any part of it that is not JSON, which no guard can check.
+-spec jsonb_literal(dynamic()) -> binary().
+jsonb_literal(Val) ->
     <<(quote_literal(iolist_to_binary(json:encode(Val))))/binary, "::jsonb">>.
 
 %% A default is DDL text, not a bind parameter, so an embedded quote has to

@@ -27,9 +27,14 @@ end),
     append/2
 ]).
 
+-export_type([t/0]).
+
 -record(kura_multi, {
     operations = [] :: [{atom(), term()}]
 }).
+
+-doc "A transaction pipeline built with `new/0` and the step functions.".
+-type t() :: #kura_multi{}.
 
 -doc "Create a new empty multi pipeline.".
 -spec new() -> #kura_multi{}.

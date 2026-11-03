@@ -4,18 +4,6 @@
 -include_lib("proper/include/proper.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
-%% eqWAlizer: proper macros generate term() - suppress affected functions
--eqwalizer({nowarn_function, gen_binary_string/0}).
--eqwalizer({nowarn_function, gen_uuid_hex/0}).
--eqwalizer({nowarn_function, prop_uuid_36_roundtrip/0}).
--eqwalizer({nowarn_function, prop_uuid_32_formats/0}).
--eqwalizer({nowarn_function, prop_uuid_16_formats/0}).
--eqwalizer({nowarn_function, prop_cast_undefined/0}).
--eqwalizer({nowarn_function, prop_dump_undefined/0}).
--eqwalizer({nowarn_function, prop_load_null/0}).
--eqwalizer({nowarn_function, prop_id_cast_binary/0}).
--eqwalizer({nowarn_function, prop_float_cast_from_int/0}).
-
 -define(NUMTESTS, 200).
 
 %%----------------------------------------------------------------------
@@ -55,7 +43,7 @@ run(Prop) ->
 %%----------------------------------------------------------------------
 
 gen_binary_string() ->
-    ?LET(Chars, list(range($a, $z)), list_to_binary(Chars)).
+    ?LET(Chars, list(range($a, $z)), chars_to_binary(Chars)).
 
 gen_date() ->
     ?LET(
@@ -75,7 +63,7 @@ gen_uuid_hex() ->
     ?LET(
         Bytes,
         binary(16),
-        binary:encode_hex(Bytes, lowercase)
+        lowercase_hex(Bytes)
     ).
 
 gen_uuid_formatted() ->
@@ -188,7 +176,7 @@ prop_uuid_36_roundtrip() ->
         V,
         gen_uuid_formatted(),
         begin
-            {ok, Cast} = kura_types:cast(uuid, V),
+            {ok, <<Cast/binary>>} = kura_types:cast(uuid, V),
             {ok, Dumped} = kura_types:dump(uuid, Cast),
             {ok, Loaded} = kura_types:load(uuid, Dumped),
             Loaded =:= V andalso byte_size(Cast) =:= 36
@@ -200,7 +188,7 @@ prop_uuid_32_formats() ->
         Hex,
         gen_uuid_hex(),
         begin
-            {ok, Formatted} = kura_types:cast(uuid, Hex),
+            {ok, <<Formatted/binary>>} = kura_types:cast(uuid, Hex),
             byte_size(Formatted) =:= 36 andalso
                 binary:at(Formatted, 8) =:= $- andalso
                 binary:at(Formatted, 13) =:= $- andalso
@@ -214,7 +202,7 @@ prop_uuid_16_formats() ->
         Raw,
         binary(16),
         begin
-            {ok, Formatted} = kura_types:cast(uuid, Raw),
+            {ok, <<Formatted/binary>>} = kura_types:cast(uuid, Raw),
             byte_size(Formatted) =:= 36
         end
     ).
@@ -297,7 +285,7 @@ prop_cast_undefined() ->
         Type,
         gen_simple_type(),
         begin
-            {ok, undefined} =:= kura_types:cast(Type, undefined)
+            {ok, undefined} =:= cast_undefined(Type)
         end
     ).
 
@@ -306,7 +294,7 @@ prop_dump_undefined() ->
         Type,
         gen_simple_type(),
         begin
-            {ok, null} =:= kura_types:dump(Type, undefined)
+            {ok, null} =:= dump_undefined(Type)
         end
     ).
 
@@ -315,7 +303,7 @@ prop_load_null() ->
         Type,
         gen_simple_type(),
         begin
-            {ok, undefined} =:= kura_types:load(Type, null)
+            {ok, undefined} =:= load_null(Type)
         end
     ).
 
@@ -327,10 +315,7 @@ prop_id_cast_binary() ->
     ?FORALL(
         V,
         pos_integer(),
-        begin
-            Bin = integer_to_binary(V),
-            {ok, V} =:= kura_types:cast(id, Bin)
-        end
+        is_integer(V) andalso {ok, V} =:= kura_types:cast(id, integer_to_binary(V))
     ).
 
 prop_boolean_cast_binary() ->
@@ -348,6 +333,25 @@ prop_float_cast_from_int() ->
         integer(),
         begin
             {ok, F} = kura_types:cast(float, V),
-            is_float(F) andalso F =:= erlang:float(V)
+            is_integer(V) andalso is_float(F) andalso F =:= erlang:float(V)
         end
     ).
+
+%%----------------------------------------------------------------------
+%% PropEr instances are untyped; these hand them to the typed API.
+%%----------------------------------------------------------------------
+
+chars_to_binary(Chars) ->
+    list_to_binary(Chars).
+
+lowercase_hex(Bytes) ->
+    binary:encode_hex(Bytes, lowercase).
+
+cast_undefined(Type) ->
+    kura_types:cast(Type, undefined).
+
+dump_undefined(Type) ->
+    kura_types:dump(Type, undefined).
+
+load_null(Type) ->
+    kura_types:load(Type, null).

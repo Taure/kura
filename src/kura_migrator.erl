@@ -39,8 +39,8 @@ one.
 -define(MIGRATION_LOCK_KEY, 571629482).
 
 %% Defaults for the pool-readiness wait at the start of migrator operations.
-%% pgo workers connect asynchronously, so the pool may exist but have no
-%% available connections yet; we retry `SELECT 1` until the pool answers.
+%% A pool can exist before its connections are open; we retry `SELECT 1`
+%% until the pool answers.
 -define(POOL_READY_TIMEOUT_MS, 5000).
 -define(POOL_READY_INTERVAL_MS, 50).
 
@@ -83,10 +83,6 @@ one.
 
 -type migration_group() :: {atom(), [{integer(), module()}]}.
 -export_type([migration_group/0]).
-
-%% eqWAlizer: operation() union has >7 variants - exceeds clause narrowing limit
--eqwalizer({nowarn_function, compile_operation/2}).
--eqwalizer({nowarn_function, default_default/1}).
 
 -doc "Run all pending migrations in order.".
 -spec migrate(module()) -> {ok, [integer()]} | {error, term()}.
@@ -443,7 +439,7 @@ emit_migrate_stop(RepoMod, T0, Direction, Result) ->
 
 -spec telemetry_event([atom()], map(), map()) -> ok.
 telemetry_event(EventName, Measurements, Metadata) ->
-    %% telemetry is a hard dependency of kura via pgo, but we still
+    %% telemetry is a hard dependency of kura, but we still
     %% guard the call: telemetry handlers run inline and an exception
     %% inside one must not abort a migration. The whole point of
     %% emitting these events is operational observability, and dropping
@@ -566,9 +562,9 @@ create_schema_migrations(RepoMod, SQL) ->
 -doc """
 Wait until the repo's connection pool has at least one ready worker.
 
-`pgo` workers connect asynchronously, so when an application starts
-and immediately calls `migrate/1` the pool may exist but reject queries
-with `none_available` until handshake completes. The migrator races
+A pool can exist before its connections are open, so when an
+application starts and immediately calls `migrate/1` the pool may
+reject queries until the first handshake completes. The migrator races
 this every time on fast CT startup. Other operations (rollback, status)
 share the same hazard. We retry `SELECT 1` until it succeeds or the
 configured timeout elapses; any successful round-trip proves the pool
@@ -1377,15 +1373,15 @@ format_default(RepoMod, Val) ->
             _ = code:ensure_loaded(M),
             case erlang:function_exported(M, format_default, 1) of
                 true -> M:format_default(Val);
-                false -> default_default(Val)
+                false -> kura_dialect_pg:format_default(Val)
             end;
         none ->
-            default_default(Val)
+            kura_dialect_pg:format_default(Val)
     end.
 
 -spec ddl_dialect(module()) -> {ok, module()} | none.
 ddl_dialect(RepoMod) ->
-    Cfg = kura_repo:config(RepoMod),
+    Cfg = kura_repo:settings(RepoMod),
     case maps:get(dialect, Cfg, undefined) of
         M when is_atom(M), M =/= undefined ->
             {ok, M};
@@ -1395,29 +1391,6 @@ ddl_dialect(RepoMod) ->
                 _ -> none
             end
     end.
-
--spec default_default(term()) -> binary().
-default_default(Val) when is_integer(Val) ->
-    integer_to_binary(Val);
-default_default(Val) when is_float(Val) ->
-    float_to_binary(Val);
-default_default(Val) when is_binary(Val) ->
-    quote_literal(Val);
-default_default(true) ->
-    ~"TRUE";
-default_default(false) ->
-    ~"FALSE";
-default_default(Val) when is_atom(Val) ->
-    quote_literal(atom_to_binary(Val));
-default_default(Val) when is_map(Val) ->
-    <<(quote_literal(iolist_to_binary(json:encode(Val))))/binary, "::jsonb">>;
-default_default(Val) when is_list(Val) ->
-    <<(quote_literal(iolist_to_binary(json:encode(Val))))/binary, "::jsonb">>.
-
--spec quote_literal(binary()) -> binary().
-quote_literal(Val) ->
-    Escaped = binary:replace(Val, ~"'", ~"''", [global]),
-    <<$', Escaped/binary, $'>>.
 
 %%----------------------------------------------------------------------
 %% Internal: type narrowing helpers for eqWAlizer

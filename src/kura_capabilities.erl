@@ -45,7 +45,7 @@ missing:
 
 ```erlang
 init(_) ->
-    case kura_capabilities:require(kura_pool_pgo, [returning, listen_notify]) of
+    case kura_capabilities:require(kura_pool_minato, [returning, listen_notify]) of
         ok -> {ok, ...};
         {error, _} = Err -> Err
     end.
@@ -54,7 +54,7 @@ init(_) ->
 A backend declares its set:
 
 ```erlang
--module(kura_pool_pgo).
+-module(my_pool).
 -behaviour(kura_pool).
 
 capabilities() ->

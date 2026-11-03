@@ -6,7 +6,7 @@ All functions take a repo module as the first argument and execute against
 its connection pool.
 
 ```erlang
-kura_repo_worker:start(MyRepo),
+ok = kura_repo_worker:start(MyRepo),
 {ok, Users} = kura_repo_worker:all(MyRepo, kura_query:from(my_user)),
 {ok, User} = kura_repo_worker:get(MyRepo, my_user, 1),
 {ok, Inserted} = kura_repo_worker:insert(MyRepo, Changeset).
@@ -52,45 +52,50 @@ kura_repo_worker:start(MyRepo),
     generate_uuid/1,
     uuid_version/1,
     key_clauses/2,
-    key_conds/2,
-    quote_ident_bin/1,
-    dump_field/2
+    join_delete_sql/3,
+    join_insert_sql/3,
+    dump_field/2,
+    join_error/3
 ]).
 -endif.
 
--eqwalizer({nowarn_function, do_insert/2}).
--eqwalizer({nowarn_function, do_update/2}).
--eqwalizer({nowarn_function, do_delete/2}).
--eqwalizer({nowarn_function, multi/2}).
--eqwalizer({nowarn_function, persist_many_to_many/6}).
-
 -type write_error() :: {error, read_only}.
+-type assoc_change() :: #kura_changeset{} | [#kura_changeset{}].
 -export_type([write_error/0]).
 
 %%----------------------------------------------------------------------
 %% Pool management
 %%----------------------------------------------------------------------
 
--doc "Start the connection pool for the given repo module.".
--spec start(module()) -> ok.
+-doc """
+Start the connection pool for the given repo module.
+
+The repo's config is read as `kura_repo:config/1` returns it, `init/1`
+applied, and the pool is named by its `pool` key, as at application boot.
+The connection settings in it go to its `pool_module`, which maps them onto
+its own options and defaults; kura's own settings are kept back. Returns
+`{error, Reason}` when the pool does
+not start, with any secret in `Reason` replaced by `redacted`. A pool module
+that raises instead makes this raise
+`{pool_start_failed, RepoMod, {Class, Redacted}}`. A repo `init/1` that raises
+returns `{error, {init_failed, {Class, Shape}}}`, keeping only the shape of its
+reason; see `kura_db:start_pool/1`. A pool name another repo's running pool
+already has returns `{error, {pool_owned_by, Owner}}`.
+
+Queries then use the settings the pool was started with, without calling
+`init/1` again. Calling `start/1` again on a running pool returns `ok` and
+re-reads them. When they changed, storing them replaces a `persistent_term`,
+which triggers a global garbage collection over every process, so refresh on
+a config change, not per request. Settings that are unchanged cost nothing.
+
+A running pool keeps the connection settings it was started with: calling
+`start/1` again after changing the credentials returns `ok` and changes
+nothing in the pool. Call `kura_db:stop_pool/1` and then `start/1` to apply
+new credentials.
+""".
+-spec start(module()) -> ok | {error, term()}.
 start(RepoMod) ->
-    Config = kura_repo:config(RepoMod),
-    Pool = maps:get(pool, Config, RepoMod),
-    PoolMod = kura_db:get_pool_module(RepoMod),
-    PgoConfig = #{
-        host => binary_to_list(maps:get(hostname, Config, ~"localhost")),
-        port => maps:get(port, Config, 5432),
-        database => binary_to_list(maps:get(database, Config)),
-        user => binary_to_list(maps:get(username, Config, ~"postgres")),
-        password => binary_to_list(maps:get(password, Config, <<>>)),
-        pool_size => maps:get(pool_size, Config, 10),
-        decode_opts => [return_rows_as_maps, column_name_as_atom]
-    },
-    case PoolMod:start_pool(Pool, PgoConfig) of
-        {ok, _Pid} -> ok;
-        {error, {already_started, _Pid}} -> ok;
-        {error, _} -> ok
-    end.
+    kura_db:start_pool(RepoMod).
 
 -doc "Execute a query and return all matching rows.".
 -spec all(module(), #kura_query{}) -> {ok, [map()]} | {error, term()}.
@@ -287,32 +292,19 @@ insert(RepoMod, CS) ->
 
 do_insert(_RepoMod, CS = #kura_changeset{valid = false}) ->
     {error, CS#kura_changeset{action = insert}};
-do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}) when
-    map_size(AC) > 0
-->
-    kura_db:transaction_ok(RepoMod, fun() ->
+do_insert(RepoMod, CS = #kura_changeset{assoc_changes = AC}) when map_size(AC) > 0 ->
+    atomically(RepoMod, fun() ->
         case insert_record(RepoMod, CS) of
             {ok, ParentRow} ->
-                persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AC);
+                persist_assoc_changes(RepoMod, CS#kura_changeset{action = insert}, ParentRow);
             {error, _} = Err ->
                 Err
         end
     end);
 do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
     case needs_transaction(SchemaMod, insert) of
-        true ->
-            try
-                kura_db:transaction_ok(RepoMod, fun() ->
-                    case insert_record(RepoMod, CS) of
-                        {ok, _} = Ok -> Ok;
-                        {error, Reason} -> throw({kura_rollback, Reason})
-                    end
-                end)
-            catch
-                throw:{kura_rollback, Reason} -> {error, Reason}
-            end;
-        false ->
-            insert_record(RepoMod, CS)
+        true -> atomically(RepoMod, fun() -> insert_record(RepoMod, CS) end);
+        false -> insert_record(RepoMod, CS)
     end.
 
 -spec insert(module(), #kura_changeset{}, map()) ->
@@ -323,7 +315,7 @@ insert(RepoMod, CS, Opts) ->
 do_insert(_RepoMod, CS = #kura_changeset{valid = false}, _Opts) ->
     {error, CS#kura_changeset{action = insert}};
 do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opts0) ->
-    Opts = guard_upsert(Opts0),
+    Opts = guard_upsert(SchemaMod, Opts0),
     Changes0 = maybe_generate_pk(RepoMod, SchemaMod, maybe_apply_tenant_changes(Changes)),
     Changes1 = maybe_add_timestamps(SchemaMod, Changes0, insert),
     case dump_changes(SchemaMod, Changes1) of
@@ -352,32 +344,19 @@ update(RepoMod, CS) ->
 
 do_update(_RepoMod, CS = #kura_changeset{valid = false}) ->
     {error, CS#kura_changeset{action = update}};
-do_update(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}) when
-    map_size(AC) > 0
-->
-    kura_db:transaction_ok(RepoMod, fun() ->
+do_update(RepoMod, CS = #kura_changeset{assoc_changes = AC}) when map_size(AC) > 0 ->
+    atomically(RepoMod, fun() ->
         case update_record(RepoMod, CS) of
             {ok, ParentRow} ->
-                persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AC);
+                persist_assoc_changes(RepoMod, CS#kura_changeset{action = update}, ParentRow);
             {error, _} = Err ->
                 Err
         end
     end);
 do_update(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
     case needs_transaction(SchemaMod, update) of
-        true ->
-            try
-                kura_db:transaction_ok(RepoMod, fun() ->
-                    case update_record(RepoMod, CS) of
-                        {ok, _} = Ok -> Ok;
-                        {error, Reason} -> throw({kura_rollback, Reason})
-                    end
-                end)
-            catch
-                throw:{kura_rollback, Reason} -> {error, Reason}
-            end;
-        false ->
-            update_record(RepoMod, CS)
+        true -> atomically(RepoMod, fun() -> update_record(RepoMod, CS) end);
+        false -> update_record(RepoMod, CS)
     end.
 
 -doc "Delete the record referenced by the changeset's data.".
@@ -387,19 +366,23 @@ delete(RepoMod, CS) ->
 
 do_delete(RepoMod, #kura_changeset{schema = SchemaMod, data = Data}) ->
     case needs_transaction(SchemaMod, delete) of
-        true ->
-            try
-                kura_db:transaction_ok(RepoMod, fun() ->
-                    case delete_record(RepoMod, SchemaMod, Data) of
-                        {ok, _} = Ok -> Ok;
-                        {error, Reason} -> throw({kura_rollback, Reason})
-                    end
-                end)
-            catch
-                throw:{kura_rollback, Reason} -> {error, Reason}
-            end;
-        false ->
-            delete_record(RepoMod, SchemaMod, Data)
+        true -> atomically(RepoMod, fun() -> delete_record(RepoMod, SchemaMod, Data) end);
+        false -> delete_record(RepoMod, SchemaMod, Data)
+    end.
+
+%% A `{error, _}` from `Fun` is thrown so the transaction rolls back, nested or
+%% not, rather than commit whatever was written before it.
+atomically(RepoMod, Fun) ->
+    Rollback = make_ref(),
+    try
+        kura_db:transaction_ok(RepoMod, fun() ->
+            case Fun() of
+                {ok, _} = Ok -> Ok;
+                {error, Reason} -> throw({Rollback, Reason})
+            end
+        end)
+    catch
+        throw:{Rollback, Reason} -> {error, Reason}
     end.
 
 -doc "Bulk update all rows matching the query, returning the count of affected rows.".
@@ -452,7 +435,7 @@ insert_all(RepoMod, SchemaMod, Entries, Opts) ->
 do_insert_all(RepoMod, SchemaMod, Entries, Opts) ->
     case dump_entries(SchemaMod, [maybe_apply_tenant_changes(E) || E <- Entries]) of
         {error, _} = DumpErr -> DumpErr;
-        {ok, Rows} -> do_insert_all_rows(RepoMod, SchemaMod, Rows, guard_upsert(Opts))
+        {ok, Rows} -> do_insert_all_rows(RepoMod, SchemaMod, Rows, guard_upsert(SchemaMod, Opts))
     end.
 
 do_insert_all_rows(RepoMod, SchemaMod, Rows, Opts) ->
@@ -482,12 +465,12 @@ transaction(RepoMod, Fun) ->
     kura_db:transaction(RepoMod, Fun).
 
 -doc "Execute a `kura_multi` pipeline inside a transaction.".
--spec multi(module(), term()) ->
+-spec multi(module(), kura_multi:t()) ->
     {ok, map()} | {error, atom(), term(), map()}.
 multi(RepoMod, Multi) ->
     Ops = kura_multi:to_list(Multi),
     try
-        kura_db:transaction_ok(RepoMod, fun() ->
+        kura_db:transaction(RepoMod, fun() ->
             execute_multi_ops(RepoMod, Ops, #{})
         end)
     catch
@@ -517,6 +500,7 @@ preload(RepoMod, Schema, Records, Assocs) ->
 %% Internal: multi execution
 %%----------------------------------------------------------------------
 
+-spec execute_multi_ops(module(), [{atom(), term()}], map()) -> {ok, map()}.
 execute_multi_ops(_RepoMod, [], Acc) ->
     {ok, Acc};
 execute_multi_ops(RepoMod, [{Name, Op} | Rest], Acc) ->
@@ -543,7 +527,7 @@ execute_multi_op(_RepoMod, {run, Fun}, Acc) ->
     Fun(Acc).
 
 %%----------------------------------------------------------------------
-%% Internal: pgo bridge (delegates to kura_db)
+%% Internal: query bridge (delegates to kura_db)
 %%----------------------------------------------------------------------
 
 pgo_query(RepoMod, SQL, Params) ->
@@ -595,7 +579,7 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
                 0 ->
                     {ok, Data};
                 _ ->
-                    KeyClauses = tenant_key_clauses(key_pairs(SchemaMod, Data)),
+                    KeyClauses = tenant_key_clauses(SchemaMod, key_pairs(SchemaMod, Data)),
                     Changes1 = maybe_add_timestamps(SchemaMod, pin_tenant(Changes), update),
                     case dump_changes(SchemaMod, Changes1) of
                         {error, DumpErr} ->
@@ -684,23 +668,9 @@ apply_prepare_funs(CS, []) ->
 apply_prepare_funs(CS, [Fun | Rest]) ->
     apply_prepare_funs(Fun(CS), Rest).
 
-%% One `col = $n` condition per key column, using the binary quoter.
-key_conds(KeyClauses, Start) ->
-    key_conds(KeyClauses, Start, [], []).
-
-key_conds([], Counter, Conds, Params) ->
-    {lists:reverse(Conds), lists:reverse(Params), Counter};
-key_conds([{Field, Value} | Rest], Counter, Conds, Params) ->
-    Cond = [quote_ident_bin(atom_to_binary(Field, utf8)), ~" = $", integer_to_binary(Counter)],
-    key_conds(Rest, Counter + 1, [Cond | Conds], [Value | Params]).
-
 %% The key column/value pairs from a record, in key order.
 key_pairs(SchemaMod, Data) ->
     [{K, maps:get(K, Data)} || K <- kura_schema:key(SchemaMod)].
-
-quote_ident_bin(Name) when is_binary(Name) ->
-    Escaped = binary:replace(Name, ~"\"", ~"\"\"", [global]),
-    <<$", Escaped/binary, $">>.
 
 -spec apply_clauses(#kura_query{}, [{atom(), term()}]) -> #kura_query{}.
 apply_clauses(Q, []) ->
@@ -708,42 +678,87 @@ apply_clauses(Q, []) ->
 apply_clauses(Q, [{Field, Value} | Rest]) ->
     apply_clauses(kura_query:where(Q, {Field, Value}), Rest).
 
-persist_assoc_changes(RepoMod, SchemaMod, ParentRow, AssocChanges) ->
-    maps:fold(
-        fun(AssocName, ChildCSs, {ok, AccRow}) ->
-            {ok, Assoc} = kura_schema:association(SchemaMod, AssocName),
-            case Assoc#kura_assoc.type of
-                many_to_many ->
-                    persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs);
-                _ ->
-                    persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs)
-            end
+persist_assoc_changes(RepoMod, CS = #kura_changeset{assoc_changes = AC}, ParentRow) ->
+    persist_assocs(RepoMod, CS, ParentRow, maps:to_list(AC)).
+
+persist_assocs(_RepoMod, _CS, Row, []) ->
+    {ok, Row};
+persist_assocs(RepoMod, CS, Row, [{AssocName, ChildCSs} | Rest]) ->
+    SchemaMod = CS#kura_changeset.schema,
+    {ok, Assoc} = kura_schema:association(SchemaMod, AssocName),
+    Persisted =
+        case Assoc#kura_assoc.type of
+            many_to_many -> persist_many_to_many(RepoMod, SchemaMod, Row, Assoc, ChildCSs);
+            _ -> persist_owned_assoc(RepoMod, SchemaMod, Row, Assoc, ChildCSs)
         end,
-        {ok, ParentRow},
-        AssocChanges
-    ).
+    case Persisted of
+        {ok, Children} ->
+            persist_assocs(RepoMod, CS, Row#{AssocName => Children}, Rest);
+        {child_failed, Failed} ->
+            AC = CS#kura_changeset.assoc_changes,
+            {error, CS#kura_changeset{valid = false, assoc_changes = AC#{AssocName => Failed}}};
+        {join_failed, PgError} ->
+            {error, join_error(CS, AssocName, PgError)};
+        link_missing ->
+            {error, kura_changeset:add_error(CS, AssocName, ~"does not exist")};
+        {error, Reason} ->
+            {error, kura_changeset:add_error(CS, base, child_error(Reason))}
+    end.
+
+%% Only a constraint violation says something about the parent's own fields.
+join_error(CS, _AssocName, {pgsql_error, #{code := Code}} = PgError) when
+    Code =:= ~"23505";
+    Code =:= ~"23503";
+    Code =:= ~"23514";
+    Code =:= ~"23P01";
+    Code =:= ~"23502"
+->
+    handle_pg_error(CS, PgError);
+join_error(CS, AssocName, _PgError) ->
+    kura_changeset:add_error(CS, AssocName, ~"could not be saved").
+
+child_error(stale) -> ~"an associated record is stale";
+child_error(_Reason) -> ~"an associated record could not be saved".
 
 -spec persist_owned_assoc(
     module(),
     module(),
     map(),
-    atom(),
     #kura_assoc{},
     #kura_changeset{} | [#kura_changeset{}]
-) -> {ok, map()}.
-persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) when
-    is_list(ChildCSs)
-->
+) -> {ok, map() | [map()]} | {child_failed, assoc_change()} | {error, term()}.
+persist_owned_assoc(RepoMod, SchemaMod, AccRow, Assoc, ChildCSs) when is_list(ChildCSs) ->
     Binding = owned_fk_binding(Assoc, SchemaMod, AccRow),
-    Children = [
-        persist_child(RepoMod, set_owned_fk(ChildCS, Binding))
-     || ChildCS <- ChildCSs
-    ],
-    {ok, AccRow#{AssocName => Children}};
-persist_owned_assoc(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCS) ->
+    Bound = [set_owned_fk(ChildCS, Binding) || ChildCS <- ChildCSs],
+    persist_children(RepoMod, owned, Bound, ChildCSs);
+persist_owned_assoc(RepoMod, SchemaMod, AccRow, Assoc, ChildCS) ->
     Binding = owned_fk_binding(Assoc, SchemaMod, AccRow),
-    Child = persist_child(RepoMod, set_owned_fk(ChildCS, Binding)),
-    {ok, AccRow#{AssocName => Child}}.
+    case persist_child(RepoMod, owned, set_owned_fk(ChildCS, Binding)) of
+        {ok, Child} -> {ok, Child};
+        {error, #kura_changeset{} = Failed} -> {child_failed, Failed};
+        {error, _} = Err -> Err
+    end.
+
+%% On a failure the failed changeset takes its place in the list the caller
+%% passed, so the parent's `assoc_changes` shows which child it was.
+-spec persist_children(
+    module(), owned | many_to_many, [#kura_changeset{}], [#kura_changeset{}]
+) -> {ok, [map()]} | {child_failed, [#kura_changeset{}]} | {error, term()}.
+persist_children(_RepoMod, _Kind, [], _Given) ->
+    {ok, []};
+persist_children(RepoMod, Kind, [ChildCS | Rest], [Given | GivenRest]) ->
+    case persist_child(RepoMod, Kind, ChildCS) of
+        {ok, Child} ->
+            case persist_children(RepoMod, Kind, Rest, GivenRest) of
+                {ok, Children} -> {ok, [Child | Children]};
+                {child_failed, Failed} -> {child_failed, [Given | Failed]};
+                {error, _} = Err -> Err
+            end;
+        {error, #kura_changeset{} = Failed} ->
+            {child_failed, [Failed | GivenRest]};
+        {error, _} = Err ->
+            Err
+    end.
 
 %% Single-column FKs are the one-element case of the same binding.
 owned_fk_binding(Assoc, SchemaMod, AccRow) ->
@@ -760,84 +775,100 @@ set_owned_fk(CS, []) ->
 set_owned_fk(CS, [{Col, Value} | Rest]) ->
     set_owned_fk(kura_changeset:put_change(CS, Col, Value), Rest).
 
-persist_child(RepoMod, CS = #kura_changeset{action = insert}) ->
-    {ok, Child} = insert_record(RepoMod, CS),
-    Child;
-persist_child(RepoMod, CS = #kura_changeset{action = update}) ->
-    {ok, Child} = update_record(RepoMod, CS),
-    Child.
-
-persist_m2m_child(RepoMod, CS = #kura_changeset{action = insert}) ->
-    {ok, Child} = insert_record(RepoMod, CS),
-    Child;
-persist_m2m_child(RepoMod, CS = #kura_changeset{action = update}) ->
-    {ok, Child} = update_record(RepoMod, CS),
-    Child;
-persist_m2m_child(_RepoMod, CS = #kura_changeset{action = undefined}) ->
-    kura_changeset:apply_changes(CS).
+persist_child(RepoMod, _Kind, CS = #kura_changeset{action = insert}) ->
+    insert_record(RepoMod, CS);
+persist_child(RepoMod, _Kind, CS = #kura_changeset{action = update}) ->
+    update_record(RepoMod, CS);
+persist_child(_RepoMod, many_to_many, CS = #kura_changeset{action = undefined}) ->
+    {ok, kura_changeset:apply_changes(CS)}.
 
 -spec persist_many_to_many(
     module(),
     module(),
     map(),
-    atom(),
     #kura_assoc{},
     [#kura_changeset{}]
-) -> {ok, map()}.
-persist_many_to_many(RepoMod, SchemaMod, AccRow, AssocName, Assoc, ChildCSs) ->
+) ->
+    {ok, [map()]}
+    | {child_failed, assoc_change()}
+    | {join_failed, term()}
+    | link_missing
+    | {error, term()}.
+persist_many_to_many(RepoMod, SchemaMod, AccRow, Assoc, ChildCSs) ->
+    case linked(RepoMod, ChildCSs) of
+        true -> persist_linked(RepoMod, SchemaMod, AccRow, Assoc, ChildCSs);
+        false -> link_missing;
+        {error, _} = Err -> Err
+    end.
+
+persist_linked(RepoMod, SchemaMod, AccRow, Assoc, ChildCSs) ->
+    case persist_children(RepoMod, many_to_many, ChildCSs, ChildCSs) of
+        {ok, Children} -> join_many_to_many(RepoMod, SchemaMod, AccRow, Assoc, Children);
+        Failed -> Failed
+    end.
+
+%% A child with no action links a row by its key, so the row is looked up the
+%% way any read is, under the current tenant, before a join row names it.
+-spec linked(module(), [#kura_changeset{}]) -> boolean() | {error, term()}.
+linked(_RepoMod, []) ->
+    true;
+linked(RepoMod, [#kura_changeset{action = undefined, schema = RelSchema} = CS | Rest]) ->
+    Key = key_pairs(RelSchema, kura_changeset:apply_changes(CS)),
+    case exists(RepoMod, apply_clauses(kura_query:from(RelSchema), Key)) of
+        {ok, true} -> linked(RepoMod, Rest);
+        {ok, false} -> false;
+        {error, _} = Err -> Err
+    end;
+linked(RepoMod, [_Written | Rest]) ->
+    linked(RepoMod, Rest).
+
+join_many_to_many(RepoMod, SchemaMod, AccRow, Assoc, Children) ->
     #kura_assoc{schema = RelSchema, join_through = JoinThrough} = Assoc,
     {OwnerCols, RelatedCols} = kura_schema:assoc_join_keys(Assoc),
-    OwnerValues = [maps:get(K, AccRow) || K <- kura_schema:key(SchemaMod)],
+    Owner = lists:zip(OwnerCols, [maps:get(K, AccRow) || K <- kura_schema:key(SchemaMod)]),
     RelKey = kura_schema:key(RelSchema),
-    JoinTable =
-        case JoinThrough of
-            B when is_binary(B) -> B;
-            M when is_atom(M) -> M:table()
-        end,
-    Children = [persist_m2m_child(RepoMod, ChildCS) || ChildCS <- ChildCSs],
-    {OwnerConds, OwnerParams, _} = key_conds(lists:zip(OwnerCols, OwnerValues), 1),
-    DeleteSQL = iolist_to_binary([
-        ~"DELETE FROM ",
-        kura_preloader:quote_table_bin(JoinTable),
-        ~" WHERE ",
-        lists:join(~" AND ", OwnerConds)
-    ]),
-    _ = kura_db:query(RepoMod, DeleteSQL, OwnerParams),
-    lists:foreach(
-        fun(Child) ->
-            RelValues = [maps:get(K, Child) || K <- RelKey],
-            {InsertSQL, InsertParams} = m2m_insert_sql(
-                JoinTable, OwnerCols ++ RelatedCols, OwnerValues ++ RelValues
-            ),
-            kura_db:query(RepoMod, InsertSQL, InsertParams)
-        end,
-        Children
-    ),
-    {ok, AccRow#{AssocName => Children}}.
+    Dialect = kura_query_compiler:dialect(RepoMod),
+    Inserts = [
+        join_insert_sql(
+            Dialect,
+            JoinThrough,
+            Owner ++ lists:zip(RelatedCols, [maps:get(K, Child) || K <- RelKey])
+        )
+     || Child <- Children
+    ],
+    case join_writes(RepoMod, [join_delete_sql(Dialect, JoinThrough, Owner) | Inserts]) of
+        ok -> {ok, Children};
+        {error, PgError} -> {join_failed, PgError}
+    end.
 
-m2m_insert_sql(JoinTable, Cols, Values) ->
-    ColSQL = lists:join(~", ", [quote_ident_bin(atom_to_binary(C, utf8)) || C <- Cols]),
-    Placeholders = lists:join(~", ", [
-        [~"$", integer_to_binary(N)]
-     || N <- lists:seq(1, length(Cols))
-    ]),
-    SQL = iolist_to_binary([
-        ~"INSERT INTO ",
-        kura_preloader:quote_table_bin(JoinTable),
-        ~" (",
-        ColSQL,
-        ~") VALUES (",
-        Placeholders,
-        ~")"
-    ]),
-    {SQL, Values}.
+%% Join-table writes go to the dialect unscoped: a join table has no tenant
+%% attribute, and the rows it links were checked under the tenant.
+-spec join_delete_sql(module(), kura_dialect:table(), [{atom(), term()}]) ->
+    {iodata(), [term()]}.
+join_delete_sql(Dialect, JoinThrough, Owner) ->
+    Dialect:delete_all(#kura_query{
+        from = JoinThrough, wheres = [{Col, '=', Value} || {Col, Value} <- Owner]
+    }).
+
+-spec join_insert_sql(module(), kura_dialect:table(), [{atom(), term()}]) ->
+    {iodata(), [term()]}.
+join_insert_sql(Dialect, JoinThrough, Row) ->
+    Dialect:insert_all(JoinThrough, [Col || {Col, _} <- Row], [maps:from_list(Row)]).
+
+join_writes(_RepoMod, []) ->
+    ok;
+join_writes(RepoMod, [{SQL, Params} | Rest]) ->
+    case kura_db:query(RepoMod, SQL, Params) of
+        {error, _} = Err -> Err;
+        _ -> join_writes(RepoMod, Rest)
+    end.
 
 delete_record(RepoMod, SchemaMod, Data) ->
     case kura_schema:run_before_delete(SchemaMod, Data) of
         {error, _} = Err ->
             Err;
         ok ->
-            KeyClauses = tenant_key_clauses(key_pairs(SchemaMod, Data)),
+            KeyClauses = tenant_key_clauses(SchemaMod, key_pairs(SchemaMod, Data)),
             {SQL, Params} = kura_query_compiler:delete(RepoMod, SchemaMod, KeyClauses),
             case kura_db:query(RepoMod, SQL, Params) of
                 #{command := delete, rows := [Row]} ->
@@ -853,7 +884,7 @@ delete_record(RepoMod, SchemaMod, Data) ->
             end
     end.
 
--spec dump_set_map(atom() | module() | undefined, map()) ->
+-spec dump_set_map(kura_dialect:table() | undefined, map()) ->
     {ok, map()} | {error, {dump_failed, atom(), binary()}}.
 dump_set_map(From, Updates) when is_atom(From), From =/= undefined ->
     case is_schema_module(From) of
@@ -1000,7 +1031,7 @@ maybe_generate_single_pk(RepoMod, SchemaMod, PK, Changes) ->
 
 -spec uuid_version(module()) -> v7 | v4.
 uuid_version(RepoMod) ->
-    case maps:get(uuid_version, kura_repo:config(RepoMod), v4) of
+    case maps:get(uuid_version, kura_repo:settings(RepoMod), v4) of
         v7 -> v7;
         _ -> v4
     end.
@@ -1137,10 +1168,24 @@ maybe_apply_tenant_prefix(Query) ->
             Query
     end.
 
-tenant_key_clauses(KeyClauses) ->
+tenant_key_clauses(SchemaMod, KeyClauses) ->
     case kura_tenant:get_tenant() of
-        {attribute, {Field, Value}} -> KeyClauses ++ [{Field, Value}];
-        _ -> KeyClauses
+        {attribute, {Field, Value}} ->
+            ok = refuse_encrypted_tenant(SchemaMod, Field),
+            KeyClauses ++ [{Field, Value}];
+        _ ->
+            KeyClauses
+    end.
+
+%% Every write path that matches rows on the attribute tenant goes through
+%% here. An update or delete key clause would bind the tenant value in
+%% plaintext, and an upsert's conflict guard compares two ciphertexts with
+%% different nonces, so it would silently never update. Both are refused
+%% with the reason where/2 gives.
+refuse_encrypted_tenant(SchemaMod, Field) ->
+    case lists:member(Field, kura_schema:encrypted_fields(SchemaMod)) of
+        true -> erlang:error({kura, {encrypted_field_in_where, Field}});
+        false -> ok
     end.
 
 pin_tenant(Changes) ->
@@ -1149,16 +1194,36 @@ pin_tenant(Changes) ->
         _ -> Changes
     end.
 
-guard_upsert(#{on_conflict := OnConflict} = Opts) ->
+guard_upsert(SchemaMod, #{on_conflict := OnConflict} = Opts) ->
+    ok = refuse_encrypted_conflict_guard(SchemaMod, OnConflict),
     case kura_tenant:get_tenant() of
-        {attribute, {Field, _Value}} -> Opts#{on_conflict => guarded(OnConflict, Field)};
-        _ -> Opts
+        {attribute, {Field, _Value}} ->
+            Opts#{on_conflict => guarded(OnConflict, SchemaMod, Field)};
+        _ ->
+            Opts
     end;
-guard_upsert(Opts) ->
+guard_upsert(_SchemaMod, Opts) ->
     Opts.
 
-guarded({_Target, nothing} = OnConflict, _Field) ->
+guarded({_Target, nothing} = OnConflict, _SchemaMod, _Field) ->
     OnConflict;
+guarded({_Target, nothing, _Opts} = OnConflict, _SchemaMod, _Field) ->
+    OnConflict;
+guarded(OnConflict, SchemaMod, Field) ->
+    ok = refuse_encrypted_tenant(SchemaMod, Field),
+    guarded(OnConflict, Field).
+
+refuse_encrypted_conflict_guard(SchemaMod, {_Target, Action, #{guard := Fields}}) when
+    Action =/= nothing, is_list(Fields)
+->
+    Encrypted = kura_schema:encrypted_fields(SchemaMod),
+    case [F || F <- Fields, lists:member(F, Encrypted)] of
+        [] -> ok;
+        [Field | _] -> erlang:error({kura, {encrypted_field_in_conflict_guard, Field}})
+    end;
+refuse_encrypted_conflict_guard(_SchemaMod, _OnConflict) ->
+    ok.
+
 guarded({Target, Action}, Field) ->
     {Target, Action, #{guard => [Field]}};
 guarded({Target, Action, Opts}, Field) when is_map(Opts) ->

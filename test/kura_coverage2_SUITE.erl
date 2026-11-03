@@ -6,10 +6,6 @@
 
 -compile(export_all).
 
--eqwalizer({nowarn_function, dump_embed_one_nested/1}).
--eqwalizer({nowarn_function, load_embed_one_nested/1}).
--eqwalizer({nowarn_function, migrator_quote_atom/1}).
-
 -define(REPO, kura_test_repo).
 
 %%----------------------------------------------------------------------
@@ -298,7 +294,7 @@ insert_with_opts_pg_error(_Config) ->
         #{email => <<"c2pe@test.com">>},
         [email]
     ),
-    {error, ErrCS} = kura_repo_worker:insert(kura_test_repo, CS, #{}),
+    {error, #kura_changeset{} = ErrCS} = kura_repo_worker:insert(kura_test_repo, CS, #{}),
     ?assertNot(ErrCS#kura_changeset.valid),
     ?assertEqual(insert, ErrCS#kura_changeset.action).
 
@@ -531,8 +527,13 @@ collect_batches(Acc, DrainMs) ->
 
 %% Covers kura_migrator line 544: quote(atom)
 migrator_quote_atom(_Config) ->
-    SQL = kura_migrator:compile_operation(?REPO, {drop_table, my_table}),
+    SQL = kura_migrator:compile_operation(?REPO, drop_atom_table()),
     ?assertEqual(<<"DROP TABLE \"my_table\"">>, SQL).
+
+%% The operation type names tables with binaries; quote/1 still takes an atom.
+-spec drop_atom_table() -> dynamic().
+drop_atom_table() ->
+    {drop_table, my_table}.
 
 %% Covers kura_migrator compile_operation 5-arity create_index (line 264-287)
 migrator_compile_index_5_arity(_Config) ->
@@ -692,19 +693,20 @@ dump_embed_one_nested(_Config) ->
         address => #{street => <<"Main">>, city => <<"NYC">>},
         labels => [#{label => <<"a">>, weight => 1}, #{label => <<"b">>, weight => 2}]
     },
-    {ok, Json} = kura_types:dump({embed, embeds_one, kura_cov2_nested_embed_schema}, Map),
+    {ok, <<Json/binary>>} = kura_types:dump(
+        {embed, embeds_one, kura_cov2_nested_embed_schema}, Map
+    ),
     ?assert(is_binary(Json)),
-    Decoded = json:decode(Json),
+    #{<<"address">> := #{} = Address, <<"labels">> := [_ | _] = Labels} =
+        Decoded = json:decode(Json),
     ?assert(is_map(Decoded)),
     %% count with bad type -> dump error fallback (line 405) -> value kept as-is
     ?assertEqual(<<"not_an_integer">>, maps:get(<<"count">>, Decoded)),
     %% address nested embed (line 399) -> recursed into dump_embed_to_term
-    ?assertEqual(<<"Main">>, maps:get(<<"street">>, maps:get(<<"address">>, Decoded))),
+    ?assertEqual(<<"Main">>, maps:get(<<"street">>, Address)),
     %% labels nested embed list (line 401)
-    Labels = maps:get(<<"labels">>, Decoded),
     ?assertEqual(2, length(Labels)),
     %% zip not in address map -> line 411 (field missing from input)
-    Address = maps:get(<<"address">>, Decoded),
     ?assertNot(maps:is_key(<<"zip">>, Address)).
 
 %% Covers kura_types lines 425, 427, 431, 434, 441, 444: load_embed nested
@@ -717,19 +719,21 @@ load_embed_one_nested(_Config) ->
         <<"labels">> => [#{<<"label">> => <<"a">>, <<"weight">> => 1}],
         <<"xyzzy_nonexistent_field_9z7">> => <<"extra">>
     },
-    {ok, Loaded} = kura_types:load({embed, embeds_one, kura_cov2_nested_embed_schema}, Json),
+    {ok, #{} = Loaded} = kura_types:load({embed, embeds_one, kura_cov2_nested_embed_schema}, Json),
     ?assert(is_map(Loaded)),
     ?assertEqual(<<"outer">>, maps:get(label, Loaded)),
     %% count had load error (string vs integer) -> value kept as-is (line 431)
     ?assertEqual(<<"not_an_integer">>, maps:get(count, Loaded)),
-    Address = maps:get(address, Loaded),
+    #{} = Address = maps:get(address, Loaded),
     ?assertEqual(<<"Main">>, maps:get(street, Address)),
     %% Also test with atom keys -> covers normalize_key atom path (line 444)
     Json2 = #{
         label => <<"atom_keyed">>,
         count => 10
     },
-    {ok, Loaded2} = kura_types:load({embed, embeds_one, kura_cov2_nested_embed_schema}, Json2),
+    {ok, #{} = Loaded2} = kura_types:load(
+        {embed, embeds_one, kura_cov2_nested_embed_schema}, Json2
+    ),
     ?assertEqual(<<"atom_keyed">>, maps:get(label, Loaded2)).
 
 %% Covers kura_types line 336: format_uuid passthrough (non-standard format)

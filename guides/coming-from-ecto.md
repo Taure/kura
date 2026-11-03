@@ -15,7 +15,7 @@ Different:
 - **Records and functions, no macros.** Schemas are behaviours. Fields are `#kura_field{}` records. Queries are built by passing the query value through functions, not a `from u in User, where: ...` macro.
 - **The repo is an argument, not a dispatcher.** Where Ecto has `MyRepo.insert(cs)`, Kura has `kura_repo_worker:insert(MyRepo, CS)`. The repo module exists to hold config; it does not dispatch CRUD.
 - **WHERE conditions are data, not lambdas or quoted ASTs.** `kura_query:where(Q, {age, '>', 18})` instead of `where(q, [u], u.age > 18)`. There is no `Ecto.Query.API`-style sigil.
-- **Field access uses atom column names.** Returned rows are maps with atom keys (configured via pgo's `column_name_as_atom`), not structs.
+- **Field access uses atom column names.** Returned rows are maps with atom keys (the driver's `column_name_as_atom` decode option), not structs.
 
 ## Schemas
 

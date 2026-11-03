@@ -207,7 +207,7 @@ dump_jsonb_string_scalar_test() ->
     %% a plain binary; dump must re-encode it so it round-trips.
     {ok, Cast} = kura_types:cast(jsonb, <<"\"hi\"">>),
     ?assertEqual(<<"hi">>, Cast),
-    {ok, Dumped} = kura_types:dump(jsonb, Cast),
+    {ok, <<Dumped/binary>>} = kura_types:dump(jsonb, Cast),
     ?assertEqual(<<"\"hi\"">>, iolist_to_binary(Dumped)),
     ?assertEqual({ok, <<"hi">>}, kura_types:load(jsonb, iolist_to_binary(Dumped))).
 

@@ -23,5 +23,12 @@ associations() ->
             type = has_many,
             schema = kura_test_tenant_note_schema,
             foreign_key = item_id
+        },
+        #kura_assoc{
+            name = links,
+            type = many_to_many,
+            schema = kura_test_tenant_item_schema,
+            join_through = ~"tenant_item_links",
+            join_keys = {item_id, linked_id}
         }
     ].

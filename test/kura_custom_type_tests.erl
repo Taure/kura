@@ -5,10 +5,6 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
-%% eqWAlizer: proper macros generate term()
--eqwalizer({nowarn_function, prop_money_dollars_roundtrip/0}).
--eqwalizer({nowarn_function, prop_email_lowercase/0}).
-
 %%----------------------------------------------------------------------
 %% Unit tests: cast/dump/load through kura_types
 %%----------------------------------------------------------------------
@@ -92,13 +88,13 @@ prop_money_dollars_roundtrip() ->
     ?FORALL(
         Cents,
         range(1, 1000000),
-        begin
-            Dollars = Cents / 100,
-            {ok, Cast} = kura_types:cast(Type, {dollars, Dollars}),
-            {ok, Dumped} = kura_types:dump(Type, Cast),
-            {ok, Loaded} = kura_types:load(Type, Dumped),
-            Loaded =:= Cents
-        end
+        is_integer(Cents) andalso
+            begin
+                {ok, Cast} = kura_types:cast(Type, {dollars, Cents / 100}),
+                {ok, Dumped} = kura_types:dump(Type, Cast),
+                {ok, Loaded} = kura_types:load(Type, Dumped),
+                Loaded =:= Cents
+            end
     ).
 
 prop_email_lowercase() ->
@@ -107,7 +103,7 @@ prop_email_lowercase() ->
         Local,
         non_empty(list(range($A, $Z))),
         begin
-            Email = list_to_binary(Local ++ "@TEST.COM"),
+            Email = upper_email(Local),
             {ok, Cast} = kura_types:cast(Type, Email),
             Cast =:= string:lowercase(Email)
         end
@@ -216,3 +212,7 @@ t_insert_all() ->
     ),
     {ok, Results} = kura_test_repo:all(Q),
     ?assertEqual(2, length(Results)).
+
+%% PropEr instances are untyped.
+upper_email(Local) ->
+    list_to_binary(Local ++ "@TEST.COM").

@@ -42,6 +42,10 @@ tenant_test_() ->
                 fun assoc_onto_foreign_record/0},
             {"associations can be written onto the tenant's own record",
                 fun assoc_onto_own_record/0},
+            {"a many_to_many link to another tenant's row is refused",
+                fun link_to_foreign_row_is_refused/0},
+            {"a many_to_many link to the tenant's own row is written",
+                fun link_to_own_row_is_written/0},
             {"a join between two tenant tables is refused", fun join_of_tenant_tables_fails/0},
             {"preloading several associations stays in the tenant",
                 fun parallel_preload_is_scoped/0},
@@ -54,6 +58,7 @@ setup() ->
     application:ensure_all_started(minato),
     application:ensure_all_started(kura),
     kura_test_repo:start(),
+    drop_tables(),
     {ok, _} = kura_test_repo:query(
         "CREATE TABLE IF NOT EXISTS tenant_items ("
         "  id BIGSERIAL PRIMARY KEY,"
@@ -61,6 +66,14 @@ setup() ->
         "  name VARCHAR(255) NOT NULL UNIQUE,"
         "  score INTEGER,"
         "  lock_version INTEGER NOT NULL DEFAULT 0"
+        ")",
+        []
+    ),
+    {ok, _} = kura_test_repo:query(
+        "CREATE TABLE IF NOT EXISTS tenant_item_links ("
+        "  item_id BIGINT NOT NULL,"
+        "  linked_id BIGINT NOT NULL,"
+        "  PRIMARY KEY (item_id, linked_id)"
         ")",
         []
     ),
@@ -77,7 +90,11 @@ setup() ->
 
 teardown(_) ->
     _ = kura_tenant:clear_tenant(),
+    drop_tables().
+
+drop_tables() ->
     kura_test_repo:query("DROP SCHEMA IF EXISTS tenant_p1 CASCADE", []),
+    kura_test_repo:query("DROP TABLE IF EXISTS tenant_item_links CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS tenant_notes CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS tenant_items CASCADE", []),
     ok.
@@ -85,7 +102,9 @@ teardown(_) ->
 seed() ->
     _ = kura_tenant:clear_tenant(),
     kura_query_cache:flush(),
-    {ok, _} = kura_test_repo:query("TRUNCATE tenant_items, tenant_notes RESTART IDENTITY", []),
+    {ok, _} = kura_test_repo:query(
+        "TRUNCATE tenant_items, tenant_notes, tenant_item_links RESTART IDENTITY", []
+    ),
     {ok, _} = kura_test_repo:query(
         "INSERT INTO tenant_items (org_id, name, score) VALUES "
         "(1, 'one-a', 1), (1, 'one-b', 2), (2, 'two-a', 10), (2, 'two-only', 20)",
@@ -314,6 +333,25 @@ assoc_onto_own_record() ->
     ?assertMatch({ok, _}, as(?ONE, fun() -> kura_test_repo:update(CS) end)),
     ?assertMatch(
         {ok, [#{org_id := 1}]}, raw("SELECT org_id FROM tenant_notes WHERE item_id = $1", [Id])
+    ).
+
+link_to_foreign_row_is_refused() ->
+    Id = id_of(~"one-a"),
+    CS0 = kura_changeset:cast(?ITEMS, #{id => Id}, #{}, []),
+    CS = kura_changeset:put_assoc(CS0, links, [#{id => id_of(~"two-only")}]),
+    {error, ErrCS} = as(?ONE, fun() -> kura_test_repo:update(CS) end),
+    ?assertEqual([{links, ~"does not exist"}], ErrCS#kura_changeset.errors),
+    ?assertEqual({ok, []}, raw("SELECT item_id FROM tenant_item_links", [])).
+
+link_to_own_row_is_written() ->
+    Id = id_of(~"one-a"),
+    Own = id_of(~"one-b"),
+    CS0 = kura_changeset:cast(?ITEMS, #{id => Id}, #{}, []),
+    CS = kura_changeset:put_assoc(CS0, links, [#{id => Own}]),
+    ?assertMatch({ok, _}, as(?ONE, fun() -> kura_test_repo:update(CS) end)),
+    ?assertEqual(
+        {ok, [#{item_id => Id, linked_id => Own}]},
+        raw("SELECT item_id, linked_id FROM tenant_item_links", [])
     ).
 
 join_of_tenant_tables_fails() ->

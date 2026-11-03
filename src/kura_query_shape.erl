@@ -17,13 +17,24 @@ subquery it contains:
   row-value `in` whose tuples all match the column count;
 - both ends of a `between`;
 - the parameters of a condition fragment, in `wheres` or `havings`;
+- the parameters of a select-expression fragment;
+- the vector of a `kura_query:distance/3` node, in a select expression
+  or in `order_by`;
 - `limit` and `offset`.
 
 `nil` and `undefined` stay in the shape wherever they appear, so a
 dialect that compiles them differently from other values still gets them.
-Unary conditions (`?KURA_IS_UNARY_OP`), select-expression fragments and
-anything not recognised also stay in the shape, so an unrecognised
-condition costs a cache entry per value set rather than correctness.
+A `{subquery, #kura_query{}}` in a bound position is shaped like any other
+subquery rather than replaced, because the encrypted filter guard reads it.
+Unary conditions (`?KURA_IS_UNARY_OP`) and anything not recognised also
+stay in the shape, so an unrecognised condition costs a cache entry per
+value set rather than correctness.
+
+Invariant: the encrypted filter guard's verdict
+(`kura_query:check_encrypted/1`) on a query equals its verdict on the
+query's shape. Every bound position above is one the guard never reads,
+so `kura_query_compiler:to_sql_cached/2` checks on a miss only. A new
+bound position, or a guard rule that reads a value, breaks that.
 
 A dialect is free to emit any SQL for a shape, but it must pass a bound
 value through to the parameter list untouched. `valid_template/2` checks
@@ -72,21 +83,64 @@ bind_param(P, _Values) -> P.
 
 -spec query(#kura_query{}, acc()) -> {#kura_query{}, acc()}.
 query(Q, Acc0) ->
-    {Wheres, Acc1} = conditions(Q#kura_query.wheres, Acc0),
-    {Havings, Acc2} = conditions(Q#kura_query.havings, Acc1),
-    {Limit, Acc3} = value(Q#kura_query.limit, Acc2),
-    {Offset, Acc4} = value(Q#kura_query.offset, Acc3),
-    {Ctes, Acc5} = named_queries(Q#kura_query.ctes, Acc4),
-    {Combinations, Acc6} = named_queries(Q#kura_query.combinations, Acc5),
+    {Select, Acc1} = select(Q#kura_query.select, Acc0),
+    {Wheres, Acc2} = conditions(Q#kura_query.wheres, Acc1),
+    {Havings, Acc3} = conditions(Q#kura_query.havings, Acc2),
+    {OrderBys, Acc4} = orders(Q#kura_query.order_bys, Acc3),
+    {Limit, Acc5} = value(Q#kura_query.limit, Acc4),
+    {Offset, Acc6} = value(Q#kura_query.offset, Acc5),
+    {Ctes, Acc7} = named_queries(Q#kura_query.ctes, Acc6),
+    {Combinations, Acc8} = named_queries(Q#kura_query.combinations, Acc7),
     Shape = Q#kura_query{
+        select = Select,
         wheres = Wheres,
         havings = Havings,
+        order_bys = OrderBys,
         limit = Limit,
         offset = Offset,
         ctes = Ctes,
         combinations = Combinations
     },
-    {Shape, Acc6}.
+    {Shape, Acc8}.
+
+-spec select(Select, acc()) -> {Select, acc()} when Select :: [term()] | {exprs, [term()]}.
+select({exprs, Exprs}, Acc0) when is_list(Exprs) ->
+    {Shapes, Acc1} = select_exprs(Exprs, Acc0),
+    {{exprs, Shapes}, Acc1};
+select(Select, Acc) ->
+    {Select, Acc}.
+
+-spec select_exprs([term()], acc()) -> {[term()], acc()}.
+select_exprs([], Acc) ->
+    {[], Acc};
+select_exprs([{Alias, Expr} | Rest], Acc0) ->
+    {Shape, Acc1} = expr(Expr, Acc0),
+    {Shapes, Acc2} = select_exprs(Rest, Acc1),
+    {[{Alias, Shape} | Shapes], Acc2};
+select_exprs([Expr | Rest], Acc0) ->
+    {Shapes, Acc1} = select_exprs(Rest, Acc0),
+    {[Expr | Shapes], Acc1}.
+
+-spec orders([term()], acc()) -> {[term()], acc()}.
+orders([], Acc) ->
+    {[], Acc};
+orders([{Expr, Dir} | Rest], Acc0) ->
+    {Shape, Acc1} = expr(Expr, Acc0),
+    {Shapes, Acc2} = orders(Rest, Acc1),
+    {[{Shape, Dir} | Shapes], Acc2};
+orders([Order | Rest], Acc0) ->
+    {Shapes, Acc1} = orders(Rest, Acc0),
+    {[Order | Shapes], Acc1}.
+
+-spec expr(term(), acc()) -> {term(), acc()}.
+expr({fragment, SQL, Params}, Acc0) when is_list(Params) ->
+    {Markers, Acc1} = values(Params, Acc0),
+    {{fragment, SQL, Markers}, Acc1};
+expr({distance, Field, Metric, Vector}, Acc0) ->
+    {Marker, Acc1} = value(Vector, Acc0),
+    {{distance, Field, Metric, Marker}, Acc1};
+expr(Expr, Acc) ->
+    {Expr, Acc}.
 
 -spec named_queries([{Name, #kura_query{}}], acc()) -> {[{Name, #kura_query{}}], acc()}.
 named_queries([], Acc) ->
@@ -122,6 +176,9 @@ condition({Exists, {subquery, SubQ}}, Acc0) when Exists =:= exists; Exists =:= n
 condition({Field, in, {subquery, SubQ}}, Acc0) ->
     {Shape, Acc1} = subquery(SubQ, Acc0),
     {{Field, in, Shape}, Acc1};
+condition({Field, Op, {subquery, #kura_query{}} = Value}, Acc0) ->
+    {Shape, Acc1} = value(Value, Acc0),
+    {{Field, Op, Shape}, Acc1};
 condition({Field, In, Values}, Acc0) when
     is_atom(Field), is_list(Values), (In =:= in orelse In =:= not_in)
 ->
@@ -176,6 +233,8 @@ values([Value | Rest], Acc0) ->
 %% offset, whose record fields are typed as integers.
 value(Value, Acc) when Value =:= nil; Value =:= undefined ->
     {Value, Acc};
+value({subquery, SubQ}, Acc) ->
+    subquery(SubQ, Acc);
 value(Value, {N, Values}) ->
     {{?MARKER, N}, {N + 1, [Value | Values]}}.
 

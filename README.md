@@ -4,7 +4,7 @@
   <img src="priv/kura.png" alt="Kura" width="600" />
 </p>
 
-Database layer for Erlang - Ecto-equivalent abstractions in pure Erlang. Pluggable backends: [`kura_postgres`](https://github.com/Taure/kura_postgres) (PostgreSQL via pgo), [`kura_sqlite`](https://github.com/Taure/kura_sqlite) (SQLite via esqlite).
+Database layer for Erlang - Ecto-equivalent abstractions in pure Erlang. Pluggable backends: [`kura_postgres`](https://github.com/Taure/kura_postgres) (PostgreSQL via minato), [`kura_sqlite`](https://github.com/Taure/kura_sqlite) (SQLite via esqlite).
 
 ## Features
 
@@ -209,8 +209,8 @@ SQLite values round-trip transparently via `kura_types:cast/2` (booleans 0/1 →
 `{vector, N}` (and dimensionless `vector`) map to [pgvector](https://github.com/pgvector/pgvector)
 columns for embeddings; requires `CREATE EXTENSION vector` and a backend
 declaring the `vector` capability. A value is a list of numbers, dimension-checked
-on cast. Distance-query operators (`<->` / `<=>`) are not yet a first-class query
-form - use a `{fragment, SQL, Params}` for nearest-neighbour ordering meanwhile.
+on cast. `kura_query:distance/3` orders and selects by `<->`, `<=>` or `<#>`
+distance; see the vector search section of the query builder guide.
 Elements are stored as `float4`, so a value read back from a column is the
 single-precision approximation of what was written, not the exact double.
 
@@ -250,8 +250,20 @@ implementing the `kura_keyring` behaviour and setting `{kura, [{keyring, my_keyr
 
 **Constraints:** encrypted columns are **not queryable** and cannot carry a
 unique constraint (each write has a random nonce, so equal plaintexts
-produce different ciphertexts). Primary and foreign keys cannot be
-encrypted. `NULL` stays `NULL` (unencrypted), so presence still leaks.
+produce different ciphertexts). `kura_query:where/2` and `having/2` raise
+on any condition that compares an encrypted field to a value, however it is
+nested, including inside a subquery or over a CTE that selects an encrypted
+field; `{Field, is_nil}` and `{Field, is_not_nil}` still work. Ordering,
+grouping, `DISTINCT ON` or joining on an encrypted field (or on a
+`select_expr/2` alias of one), partitioning or ordering a window by one,
+and `sum`, `avg`, `min` or `max` of one raise too; `count` works. A raw
+`{fragment, SQL, Params}` is not inspected. The check runs again when a
+query is compiled, so a `#kura_query{}` record built by hand is covered
+too. Primary keys, association keys and fields of embedded schemas cannot
+be encrypted: `kura_schema` raises when it first reads such a schema. An
+`{array, {encrypted, Inner}}` field encrypts each element, is stored as
+`BYTEA[]`, and is an encrypted field for all of the above. `NULL` stays
+`NULL` (unencrypted), so presence still leaks.
 Schema introspection (`rebar3 kura gen_schemas`) cannot detect that a
 `BYTEA` column was encrypted - annotate it by hand. The audit trail
 redacts encrypted fields to `[encrypted]` (it keeps the "changed" signal
@@ -377,6 +389,10 @@ call, so a read that must see a just-written row should use the primary.
 The guard covers the changeset write API; raw SQL via `query/3` is not
 guarded, so a raw write on a replica is rejected by PostgreSQL itself.
 
+`read_only` and `replicas` are read when the repo's pool starts. Changing
+them at runtime takes effect after `kura_repo_worker:start/1` is called
+again for that repo.
+
 <details>
 <summary>Legacy v1.x config forms (still supported)</summary>
 
@@ -410,6 +426,12 @@ The per-app form:
     }}
 ]}].
 ```
+
+In the per-app form the settings go to the backend's pool as written, and
+the pool applies its own defaults. kura_postgres needs `user`, and defaults
+`database` to it. The flat form on Postgres still gets `user` and `database`
+set to `"postgres"` when it leaves them out, with a deprecation warning;
+kura 3.0 drops that, so set both.
 
 The per-app form requires the consuming app to call `my_repo:start()`
 manually. The `{repos, #{...}}` form (above) is preferred for new

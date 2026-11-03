@@ -170,7 +170,7 @@ primary_key_composite_raises_named_error_test() ->
     ).
 
 primary_key_field_single_test() ->
-    Field = kura_schema:primary_key_field(kura_test_schema),
+    #kura_field{} = Field = kura_schema:primary_key_field(kura_test_schema),
     ?assertEqual(id, Field#kura_field.name).
 
 assoc_fields_from_legacy_foreign_key_test() ->

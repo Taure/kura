@@ -2,13 +2,6 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
--eqwalizer({nowarn_function, dump_embed_one_test/0}).
--eqwalizer({nowarn_function, dump_embed_many_test/0}).
--eqwalizer({nowarn_function, load_embed_one_from_map_test/0}).
--eqwalizer({nowarn_function, load_embed_one_from_binary_test/0}).
--eqwalizer({nowarn_function, load_embed_many_test/0}).
--eqwalizer({nowarn_function, dump_load_roundtrip_test/0}).
-
 %%----------------------------------------------------------------------
 %% Schema: embeds/1, embed/2
 %%----------------------------------------------------------------------
@@ -158,7 +151,7 @@ dump_embed_one_test() ->
     Data = #{street => <<"123 Main">>, city => <<"Portland">>, zip => <<"97201">>},
     {ok, Json} = kura_types:dump({embed, embeds_one, kura_test_address}, Data),
     ?assert(is_binary(Json)),
-    {ok, Decoded} = kura_types:load(jsonb, Json),
+    {ok, #{} = Decoded} = kura_types:load(jsonb, Json),
     ?assertEqual(<<"123 Main">>, maps:get(<<"street">>, Decoded)).
 
 dump_embed_many_test() ->
@@ -168,20 +161,20 @@ dump_embed_many_test() ->
     ],
     {ok, Json} = kura_types:dump({embed, embeds_many, kura_test_label}, Data),
     ?assert(is_binary(Json)),
-    {ok, Decoded} = kura_types:load(jsonb, Json),
+    {ok, [_ | _] = Decoded} = kura_types:load(jsonb, Json),
     ?assert(is_list(Decoded)),
     ?assertEqual(2, length(Decoded)).
 
 load_embed_one_from_map_test() ->
     Map = #{<<"street">> => <<"123 Main">>, <<"city">> => <<"Portland">>, <<"zip">> => <<"97201">>},
-    {ok, Loaded} = kura_types:load({embed, embeds_one, kura_test_address}, Map),
+    {ok, #{} = Loaded} = kura_types:load({embed, embeds_one, kura_test_address}, Map),
     ?assertEqual(<<"123 Main">>, maps:get(street, Loaded)),
     ?assertEqual(<<"Portland">>, maps:get(city, Loaded)),
     ?assertEqual(<<"97201">>, maps:get(zip, Loaded)).
 
 load_embed_one_from_binary_test() ->
     Json = <<"{\"street\":\"123 Main\",\"city\":\"Portland\",\"zip\":\"97201\"}">>,
-    {ok, Loaded} = kura_types:load({embed, embeds_one, kura_test_address}, Json),
+    {ok, #{} = Loaded} = kura_types:load({embed, embeds_one, kura_test_address}, Json),
     ?assertEqual(<<"123 Main">>, maps:get(street, Loaded)),
     ?assertEqual(<<"Portland">>, maps:get(city, Loaded)).
 
@@ -190,9 +183,9 @@ load_embed_many_test() ->
         #{<<"label">> => <<"important">>, <<"weight">> => 10},
         #{<<"label">> => <<"urgent">>, <<"weight">> => 5}
     ],
-    {ok, Loaded} = kura_types:load({embed, embeds_many, kura_test_label}, List),
+    {ok, [_ | _] = Loaded} = kura_types:load({embed, embeds_many, kura_test_label}, List),
     ?assertEqual(2, length(Loaded)),
-    [L1, L2] = Loaded,
+    [#{} = L1, #{} = L2] = Loaded,
     ?assertEqual(<<"important">>, maps:get(label, L1)),
     ?assertEqual(10, maps:get(weight, L1)),
     ?assertEqual(<<"urgent">>, maps:get(label, L2)).
@@ -200,7 +193,7 @@ load_embed_many_test() ->
 dump_load_roundtrip_test() ->
     Data = #{street => <<"123 Main">>, city => <<"Portland">>, zip => <<"97201">>},
     {ok, Dumped} = kura_types:dump({embed, embeds_one, kura_test_address}, Data),
-    {ok, Loaded} = kura_types:load({embed, embeds_one, kura_test_address}, Dumped),
+    {ok, #{} = Loaded} = kura_types:load({embed, embeds_one, kura_test_address}, Dumped),
     ?assertEqual(<<"123 Main">>, maps:get(street, Loaded)),
     ?assertEqual(<<"Portland">>, maps:get(city, Loaded)),
     ?assertEqual(<<"97201">>, maps:get(zip, Loaded)).
