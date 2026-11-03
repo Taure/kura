@@ -299,11 +299,13 @@ dump_field_reports_the_cast_message_test() ->
         kura_repo_worker:dump_field({enum, [admin]}, ~"deleted", no_context)
     ).
 
-dump_field_fails_closed_when_cast_raises_badarg_test() ->
+dump_field_reports_an_empty_time_as_a_cast_error_test() ->
     ?assertEqual(
-        {error, ~"cannot dump utc_datetime"},
+        {error, ~"is not a valid time"},
         kura_repo_worker:dump_field(utc_datetime, ~"2026-01-01T", no_context)
-    ),
+    ).
+
+dump_field_fails_closed_when_cast_raises_badarg_test() ->
     ?assertEqual(
         {error, ~"cannot dump string"},
         kura_repo_worker:dump_field(string, [999999], no_context)

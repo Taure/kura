@@ -31,11 +31,11 @@ cast_datetime_with_fractional_seconds_test() ->
 
 cast_datetime_with_tz_offset_test() ->
     {ok, Result} = kura_types:cast(utc_datetime, <<"2024-01-15T10:30:00+05:00">>),
-    ?assertEqual({{2024, 1, 15}, {10, 30, 0}}, Result).
+    ?assertEqual({{2024, 1, 15}, {5, 30, 0}}, Result).
 
 cast_datetime_with_negative_tz_offset_test() ->
     {ok, Result} = kura_types:cast(utc_datetime, <<"2024-01-15T10:30:00-03:00">>),
-    ?assertEqual({{2024, 1, 15}, {10, 30, 0}}, Result).
+    ?assertEqual({{2024, 1, 15}, {13, 30, 0}}, Result).
 
 cast_datetime_invalid_date_part_test() ->
     ?assertMatch({error, _}, kura_types:cast(utc_datetime, <<"XXXX-01-15T10:30:00Z">>)).
