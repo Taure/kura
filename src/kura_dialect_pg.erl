@@ -681,6 +681,14 @@ compile_condition({Field, not_in, Values}, Ctx, Counter) when is_atom(Field), is
         Values,
         NewCounter
     };
+compile_condition({Field, encrypted_in, Frames}, Ctx, Counter) when
+    is_atom(Field), is_list(Frames)
+->
+    compile_condition({Field, in, Frames}, Ctx, Counter);
+compile_condition({Field, encrypted_not_in, Frames}, Ctx, Counter) when
+    is_atom(Field), is_list(Frames)
+->
+    compile_condition({Field, not_in, Frames}, Ctx, Counter);
 compile_condition({Field, between, {Low, High}}, Ctx, Counter) when is_atom(Field) ->
     {
         [

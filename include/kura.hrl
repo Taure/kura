@@ -68,6 +68,11 @@
     (Op =:= '<' orelse Op =:= '<=' orelse Op =:= '>' orelse Op =:= '>=')
 ).
 
+%% The operators of a deterministic encrypted lookup `{Field, Op, Frames}`,
+%% which kura_query:where/2 and having/2 build in place of an equality on
+%% a deterministic field. Frames are ciphertexts, never plaintext.
+-define(KURA_IS_LOOKUP_OP(Op), (Op =:= encrypted_in orelse Op =:= encrypted_not_in)).
+
 -record(kura_query, {
     from :: atom() | module() | binary() | undefined,
     select = [] :: [atom() | term()] | {exprs, [term()]},
