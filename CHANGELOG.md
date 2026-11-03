@@ -9,6 +9,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Deterministic field encryption and equality lookups (kura#137).
+  `{encrypted, Inner, Opts}` takes a closed set of options, checked when a
+  schema is first read: `mode` (`randomized` | `deterministic`, default
+  `randomized`), `normalize` (`none` | `casefold` | `nfc` |
+  `nfc_casefold`, deterministic `string`/`text` only), `context`
+  (`{Table, Column}`, pins the binding so a rename keeps values readable,
+  or lets two columns share ciphertexts) and `legacy` (`accept` |
+  `reject`, default `reject`). A bad options map raises
+  `{kura, {invalid_encryption_options, Mod, Field}}`,
+  `{kura, {unknown_encryption_option, Mod, Field, Key}}`,
+  `{kura, {invalid_encryption_option, Mod, Field, Key}}` or
+  `{kura, {unsupported_deterministic_type, Mod, Field}}`. The options form
+  always writes v2 frames. A deterministic value is encrypted with
+  HMAC-SIV-GCM (frame mode `1`): the IV is the first 12 bytes of
+  HMAC-SHA-256 under a per-column MAC key, over the AAD and the value, and
+  AES-256-GCM runs under a separate per-column key; decryption recomputes
+  the IV and raises `{kura_crypto, {noncanonical, KeyId}}` on a mismatch.
+  Inner types: `string`, `text`, `binary`, `uuid` (compared lowercase),
+  `integer`, `bigint`, `smallint`; `boolean`, `jsonb` and arrays are
+  refused. `legacy => reject` refuses a v1 frame
+  (`{kura_crypto, {refused_version, 1}}`) and a v2 frame of the other mode
+  (`{kura_crypto, {refused_mode, Mode}}`) per column, which covers per
+  column what kura#214 proposes as a node-wide switch.
+- `kura_query:where/2` and `having/2` turn `=`, bare equality, `in`, `!=`
+  and `not_in` on a deterministic field into
+  `{Field, encrypted_in | encrypted_not_in, Ciphertexts}` before the
+  condition is stored, so the plaintext never reaches the query, the query
+  cache, telemetry or logs. The PG dialect compiles them to `IN` and
+  `NOT IN`. A value that does not cast raises
+  `{kura, {invalid_lookup_value, Field}}`; passing either operator to
+  `where/2` raises `{kura, {reserved_operator, Op}}`; and the compile-time
+  check refuses one on a field the query cannot look up, or with values
+  not laid out as deterministic frames, with
+  `{kura, {invalid_encrypted_lookup, Field}}`. A field encrypted in two
+  sources of a query, or read through a CTE, is not looked up. The query
+  cache keys a lookup by shape only when every value has the frame layout.
+- `kura_encryption:lookup_params/3` returns the ciphertexts a lookup binds,
+  for a `{fragment, SQL, Params}`.
+- `kura_keyring` gains the optional callbacks `deterministic_active/0` and
+  `key_ids/0`, and `kura_keyring_env` implements both
+  (`deterministic_active` in the `encryption` config). Deterministic
+  writes use `deterministic_active`, never `active`, and raise
+  `{kura_crypto, no_deterministic_key}` without one. A lookup is encrypted
+  under `deterministic_active` and every other `key_ids/0` id, at most 8
+  (`{kura_crypto, {too_many_lookup_keys, N}}` beyond).
+- `kura_crypto:encrypt/3`, `decrypt/3`, `lookup/2` and
+  `is_deterministic_frame/1`; `kura_types:validate_encryption/1` and
+  `deterministic_inner/1`.
+- Deterministic mode reveals which rows share a value, and a lookup's
+  ciphertext is a stable pseudonym in telemetry and logged parameters;
+  both modes reveal length and `NULL`-ness, and the value stays personal
+  data under the GDPR. A unique index holds within one deterministic key
+  generation. Keep a column under 2^32 distinct values per key.
 - A pgvector distance threshold in `where/2` and `having/2`:
   `{kura_query:distance(Field, Metric, Vector), Op, Number}` with `Op`
   one of `'<'`, `'<='`, `'>'`, `'>='`, also under `'and'`, `'or'` and
@@ -43,6 +96,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   satisfies a declared `hnsw` index. Without `using` any method counts.
 
 ### Changed
+
+- `kura_types:encryption/1` returns the full spec, with `mode`,
+  `legacy` and `normalize`, and `kura_schema:encryption_specs/1` returns it
+  with `context` resolved, in place of `#{context => Ctx}` alone.
+- `kura_crypto:decrypt/2` (the `{encrypted, Inner}` read path) reads a
+  deterministic v2 frame of its column, as `legacy => accept` does; a frame
+  with its mode byte changed from `0` to `1` now raises `bad_tag` rather
+  than `{unsupported_mode, 1}`.
+- An attribute tenant on a deterministic field raises
+  `{kura, {encrypted_field_in_where, Field}}` when a query is scoped, as on
+  a randomized field: writes refuse an encrypted tenant field in either
+  mode.
 
 - Map-form `create_index` honours `name`. It used to be ignored, the
   index always taking `kura_migration:index_name/2`. A migration that

@@ -26,7 +26,7 @@ Database layer for Erlang - Ecto-equivalent abstractions in pure Erlang. Pluggab
 - **Streaming** - server-side cursor streaming for large result sets
 - **Multitenancy** - schema prefix and attribute-based tenant isolation
 - **Optimistic Locking** - concurrent update conflict detection
-- **Encryption at rest** - `{encrypted, Type}` fields, AES-256-GCM, key rotation
+- **Encryption at rest** - `{encrypted, Type}` fields, AES-256-GCM, key rotation, deterministic equality lookups
 
 ## Quick Start
 
@@ -202,6 +202,7 @@ kura_migrator:status(my_repo).
 | `jsonb` | `JSONB` | `TEXT` | `map()` |
 | `{array, T}` | `T[]` | unsupported | `list()` |
 | `{encrypted, T}` | `BYTEA` | `BLOB` | `T` (encrypted at rest) |
+| `{encrypted, T, Opts}` | `BYTEA` | see below | `T` (encrypted at rest) |
 | `{vector, N}` | `VECTOR(N)` | unsupported | `[float()]` |
 
 SQLite values round-trip transparently via `kura_types:cast/2` (booleans 0/1 → `true`/`false`, ISO 8601 → datetime tuples, JSON text → maps).
@@ -264,8 +265,9 @@ mode and key id are authenticated as AAD. A v2 value copied by a
 database-level writer into another encrypted column or table fails to
 decrypt (`{kura_crypto, {bad_tag, KeyId}}`) instead of being shown as that
 column's value. The binding uses the table and column name, so renaming
-either makes the stored v2 values undecryptable. Mode is `0` (randomized)
-for now.
+either makes the stored v2 values undecryptable, unless the field pins its
+`context` (see Deterministic encryption). Mode is `0` (randomized) or `1`
+(deterministic).
 
 What v2 does not cover yet:
 
@@ -301,9 +303,10 @@ node runs a kura that reads v2, since an older node cannot read a v2 value
 An existing v1 value stays v1 until that field is written again; there is
 no in-place re-encryption yet.
 
-**Constraints:** encrypted columns are **not queryable** and cannot carry a
-unique constraint (each write has a random nonce, so equal plaintexts
-produce different ciphertexts). `kura_query:where/2` and `having/2` raise
+**Constraints:** randomized encrypted columns are **not queryable** and
+cannot carry a unique constraint (each write has a random nonce, so equal
+plaintexts produce different ciphertexts). Deterministic columns can be
+looked up by equality (below). `kura_query:where/2` and `having/2` raise
 on any condition that compares an encrypted field to a value, however it is
 nested, including inside a subquery or over a CTE that selects an encrypted
 field; `{Field, is_nil}` and `{Field, is_not_nil}` still work. Ordering,
@@ -321,6 +324,82 @@ Schema introspection (`rebar3 kura gen_schemas`) cannot detect that a
 `BYTEA` column was encrypted - annotate it by hand. The audit trail
 redacts encrypted fields to `[encrypted]` (it keeps the "changed" signal
 but never logs the value).
+
+### Options and deterministic encryption
+
+`{encrypted, Inner, Opts}` takes a closed set of options, checked when
+the schema is first read (an unknown key or a bad value raises
+`{kura, {unknown_encryption_option | invalid_encryption_option, Mod, Field, Key}}`):
+
+| Option | Values | Default |
+|---|---|---|
+| `mode` | `randomized`, `deterministic` | `randomized` |
+| `normalize` | `none`, `casefold`, `nfc`, `nfc_casefold` (deterministic `string`/`text` only) | `none` |
+| `context` | `{Table, Column}`, binaries | the schema's `table()` and the column name |
+| `legacy` | `accept`, `reject` | `reject` |
+
+The options form is always written as a v2 frame, whatever
+`encryption_write_format` says. With `legacy => reject` a column refuses a
+v1 frame (`{kura_crypto, {refused_version, 1}}`) and a v2 frame of the
+other mode (`{kura_crypto, {refused_mode, Mode}}`); `accept` reads both,
+which is how a column moves between modes. `{encrypted, Inner}` keeps its
+behaviour: randomized, `legacy => accept`, and the write format decides
+the frame.
+
+A **deterministic** field encrypts a value with a synthetic IV
+(HMAC-SHA-256 over the value and the column, then AES-256-GCM, with keys
+derived per column), so equal values of one column encrypt to equal
+ciphertexts under one key:
+
+```erlang
+#kura_field{name = email,
+            type = {encrypted, string, #{mode => deterministic, normalize => casefold}}}
+
+kura_query:where(kura_query:from(user), {email, ~"Ada@Example.com"}).
+```
+
+`where/2` and `having/2` cast and normalise the value as a write would,
+encrypt it under every lookup key and replace the condition with
+`{email, encrypted_in, Ciphertexts}` before the query is stored, so the
+plaintext never reaches the query, the cache, telemetry or logs. `=`,
+`in`, `!=` and `not_in` work, as do `is_nil` and `is_not_nil`; every
+other operator, ordering, grouping and aggregates still raise. A `unique`
+index works, and `normalize => casefold` makes it case-insensitive. A
+`uuid` is compared in its lowercase form. For a `{fragment, SQL, Params}`
+use `kura_encryption:lookup_params(Schema, Field, Value)`. Inner types:
+`string`, `text`, `binary`, `uuid`, `integer`, `bigint`, `smallint`
+(`boolean` and `jsonb` are refused), and not in arrays.
+
+Deterministic writes use a separate key, `deterministic_active`, and fail
+closed without one (`{kura_crypto, no_deterministic_key}`):
+
+```erlang
+{encryption, #{active => 1, deterministic_active => 2, keys => [...]}}
+```
+
+A lookup is encrypted under `deterministic_active` and every other key in
+the ring (at most 8), so rows written under an earlier key are still found.
+
+What deterministic mode gives away, compared with randomized:
+
+| | Randomized | Deterministic |
+|---|---|---|
+| Which rows hold equal values | hidden | **revealed** (frequency analysis) |
+| A looked-up value in telemetry and logged query parameters | never bound | its ciphertext, a stable pseudonym |
+| Length of a value, and whether it is `NULL` | revealed | revealed |
+| Personal data under the GDPR | yes | yes (pseudonymised, not anonymised) |
+| Unique index | never violated | works within one key generation |
+
+Use it only where an equality lookup or uniqueness is needed. Keep a
+deterministic column under 2^32 distinct values per key. The same value
+written under two deterministic keys is two ciphertexts, so a unique index
+does not catch a duplicate across a key rotation until the old rows are
+rewritten. Renaming the table or column without pinning `context` makes the
+stored values undecryptable. A shared `context` gives two columns equal
+ciphertexts for equal values, which raw SQL can compare (`join/5` still
+refuses an encrypted column), at the cost of a value being movable between
+them. On SQLite, deterministic lookups need kura_sqlite's
+support for the `encrypted_in` condition.
 
 ## Configuration
 
