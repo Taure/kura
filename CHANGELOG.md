@@ -196,6 +196,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still take a schema module or an atom. `kura_dialect_pg` returns a
   binary table name as it is; a dialect that resolves the table itself
   rather than delegating to it must do the same.
+- The migrator takes its advisory lock with `pg_try_advisory_xact_lock`,
+  retried in a fresh transaction every `migration_lock_retry_interval`
+  milliseconds (default 100), instead of blocking in
+  `pg_advisory_xact_lock` (#139). A node waiting inside a statement, or
+  inside one long transaction, is a transaction that `CREATE INDEX
+  CONCURRENTLY` on the lock holder waits for, and the two deadlocked.
+
+  **Upgrading:** deploy this kura on every node before shipping the
+  first `transactional() -> false` migration. A node still on an older
+  kura waits for the lock the blocking way, which deadlocks with a
+  concurrent index build on the node holding it, and it ignores
+  `transactional/0` and `concurrently`, so if it runs the migration itself
+  it builds the index with a plain `CREATE INDEX` that blocks writes to
+  the table.
+- A `schema_migrations` read that fails stops `migrate/1`,
+  `rollback/1,2,3` and `fake/1,2,3` with `{error,
+  {schema_migrations_unreadable, Reason}}`, where it was taken as an
+  empty table (#139). A non-transactional migration's re-read failing,
+  on a `lock_timeout` for instance, would otherwise run an applied
+  migration again in autocommit. `status/1` still reports such a table
+  as nothing applied.
+- The migrator keeps only a Postgres error's `code`, `message`,
+  `severity`, `hint`, `schema`, `table`, `column`, `data_type` and
+  `constraint` in what it logs, returns and emits as telemetry
+  `error_reason` (#139). A failed `CREATE UNIQUE INDEX` put the
+  duplicated key values, often personal data, in `detail`.
+- The `[kura, migrator, migrate, stop]` event carries the new
+  `applied_versions` metadata, and on an error its `applied_count` and
+  `applied_versions` give the migrations a split run committed before it
+  failed, which stay applied, where `applied_count` was always 0 (#139).
+- A migrator waiting for the advisory lock logs a warning every 30
+  seconds with the time it has waited, where the wait was silent after
+  its first info line (#139). The wait is still unbounded by default; the
+  new `migration_lock_timeout` app env (milliseconds, default `infinity`)
+  ends it with `{error, migration_lock_timeout}` from `migrate/1`,
+  `rollback/1,2,3`, `fake/1,2,3` and `ensure_schema_migrations/1`. Any
+  role able to connect can hold the shared lock key and stall deploys,
+  so set a finite timeout in production. `migration_lock_retry_interval`
+  below 10 ms is taken as 10, where 0 busy-looped.
+- Inside `kura_db:transaction/2` or with a sandbox connection checked
+  out, the migrator tries the advisory lock once and returns `{error,
+  migration_lock_busy}` when another session holds it, where it polled
+  inside the enclosing transaction (#139).
 - `kura_repo_worker:start/1` returns `{error, Reason}` when the pool does
   not start, where it logged the failure and returned `ok` (#192). A test
   setup written as `ok = kura_repo_worker:start(my_repo)` now stops at the
@@ -442,6 +485,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Non-transactional migrations (#139). A migration exporting
+  `transactional() -> false` runs outside a transaction, statement by
+  statement, on one connection holding the session-level advisory lock.
+  Its version is recorded only after its last statement succeeds: a
+  failure part-way leaves the earlier statements committed and the
+  migration pending, and the error log says how many statements were
+  committed. Transactional migrations before it in the run commit first,
+  and those after it run in further transactions, each under the lock.
+  Inside `kura_db:transaction/2` or with a sandbox connection checked
+  out, a run with one pending is refused with
+  `{non_transactional_in_transaction, Version, Module}` before anything
+  executes. See the upgrade note under Changed before shipping one.
+- `{create_index, ...}` takes `concurrently => true` (or `concurrently`
+  in the list form) and emits `CREATE INDEX CONCURRENTLY` (#139). It is
+  refused in a migration that is still transactional, with
+  `{concurrently_in_transaction, Version, Module}`, before anything in
+  the run executes. On a non-Postgres pool that does not declare the new
+  standard `concurrent_indexes` capability (SQLite) it compiles to a
+  plain `CREATE INDEX`. A Postgres repo on a pool without it
+  (kura_postgres 1.1.3 and earlier) is refused with
+  `{concurrent_indexes_unsupported, PoolModule}` while the run is
+  planned; non-transactional migrations need kura_postgres 1.1.5 or
+  later.
+- `kura_db:query_on/4,5` runs a statement on a connection the caller
+  checked out, with the same telemetry as `kura_db:query/3`. `/5` hands
+  an options map to the driver's `query_on/4` (`timeout` for minato).
 - `kura_repo:settings/1` returns a repo's own settings as queries see
   them, without connection settings or secrets (#200).
 - `kura_db:stop_pool/1` stops a repo's pool through its pool module,

@@ -3,7 +3,8 @@
 Behaviour for defining database migrations.
 
 Implement `up/0` and `down/0` returning a list of DDL operations.
-Migration modules must be named `m<YYYYMMDDHHMMSS>_<name>`.
+Migration modules must be named `m<YYYYMMDDHHMMSS>_<name>`. `up/0` and
+`down/0` may be called more than once per run, so they must be pure.
 
 ```erlang
 -module(m20250101120000_create_users).
@@ -22,6 +23,36 @@ down() ->
     [{drop_index, <<"users_email_index">>},
      {drop_table, <<"users">>}].
 ```
+
+## Non-transactional migrations
+
+The migrator runs a migration's operations inside a transaction, so a
+failing statement leaves nothing behind. Some statements cannot run in
+a transaction at all; `CREATE INDEX CONCURRENTLY` is the usual one. A
+migration opts out by exporting `transactional/0` returning `false`:
+
+```erlang
+-module(m20250102120000_index_users_email).
+-behaviour(kura_migration).
+-export([up/0, down/0, transactional/0]).
+
+transactional() -> false.
+
+up() ->
+    [{create_index, <<"users">>, [email], #{concurrently => true}}].
+
+down() ->
+    [{execute, <<"DROP INDEX CONCURRENTLY \"users_email_index\"">>}].
+```
+
+Each statement then commits on its own. The version is recorded only
+after the last one succeeds, so a failure part-way leaves the earlier
+statements committed and the migration pending. Keep such a migration
+to one statement, or make every statement safe to re-run.
+
+`concurrently => true` is refused in a migration that is still
+transactional. See `m:kura_migrator` for how the run is split and how
+the advisory lock is held.
 """.
 
 -include("kura.hrl").
@@ -29,7 +60,14 @@ down() ->
 -callback up() -> [operation()].
 -callback down() -> [operation()].
 -callback safe() -> [safe_entry()].
--optional_callbacks([safe/0]).
+-doc """
+Optional. Return `false` to run the migration outside a transaction.
+
+A missing callback, or any other value, keeps the migration
+transactional.
+""".
+-callback transactional() -> boolean().
+-optional_callbacks([safe/0, transactional/0]).
 
 -type safe_entry() ::
     {drop_column, atom()}
@@ -45,8 +83,8 @@ down() ->
     | {rename_column, atom(), atom()}
     | {modify_column, atom(), kura_types:kura_type()}.
 
--type index_opts() :: [unique | {where, binary()}].
--type index_opts_map() :: #{unique => boolean(), where => binary()}.
+-type index_opts() :: [unique | concurrently | {where, binary()}].
+-type index_opts_map() :: #{unique => boolean(), where => binary(), concurrently => boolean()}.
 -type index_def() :: {[atom()], index_opts_map()}.
 
 -type table_constraint() ::

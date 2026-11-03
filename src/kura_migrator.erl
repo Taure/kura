@@ -18,12 +18,82 @@ across every application feeding a repo: two applications shipping the
 same version is a hard error (`duplicate_migration_version`) rather than
 a silent last-one-wins.
 
-All migrations run within a single transaction protected by a PostgreSQL
-advisory lock (`pg_advisory_xact_lock`) to prevent concurrent execution
-across multiple nodes. The applied-version set is read inside that lock,
-so two nodes booting together cannot both decide the same migration is
-pending, and `schema_migrations` is created under the same lock in its
-own transaction, so they cannot race to create it either.
+Pending migrations run within a single transaction holding a
+transaction-level PostgreSQL advisory lock, so two nodes cannot run them
+at once. The applied-version set is read inside that lock, so two nodes
+booting together cannot both decide the same migration is pending, and
+`schema_migrations` is created under the same lock in its own
+transaction, so they cannot race to create it either.
+
+## Non-transactional migrations
+
+A migration exporting `transactional() -> false` (see `m:kura_migration`)
+splits the run. The pending set is read once, under the lock, and the
+transactional migrations before the non-transactional one run in that
+first transaction and commit. The non-transactional migration then runs
+on a connection checked out for it alone, which takes the session-level
+lock (`pg_advisory_lock`) before it re-reads `schema_migrations` and
+releases it after recording the version. Each of its statements commits
+on its own. The migrations after it run in further transactions, each
+taking the lock again. The lock is released between these steps, so a
+node booting meanwhile may apply the next step itself, but every step
+re-reads `schema_migrations` under the lock and skips what is already
+done: each migration still runs once, and in order.
+
+A statement failing in a non-transactional migration leaves the
+statements before it committed and the version unrecorded, so the
+migration stays pending and the error names how many statements were
+committed. Migrations earlier in the run stay applied, later ones do not
+run, and the result is `{error, {migration_failed, Version, Reason}}` as
+for a transactional migration. `rollback/1,2,3` runs a non-transactional
+migration's `down/0` the same way.
+
+`{create_index, Table, Columns, #{concurrently => true}}` in a migration
+that is still transactional is refused with `{error,
+{concurrently_in_transaction, Version, Module}}` before anything in the
+run executes. On a non-Postgres backend whose pool does not declare the
+`concurrent_indexes` capability (SQLite) the option compiles to a plain
+`CREATE INDEX`, so one migration serves both backends. A Postgres repo
+(dialect `kura_dialect_pg`, or none configured) on a pool without it is
+refused with `{error, {concurrent_indexes_unsupported, PoolModule}}`
+while the run is planned, rather than given a build that blocks writes.
+
+A run with a non-transactional migration pending is refused with
+`{error, {non_transactional_in_transaction, Version, Module}}`, before
+anything in it executes, when the caller is inside
+`kura_db:transaction/2` or holds a `m:kura_sandbox` connection for the
+repo's pool. The enclosing transaction would keep the first step's
+lock held while the migration waited for it on another connection.
+
+## The advisory lock
+
+The lock is taken with `pg_try_advisory_xact_lock` or
+`pg_try_advisory_lock`, never with the blocking forms, and a transaction
+that misses it ends before the next try, `migration_lock_retry_interval`
+milliseconds later (`kura` app env, default 100, at least 10). `CREATE INDEX
+CONCURRENTLY` on the node holding the lock waits for every transaction
+that had a snapshot when it started: a waiter blocked inside a statement,
+or retrying inside one long transaction, would never end, and the two
+would deadlock. A node still on an older kura waits the blocking way and
+ignores `transactional/0`, so deploy this version on every node before
+shipping the first non-transactional migration.
+
+Inside `kura_db:transaction/2` or with a sandbox connection checked
+out, the lock is tried once and a miss returns `{error,
+migration_lock_busy}`: retrying would keep that one transaction open.
+
+A waiting migrator logs a warning every 30 seconds with the time it has
+waited. The wait is unbounded unless `migration_lock_timeout` (`kura` app
+env, milliseconds, default `infinity`) is set; past it the operation
+returns `{error, migration_lock_timeout}`. The lock key is a fixed public
+constant, so any role that can connect to the database can take it and
+stall every deploy's migrations; set a finite `migration_lock_timeout`
+in production.
+
+A backend whose pool does not declare `advisory_locks` (SQLite) takes no
+lock and relies on its single writer. There a non-transactional
+migration runs each statement in autocommit on one connection, so a
+`PRAGMA` it sets holds for the statements after it.
 
 `migrate/1` and `status/1` span every application. The two operations
 that record versions without running the DDL they stand for -
@@ -33,10 +103,14 @@ one.
 """.
 
 -include("kura.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 %% Arbitrary constant used as the advisory lock key. All Kura migrators
 %% sharing a PostgreSQL database contend on this single lock.
 -define(MIGRATION_LOCK_KEY, 571629482).
+-define(LOCK_RETRY_INTERVAL_MS, 100).
+-define(LOCK_RETRY_FLOOR_MS, 10).
+-define(LOCK_WARN_INTERVAL_MS, 30000).
 
 %% Defaults for the pool-readiness wait at the start of migrator operations.
 %% A pool can exist before its connections are open; we retry `SELECT 1`
@@ -77,11 +151,25 @@ one.
     collect_migrations/1,
     collect_migration_groups/1,
     topo_sort_apps/1,
-    pending_migrations/2
+    pending_migrations/2,
+    runs_in_transaction/1,
+    concurrent_index/1,
+    split_transactional/1,
+    still_todo/3,
+    lock_wait_step/4,
+    release_session_lock/1,
+    run_non_transactional/3,
+    refuse_unsupported_concurrently/3,
+    lock_retry_interval/0,
+    without_row_values/1
 ]).
 -endif.
 
 -type migration_group() :: {atom(), [{integer(), module()}]}.
+-type migration() :: {integer(), module()}.
+-type conn_target() :: {conn, module(), kura_pool:conn()}.
+-type target() :: module() | conn_target().
+-type lock_wait() :: first | {waiting, Since :: integer(), WarnAt :: integer()}.
 -export_type([migration_group/0]).
 
 -doc "Run all pending migrations in order.".
@@ -94,16 +182,9 @@ migrate(RepoMod) ->
     case prepare(RepoMod) of
         {ok, Groups} ->
             Ordered = flatten_groups(Groups),
-            T0 = erlang:monotonic_time(),
-            Result = with_migration_lock(RepoMod, fun() ->
-                Pending = pending_migrations(
-                    Ordered, get_applied_versions(RepoMod)
-                ),
-                emit_migrate_start(RepoMod, up, length(Pending)),
-                run_migrations(Pending, up, RepoMod, [])
-            end),
-            emit_migrate_stop(RepoMod, T0, up, Result),
-            Result;
+            run_plan(RepoMod, up, fun() ->
+                pending_migrations(Ordered, applied_versions_strict(RepoMod))
+            end);
         {error, _} = Err ->
             Err
     end.
@@ -250,7 +331,7 @@ run_fake_up_to(RepoMod, Ordered, UpTo) ->
 run_fake(RepoMod, Ordered) ->
     T0 = erlang:monotonic_time(),
     Result = with_migration_lock(RepoMod, fun() ->
-        Pending = pending_migrations(Ordered, get_applied_versions(RepoMod)),
+        Pending = pending_migrations(Ordered, applied_versions_strict(RepoMod)),
         log_fake_stamp(RepoMod, Pending),
         emit_migrate_start(RepoMod, fake, length(Pending)),
         stamp_migrations(Pending, RepoMod, [])
@@ -302,8 +383,8 @@ rollback(RepoMod, Steps) ->
             refuse_multi_app(ambiguous_rollback, RepoMod, group_apps(Groups));
         {ok, Groups} ->
             Ordered = flatten_groups(Groups),
-            run_rollback_locked(RepoMod, fun() ->
-                run_rollback(RepoMod, Ordered, Steps, get_applied_versions(RepoMod))
+            run_plan(RepoMod, down, fun() ->
+                rollback_window(RepoMod, Ordered, Steps, applied_versions_strict(RepoMod))
             end);
         {error, _} = Err ->
             Err
@@ -332,8 +413,8 @@ rollback(RepoMod, App, Steps) ->
         {ok, Groups} ->
             case app_migrations(App, Groups) of
                 {ok, Ordered} ->
-                    run_rollback_locked(RepoMod, fun() ->
-                        run_rollback(RepoMod, Ordered, Steps, app_applied(RepoMod, Ordered))
+                    run_plan(RepoMod, down, fun() ->
+                        rollback_window(RepoMod, Ordered, Steps, app_applied(RepoMod, Ordered))
                     end);
                 error ->
                     refuse_unknown_app(RepoMod, App, group_apps(Groups))
@@ -341,14 +422,6 @@ rollback(RepoMod, App, Steps) ->
         {error, _} = Err ->
             Err
     end.
-
--spec run_rollback_locked(module(), fun(() -> [integer()])) ->
-    {ok, [integer()]} | {error, term()}.
-run_rollback_locked(RepoMod, Fun) ->
-    T0 = erlang:monotonic_time(),
-    Result = with_migration_lock(RepoMod, Fun),
-    emit_migrate_stop(RepoMod, T0, down, Result),
-    Result.
 
 %% Restricting the applied set to versions this application's own
 %% migrations claim is what confines the window to one application. It
@@ -359,16 +432,15 @@ run_rollback_locked(RepoMod, Fun) ->
 -spec app_applied(module(), [{integer(), module()}]) -> [integer()].
 app_applied(RepoMod, Ordered) ->
     Known = #{V => [] || {V, _M} <- Ordered},
-    [V || V <- get_applied_versions(RepoMod), is_map_key(V, Known)].
+    [V || V <- applied_versions_strict(RepoMod), is_map_key(V, Known)].
 
--spec run_rollback(module(), [{integer(), module()}], non_neg_integer(), [integer()]) ->
-    [integer()].
-run_rollback(RepoMod, Ordered, Steps, Applied) ->
+-spec rollback_window(module(), [migration()], non_neg_integer(), [integer()]) ->
+    [migration()].
+rollback_window(RepoMod, Ordered, Steps, Applied) ->
     Selected = take_integers(reverse_integers(sort_integers(Applied), []), Steps),
-    emit_migrate_start(RepoMod, down, length(Selected)),
     case build_rollback_pairs(Selected, Ordered) of
         {ok, Pairs} ->
-            run_migrations(Pairs, down, RepoMod, []);
+            Pairs;
         {error, {unknown_applied_versions, Missing} = Reason} ->
             logger:error(#{
                 msg => ~"kura: refusing to roll back past migrations with no module",
@@ -419,11 +491,17 @@ emit_migrate_start(RepoMod, Direction, PendingCount) ->
 
 -spec emit_migrate_stop(module(), integer(), up | down | fake, term()) -> ok.
 emit_migrate_stop(RepoMod, T0, Direction, Result) ->
+    emit_migrate_stop(RepoMod, T0, Direction, Result, []).
+
+%% `Committed` is what a split run committed before it failed: those
+%% versions stay applied, so an error does not mean nothing changed.
+-spec emit_migrate_stop(module(), integer(), up | down | fake, term(), [integer()]) -> ok.
+emit_migrate_stop(RepoMod, T0, Direction, Result, Committed) ->
     DurationNative = erlang:monotonic_time() - T0,
-    {ResultStatus, AppliedCount, ErrorReason} =
+    {ResultStatus, Applied, ErrorReason} =
         case Result of
-            {ok, Versions} when is_list(Versions) -> {ok, length(Versions), undefined};
-            {error, R} -> {error, 0, R}
+            {ok, Versions} when is_list(Versions) -> {ok, Versions, undefined};
+            {error, R} -> {error, Committed, R}
         end,
     telemetry_event(
         [kura, migrator, migrate, stop],
@@ -432,7 +510,8 @@ emit_migrate_stop(RepoMod, T0, Direction, Result) ->
             repo => RepoMod,
             direction => Direction,
             result => ResultStatus,
-            applied_count => AppliedCount,
+            applied_count => length(Applied),
+            applied_versions => Applied,
             error_reason => ErrorReason
         }
     ).
@@ -514,7 +593,9 @@ it - no lock is held across the two.
 
 Returns `{error, {schema_migrations_failed, Reason}}` when the
 statement does not succeed, rather than leaving every later query to
-fail on a table that was never created.
+fail on a table that was never created, and `{error,
+migration_lock_timeout}` when the lock wait passes
+`migration_lock_timeout`.
 """.
 -spec ensure_schema_migrations(module()) -> ok | {error, term()}.
 ensure_schema_migrations(RepoMod) ->
@@ -527,13 +608,11 @@ ensure_schema_migrations(RepoMod) ->
         "inserted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"
         ")"
     >>,
-    PoolMod = kura_db:get_pool_module(RepoMod),
     try
-        kura_db:transaction(RepoMod, fun() ->
-            maybe_acquire_advisory_lock(RepoMod, PoolMod),
-            create_schema_migrations(RepoMod, SQL)
-        end)
+        in_migration_lock(RepoMod, fun() -> create_schema_migrations(RepoMod, SQL) end)
     catch
+        error:{migration_aborted, AbortReason} ->
+            {error, AbortReason};
         Class:Reason:Stack ->
             logger:error(#{
                 msg => ~"kura: schema_migrations bootstrap failed",
@@ -574,23 +653,6 @@ Timeout/interval are configurable via the `kura` app env keys
 `migration_pool_ready_timeout` and `migration_pool_ready_interval`
 (both in milliseconds).
 """.
-%% Acquire a session-wide migration lock when the backend supports
-%% advisory locks. SQLite and other single-writer backends rely on the
-%% transaction itself for serialization.
--spec maybe_acquire_advisory_lock(module(), module()) -> ok.
-maybe_acquire_advisory_lock(RepoMod, PoolMod) ->
-    case kura_capabilities:has(PoolMod, advisory_locks) of
-        true ->
-            #{command := _} = kura_db:query(
-                RepoMod,
-                ~"SELECT 1 FROM (SELECT pg_advisory_xact_lock($1)) AS _lock",
-                [?MIGRATION_LOCK_KEY]
-            ),
-            ok;
-        false ->
-            ok
-    end.
-
 -spec wait_for_pool(module()) -> ok | {error, pool_unavailable}.
 wait_for_pool(RepoMod) ->
     Timeout = read_pos_int_env(migration_pool_ready_timeout, ?POOL_READY_TIMEOUT_MS),
@@ -886,70 +948,456 @@ parse_migration_module(Module) ->
 %% Advisory lock
 %%----------------------------------------------------------------------
 
+%% Polled, never blocking: see "The advisory lock" in the moduledoc. A
+%% transaction that misses the lock ends before the next try, so it never
+%% sits open for a `CREATE INDEX CONCURRENTLY` elsewhere to wait on.
+-spec in_migration_lock(module(), fun(() -> Result)) -> Result.
+in_migration_lock(RepoMod, Fun) ->
+    in_migration_lock(RepoMod, Fun, first).
+
+-spec in_migration_lock(module(), fun(() -> Result), lock_wait()) -> Result.
+in_migration_lock(RepoMod, Fun, Wait) ->
+    PoolMod = kura_db:get_pool_module(RepoMod),
+    Outcome = kura_db:transaction(RepoMod, fun() ->
+        case xact_lock_taken(RepoMod, PoolMod) of
+            true -> {locked, Fun()};
+            false -> busy
+        end
+    end),
+    case Outcome of
+        {locked, Result} ->
+            Result;
+        busy ->
+            in_migration_lock_again(RepoMod, Fun, Wait, enclosing_transaction(RepoMod))
+    end.
+
+%% Inside a transaction the caller opened, or the sandbox's, every try
+%% would run in that one open transaction, which is the wait that stalls
+%% a `CREATE INDEX CONCURRENTLY` on the node holding the lock. Try once.
+-spec in_migration_lock_again(module(), fun(() -> Result), lock_wait(), boolean()) -> Result.
+in_migration_lock_again(RepoMod, _Fun, _Wait, true) ->
+    ?LOG_ERROR(#{
+        msg => ~"kura: the migration lock is held elsewhere and this run is inside a transaction",
+        repo => RepoMod,
+        hint => ~"run the migrator outside kura_db:transaction/2 and the sandbox to wait for it"
+    }),
+    error({migration_aborted, migration_lock_busy});
+in_migration_lock_again(RepoMod, Fun, Wait, false) ->
+    in_migration_lock(RepoMod, Fun, wait_for_lock(RepoMod, Wait)).
+
+%% SQLite and other single-writer backends declare no `advisory_locks`
+%% and rely on their own write serialisation.
+-spec xact_lock_taken(module(), module()) -> boolean().
+xact_lock_taken(RepoMod, PoolMod) ->
+    case kura_capabilities:has(PoolMod, advisory_locks) of
+        true -> try_lock(RepoMod, ~"SELECT pg_try_advisory_xact_lock($1) AS locked");
+        false -> true
+    end.
+
+-spec acquire_session_lock(conn_target(), lock_wait()) -> ok.
+acquire_session_lock(Target, Wait) ->
+    case try_lock(Target, ~"SELECT pg_try_advisory_lock($1) AS locked") of
+        true -> ok;
+        false -> acquire_session_lock(Target, wait_for_lock(target_repo(Target), Wait))
+    end.
+
+-spec try_lock(target(), binary()) -> boolean().
+try_lock(Target, SQL) ->
+    case run_sql(Target, SQL, [?MIGRATION_LOCK_KEY]) of
+        #{rows := [#{locked := Locked}]} when is_boolean(Locked) -> Locked;
+        Other -> error({migration_lock_failed, Other})
+    end.
+
+%% Raises `{migration_aborted, migration_lock_timeout}` once the wait
+%% passes `migration_lock_timeout`, outside any transaction of its own.
+-spec wait_for_lock(module(), lock_wait()) -> lock_wait().
+wait_for_lock(RepoMod, first) ->
+    ?LOG_INFO(#{
+        msg => ~"kura: waiting for the migration lock held by another migrator", repo => RepoMod
+    }),
+    Now = erlang:monotonic_time(millisecond),
+    pause_for_lock({waiting, Now, Now + ?LOCK_WARN_INTERVAL_MS});
+wait_for_lock(RepoMod, {waiting, Since, WarnAt}) ->
+    Now = erlang:monotonic_time(millisecond),
+    case lock_wait_step(Now, Since, WarnAt, migration_lock_timeout()) of
+        timeout ->
+            ?LOG_ERROR(#{
+                msg => ~"kura: gave up waiting for the migration lock",
+                repo => RepoMod,
+                waited_ms => Now - Since
+            }),
+            error({migration_aborted, migration_lock_timeout});
+        {warn, NextWarnAt} ->
+            ?LOG_WARNING(#{
+                msg => ~"kura: still waiting for the migration lock held by another migrator",
+                repo => RepoMod,
+                waited_ms => Now - Since
+            }),
+            pause_for_lock({waiting, Since, NextWarnAt});
+        wait ->
+            pause_for_lock({waiting, Since, WarnAt})
+    end.
+
+-spec lock_wait_step(integer(), integer(), integer(), timeout()) ->
+    timeout | {warn, integer()} | wait.
+lock_wait_step(Now, Since, _WarnAt, Timeout) when is_integer(Timeout), Now - Since >= Timeout ->
+    timeout;
+lock_wait_step(Now, _Since, WarnAt, _Timeout) when Now >= WarnAt ->
+    {warn, Now + ?LOCK_WARN_INTERVAL_MS};
+lock_wait_step(_Now, _Since, _WarnAt, _Timeout) ->
+    wait.
+
+-spec pause_for_lock(lock_wait()) -> lock_wait().
+pause_for_lock(Wait) ->
+    timer:sleep(lock_retry_interval()),
+    Wait.
+
+-spec lock_retry_interval() -> pos_integer().
+lock_retry_interval() ->
+    max(
+        ?LOCK_RETRY_FLOOR_MS,
+        read_pos_int_env(migration_lock_retry_interval, ?LOCK_RETRY_INTERVAL_MS)
+    ).
+
+-spec migration_lock_timeout() -> timeout().
+migration_lock_timeout() ->
+    case application:get_env(kura, migration_lock_timeout, infinity) of
+        N when is_integer(N), N >= 0 -> N;
+        _ -> infinity
+    end.
+
 -spec with_migration_lock(module(), fun(() -> [integer()])) ->
     {ok, [integer()]} | {error, term()}.
 with_migration_lock(RepoMod, Fun) ->
-    PoolMod = kura_db:get_pool_module(RepoMod),
     try
-        narrow_migration_result(
-            kura_db:transaction(RepoMod, fun() ->
-                maybe_acquire_advisory_lock(RepoMod, PoolMod),
-                Fun()
-            end)
-        )
+        narrow_migration_result(in_migration_lock(RepoMod, Fun))
     catch
-        %% Raised, not returned, so the surrounding transaction aborts.
-        %% The reason is already logged at the point of abort.
-        error:{migration_aborted, AbortReason} ->
-            {error, AbortReason};
-        error:{migration_failed, Version, MigReason}:Stack ->
-            logger:error(#{
-                msg => ~"migration_failed",
+        Class:Reason:Stack -> migration_error(Class, Reason, Stack)
+    end.
+
+-spec locked_step(module(), fun(() -> Result)) -> {ok, Result} | {error, term()}.
+locked_step(RepoMod, Fun) ->
+    try
+        {ok, in_migration_lock(RepoMod, Fun)}
+    catch
+        Class:Reason:Stack -> migration_error(Class, Reason, Stack)
+    end.
+
+%% `migration_aborted` and `migration_failed` are raised, not returned,
+%% so the surrounding transaction aborts. An aborted run's reason is
+%% already logged at the point of abort.
+-spec migration_error(error | exit | throw, term(), erlang:stacktrace()) -> {error, term()}.
+migration_error(error, {migration_aborted, AbortReason}, _Stack) ->
+    {error, AbortReason};
+migration_error(error, {migration_failed, Version, MigReason}, Stack) ->
+    ?LOG_ERROR(#{
+        msg => ~"migration_failed",
+        version => Version,
+        reason => MigReason,
+        stacktrace => Stack
+    }),
+    {error, {migration_failed, Version, MigReason}};
+migration_error(Class, Reason, Stack) ->
+    ?LOG_ERROR(#{
+        msg => ~"migration_failed",
+        class => Class,
+        reason => Reason,
+        stacktrace => Stack
+    }),
+    {error, Reason}.
+
+%%----------------------------------------------------------------------
+%% Planned runs
+%%----------------------------------------------------------------------
+
+%% `PlanFun` picks the migrations to run and is called once, inside the
+%% first lock. Every later step re-reads `schema_migrations` under the
+%% lock and skips what another node did meanwhile.
+-spec run_plan(module(), up | down, fun(() -> [migration()])) ->
+    {ok, [integer()]} | {error, term()}.
+run_plan(RepoMod, Dir, PlanFun) ->
+    T0 = erlang:monotonic_time(),
+    Enclosed = enclosing_transaction(RepoMod),
+    First = locked_step(RepoMod, fun() ->
+        Todo = PlanFun(),
+        refuse_non_transactional_when_enclosed(Enclosed, Todo),
+        refuse_concurrently_in_transaction(Todo, Dir),
+        refuse_unsupported_concurrently(RepoMod, Todo, Dir),
+        emit_migrate_start(RepoMod, Dir, length(Todo)),
+        run_transactional_prefix(Todo, Dir, RepoMod)
+    end),
+    {Result, Committed} = continue_plan(First, Dir, RepoMod, []),
+    emit_migrate_stop(RepoMod, T0, Dir, Result, Committed),
+    Result.
+
+-spec continue_plan(
+    {ok, {[integer()], [migration()]}} | {error, term()}, up | down, module(), [integer()]
+) -> {{ok, [integer()]} | {error, term()}, [integer()]}.
+continue_plan({ok, {Versions, []}}, _Dir, _RepoMod, Done) ->
+    {{ok, Done ++ Versions}, Done ++ Versions};
+continue_plan({ok, {Versions, Todo}}, Dir, RepoMod, Done) ->
+    continue_plan(next_step(Todo, Dir, RepoMod), Dir, RepoMod, Done ++ Versions);
+continue_plan({error, _} = Err, _Dir, RepoMod, Done) ->
+    log_kept(RepoMod, Done),
+    {Err, Done}.
+
+-spec next_step([migration()], up | down, module()) ->
+    {ok, {[integer()], [migration()]}} | {error, term()}.
+next_step([{_, Module} = Next | Rest] = Todo, Dir, RepoMod) ->
+    case runs_in_transaction(Module) of
+        false ->
+            case run_non_transactional(Next, Dir, RepoMod) of
+                {ok, Versions} -> {ok, {Versions, Rest}};
+                {error, _} = Err -> Err
+            end;
+        true ->
+            locked_step(RepoMod, fun() ->
+                run_transactional_prefix(
+                    still_todo(Dir, Todo, applied_versions_strict(RepoMod)), Dir, RepoMod
+                )
+            end)
+    end.
+
+-spec log_kept(module(), [integer()]) -> ok.
+log_kept(_RepoMod, []) ->
+    ok;
+log_kept(RepoMod, Done) ->
+    ?LOG_WARNING(#{
+        msg => ~"kura: migrations committed before the failure stay committed",
+        repo => RepoMod,
+        versions => Done
+    }).
+
+-spec run_transactional_prefix([migration()], up | down, module()) ->
+    {[integer()], [migration()]}.
+run_transactional_prefix(Todo, Dir, RepoMod) ->
+    {Prefix, Rest} = split_transactional(Todo),
+    {run_migrations(Prefix, Dir, RepoMod, []), Rest}.
+
+-spec split_transactional([migration()]) -> {[migration()], [migration()]}.
+split_transactional(Todo) ->
+    split_transactional(Todo, []).
+
+-spec split_transactional([migration()], [migration()]) -> {[migration()], [migration()]}.
+split_transactional([{_, Module} = Migration | Rest] = Todo, Acc) ->
+    case runs_in_transaction(Module) of
+        true -> split_transactional(Rest, [Migration | Acc]);
+        false -> {reverse_migrations(Acc, []), Todo}
+    end;
+split_transactional([], Acc) ->
+    {reverse_migrations(Acc, []), []}.
+
+-spec still_todo(up | down, [migration()], [integer()]) -> [migration()].
+still_todo(up, Migrations, Applied) ->
+    pending_migrations(Migrations, Applied);
+still_todo(down, Migrations, Applied) ->
+    [M || {V, _} = M <- Migrations, lists:member(V, Applied)].
+
+-spec runs_in_transaction(module()) -> boolean().
+runs_in_transaction(Module) ->
+    _ = code:ensure_loaded(Module),
+    case erlang:function_exported(Module, transactional, 0) of
+        true -> Module:transactional() =/= false;
+        false -> true
+    end.
+
+%% A transaction the caller is in, or a sandbox connection, would keep
+%% the first step's transaction-level lock held while the
+%% non-transactional migration polls for it on a connection of its own.
+-spec enclosing_transaction(module()) -> boolean().
+enclosing_transaction(RepoMod) ->
+    kura_db:in_transaction(RepoMod) orelse
+        kura_sandbox:get_conn(kura_db:get_pool(RepoMod)) =/= not_found.
+
+-spec refuse_non_transactional_when_enclosed(boolean(), [migration()]) -> ok.
+refuse_non_transactional_when_enclosed(false, _Todo) ->
+    ok;
+refuse_non_transactional_when_enclosed(true, Todo) ->
+    case [M || {_, Module} = M <- Todo, not runs_in_transaction(Module)] of
+        [] ->
+            ok;
+        [{Version, Module} | _] ->
+            ?LOG_ERROR(#{
+                msg => ~"kura: a non-transactional migration cannot run inside a transaction",
                 version => Version,
-                reason => MigReason,
-                stacktrace => Stack
+                module => Module,
+                hint => ~"run the migrator outside kura_db:transaction/2 and the sandbox"
             }),
-            {error, {migration_failed, Version, MigReason}};
-        Class:ExReason:Stack ->
-            logger:error(#{
-                msg => ~"migration_failed",
-                class => Class,
-                reason => ExReason,
-                stacktrace => Stack
+            error({migration_aborted, {non_transactional_in_transaction, Version, Module}})
+    end.
+
+-spec refuse_concurrently_in_transaction([migration()], up | down) -> ok.
+refuse_concurrently_in_transaction([], _Dir) ->
+    ok;
+refuse_concurrently_in_transaction([{Version, Module} | Rest], Dir) ->
+    case runs_in_transaction(Module) andalso has_concurrent_index(get_migration_ops(Module, Dir)) of
+        true ->
+            ?LOG_ERROR(#{
+                msg => ~"kura: concurrently => true needs a non-transactional migration",
+                version => Version,
+                module => Module,
+                hint => ~"export transactional() -> false from the migration"
             }),
-            {error, ExReason}
+            error({migration_aborted, {concurrently_in_transaction, Version, Module}});
+        false ->
+            refuse_concurrently_in_transaction(Rest, Dir)
+    end.
+
+%% Checked while planning so a migration is not refused part-way, after
+%% statements before its index build have committed.
+-spec refuse_unsupported_concurrently(module(), [migration()], up | down) -> ok.
+refuse_unsupported_concurrently(RepoMod, Todo, Dir) ->
+    case [M || {_, M} <- Todo, has_concurrent_index(get_migration_ops(M, Dir))] of
+        [] ->
+            ok;
+        [_ | _] ->
+            _ = concurrently(RepoMod, true),
+            ok
+    end.
+
+-spec has_concurrent_index([kura_migration:operation()]) -> boolean().
+has_concurrent_index(Ops) ->
+    [Op || Op <- Ops, concurrent_index(Op)] =/= [].
+
+-spec concurrent_index(kura_migration:operation()) -> boolean().
+concurrent_index({create_index, _Table, _Columns, #{concurrently := true}}) ->
+    true;
+concurrent_index({create_index, _Name, _Table, _Columns, Opts}) when is_list(Opts) ->
+    lists:member(concurrently, Opts);
+concurrent_index(_Op) ->
+    false.
+
+%%----------------------------------------------------------------------
+%% Non-transactional migrations
+%%----------------------------------------------------------------------
+
+-spec run_non_transactional(migration(), up | down, module()) ->
+    {ok, [integer()]} | {error, term()}.
+run_non_transactional(Migration, Dir, RepoMod) ->
+    Pool = kura_db:get_pool(RepoMod),
+    PoolMod = kura_db:get_pool_module(RepoMod),
+    case PoolMod:checkout(Pool, #{}) of
+        {ok, Conn, Token} ->
+            try
+                session_locked(Migration, Dir, PoolMod, {conn, RepoMod, Conn})
+            after
+                PoolMod:checkin(Pool, Token)
+            end;
+        {error, Reason} ->
+            ?LOG_ERROR(#{
+                msg => ~"kura: no connection for a non-transactional migration",
+                repo => RepoMod,
+                reason => Reason
+            }),
+            {error, {no_connection, Reason}}
+    end.
+
+-spec session_locked(migration(), up | down, module(), conn_target()) ->
+    {ok, [integer()]} | {error, term()}.
+session_locked(Migration, Dir, PoolMod, Target) ->
+    try
+        case kura_capabilities:has(PoolMod, advisory_locks) of
+            true ->
+                acquire_session_lock(Target, first),
+                try
+                    apply_non_transactional(Migration, Dir, Target)
+                after
+                    _ = release_session_lock(Target)
+                end;
+            false ->
+                apply_non_transactional(Migration, Dir, Target)
+        end
+    catch
+        Class:Reason:Stack -> migration_error(Class, Reason, Stack)
+    end.
+
+%% Never raises, so a failed unlock cannot turn a recorded migration into
+%% an error. A connection that has gone takes its session lock with it,
+%% and the pool unlocks every advisory lock when the connection is
+%% checked in. Anything but `true` from the unlock means this session did
+%% not hold the lock it was releasing, which is worth a warning too.
+-spec release_session_lock(conn_target()) -> released | not_released.
+release_session_lock(Target) ->
+    try run_sql(Target, ~"SELECT pg_advisory_unlock($1) AS unlocked", [?MIGRATION_LOCK_KEY]) of
+        #{rows := [#{unlocked := true}]} -> released;
+        Other -> not_released(Target, #{answer => Other})
+    catch
+        Class:Reason -> not_released(Target, #{class => Class, reason => Reason})
+    end.
+
+-spec not_released(conn_target(), map()) -> not_released.
+not_released(Target, Why) ->
+    ?LOG_WARNING(Why#{
+        msg => ~"kura: could not release the migration lock; checkin releases it",
+        repo => target_repo(Target)
+    }),
+    not_released.
+
+-spec apply_non_transactional(migration(), up | down, conn_target()) ->
+    {ok, [integer()]} | {error, term()}.
+apply_non_transactional({Version, Module} = Migration, Dir, Target) ->
+    case still_todo(Dir, [Migration], applied_versions_strict(Target)) of
+        [] ->
+            {ok, []};
+        [_] ->
+            T0 = erlang:monotonic_time(),
+            Ops = migration_ops(Module, Dir),
+            case exec_each(topo_sort_ops(Ops), Target, 0) of
+                ok ->
+                    exec(record_sql(Dir), [Version], Version, Target),
+                    migration_applied(Version, Module, Dir, length(Ops), T0),
+                    {ok, [Version]};
+                {error, Committed, Reason} ->
+                    ?LOG_ERROR(#{
+                        msg => ~"kura: non-transactional migration failed part-way",
+                        version => Version,
+                        module => Module,
+                        committed_statements => Committed,
+                        reason => Reason,
+                        hint =>
+                            ~"statements before the failing one stay committed; the version is not recorded"
+                    }),
+                    {error, {migration_failed, Version, Reason}}
+            end
+    end.
+
+-spec exec_each([kura_migration:operation()], conn_target(), non_neg_integer()) ->
+    ok | {error, non_neg_integer(), term()}.
+exec_each([], _Target, _Committed) ->
+    ok;
+exec_each([Op | Rest], Target, Committed) ->
+    case run_sql(Target, compile_operation(target_repo(Target), Op), []) of
+        #{command := _} -> exec_each(Rest, Target, Committed + 1);
+        {error, Reason} -> {error, Committed, Reason}
     end.
 
 %%----------------------------------------------------------------------
 %% Migration execution (runs inside advisory lock transaction)
 %%----------------------------------------------------------------------
 
--spec run_migrations([{integer(), module()}], up | down, module(), [integer()]) -> [integer()].
+-spec run_migrations([migration()], up | down, module(), [integer()]) -> [integer()].
 run_migrations([], _Dir, _RepoMod, Acc) ->
     reverse_integers(Acc, []);
 run_migrations([{Version, Module} | Rest], Dir, RepoMod, Acc) ->
     T0 = erlang:monotonic_time(),
-    Ops = get_migration_ops(Module, Dir),
-    SafeEntries = get_safe_entries(Module),
-    Warnings = check_unsafe_operations(Ops, SafeEntries),
-    log_warnings(Module, Warnings),
+    Ops = migration_ops(Module, Dir),
     exec_operations(Ops, Version, RepoMod),
-    case Dir of
-        up ->
-            exec(
-                ~"INSERT INTO schema_migrations (version) VALUES ($1)",
-                [Version],
-                Version,
-                RepoMod
-            );
-        down ->
-            exec(
-                ~"DELETE FROM schema_migrations WHERE version = $1",
-                [Version],
-                Version,
-                RepoMod
-            )
-    end,
+    exec(record_sql(Dir), [Version], Version, RepoMod),
+    migration_applied(Version, Module, Dir, length(Ops), T0),
+    run_migrations(Rest, Dir, RepoMod, [Version | Acc]).
+
+-spec migration_ops(module(), up | down) -> [kura_migration:operation()].
+migration_ops(Module, Dir) ->
+    Ops = get_migration_ops(Module, Dir),
+    log_warnings(Module, check_unsafe_operations(Ops, get_safe_entries(Module))),
+    Ops.
+
+-spec record_sql(up | down) -> binary().
+record_sql(up) -> ~"INSERT INTO schema_migrations (version) VALUES ($1)";
+record_sql(down) -> ~"DELETE FROM schema_migrations WHERE version = $1".
+
+-spec migration_applied(integer(), module(), up | down, non_neg_integer(), integer()) -> ok.
+migration_applied(Version, Module, Dir, OpCount, T0) ->
     logger:info("Kura: ~s migration ~p (~p)", [Dir, Version, Module]),
     telemetry_event(
         [kura, migrator, migration, apply],
@@ -958,10 +1406,9 @@ run_migrations([{Version, Module} | Rest], Dir, RepoMod, Acc) ->
             version => Version,
             module => Module,
             direction => Dir,
-            op_count => length(Ops)
+            op_count => OpCount
         }
-    ),
-    run_migrations(Rest, Dir, RepoMod, [Version | Acc]).
+    ).
 
 %% Stamp migrations as applied without running any DDL (baseline / fake apply).
 %% Physically separate from run_migrations so the "never executes DDL"
@@ -1001,9 +1448,9 @@ exec_operations_seq([Op | Rest], Version, RepoMod) ->
     exec(SQL, [], Version, RepoMod),
     exec_operations_seq(Rest, Version, RepoMod).
 
--spec exec(binary(), list(), integer(), module()) -> ok.
-exec(SQL, Params, Version, RepoMod) ->
-    case kura_db:query(RepoMod, SQL, Params) of
+-spec exec(binary(), list(), integer(), target()) -> ok.
+exec(SQL, Params, Version, Target) ->
+    case run_sql(Target, SQL, Params) of
         #{command := _} ->
             ok;
         {error, Reason} ->
@@ -1039,7 +1486,7 @@ compile_operation(RepoMod, {alter_table, Name, AlterOps}) ->
         ~" ",
         iolist_to_binary(lists:join(~", ", Ops))
     ]);
-compile_operation(_RepoMod, {create_index, Table, Columns, Opts}) when is_map(Opts) ->
+compile_operation(RepoMod, {create_index, Table, Columns, Opts}) when is_map(Opts) ->
     IdxName = kura_migration:index_name(Table, Columns),
     Unique =
         case maps:get(unique, Opts, false) of
@@ -1056,6 +1503,7 @@ compile_operation(_RepoMod, {create_index, Table, Columns, Opts}) when is_map(Op
         ~"CREATE ",
         Unique,
         ~"INDEX ",
+        concurrently(RepoMod, maps:get(concurrently, Opts, false)),
         quote(IdxName),
         ~" ON ",
         quote(Table),
@@ -1064,7 +1512,7 @@ compile_operation(_RepoMod, {create_index, Table, Columns, Opts}) when is_map(Op
         ~")",
         Where
     ]);
-compile_operation(_RepoMod, {create_index, IdxName, Table, Columns, Opts}) ->
+compile_operation(RepoMod, {create_index, IdxName, Table, Columns, Opts}) ->
     Unique =
         case lists:member(unique, Opts) of
             true -> ~"UNIQUE ";
@@ -1080,6 +1528,7 @@ compile_operation(_RepoMod, {create_index, IdxName, Table, Columns, Opts}) ->
         ~"CREATE ",
         Unique,
         ~"INDEX ",
+        concurrently(RepoMod, lists:member(concurrently, Opts)),
         quote(IdxName),
         ~" ON ",
         quote(Table),
@@ -1092,6 +1541,44 @@ compile_operation(_RepoMod, {drop_index, Name}) ->
     iolist_to_binary([~"DROP INDEX ", quote(Name)]);
 compile_operation(_RepoMod, {execute, SQL}) ->
     SQL.
+
+%% A non-Postgres backend without `concurrent_indexes` (SQLite) has no
+%% online index build, and a plain `CREATE INDEX` is what it would run
+%% anyway. A Postgres pool without it (kura_postgres 1.1.3 and earlier)
+%% would take a lock blocking writes for the whole build, so it is refused.
+-spec concurrently(module(), boolean()) -> binary().
+concurrently(RepoMod, true) ->
+    PoolMod = kura_db:get_pool_module(RepoMod),
+    _ = code:ensure_loaded(PoolMod),
+    case kura_capabilities:has(PoolMod, concurrent_indexes) of
+        true -> ~"CONCURRENTLY ";
+        false -> plain_index_build(RepoMod, PoolMod)
+    end;
+concurrently(_RepoMod, false) ->
+    <<>>.
+
+-spec plain_index_build(module(), module()) -> binary().
+plain_index_build(RepoMod, PoolMod) ->
+    case postgres_ddl(RepoMod) of
+        false ->
+            <<>>;
+        true ->
+            ?LOG_ERROR(#{
+                msg => ~"kura: the pool cannot build an index concurrently",
+                repo => RepoMod,
+                pool_module => PoolMod,
+                hint => ~"upgrade kura_postgres to a release declaring concurrent_indexes"
+            }),
+            error({migration_aborted, {concurrent_indexes_unsupported, PoolMod}})
+    end.
+
+-spec postgres_ddl(module()) -> boolean().
+postgres_ddl(RepoMod) ->
+    case ddl_dialect(RepoMod) of
+        {ok, kura_dialect_pg} -> true;
+        {ok, _Other} -> false;
+        none -> true
+    end.
 
 -spec compile_column_def(module(), #kura_column{}) -> binary().
 compile_column_def(RepoMod, #kura_column{
@@ -1334,14 +1821,65 @@ log_warnings(Module, Warnings) ->
 %% Internal helpers
 %%----------------------------------------------------------------------
 
--spec get_applied_versions(module()) -> [integer()].
-get_applied_versions(RepoMod) ->
-    case kura_db:query(RepoMod, ~"SELECT version FROM schema_migrations ORDER BY version", []) of
+%% Lenient: `status/1` reports a table it cannot read as nothing applied.
+-spec get_applied_versions(target()) -> [integer()].
+get_applied_versions(Target) ->
+    case run_sql(Target, ~"SELECT version FROM schema_migrations ORDER BY version", []) of
         #{rows := Rows} ->
             [V || #{version := V} <- Rows];
         _ ->
             []
     end.
+
+%% For every path that decides what to run: a read that fails is not an
+%% empty table, and taking it for one would run applied migrations again.
+-spec applied_versions_strict(target()) -> [integer()].
+applied_versions_strict(Target) ->
+    case run_sql(Target, ~"SELECT version FROM schema_migrations ORDER BY version", []) of
+        #{rows := Rows} ->
+            [V || #{version := V} <- Rows];
+        Other ->
+            ?LOG_ERROR(#{
+                msg => ~"kura: could not read schema_migrations; running nothing",
+                reason => Other
+            }),
+            error({migration_aborted, {schema_migrations_unreadable, Other}})
+    end.
+
+%% Every statement the migrator runs goes through here, so no server
+%% error reaches its logs, results or telemetry with row values in it.
+-spec run_sql(target(), binary(), list()) -> map() | {error, term()}.
+run_sql({conn, RepoMod, Conn}, SQL, Params) ->
+    without_row_values(kura_db:query_on(RepoMod, Conn, SQL, Params));
+run_sql(RepoMod, SQL, Params) ->
+    without_row_values(kura_db:query(RepoMod, SQL, Params)).
+
+%% A failed `CREATE UNIQUE INDEX` puts the duplicated key values in
+%% `detail`, and `where` and `internal_query` can quote data too.
+-spec without_row_values(map() | {error, term()}) -> map() | {error, term()}.
+without_row_values({error, {pgsql_error, Fields}}) when is_map(Fields) ->
+    {error,
+        {pgsql_error,
+            maps:with(
+                [
+                    code,
+                    message,
+                    severity,
+                    severity_non_localised,
+                    hint,
+                    schema,
+                    table,
+                    column,
+                    data_type,
+                    constraint
+                ],
+                Fields
+            )}};
+without_row_values(Result) ->
+    Result.
+
+-spec target_repo(conn_target()) -> module().
+target_repo({conn, RepoMod, _Conn}) -> RepoMod.
 
 -spec quote(binary() | atom()) -> binary().
 quote(Name) when is_binary(Name) ->
