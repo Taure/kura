@@ -281,27 +281,44 @@ non_atom_field_distance() -> {distance, "embedding", l2, ~"[1.0,2.0,3.0]"}.
 -spec improper(term()) -> dynamic().
 improper(Term) -> Term.
 
-%% Distance thresholds are planned in #122. Until then a distance outside order_by and
-%% select_expr would leave its vector in the cache key and crash the
-%% dialect, so the builder refuses it.
-distance_outside_order_by_and_select_raises_test_() ->
+%% A distance anywhere but select_expr, order_by or the left side of a
+%% where or having threshold would leave its vector in the cache key and
+%% crash the dialect, so the builder refuses it.
+distance_outside_order_by_select_and_thresholds_raises_test_() ->
     D = kura_query:distance(embedding, cosine, [1, 2, 3]),
     Q = kura_query:from(?VEC_SCHEMA),
     [
-        ?_assertError(
-            {kura, {distance_not_supported_here, where}}, kura_query:where(Q, {D, '<', 0.3})
-        ),
         ?_assertError(
             {kura, {distance_not_supported_here, where}},
             kura_query:where(Q, {D, between, {0.1, 0.3}})
         ),
         ?_assertError(
             {kura, {distance_not_supported_here, where}},
-            kura_query:where(Q, {'and', [{id, 1}, {D, '<', 0.3}]})
+            kura_query:where(Q, {'and', [{id, 1}, {D, '=', 0.3}]})
         ),
         ?_assertError(
             {kura, {distance_not_supported_here, where}},
-            kura_query:where(Q, {'or', [{'not', {D, '>', 0.9}}]})
+            kura_query:where(Q, {'or', [{'not', {D, '!=', 0.9}}]})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}}, kura_query:where(Q, {D, 0.3})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}}, kura_query:where(Q, {D, like, ~"x"})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}}, kura_query:where(Q, {D, in, [0.3]})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}}, kura_query:where(Q, {D, is_nil})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}},
+            kura_query:where(Q, {D, in, {subquery, kura_query:from(?VEC_SCHEMA)}})
+        ),
+        ?_assertError(
+            {kura, {distance_not_supported_here, where}},
+            kura_query:where(Q, {id, '<', D})
         ),
         ?_assertError(
             {kura, {distance_not_supported_here, where}}, kura_query:where(Q, {content, D})
@@ -376,7 +393,7 @@ distance_outside_order_by_and_select_raises_test_() ->
         ),
         ?_assertError({kura, {distance_not_supported_here, where}}, kura_query:where(Q, D)),
         ?_assertError(
-            {kura, {distance_not_supported_here, having}}, kura_query:having(Q, {D, '<', 0.3})
+            {kura, {distance_not_supported_here, having}}, kura_query:having(Q, {D, '=', 0.3})
         ),
         ?_assertError(
             {kura, {distance_not_supported_here, group_by}},
@@ -624,3 +641,185 @@ where_keeps_undefined_and_null_in_an_enum_in_list_test() ->
         kura_query:from(kura_test_schema), {status, in, [active, undefined, null]}
     ),
     ?assertEqual([{status, in, [~"active", undefined, null]}], Q#kura_query.wheres).
+
+%%----------------------------------------------------------------------
+%% Distance thresholds in where/2 and having/2
+%%----------------------------------------------------------------------
+
+where_accepts_a_distance_threshold_for_each_comparison_test_() ->
+    D = kura_query:distance(embedding, cosine, [1, 2, 3]),
+    [
+        ?_assertEqual(
+            [{D, Op, 0.35}],
+            (kura_query:where(kura_query:from(?VEC_SCHEMA), {D, Op, 0.35}))#kura_query.wheres
+        )
+     || Op <- ['<', '<=', '>', '>=']
+    ].
+
+having_accepts_a_distance_threshold_test() ->
+    D = kura_query:distance(embedding, l2, [1, 2, 3]),
+    Q = kura_query:having(kura_query:from(?VEC_SCHEMA), {D, '<', 1}),
+    ?assertEqual([{D, '<', 1}], Q#kura_query.havings).
+
+where_accepts_a_threshold_nested_in_a_boolean_test() ->
+    D = kura_query:distance(embedding, l2, [1, 2, 3]),
+    Cond = {'or', [{id, 1}, {'and', [{'not', {D, '>=', 2}}, {content, ~"x"}]}]},
+    Q = kura_query:where(kura_query:from(?VEC_SCHEMA), Cond),
+    ?assertEqual([Cond], Q#kura_query.wheres).
+
+where_accepts_a_threshold_on_an_undimensioned_field_test() ->
+    D = kura_query:distance(any_embedding, l2, lists:seq(1, 1536)),
+    Q = kura_query:where(kura_query:from(?VEC_SCHEMA), {D, '<', 3}),
+    ?assertEqual([{D, '<', 3}], Q#kura_query.wheres).
+
+distance_threshold_is_checked_against_the_schema_test_() ->
+    Q = kura_query:from(?VEC_SCHEMA),
+    D = kura_query:distance(embedding, cosine, [1, 2, 3]),
+    Short = kura_query:distance(embedding, cosine, [1, 2]),
+    [
+        ?_assertError(
+            {kura, {distance_requires_schema, items}},
+            kura_query:where(kura_query:from(items), {D, '<', 0.3})
+        ),
+        ?_assertError(
+            {kura, {distance_requires_schema, items}},
+            kura_query:having(kura_query:from(items), {D, '<', 0.3})
+        ),
+        ?_assertError(
+            {kura, {not_a_vector_field, content}},
+            kura_query:where(Q, {kura_query:distance(content, l2, [1, 2, 3]), '<', 0.3})
+        ),
+        ?_assertError(
+            {kura, {vector_dimension_mismatch, embedding, 3, 2}},
+            kura_query:where(Q, {Short, '<', 0.3})
+        ),
+        ?_assertError(
+            {kura, {vector_dimension_mismatch, embedding, 3, 2}},
+            kura_query:having(Q, {'not', {Short, '>', 0.3}})
+        ),
+        ?_assertError(
+            {kura, {vector_dimension_mismatch, embedding, 3, 2}},
+            kura_query:where(Q, {'and', [{D, '<', 0.3}, {Short, '<', 0.3}]})
+        ),
+        ?_assertError(
+            {kura, {invalid_distance, embedding}},
+            kura_query:where(Q, {hand_built_distance(), '<', 0.3})
+        ),
+        ?_assertError(
+            {kura, {invalid_distance, embedding}},
+            kura_query:where(Q, {bad_metric_distance(), '<', 0.3})
+        )
+    ].
+
+%% The reason names the field, never the threshold or the vector.
+distance_threshold_must_be_a_number_test_() ->
+    Q = kura_query:from(?VEC_SCHEMA),
+    D = kura_query:distance(embedding, cosine, [1, 2, 3]),
+    [
+        ?_assertError(
+            {kura, {invalid_distance_threshold, embedding}},
+            kura_query:where(Q, {D, '<', ill_typed(T)})
+        )
+     || T <- [~"0.3", nil, undefined, [0.3], {subquery, Q}, D]
+    ] ++
+        [
+            ?_assertError(
+                {kura, {invalid_distance_threshold, embedding}},
+                kura_query:having(Q, {D, '>', ill_typed(~"1")})
+            ),
+            ?_assertError(
+                {kura, invalid_distance},
+                kura_query:where(Q, {non_atom_field_distance(), '<', ill_typed(~"1")})
+            ),
+            ?_assertError(
+                {kura, {invalid_distance, embedding}},
+                kura_query:where(Q, {bad_metric_distance(), '<', ill_typed(~"1")})
+            ),
+            ?_assertError(
+                {kura, {distance_requires_schema, items}},
+                kura_query:where(kura_query:from(items), {D, '<', ill_typed(~"1")})
+            )
+        ].
+
+%% A distance threshold inside a subquery is checked against the
+%% subquery's own schema, when the subquery is built and again when the
+%% outer condition takes it.
+where_checks_the_distances_of_a_subquery_test_() ->
+    Short = {distance, embedding, l2, ~"[1.0,2.0]"},
+    Sub = #kura_query{from = ?VEC_SCHEMA, select = [id], wheres = [{Short, '<', 1}]},
+    Q = kura_query:from(?VEC_SCHEMA),
+    [
+        ?_assertError(
+            {kura, {vector_dimension_mismatch, embedding, 3, 2}},
+            kura_query:where(Q, {id, in, {subquery, Sub}})
+        ),
+        ?_assertError(
+            {kura, {vector_dimension_mismatch, embedding, 3, 2}},
+            kura_query:where(Q, {exists, {subquery, Sub}})
+        ),
+        ?_assertError(
+            {kura, {vector_dimension_mismatch, embedding, 3, 2}},
+            kura_query:having(Q, {not_exists, {subquery, Sub}})
+        )
+    ].
+
+-spec ill_typed(term()) -> dynamic().
+ill_typed(Term) -> Term.
+
+%% The compiler's check walks structure, not bound values; where/2 and
+%% having/2 refuse a distance in a value position.
+compiler_check_skips_value_positions_test() ->
+    D = kura_query:distance(embedding, l2, [1, 2, 3]),
+    Q = #kura_query{
+        from = ?VEC_SCHEMA,
+        wheres = [{id, in, [D]}, {[id, content], in, [{1, D}]}],
+        havings = [{id, between, {D, D}}]
+    },
+    ?assertEqual(ok, kura_query:check_distances(Q)).
+
+compiler_check_refuses_a_distance_bound_as_the_value_test_() ->
+    D = kura_query:distance(embedding, l2, [1, 2, 3]),
+    Plain = #kura_query{from = ?VEC_SCHEMA},
+    Ordered = Plain#kura_query{order_bys = [{id, asc}]},
+    Where = {kura, {distance_not_supported_here, where}},
+    Having = {kura, {distance_not_supported_here, having}},
+    [
+        ?_assertError(
+            Where, kura_query:check_distances(Plain#kura_query{wheres = [{content, '=', D}]})
+        ),
+        ?_assertError(Where, kura_query:check_distances(Plain#kura_query{wheres = [{content, D}]})),
+        ?_assertError(
+            Where, kura_query:check_distances(Ordered#kura_query{wheres = [{'not', {id, '>', D}}]})
+        ),
+        ?_assertError(
+            Having,
+            kura_query:check_distances(Plain#kura_query{havings = [{'or', [{id, 1}, {id, '<', D}]}]})
+        ),
+        ?_assertError(Having, kura_query:check_distances(Ordered#kura_query{havings = [{id, D}]}))
+    ].
+
+compiler_check_walks_thresholds_on_both_paths_test_() ->
+    D = kura_query:distance(embedding, l2, [1, 2, 3]),
+    Bad = {kura, {invalid_distance_threshold, embedding}},
+    Plain = #kura_query{from = ?VEC_SCHEMA},
+    Ordered = Plain#kura_query{order_bys = [{id, asc}]},
+    Sub = Plain#kura_query{wheres = [{D, '<', nil}]},
+    [
+        ?_assertEqual(ok, kura_query:check_distances(Plain#kura_query{wheres = [{D, '<', 0.5}]})),
+        ?_assertEqual(ok, kura_query:check_distances(Ordered#kura_query{havings = [{D, '>=', 1}]})),
+        ?_assertError(Bad, kura_query:check_distances(Plain#kura_query{wheres = [{D, '>=', nil}]})),
+        ?_assertError(
+            Bad, kura_query:check_distances(Ordered#kura_query{havings = [{D, '>', nil}]})
+        ),
+        ?_assertError(
+            Bad,
+            kura_query:check_distances(Plain#kura_query{wheres = [{D, '<', 1}, {D, '<=', nil}]})
+        ),
+        ?_assertError(
+            Bad,
+            kura_query:check_distances(Plain#kura_query{wheres = [{not_exists, {subquery, Sub}}]})
+        ),
+        ?_assertError(
+            Bad, kura_query:check_distances(Plain#kura_query{wheres = [{exists, {subquery, Sub}}]})
+        )
+    ].

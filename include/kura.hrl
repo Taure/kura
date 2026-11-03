@@ -63,6 +63,11 @@
 %% to tell the two apart, so a new unary operator must be added here.
 -define(KURA_IS_UNARY_OP(Op), (Op =:= is_nil orelse Op =:= is_not_nil)).
 
+%% The operators of a vector distance threshold `{Distance, Op, Number}`.
+-define(KURA_IS_THRESHOLD_OP(Op),
+    (Op =:= '<' orelse Op =:= '<=' orelse Op =:= '>' orelse Op =:= '>=')
+).
+
 -record(kura_query, {
     from :: atom() | module() | binary() | undefined,
     select = [] :: [atom() | term()] | {exprs, [term()]},

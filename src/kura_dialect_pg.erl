@@ -360,6 +360,15 @@ compile_condition({'not', Condition}, Ctx, Counter) ->
 compile_condition({fragment, SQL, Params}, _Ctx, Counter) ->
     {RewrittenSQL, NewCounter} = rewrite_fragment_placeholders(SQL, Counter),
     {RewrittenSQL, Params, NewCounter};
+compile_condition({{distance, _, _, _} = Distance, Op, Threshold}, Ctx, Counter) when
+    ?KURA_IS_THRESHOLD_OP(Op)
+->
+    {DistanceSQL, DistanceParams, Next} = compile_distance(Distance, Ctx, Counter),
+    {
+        [DistanceSQL, threshold_op(Op), integer_to_binary(Next)],
+        DistanceParams ++ [Threshold],
+        Next + 1
+    };
 compile_condition({Field, Op}, Ctx, Counter) when is_atom(Field), ?KURA_IS_UNARY_OP(Op) ->
     {[column(Field, Ctx), unary_sql(Op)], [], Counter};
 compile_condition({Field, '=', Value}, Ctx, Counter) when is_atom(Field) ->
@@ -530,6 +539,11 @@ compile_distance({distance, Field, Metric, Vector}, Ctx, Counter) when is_atom(F
 distance_op(l2) -> ~" <-> $";
 distance_op(cosine) -> ~" <=> $";
 distance_op(inner_product) -> ~" <#> $".
+
+threshold_op('<') -> ~" < $";
+threshold_op('<=') -> ~" <= $";
+threshold_op('>') -> ~" > $";
+threshold_op('>=') -> ~" >= $".
 
 dir_to_sql(asc) -> ~"ASC";
 dir_to_sql(desc) -> ~"DESC".

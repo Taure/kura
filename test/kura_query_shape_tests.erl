@@ -71,6 +71,16 @@ queries(N) ->
             order_bys = [{id, asc}, {{distance, any_embedding, l2, vec(V(3))}, desc}],
             limit = V(4)
         }},
+        {"distance threshold in where and having", #kura_query{
+            from = kura_test_vector_schema,
+            wheres = [
+                {'and', [{{distance, any_embedding, cosine, vec(V(1))}, '<', V(2)}, {id, V(3)}]}
+            ],
+            group_bys = [id, any_embedding],
+            havings = [{'not', {{distance, any_embedding, l2, vec(V(4))}, '>=', V(5)}}],
+            order_bys = [{{distance, any_embedding, cosine, vec(V(6))}, asc}],
+            limit = V(7)
+        }},
         {"having fragment", #kura_query{
             from = users,
             group_bys = [role],
@@ -204,6 +214,64 @@ distance_vectors_are_split_out_of_the_shape_test() ->
         [{{distance, embedding, l2, {'$kura_param', 3}}, asc}, {id, desc}],
         Shape#kura_query.order_bys
     ).
+
+%% Two searches that differ only in the query vector and the threshold
+%% compile once.
+distinct_vectors_and_thresholds_share_one_entry_test() ->
+    with_pg(fun() ->
+        Build = fun(Seed, Threshold) ->
+            Vec = [float(Seed + I) || I <- lists:seq(1, 1536)],
+            {distance, _, _, Text} = D = kura_query:distance(any_embedding, cosine, Vec),
+            Q0 = kura_query:where(kura_query:from(kura_test_vector_schema), {D, '<', Threshold}),
+            {kura_query:limit(kura_query:order_by(Q0, [{D, asc}]), 10), Text}
+        end,
+        [
+            begin
+                {Q, Text} = Build(Seed, Threshold),
+                {SQL, Params} = kura_query_compiler:to_sql_cached(?REPO, Q),
+                ?assertEqual(kura_query_compiler:to_sql(?REPO, Q), {SQL, Params}),
+                ?assertEqual([Text, Threshold, Text, 10], Params)
+            end
+         || {Seed, Threshold} <- [{1, 0.25}, {2, 0.5}, {3, 1}]
+        ],
+        ?assertEqual(1, kura_query_cache:entry_count()),
+        [{Key, _}] = cache_entries(),
+        ?assertEqual([], [B || B <- binaries(Key), byte_size(B) > 64]),
+        ?assertEqual([], [F || F <- floats(Key), F =:= 0.25 orelse F =:= 0.5])
+    end).
+
+distance_thresholds_are_split_out_of_the_shape_test() ->
+    D = {distance, embedding, l2, ~"[1.0]"},
+    {Shape, Values} = kura_query_shape:split(
+        #kura_query{
+            from = items,
+            wheres = [{D, '<', 0.5}, {'or', [{D, '>=', 2}, {id, 7}]}],
+            havings = [{'not', {D, '<=', 0.1}}]
+        }
+    ),
+    ?assertEqual({~"[1.0]", 0.5, ~"[1.0]", 2, 7, ~"[1.0]", 0.1}, Values),
+    M = fun(N) -> {'$kura_param', N} end,
+    ?assertEqual(
+        [
+            {{distance, embedding, l2, M(1)}, '<', M(2)},
+            {'or', [{{distance, embedding, l2, M(3)}, '>=', M(4)}, {id, M(5)}]}
+        ],
+        Shape#kura_query.wheres
+    ),
+    ?assertEqual(
+        [{'not', {{distance, embedding, l2, M(6)}, '<=', M(7)}}], Shape#kura_query.havings
+    ),
+    ?assertEqual(
+        [~"[1.0]", 0.5, ~"[1.0]", 2, 7, ~"[1.0]", 0.1],
+        kura_query_shape:bind([M(N) || N <- lists:seq(1, 7)], Values)
+    ).
+
+%% Only the four orderings are thresholds; any other operator stays in the
+%% shape, which the builder never lets through anyway.
+other_distance_operators_stay_in_the_shape_test() ->
+    D = {distance, embedding, l2, ~"[1.0]"},
+    Q = #kura_query{from = items, wheres = [{D, '=', 0.5}]},
+    ?assertEqual({Q, {}}, kura_query_shape:split(Q)).
 
 is_nil_is_part_of_the_shape_test() ->
     with_pg(fun() ->
@@ -345,6 +413,11 @@ cache_entries() ->
 
 vec(N) ->
     iolist_to_binary([~"[", integer_to_binary(N), ~".0]"]).
+
+floats(F) when is_float(F) -> [F];
+floats(T) when is_tuple(T) -> floats(tuple_to_list(T));
+floats(L) when is_list(L) -> lists:append([floats(E) || E <- L]);
+floats(_) -> [].
 
 binaries(B) when is_binary(B) -> [B];
 binaries(T) when is_tuple(T) -> binaries(tuple_to_list(T));
