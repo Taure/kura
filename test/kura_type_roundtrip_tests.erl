@@ -25,6 +25,8 @@ type_roundtrip_test_() ->
             {"enum insert as binary", fun t_enum_insert_binary/0},
             {"enum update", fun t_enum_update/0},
             {"enum where clause", fun t_enum_where/0},
+            {"enum where clause takes atoms", fun t_enum_where_atom/0},
+            {"where casts a binary id and datetime", fun t_where_casts_values/0},
             {"enum invalid value rejected", fun t_enum_invalid/0},
 
             %% Text
@@ -159,6 +161,24 @@ t_enum_update() ->
     ?assertEqual(banned, maps:get(status, Updated)),
     {ok, Fetched} = kura_test_repo:get(kura_test_type_schema, maps:get(id, Item)),
     ?assertEqual(banned, maps:get(status, Fetched)).
+
+t_enum_where_atom() ->
+    _ = insert_item(~"ewa1", #{status => banned}),
+    _ = insert_item(~"ewa2", #{status => inactive}),
+    Q0 = kura_query:where(kura_query:from(kura_test_type_schema), {name, like, ~"ewa%"}),
+    {ok, Banned} = kura_test_repo:all(kura_query:where(Q0, {status, banned})),
+    ?assertEqual([~"ewa1"], [maps:get(name, R) || R <- Banned]),
+    {ok, Either} = kura_test_repo:all(kura_query:where(Q0, {status, in, [banned, inactive]})),
+    ?assertEqual([~"ewa1", ~"ewa2"], lists:sort([maps:get(name, R) || R <- Either])),
+    {ok, NotBanned} = kura_test_repo:all(kura_query:where(Q0, {status, '!=', banned})),
+    ?assertEqual([~"ewa2"], [maps:get(name, R) || R <- NotBanned]).
+
+t_where_casts_values() ->
+    Item = insert_item(~"wcv", #{happened_at => {{2026, 1, 2}, {3, 4, 5}}}),
+    IdBin = integer_to_binary(maps:get(id, Item)),
+    Q = kura_query:where(kura_query:from(kura_test_type_schema), {id, IdBin}),
+    Q1 = kura_query:where(Q, {happened_at, '>=', ~"2026-01-02T03:04:05Z"}),
+    ?assertMatch({ok, [#{name := ~"wcv"}]}, kura_test_repo:all(Q1)).
 
 t_enum_where() ->
     _I1 = insert_item(~"ew1", #{status => active}),

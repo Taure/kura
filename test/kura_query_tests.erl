@@ -490,3 +490,80 @@ too_many_dimensions_names_the_limit_test() ->
         {kura, {invalid_vector, any_embedding, ~"has more than 16000 dimensions"}},
         kura_query:distance(any_embedding, l2, lists:duplicate(16001, 1.0))
     ).
+
+%%----------------------------------------------------------------------
+%% where/2 dumps values through the from schema's field types
+%%----------------------------------------------------------------------
+
+where_dumps_an_enum_atom_test() ->
+    Q = kura_query:where(kura_query:from(kura_test_schema), {status, active}),
+    ?assertEqual([{status, ~"active"}], Q#kura_query.wheres).
+
+where_dumps_enum_atoms_under_operators_and_logic_test() ->
+    Q = kura_query:where(
+        kura_query:from(kura_test_schema),
+        {'or', [
+            {status, in, [active, banned]},
+            {'not', {status, '!=', inactive}},
+            {status, not_in, [banned]}
+        ]}
+    ),
+    ?assertEqual(
+        [
+            {'or', [
+                {status, in, [~"active", ~"banned"]},
+                {'not', {status, '!=', ~"inactive"}},
+                {status, not_in, [~"banned"]}
+            ]}
+        ],
+        Q#kura_query.wheres
+    ).
+
+where_casts_a_value_in_cast_form_test() ->
+    Q0 = kura_query:from(kura_test_schema),
+    Q1 = kura_query:where(Q0, {id, ~"42"}),
+    Q2 = kura_query:where(Q1, {age, between, {~"18", 30}}),
+    Q3 = kura_query:where(Q2, {inserted_at, '>', ~"2026-01-02T03:04:05Z"}),
+    ?assertEqual(
+        [
+            {id, 42},
+            {age, between, {18, 30}},
+            {inserted_at, '>', {{2026, 1, 2}, {3, 4, 5}}}
+        ],
+        Q3#kura_query.wheres
+    ).
+
+where_keeps_a_value_the_type_cannot_take_test() ->
+    Q0 = kura_query:from(kura_test_schema),
+    Q1 = kura_query:where(Q0, {status, 42}),
+    Q2 = kura_query:where(Q1, {age, ~"not a number"}),
+    ?assertEqual([{status, 42}, {age, ~"not a number"}], Q2#kura_query.wheres).
+
+where_leaves_unary_like_and_fragment_conditions_alone_test() ->
+    Conds = [
+        {status, is_nil},
+        {name, like, ~"A%"},
+        {fragment, ~"lower(name) = ?", [~"a"]},
+        {status, undefined}
+    ],
+    Q = where_all(kura_query:from(kura_test_schema), Conds),
+    ?assertEqual(Conds, Q#kura_query.wheres).
+
+where_all(Q, []) -> Q;
+where_all(Q, [C | Rest]) -> where_all(kura_query:where(Q, C), Rest).
+
+where_binds_a_bare_table_or_cte_value_as_given_test() ->
+    Q1 = kura_query:where(kura_query:from(users), {status, active}),
+    Q2 = kura_query:where(kura_query:from(~"ranked"), {status, active}),
+    ?assertEqual([{status, active}], Q1#kura_query.wheres),
+    ?assertEqual([{status, active}], Q2#kura_query.wheres).
+
+where_binds_a_field_the_from_schema_lacks_as_given_test() ->
+    Q0 = kura_query:join(kura_query:from(kura_test_post_schema), inner, kura_test_schema, {
+        author_id, id
+    }),
+    Q = kura_query:where(Q0, {status, active}),
+    ?assertEqual([{status, active}], Q#kura_query.wheres).
+
+from_accepts_a_binary_name_test() ->
+    ?assertEqual(~"ranked", (kura_query:from(~"ranked"))#kura_query.from).

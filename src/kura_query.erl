@@ -425,12 +425,101 @@ allowed. A `{fragment, SQL, Params}` is not inspected: what it binds is the
 caller's responsibility. A query over a bare table name has no schema and is
 not checked. A `{subquery, Q}` anywhere but `exists`, `not_exists` or a
 single-column `in` raises `{kura, unrecognised_condition}`.
+
+A value compared to a field of a `from` schema is dumped through the
+field's type, as a write would dump it, so `{status, published}` on an
+`{enum, [...]}` field binds `~"published"`, and a value in the form
+`kura_changeset:cast/4` accepts, such as `~"42"` for an integer field, is
+cast first. This covers `=`, `!=`, `<`, `>`, `<=`, `>=`, `in`, `not_in` and
+`between`, under `and`, `or` and `not`. A value that neither dumps nor casts
+is bound as given. Fields of joined schemas, CTEs and bare table names are
+bound as given.
 """.
 -spec where(#kura_query{}, term()) -> #kura_query{}.
-where(Q = #kura_query{wheres = W}, Condition) ->
+where(Q = #kura_query{wheres = W, from = From}, Condition) ->
     reject_distance_cond(where, Condition),
     refuse_each([Condition], guard_scope(Q, [], []), encrypted_field_in_where),
-    Q#kura_query{wheres = W ++ [Condition]}.
+    Q#kura_query{wheres = W ++ [dump_condition(from_types(From), Condition)]}.
+
+from_types(From) when is_atom(From), From =/= undefined ->
+    case kura_schema:is_schema(From) of
+        true -> kura_schema:field_types(From);
+        false -> #{}
+    end;
+from_types(_From) ->
+    #{}.
+
+dump_condition(Types, Condition) when map_size(Types) =:= 0 ->
+    Condition;
+dump_condition(Types, {Logic, Conditions}) when
+    (Logic =:= 'and' orelse Logic =:= 'or'), is_list(Conditions)
+->
+    {Logic, [dump_condition(Types, C) || C <- Conditions]};
+dump_condition(Types, {'not', Condition}) ->
+    {'not', dump_condition(Types, Condition)};
+dump_condition(Types, {Field, Op, Values}) when
+    (Op =:= in orelse Op =:= not_in), is_atom(Field), is_list(Values)
+->
+    {Field, Op, [dump_value(Types, Field, V) || V <- Values]};
+dump_condition(Types, {Field, between, {Low, High}}) when is_atom(Field) ->
+    {Field, between, {dump_value(Types, Field, Low), dump_value(Types, Field, High)}};
+dump_condition(Types, {Field, Op, Value}) when
+    is_atom(Field),
+    (Op =:= '=' orelse Op =:= '!=' orelse Op =:= '<' orelse Op =:= '>' orelse Op =:= '<=' orelse
+        Op =:= '>=')
+->
+    {Field, Op, dump_value(Types, Field, Value)};
+dump_condition(Types, {Field, Value}) when is_atom(Field) ->
+    case ?KURA_IS_UNARY_OP(Value) of
+        true -> {Field, Value};
+        false -> {Field, dump_value(Types, Field, Value)}
+    end;
+dump_condition(_Types, Condition) ->
+    Condition.
+
+%% An encrypted field never reaches here with a value: the guard above has
+%% already refused it.
+dump_value(_Types, _Field, Value) when Value =:= undefined; Value =:= null ->
+    Value;
+dump_value(_Types, _Field, {subquery, _} = Value) ->
+    Value;
+dump_value(Types, Field, Value) ->
+    case Types of
+        #{Field := Type} ->
+            case kura_types:encryption(Type) of
+                none -> dump_or_keep(Type, Value);
+                _ -> Value
+            end;
+        #{} ->
+            Value
+    end.
+
+%% Binding the value as given is what a where did before it was dumped, so a
+%% value the type cannot take, or a custom type that raises on it, is left
+%% for the server to judge.
+dump_or_keep(Type, Value) ->
+    try
+        dump_or_cast(Type, Value)
+    catch
+        _:_ -> Value
+    end.
+
+dump_or_cast(Type, Value) ->
+    case kura_types:dump(Type, Value) of
+        {ok, Dumped} ->
+            Dumped;
+        {error, _} ->
+            case kura_types:cast(Type, Value) of
+                {ok, Cast} -> dumped_cast(Type, Cast, Value);
+                {error, _} -> Value
+            end
+    end.
+
+dumped_cast(Type, Cast, Value) ->
+    case kura_types:dump(Type, Cast) of
+        {ok, Dumped} -> Dumped;
+        {error, _} -> Value
+    end.
 
 %% A nested query reads its own CTEs before those of the queries around it.
 guard_scope(#kura_query{ctes = Own} = Q, OuterEncrypted, OuterCtes) ->

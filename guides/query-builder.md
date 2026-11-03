@@ -17,6 +17,12 @@ Q1 = kura_query:where(Q, {active, true}),
 
 ## WHERE Conditions
 
+A value compared to a field of the `from` schema is dumped through that
+field's type before it is bound, as a write dumps it: an enum atom binds
+its binary, and a value in the form a changeset casts, such as `~"42"` for
+an integer field or `~"2026-01-01T00:00:00Z"` for a datetime, is cast first.
+A value the type cannot take is bound as given.
+
 ### Equality
 
 ```erlang
