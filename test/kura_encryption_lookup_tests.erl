@@ -55,6 +55,8 @@ lookup_test_() ->
                 {"a field of a joined schema is looked up", fun t_joined_field/0},
                 {"a from field looked up under a join names the from table",
                     fun t_lookup_under_a_join_is_qualified/0},
+                {"a plain from field is not looked up through a joined schema",
+                    fun t_lookup_on_a_plain_from_field_is_refused/0},
                 {"a source read through a CTE raises", fun t_cte/0},
                 {"a subquery looks up in its own scope", fun t_subquery/0},
                 {"an outer deterministic field in a subquery raises", fun t_outer_field/0},
@@ -335,6 +337,27 @@ t_lookup_under_a_join_is_qualified() ->
             {{ssn, ?P1}, ~"\"det_users\".\"ssn\" IN ($"},
             {{ssn, '!=', ?P1}, ~"\"det_users\".\"ssn\" NOT IN ($"}
         ]
+    ].
+
+%% Under a join `ssn` names the from table's plain column, so the joined
+%% schema's deterministic `ssn` must not turn the condition into a lookup:
+%% its ciphertexts would be compared with the plain column, and `!=` would
+%% match every row.
+t_lookup_on_a_plain_from_field_is_refused() ->
+    Joined = kura_query:join(
+        kura_query:from(kura_test_poc_plain_schema), inner, ?DET, {user_id, id}
+    ),
+    [
+        ?assertError({kura, {encrypted_field_in_where, ssn}}, kura_query:where(Joined, Cond))
+     || Cond <- [{ssn, ?P1}, {ssn, '!=', ?P1}, {ssn, in, [?P1]}, {ssn, not_in, [?P1]}]
+    ],
+    Frames = kura_encryption:lookup_params(?DET, ssn, ?P1),
+    [
+        ?assertError(
+            {kura, {invalid_encrypted_lookup, ssn}},
+            kura_query_compiler:to_sql(?REPO, Joined#kura_query{wheres = [{ssn, Op, Frames}]})
+        )
+     || Op <- [encrypted_in, encrypted_not_in]
     ].
 
 t_cte() ->

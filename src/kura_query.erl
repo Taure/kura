@@ -619,7 +619,9 @@ lookup_op(Op) when Op =:= '!='; Op =:= not_in -> encrypted_not_in.
 %% source of Q declares encrypted, and declares deterministic. A source that
 %% reads a CTE holds whatever the CTE selects, and a CTE whose encrypted
 %% columns cannot be named may hold ciphertext under any name, so neither
-%% offers a lookup.
+%% offers a lookup. After a join a dialect names a field of the `from`
+%% schema with the `from` table (kura_dialect:qualified_columns/1), so
+%% only the `from` schema can offer a lookup on such a field.
 lookup_specs(_Q, {[], _Ctes}) ->
     #{};
 lookup_specs(Q, {Encrypted, Ctes}) ->
@@ -627,13 +629,21 @@ lookup_specs(Q, {Encrypted, Ctes}) ->
         true ->
             #{};
         false ->
+            FromOwned = from_owned_fields(Q),
             maps:from_list([
                 {F, Spec}
              || Source <- sources(Q),
                 not reads_cte(Source, Ctes),
                 F := #{mode := deterministic} = Spec <- source_specs(Source),
-                declared_once(F, Encrypted)
+                declared_once(F, Encrypted),
+                Source =:= Q#kura_query.from orelse not is_map_key(F, FromOwned)
             ])
+    end.
+
+from_owned_fields(Q) ->
+    case kura_dialect:qualified_columns(Q) of
+        {_Table, FromFields} -> FromFields;
+        undefined -> #{}
     end.
 
 declared_once(Field, Encrypted) ->
