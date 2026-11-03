@@ -517,7 +517,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so ciphertexts can be swapped between rows or tenants of the same
   column, and the elements of an encrypted array reordered or spliced
   within it. An encrypted column of a joined schema comes back
-  undecrypted.
+  undecrypted. When it shares a name with an encrypted `from` field, a
+  join without a `select` reads the joined value under that field: a v2
+  value raises, a v1 value decrypts and is returned as the `from` field.
 - Cost per value, on one machine (`KURA_BENCH=1 rebar3 eunit
   --module=kura_crypto_bench`): v1 encrypt 1.9-2.0 us and decrypt 1.1 us;
   v2 encrypt 4.8-4.9 us and decrypt 3.8 us, the difference being the
@@ -538,6 +540,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{kura_crypto, invalid_context}`, and a non-binary plaintext
   `{kura_crypto, malformed_plaintext}`. A keyring key that is not 32 bytes
   now raises `no_active_key` or `{unknown_key_id, KeyId}` for v1 as well.
+- `kura_schema` refuses two encrypted fields stored in the same column
+  (`{kura, {duplicate_encrypted_column, Mod, Column}}`) and an encrypted
+  field whose column name is not a binary of 1 to 65535 bytes
+  (`{kura, {invalid_encrypted_column, Mod, Field}}`), the first time it
+  reads the schema. An array of encrypted values that loads a non-list
+  raises `{kura_crypto, malformed_frame}` instead of returning an error,
+  which the read path turned into the raw value.
 - Non-transactional migrations (#139). A migration exporting
   `transactional() -> false` runs outside a transaction, statement by
   statement, on one connection holding the session-level advisory lock.

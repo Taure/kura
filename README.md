@@ -282,8 +282,11 @@ What v2 does not cover yet:
 - **Only the repo read path decrypts v2**: rows loaded for a schema
   (`kura_db:load_row/2`, which every repo read, stream and preload uses).
   An encrypted column of a joined schema is loaded by the `from` schema's
-  types, so it comes back undecrypted, or raises when its name collides
-  with an encrypted field of the `from` schema.
+  types, so it comes back undecrypted. A join without a `select` reads
+  `SELECT *`, so when a joined column shares its name with an encrypted
+  field of the `from` schema, the joined value may be read under that
+  field: it raises for a v2 value; a v1 value decrypts and is returned
+  under the `from` field. Use an explicit `select` on joins.
 
 **Write format:** kura writes v1 by default and reads both. Opt in to v2
 with:
