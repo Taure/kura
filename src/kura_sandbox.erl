@@ -45,10 +45,13 @@ while another process has one open on the same connection raises
 A `COMMIT`, `END` or `ROLLBACK` run through a query ends the sandbox's
 transaction, and what it committed stays in the database. With a driver
 that checks for it (see `c:kura_driver:query_on/4`), the statement
-raises `{DriverMod, transaction_ended_by_statement}`, and so does every
-statement on the connection after it, from any process sharing it,
-without being run. With a driver that does not check, the statements
-after it run in autocommit and their work is kept.
+raises `{DriverMod, transaction_ended_by_statement}`. So does every
+statement on the connection that starts after that error, from any
+process sharing it, without being run. On SQLite, a statement another
+process started while the `COMMIT` ran can still run in autocommit and
+keep its work. With a driver that does not check, the statements after
+it run in autocommit and their work is kept. On kura_postgres, a
+`RESET ALL` in the test also reads as the end of the transaction.
 """.
 
 -export([
@@ -104,6 +107,8 @@ checkout(RepoMod, Opts) ->
             ets:insert(?TABLE, {{Pool, Self}, {PoolMod, Token, Conn}})
     end,
 
+    %% A test that died after a COMMIT never checked in to clear it.
+    ets:delete(?TABLE, {ended, Conn}),
     _ = DriverMod:query_on(Conn, ~"BEGIN", [], #{transaction => starts}),
     ok.
 
@@ -214,18 +219,16 @@ leave_transaction(Conn) ->
             ok
     end.
 
--doc """
-Note that a statement ended the transaction on sandbox connection `Conn`.
-
-Called by `m:kura_db` when the driver raises
-`{DriverMod, transaction_ended_by_statement}`. Cleared by `checkin/1`.
-""".
+%% Called by kura_db when the driver raises
+%% {DriverMod, transaction_ended_by_statement}. Cleared by checkin/1 and
+%% checkout/2.
+-doc false.
 -spec note_ended(kura_pool:conn()) -> ok.
 note_ended(Conn) ->
     true = ets:insert(?TABLE, {{ended, Conn}}),
     ok.
 
--doc "Whether a statement ended the transaction on sandbox connection `Conn`.".
+-doc false.
 -spec ended(kura_pool:conn()) -> boolean().
 ended(Conn) ->
     ets:member(?TABLE, {ended, Conn}).

@@ -103,9 +103,10 @@ its lifetime.
 `m:kura_sandbox` runs its own transaction on `Conn` and says so in
 `Opts`, so that a driver can catch user SQL that ends it:
 
-- `transaction => starts`: `SQL` begins a transaction, and later
-  statements marked `inside` run in it. `Params` is `[]`. A driver may
-  record whatever it needs to recognise that transaction later.
+- `transaction => starts`: `SQL` is a plain `BEGIN`, and later
+  statements marked `inside` run in the transaction it begins. `Params`
+  is `[]`. A driver may open the transaction its own way, to record
+  what it needs to recognise it later.
 - `transaction => inside`: `Conn` is expected to be inside that
   transaction. A statement that ends it (a `COMMIT`, `END` or
   `ROLLBACK`, however spelled) raises

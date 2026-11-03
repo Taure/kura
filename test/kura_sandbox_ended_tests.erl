@@ -36,6 +36,8 @@ ended_test_() ->
         {"a transaction opened after the COMMIT raises before running its function",
             fun transaction_after_commit/0},
         {"checkin clears it for the next checkout", fun checkin_clears/0},
+        {"a checkout clears what a test that never checked in left",
+            fun checkout_clears_a_lost_checkin/0},
         {"other driver errors still read as the savepoint failing", fun other_failures_unchanged/0}
     ]}.
 
@@ -108,6 +110,16 @@ checkin_clears() ->
     ?assertEqual(
         [~"BEGIN", ~"COMMIT", ~"ROLLBACK", ~"BEGIN", ~"SELECT 1"], logged_sql()
     ).
+
+%% The pool lends the same connection again after a test died holding it.
+checkout_clears_a_lost_checkin() ->
+    ok = kura_sandbox:checkout(?MODULE),
+    ?assertError(?ENDED, kura_db:query(?MODULE, ~"COMMIT", [])),
+    [{Key, {PoolMod, Token, _Conn}}] = ets:lookup(kura_sandbox_registry, {?POOL, self()}),
+    true = ets:delete(kura_sandbox_registry, Key),
+    ok = PoolMod:checkin(?POOL, Token),
+    ok = kura_sandbox:checkout(?MODULE),
+    ?assertMatch(#{}, kura_db:query(?MODULE, ~"SELECT 1", [])).
 
 other_failures_unchanged() ->
     ok = kura_sandbox:checkout(?MODULE),
