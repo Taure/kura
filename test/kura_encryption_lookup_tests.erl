@@ -63,6 +63,9 @@ lookup_test_() ->
                 {"an attribute tenant on a deterministic field raises", fun t_tenant/0},
                 {"the tenant scope checks distance thresholds", fun t_scope_thresholds/0},
                 {"a raw table is not looked up", fun t_raw_table/0},
+                {"a raw from joined to a deterministic schema looks up",
+                    fun t_raw_from_joined_field/0},
+                {"nil on a string field raises", fun t_nil_string/0},
                 {"an empty in compiles as on a plain field", fun t_empty_in/0},
                 {"a malformed keyring config raises without key material", fun t_malformed_config/0}
             ]}.
@@ -455,6 +458,29 @@ t_tenant() ->
     after
         kura_tenant:clear_tenant()
     end.
+
+t_raw_from_joined_field() ->
+    Q = kura_query:join(kura_query:from(ill_typed(~"users")), inner, ?DET, {id, id}),
+    Q1 = kura_query:where(Q, {ssn, ?P1}),
+    ?assertEqual([{ssn, encrypted_in, frames(ssn, ?P1)}], Q1#kura_query.wheres),
+    ?assertEqual(ok, kura_query:check_encrypted(Q1)).
+
+t_nil_string() ->
+    Q = kura_query:from(?DET),
+    [
+        ?assertError({kura, {invalid_lookup_value, F}}, kura_query:where(Q, C))
+     || {F, C} <- [
+            {ssn, {ssn, nil}},
+            {ssn, {ssn, '=', null}},
+            {ssn, {ssn, '!=', nil}},
+            {ssn, {ssn, undefined}},
+            {email, {email, in, [~"a@example.com", nil]}},
+            {email, {email, not_in, [null]}}
+        ]
+    ],
+    ?assertError(
+        {kura, {invalid_lookup_value, ssn}}, kura_encryption:lookup_params(?DET, ssn, nil)
+    ).
 
 t_raw_table() ->
     Q = kura_query:where(kura_query:from(ill_typed(~"det_users")), {ssn, ?P1}),
