@@ -214,7 +214,9 @@ t_cast_normalises() ->
     ),
     ?assertEqual({ok, ~"Ada"}, kura_types:cast(det(#{}), ~"Ada")),
     ?assertEqual({ok, ~"Ada"}, kura_types:cast({encrypted, string, #{}}, ~"Ada")),
-    ?assertEqual({ok, undefined}, kura_types:cast(det(#{normalize => casefold}), undefined)).
+    ?assertEqual({ok, undefined}, kura_types:cast(det(#{normalize => casefold}), undefined)),
+    ?assertEqual({ok, ~"\x{131}"}, kura_types:cast(det(#{normalize => casefold}), ~"\x{131}")),
+    ?assertEqual({ok, ~"i"}, kura_types:cast(det(#{normalize => casefold}), ~"I")).
 
 t_cast_uuid() ->
     Lower = ~"0190a5b2-7c3d-7e4f-8a9b-0c1d2e3f4a5b",

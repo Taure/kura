@@ -135,12 +135,17 @@ prop_uuid_canonical() ->
         end
     ).
 
+%% Full case folding maps U+0131 (dotless i) to itself while its uppercase
+%% I folds to i, so the two do not fold equally.
 prop_casefold() ->
     ?FORALL(
         Plain,
         utf8(),
-        dump(casefold(), string, string:uppercase(bin(Plain))) =:=
-            dump(casefold(), string, string:lowercase(bin(Plain)))
+        ?IMPLIES(
+            binary:match(bin(Plain), ~"\x{131}") =:= nomatch,
+            dump(casefold(), string, string:uppercase(bin(Plain))) =:=
+                dump(casefold(), string, string:lowercase(bin(Plain)))
+        )
     ).
 
 prop_normalize_idempotent() ->

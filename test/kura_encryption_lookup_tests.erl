@@ -60,6 +60,7 @@ lookup_test_() ->
                 {"the cache cannot pass a hand-built plaintext lookup", fun t_cache_soundness/0},
                 {"cached lookups share one entry", fun t_cache_shared/0},
                 {"an attribute tenant on a deterministic field raises", fun t_tenant/0},
+                {"the tenant scope checks distance thresholds", fun t_scope_thresholds/0},
                 {"a raw table is not looked up", fun t_raw_table/0}
             ]}.
 
@@ -211,7 +212,9 @@ t_invalid_value() ->
     ?assertError(
         {kura, unrecognised_condition},
         kura_query:where(kura_query:from(?DET), {pin, in, improper(1, 2)})
-    ).
+    ),
+    #{pin := Spec} = kura_schema:encryption_specs(?DET),
+    ?assertError({kura, unrecognised_condition}, kura_encryption:lookup(pin, Spec, improper(1, 2))).
 
 t_no_key() ->
     application:set_env(kura, encryption, #{
@@ -268,7 +271,10 @@ t_cte() ->
         {kura, {invalid_encrypted_lookup, ssn}}, kura_query:with_cte(Q1, ~"det_users", Cte)
     ),
     Q2 = kura_query:with_cte(Q1, ~"other", Cte),
-    ?assertEqual(ok, kura_query:check_encrypted(Q2)).
+    ?assertEqual(ok, kura_query:check_encrypted(Q2)),
+    Plain = kura_query:select(kura_query:from(kura_test_schema), [id]),
+    Q3 = kura_query:with_cte(kura_query:from(?DET), ~"det_users", Plain),
+    ?assertError({kura, {encrypted_field_in_where, ssn}}, kura_query:where(Q3, {ssn, ?P1})).
 
 t_subquery() ->
     Sub = kura_query:select(kura_query:where(kura_query:from(?DET), {ssn, ?P1}), [id]),
@@ -341,7 +347,14 @@ t_shape() ->
     ?assertEqual(list_to_tuple(Frames), Values),
     Plain = #kura_query{from = ?DET, wheres = [{ssn, encrypted_in, [hd(Frames), ?P1]}]},
     {PlainShape, {}} = kura_query_shape:split(Plain),
-    ?assertEqual(Plain, PlainShape).
+    ?assertEqual(Plain, PlainShape),
+    {OneShape, {Frame}} = kura_query_shape:split(Plain#kura_query{
+        wheres = [{ssn, encrypted_in, [hd(Frames)]}]
+    }),
+    ?assertEqual(hd(Frames), Frame),
+    ?assertEqual([{ssn, encrypted_in, [{'$kura_param', 1}]}], OneShape#kura_query.wheres),
+    Improper = Plain#kura_query{wheres = [{ssn, encrypted_in, improper(hd(Frames), hd(Frames))}]},
+    ?assertEqual({Improper, {}}, kura_query_shape:split(Improper)).
 
 %% A query that passed the guard puts its shape in the cache. A hand-built
 %% lookup with plaintext in the same position must not hit that entry.
@@ -366,6 +379,12 @@ t_cache_shared() ->
      || V <- [?P1, ?P2, ~"three"]
     ],
     ?assertEqual(1, kura_query_cache:entry_count()).
+
+t_scope_thresholds() ->
+    Q = kura_query:from(kura_test_vector_schema),
+    Bad = {{distance, embedding, l2, ~"[1.0,2.0,3.0]"}, '<', ~"x"},
+    ?assertError({kura, {invalid_distance_threshold, embedding}}, kura_query:where(Q, Bad)),
+    ?assertError({kura, {invalid_distance_threshold, embedding}}, kura_query:scope_where(Q, Bad)).
 
 t_tenant() ->
     kura_tenant:put_tenant({attribute, {ssn, ?P1}}),

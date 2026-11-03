@@ -52,6 +52,7 @@ det_test_() ->
         {"lookup puts deterministic_active first", fun t_lookup_order/0},
         {"lookup without key_ids uses deterministic_active", fun t_lookup_without_key_ids/0},
         {"lookup is capped at 8 keys", fun t_lookup_cap/0},
+        {"key ids 0 and 255 are looked up", fun t_lookup_key_id_bounds/0},
         {"invalid key ids raise", fun t_invalid_key_ids/0},
         {"an unresolvable key id raises", fun t_unresolvable_key_id/0},
         {"is_deterministic_frame/1", fun t_is_deterministic_frame/0},
@@ -296,7 +297,16 @@ t_lookup_without_key_ids() ->
     ?assertError({kura_crypto, no_deterministic_key}, kura_crypto:lookup([~"x"], ?CTX)),
     application:set_env(kura, keyring, kura_test_det_keyring),
     application:set_env(kura, test_key_ids, []),
-    ?assertMatch([<<2, 1, 1:16, _/binary>>], kura_crypto:lookup([~"x"], ?CTX)).
+    ?assertMatch([<<2, 1, 1:16, _/binary>>], kura_crypto:lookup([~"x"], ?CTX)),
+    application:set_env(kura, keyring, kura_test_det_only_keyring),
+    unload(kura_test_det_only_keyring),
+    ?assertMatch([<<2, 1, 4:16, _/binary>>], kura_crypto:lookup([~"x"], ?CTX)).
+
+unload(Module) ->
+    code:purge(Module),
+    code:delete(Module),
+    code:purge(Module),
+    ?assertEqual(false, code:is_loaded(Module)).
 
 t_lookup_cap() ->
     application:set_env(kura, encryption, #{
@@ -308,6 +318,12 @@ t_lookup_cap() ->
     }),
     ?assertError({kura_crypto, {too_many_lookup_keys, 9}}, kura_crypto:lookup([~"x"], ?CTX)),
     ?assertMatch(<<2, 1, 1:16, _/binary>>, det(~"x")).
+
+t_lookup_key_id_bounds() ->
+    application:set_env(kura, encryption, #{deterministic_active => 255, keys => keys([0, 255])}),
+    ?assertEqual(
+        [255, 0], [Id || <<2, 1, Id:16, _/binary>> <- kura_crypto:lookup([~"x"], ?CTX)]
+    ).
 
 t_invalid_key_ids() ->
     application:set_env(kura, keyring, kura_test_det_keyring),
