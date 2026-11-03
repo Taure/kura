@@ -509,12 +509,12 @@ too_many_dimensions_names_the_limit_test() ->
     ).
 
 %%----------------------------------------------------------------------
-%% kura_dialect_pg:prepare_query/1 dumps where values through the from
+%% kura_dialect_pg:convert_values/1 dumps where values through the from
 %% schema's field types
 %%----------------------------------------------------------------------
 
 dumped(Q) ->
-    (kura_dialect_pg:prepare_query(Q))#kura_query.wheres.
+    (kura_dialect_pg:convert_values(Q))#kura_query.wheres.
 
 where_stores_the_condition_as_given_test() ->
     Q = kura_query:where(kura_query:from(kura_test_schema), {active, '!=', ~"1"}),
@@ -650,25 +650,38 @@ where_keeps_undefined_and_null_in_an_enum_in_list_test() ->
     ),
     ?assertEqual([{status, in, [~"active", undefined, null]}], dumped(Q)).
 
-prepare_query_converts_nested_queries_against_their_own_schema_test() ->
+convert_values_converts_nested_queries_against_their_own_schema_test() ->
     Sub = kura_query:where(kura_query:from(kura_test_schema), {active, ~"1"}),
     Q0 = kura_query:from(kura_test_post_schema),
     Q1 = kura_query:where(Q0, {author_id, in, {subquery, kura_query:select(Sub, [id])}}),
     Q2 = kura_query:where(Q1, {exists, {subquery, Sub}}),
     Q3 = kura_query:with_cte(Q2, ~"c", Sub),
     Q = kura_query:union(Q3, Sub),
-    P = kura_dialect_pg:prepare_query(Q),
+    P = kura_dialect_pg:convert_values(Q),
     [{author_id, in, {subquery, In}}, {exists, {subquery, Exists}}] = P#kura_query.wheres,
     [{~"c", Cte}] = P#kura_query.ctes,
     [{union, Union}] = P#kura_query.combinations,
     [?assertMatch(#kura_query{wheres = [{active, true}]}, N) || N <- [In, Exists, Cte, Union]].
 
-prepare_query_is_idempotent_test() ->
+%% A hand-built query skips where/2, and the cached compile converts before
+%% the encrypted filter guard runs, so the conversion sees the plaintext.
+convert_values_leaves_an_encrypted_field_value_as_given_test() ->
+    Wheres = [
+        {owner_id, ~"1"},
+        {owner_id, in, [~"2"]},
+        {'not', {owner_id, '>', ~"3"}},
+        {owner_id, between, {~"1", ~"2"}},
+        {flag, ~"true"}
+    ],
+    Q = #kura_query{from = kura_test_enc_scalar_schema, wheres = Wheres},
+    ?assertEqual(Wheres, dumped(Q)).
+
+convert_values_is_idempotent_test() ->
     Q = where_all(kura_query:from(kura_test_schema), [
         {active, ~"true"}, {status, active}, {age, in, [~"1", 2]}
     ]),
-    Once = kura_dialect_pg:prepare_query(Q),
-    ?assertEqual(Once, kura_dialect_pg:prepare_query(Once)).
+    Once = kura_dialect_pg:convert_values(Q),
+    ?assertEqual(Once, kura_dialect_pg:convert_values(Once)).
 
 where_binds_an_oversized_number_binary_as_given_test() ->
     Long = binary:copy(~"9", 21),

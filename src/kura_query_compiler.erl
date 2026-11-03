@@ -75,7 +75,7 @@ to_sql(RepoMod, Query) ->
 -spec compile_query(module(), #kura_query{}) -> {iodata(), [term()]}.
 compile_query(RepoMod, Query) ->
     Dialect = dialect(RepoMod),
-    Dialect:to_sql(prepare(Dialect, scope(Query))).
+    Dialect:to_sql(convert(Dialect, scope(Query))).
 
 -doc """
 Cached `to_sql/2`. The cache key includes `RepoMod` so two repos with
@@ -118,7 +118,7 @@ cannot take apart, such as one with an improper condition list, goes through
 """.
 -spec to_sql_cached(module(), #kura_query{}) -> {iodata(), [term()]}.
 to_sql_cached(RepoMod, Query) ->
-    case split(prepare(dialect(RepoMod), Query)) of
+    case split(convert(dialect(RepoMod), Query)) of
         {ok, Shape, Values} -> cached(RepoMod, Query, Shape, Values);
         malformed -> to_sql(RepoMod, Query)
     end.
@@ -176,7 +176,7 @@ to_sql_from(RepoMod, Query, StartCounter) ->
     ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
     Dialect = dialect(RepoMod),
-    Dialect:to_sql_from(prepare(Dialect, scope(Query)), StartCounter).
+    Dialect:to_sql_from(convert(Dialect, scope(Query)), StartCounter).
 
 -spec insert(module(), atom() | module(), [atom()], map()) -> {iodata(), [term()]}.
 insert(RepoMod, SchemaOrTable, Fields, Data) ->
@@ -201,7 +201,7 @@ update_all(RepoMod, Query, SetMap) ->
     ok = kura_query:check_encrypted(Query),
     ok = check_bulk_write(Query),
     Dialect = dialect(RepoMod),
-    Dialect:update_all(prepare(Dialect, scope(Query)), SetMap).
+    Dialect:update_all(convert(Dialect, scope(Query)), SetMap).
 
 -spec delete_all(module(), #kura_query{}) -> {iodata(), [term()]}.
 delete_all(RepoMod, Query) ->
@@ -209,7 +209,7 @@ delete_all(RepoMod, Query) ->
     ok = kura_query:check_encrypted(Query),
     ok = check_bulk_write(Query),
     Dialect = dialect(RepoMod),
-    Dialect:delete_all(prepare(Dialect, scope(Query))).
+    Dialect:delete_all(convert(Dialect, scope(Query))).
 
 -spec insert_all(module(), atom() | module(), [atom()], [map()]) -> {iodata(), [term()]}.
 insert_all(RepoMod, SchemaOrTable, Fields, Rows) ->
@@ -220,21 +220,21 @@ insert_all(RepoMod, SchemaOrTable, Fields, Rows) ->
 insert_all(RepoMod, SchemaOrTable, Fields, Rows, Opts) ->
     (dialect(RepoMod)):insert_all(SchemaOrTable, Fields, Rows, Opts).
 
-%% A dialect's prepare_query/1 is optional (see kura_dialect).
--spec prepare(module(), #kura_query{}) -> #kura_query{}.
-prepare(Dialect, Query) ->
-    case has_prepare(Dialect) of
-        true -> Dialect:prepare_query(Query);
+%% A dialect's convert_values/1 is optional (see kura_dialect).
+-spec convert(module(), #kura_query{}) -> #kura_query{}.
+convert(Dialect, Query) ->
+    case has_convert_values(Dialect) of
+        true -> Dialect:convert_values(Query);
         false -> Query
     end.
 
 %% function_exported/3 is false for a module not yet loaded.
--spec has_prepare(module()) -> boolean().
-has_prepare(Dialect) ->
-    erlang:function_exported(Dialect, prepare_query, 1) orelse
+-spec has_convert_values(module()) -> boolean().
+has_convert_values(Dialect) ->
+    erlang:function_exported(Dialect, convert_values, 1) orelse
         (not erlang:module_loaded(Dialect) andalso
             code:ensure_loaded(Dialect) =:= {module, Dialect} andalso
-            erlang:function_exported(Dialect, prepare_query, 1)).
+            erlang:function_exported(Dialect, convert_values, 1)).
 
 %% A bulk write compiles only the from table, the where conditions and the
 %% prefix, so a clause that narrows or widens the rows a SELECT would read

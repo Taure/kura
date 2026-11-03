@@ -516,8 +516,8 @@ single-column `in` raises `{kura, unrecognised_condition}`.
 
 The condition is stored as given. Whether a value is converted to the
 field's type before it is bound is up to the dialect, when the query is
-compiled: `kura_dialect_pg` does it (see `kura_dialect_pg:prepare_query/1`),
-a dialect without `prepare_query/1` binds every value as given.
+compiled: `kura_dialect_pg` does it (see `kura_dialect_pg:convert_values/1`),
+a dialect without `convert_values/1` binds every value as given.
 """.
 -spec where(#kura_query{}, term()) -> #kura_query{}.
 where(Q = #kura_query{from = From, wheres = W}, Condition) ->

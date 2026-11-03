@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Optional `kura_dialect` callback `convert_values/1`: a dialect converts
+  a query's bound values before it is compiled. `kura_dialect_pg`
+  implements it (see Changed).
 - `kura_changeset:delete_change/2` removes a field from a changeset's
   changes, leaving data and params as they are (as Ecto does), for example
   to drop a virtual password once it is hashed.
@@ -67,7 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on datetimes without an offset other than `Z` or a fraction. An integer
   binary over 20 bytes or a float binary over 64 is not parsed. Every
   other value, `decimal` included, is bound as given. The conversion is
-  the new optional `kura_dialect` callback `prepare_query/1`, implemented
+  the new optional `kura_dialect` callback `convert_values/1`, implemented
   by `kura_dialect_pg`; `kura_query:where/2` stores the condition as
   given, and a dialect without the callback (kura_sqlite) binds every
   value as given, so a boolean filter on SQLite is not turned into the

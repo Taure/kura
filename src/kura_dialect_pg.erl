@@ -17,7 +17,7 @@ configured for the running app.
 -export([
     to_sql/1,
     to_sql_from/2,
-    prepare_query/1,
+    convert_values/1,
     insert/3,
     insert/4,
     update/4,
@@ -117,25 +117,25 @@ The conversion is PostgreSQL's reading of a value, so it lives here and not
 in `kura_query:where/2`: SQLite, for one, would compare a converted boolean
 `true` with an `INTEGER` column as the text `'true'`.
 """.
--spec prepare_query(#kura_query{}) -> #kura_query{}.
-prepare_query(#kura_query{from = From, wheres = Wheres, ctes = Ctes, combinations = Comb} = Q) ->
+-spec convert_values(#kura_query{}) -> #kura_query{}.
+convert_values(#kura_query{from = From, wheres = Wheres, ctes = Ctes, combinations = Comb} = Q) ->
     Q#kura_query{
         wheres = dump_conditions(from_types(From), Wheres),
-        ctes = prepare_named(Ctes),
-        combinations = prepare_named(Comb)
+        ctes = convert_named(Ctes),
+        combinations = convert_named(Comb)
     }.
 
 %% A hand-built query can hold an improper list, which the encrypted filter
 %% guard refuses after this runs; it is left for the guard, since a crash here
 %% would carry the query's values.
-prepare_named(Named) ->
+convert_named(Named) ->
     case is_proper(Named) of
-        true -> [prepare_one(N) || N <- Named];
+        true -> [convert_one(N) || N <- Named];
         false -> Named
     end.
 
-prepare_one({Name, #kura_query{} = Q}) -> {Name, prepare_query(Q)};
-prepare_one(Other) -> Other.
+convert_one({Name, #kura_query{} = Q}) -> {Name, convert_values(Q)};
+convert_one(Other) -> Other.
 
 dump_conditions(Types, Conditions) ->
     case is_proper(Conditions) of
@@ -164,9 +164,9 @@ dump_condition(Types, {'not', Condition}) ->
 dump_condition(_Types, {Exists, {subquery, #kura_query{} = SubQ}}) when
     Exists =:= exists; Exists =:= not_exists
 ->
-    {Exists, {subquery, prepare_query(SubQ)}};
+    {Exists, {subquery, convert_values(SubQ)}};
 dump_condition(_Types, {Field, Op, {subquery, #kura_query{} = SubQ}}) ->
-    {Field, Op, {subquery, prepare_query(SubQ)}};
+    {Field, Op, {subquery, convert_values(SubQ)}};
 dump_condition(Types, Condition) when map_size(Types) =:= 0 ->
     Condition;
 dump_condition(Types, {Field, Op, Values}) when
@@ -192,8 +192,9 @@ dump_condition(Types, {Field, Value}) when is_atom(Field) ->
 dump_condition(_Types, Condition) ->
     Condition.
 
-%% An encrypted field never reaches here with a value: kura_query's
-%% encrypted filter guard has already refused it.
+%% A value can reach here before the encrypted filter guard runs (the cached
+%% path converts first, and a hand-built query skips where/2). An encrypted
+%% field's type is never convertible, so its value is returned untouched.
 dump_value(Types, Field, Value) ->
     case convertible_type(Types, Field) of
         {ok, Type} -> where_value(Type, Value);

@@ -29,7 +29,7 @@ fields, values the type rejects, and fields of joined schemas, CTEs and
 bare table names. Conditions from `having/2` are not converted. An integer
 binary over 20 bytes or a float binary over 64 is bound as given. Other
 dialects bind every value as given (see
-`kura_dialect_pg:prepare_query/1`).
+`kura_dialect_pg:convert_values/1`).
 
 `kura_repo_worker:update_all/3` and `delete_all/2` write the rows the
 `from` table's where conditions match. A query with a join, `order_by`,

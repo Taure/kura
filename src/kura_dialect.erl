@@ -136,17 +136,22 @@ guard: it is what keeps an upsert inside its tenant.
 -callback format_default(term()) -> binary().
 
 -doc """
-Optional. Rewrite a query's bound values before it is compiled.
-`kura_query_compiler` calls it on every query it compiles, before it splits
-the query into a cached shape, so it sees the values rather than their
-markers, and again on the shape once the tenant condition is added, where it
-must leave a marker as it is. It must be idempotent and keep the query's
-structure. `kura_dialect_pg` converts where values to the field's type here.
-A dialect without it binds every value as the caller gave it.
-""".
--callback prepare_query(#kura_query{}) -> #kura_query{}.
+Optional. Convert a query's bound values before it is compiled.
+`kura_query_compiler` calls it on every query it compiles: before it splits
+the query into a cached shape, so it sees the values, and again on the shape
+once the tenant condition is added. Return every value you do not convert
+unchanged; the result must keep the query's shape. It must be idempotent.
+`kura_dialect_pg` converts where values to the field's type here. A dialect
+without it binds every value as the caller gave it.
 
--optional_callbacks([column_type/1, format_default/1, prepare_query/1]).
+It runs before the encrypted filter guard on the cached path, and a query
+built without `kura_query:where/2` never meets that guard's first check, so
+an implementation may see the plaintext value of an encrypted field. It must
+not raise on a value or log one.
+""".
+-callback convert_values(#kura_query{}) -> #kura_query{}.
+
+-optional_callbacks([column_type/1, format_default/1, convert_values/1]).
 
 -doc """
 Which bare fields of a query name a column of its `from` table.

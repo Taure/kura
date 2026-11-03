@@ -678,6 +678,22 @@ sqlite_dialect_leaves_where_values_unconverted_test() ->
         unset_repo()
     end.
 
+cached_compile_refuses_an_encrypted_field_after_converting_test() ->
+    set_repo_dialect(kura_dialect_pg),
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        Q = #kura_query{from = kura_test_enc_scalar_schema, wheres = [{owner_id, ~"1"}]},
+        ?assertError(
+            {kura, {encrypted_field_in_where, owner_id}},
+            kura_query_compiler:to_sql_cached(?REPO, Q)
+        ),
+        ?assertEqual(0, kura_query_cache:entry_count())
+    after
+        kura_query_cache:flush(),
+        unset_repo()
+    end.
+
 pg_dialect_converts_the_attribute_tenant_value_test() ->
     set_repo_dialect(kura_dialect_pg),
     kura_query_cache:init(),
