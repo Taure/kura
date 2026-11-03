@@ -41,6 +41,8 @@ assoc_test_() ->
             %% cast_assoc / put_assoc
             {"cast_assoc has_many inserts children", fun t_cast_assoc_has_many/0},
             {"insert/3 persists cast_assoc children", fun t_insert_opts_cast_assoc/0},
+            {"insert/3 takes a guarded nothing with assocs",
+                fun t_insert_opts_guarded_nothing_with_assocs/0},
             {"insert/3 refuses an updating upsert with associations",
                 fun t_insert_opts_upsert_with_assocs_refused/0},
             {"cast_assoc single child via has_many", fun t_cast_assoc_single_child/0},
@@ -699,6 +701,26 @@ t_insert_opts_cast_assoc() ->
     ?assertMatch([#{body := <<"opts child">>}], maps:get(comments, Post)),
     [Loaded] = kura_test_repo:preload(kura_test_post_schema, [Post], [comments]),
     ?assertMatch([#{body := <<"opts child">>}], maps:get(comments, Loaded)).
+
+t_insert_opts_guarded_nothing_with_assocs() ->
+    {ok, User} = insert_user(<<"CAG_Author">>, <<"cag_author@test.com">>),
+    UserId = maps:get(id, User),
+    CS = kura_changeset:cast(
+        kura_test_post_schema,
+        #{},
+        #{
+            title => <<"CAG Post">>,
+            author_id => UserId,
+            comments => [#{body => <<"guarded child">>, author_id => UserId}]
+        },
+        [title, author_id]
+    ),
+    {ok, Post} = kura_repo_worker:insert(
+        kura_test_repo,
+        kura_changeset:cast_assoc(CS, comments),
+        #{on_conflict => {id, nothing, #{guard => [author_id]}}}
+    ),
+    ?assertMatch([#{body := <<"guarded child">>}], maps:get(comments, Post)).
 
 t_insert_opts_upsert_with_assocs_refused() ->
     {ok, User} = insert_user(<<"CAU_Author">>, <<"cau_author@test.com">>),
