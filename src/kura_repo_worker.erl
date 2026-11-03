@@ -345,8 +345,6 @@ do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod}, Opts0) ->
 
 refuse_upsert_with_assocs(#{on_conflict := {_Target, nothing}}) ->
     ok;
-refuse_upsert_with_assocs(#{on_conflict := {_Target, nothing, _Opts}}) ->
-    ok;
 refuse_upsert_with_assocs(#{on_conflict := _}) ->
     erlang:error({kura, on_conflict_with_assocs});
 refuse_upsert_with_assocs(#{}) ->
