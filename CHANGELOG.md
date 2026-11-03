@@ -141,38 +141,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   afterwards; a repo whose pool kura did not start still reads them on
   each call.
 - **Upgrading:** two repos can no longer share one pool by naming the
-  same `pool` (#201). The second repo's `kura_repo_worker:start/1`
-  returns `{error, {pool_owned_by, Owner}}` (boot logs it and carries
-  on), and its queries raise `{pool_owned_by, Owner}`. That includes a
-  repo kura never started that only names another repo's running pool,
-  such as a migration repo pointed at the application repo's pool. Give
-  each repo its own pool name.
+  same `pool` (#201). That includes a repo kura never started that only
+  names another repo's running pool, such as a migration repo pointed at
+  the application repo's pool. Give each repo its own pool name.
 - A repo whose config names a pool another repo started is refused
   instead of sharing that pool, database and credentials (#201).
   `kura_repo_worker:start/1` returns
   `{error, {pool_owned_by, Owner}}`, boot logs it as a pool that did not
-  start, and the refused repo's queries raise `{pool_owned_by, Owner}`.
-  The check is made before the pool module is called, so it holds for a
-  pool module that answers `{ok, Pid}` for a name already running, as
-  `kura_pool_minato` did. The repo that started a pool can start it
-  again and gets `ok`. A pool already running that kura did not start
-  goes to the first repo that starts it, with a warning naming the repo,
-  the pool and the pool module, since it keeps the connection settings
-  it was started with. Changing a running repo's credentials takes
-  `kura_db:stop_pool/1` and then `kura_repo_worker:start/1`; `start/1`
-  alone returns `ok` and leaves the pool as it is. A pool stays owned by
-  the repo that started it until `kura_db:stop_pool/1` releases it, or
-  until that repo starts on another pool name and the old pool has
-  stopped; a pool stopped outside kura stays owned. A repo whose pool name another repo owns cannot query it either:
-  `kura_db:get_pool/1` raises `{pool_owned_by, Owner}`, which covers a
-  repo kura never started and one stopped with `kura_db:stop_pool/1`
-  whose pool name another repo then started. A repo
-  that starts on another pool name keeps the pool it had
-  until that pool is stopped, which happens right after the new one
-  starts, so no other repo can adopt it while it runs with the first
-  repo's credentials. If that stop raises, the start still returns `ok`,
-  the failure is logged with only the shape of its reason, and the old
-  pool stays owned until `kura_db:stop_pool/1` stops it.
+  start and carries on, and the refused repo's queries raise
+  `{pool_owned_by, Owner}`. The check is made before the pool module is
+  called, so it holds for a pool module that answers `{ok, Pid}` for a
+  name already running, as `kura_pool_minato` did. The repo that started
+  a pool can start it again and gets `ok`. A pool already running that
+  kura did not start goes to the first repo that starts it, with a
+  warning naming the repo, the pool and the pool module, since it keeps
+  the connection settings it was started with. Changing a running repo's
+  credentials takes `kura_db:stop_pool/1` and then
+  `kura_repo_worker:start/1`; `start/1` alone returns `ok` and leaves the
+  pool as it is. A pool stays owned by the repo that started it until
+  `kura_db:stop_pool/1` releases it, or until that repo starts on another
+  pool name and the old pool has stopped; a pool stopped outside kura
+  stays owned. A repo whose pool name another repo owns cannot query it
+  either: `kura_db:get_pool/1` raises `{pool_owned_by, Owner}`, which
+  covers a repo kura never started and one stopped with
+  `kura_db:stop_pool/1` whose pool name another repo then started. A repo
+  that starts on another pool name keeps the pool it had until that pool
+  is stopped, which happens right after the new one starts, so no other
+  repo can adopt it while it runs with the first repo's credentials. Two
+  such starts of one repo at once leave it on one of the two new pools
+  and stop the other. If a stop raises, the start still returns `ok`, the
+  failure is logged with only the shape of its reason, and that pool
+  stays owned. `kura_db:stop_pool/1` stops every pool the repo still
+  owns, one whose stop raised or whose start died before stopping it
+  among them; a pool whose stop raises there is logged the same way and
+  stays owned, and the others are still stopped.
 - The many_to_many join-table SQL, the preload read and the `put_assoc` /
   `cast_assoc` DELETE and INSERT, is compiled by the repo's dialect
   (`to_sql/1`, `delete_all/1`, `insert_all/3`) instead of written by hand
