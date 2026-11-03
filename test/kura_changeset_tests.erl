@@ -157,6 +157,15 @@ validate_length_counts_bytes_on_a_binary_field_test() ->
     CS2 = kura_changeset:validate_length(CS, digest, [{max, 2}]),
     ?assertEqual([{digest, ~"should be at most 2 byte(s)"}], CS2#kura_changeset.errors).
 
+validate_length_counts_bytes_on_an_encrypted_binary_field_test() ->
+    Types = #{secret => {encrypted, binary}},
+    CS = kura_changeset:put_change(
+        kura_changeset:cast(Types, #{}, #{}, []), secret, <<"日本"/utf8, 255>>
+    ),
+    ?assert((kura_changeset:validate_length(CS, secret, [{is, 7}]))#kura_changeset.valid),
+    CS2 = kura_changeset:validate_length(CS, secret, [{max, 2}]),
+    ?assertEqual([{secret, ~"should be at most 2 byte(s)"}], CS2#kura_changeset.errors).
+
 delete_change_removes_only_the_change_test() ->
     Types = #{password => string, password_hash => string, email => string},
     CS = kura_changeset:cast(

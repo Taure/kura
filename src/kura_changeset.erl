@@ -145,9 +145,9 @@ fits the column. `~"日本語"` has length 3 and four emoji have length 4. A
 binary that is not valid UTF-8 gets the error `is not valid UTF-8` instead
 of a length check.
 
-On a field typed `binary` the value is bytes, so it is measured with
-`byte_size/1` and the messages say byte(s). A list is measured by its
-length.
+On a field typed `binary` or `{encrypted, binary}` the value is bytes, so it
+is measured with `byte_size/1` and the messages say byte(s). A list is
+measured by its length.
 """.
 -spec validate_length(#kura_changeset{}, atom(), [{atom(), non_neg_integer()}]) ->
     #kura_changeset{}.
@@ -563,8 +563,12 @@ group_errors([{F, M} | Rest], Acc) ->
 
 binary_length(#kura_changeset{types = Types} = CS, Field, Val, Opts) ->
     case Types of
-        #{Field := binary} -> check_length(CS, Field, byte_size(Val), ~"byte(s)", Opts);
-        #{} -> text_length(CS, Field, Val, Opts)
+        #{Field := binary} ->
+            check_length(CS, Field, byte_size(Val), ~"byte(s)", Opts);
+        #{Field := {encrypted, binary}} ->
+            check_length(CS, Field, byte_size(Val), ~"byte(s)", Opts);
+        #{} ->
+            text_length(CS, Field, Val, Opts)
     end.
 
 text_length(CS, Field, Val, Opts) ->
