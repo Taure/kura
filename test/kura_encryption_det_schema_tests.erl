@@ -184,7 +184,8 @@ seam_test_() ->
         {"to_pg_type is BYTEA", fun t_pg_type/0},
         {"the audit trail redacts deterministic fields", fun t_audit/0},
         {"lookup payloads", fun t_lookup_payload/0},
-        {"lookup_params", fun t_lookup_params/0}
+        {"lookup_params", fun t_lookup_params/0},
+        {"nfc_casefold folds canonically equivalent forms equally", fun t_canonical_equivalence/0}
     ]}.
 
 setup_keys() ->
@@ -362,6 +363,24 @@ t_lookup_payload() ->
     ?assertEqual({ok, ~"42"}, kura_types:lookup_payload(Int, 42)),
     ?assertEqual({ok, ~"42"}, kura_types:lookup_payload(Int, ~"42")),
     ?assertEqual(error, kura_types:lookup_payload(Int, ~"4x2")).
+
+t_canonical_equivalence() ->
+    Precomposed = ~"\x{1FB4}",
+    Decomposed = ~"\x{3B1}\x{345}\x{301}",
+    Type = det(#{normalize => nfc_casefold, context => ?CTX}),
+    {ok, Cast} = kura_types:cast(Type, Precomposed),
+    ?assertEqual({ok, Cast}, kura_types:cast(Type, Decomposed)),
+    ?assertEqual({ok, Cast}, kura_types:cast(Type, Cast)),
+    {ok, Stored} = kura_types:dump(Type, Precomposed),
+    ?assertEqual({ok, Stored}, kura_types:dump(Type, Decomposed)),
+    {ok, #{inner := Inner, mode := Mode, legacy := Legacy, normalize := Normalize}} =
+        kura_types:encryption(Type),
+    Spec = #{
+        inner => Inner, mode => Mode, legacy => Legacy, normalize => Normalize, context => ?CTX
+    },
+    Lookup = kura_encryption:lookup(field, Spec, [Precomposed]),
+    ?assertEqual(Lookup, kura_encryption:lookup(field, Spec, [Decomposed])),
+    ?assert(lists:member(Stored, Lookup)).
 
 t_lookup_params() ->
     [Frame] = kura_encryption:lookup_params(?DET, email, ~"ADA@example.com"),

@@ -17,7 +17,8 @@ encrypted (see `encryption/1`). With `#{mode => deterministic}` equal values
 encrypt equally, so the field can be looked up by equality and carry a
 unique index, but which rows share a value is revealed, and the
 ciphertext bound in a lookup is a stable pseudonym in telemetry and logs.
-Both modes reveal a value's length and whether it is `NULL`, and the value
+Equality is visible across tenants in both tenancy modes, since the context
+is the unprefixed table. Both modes reveal a value's length and whether it is `NULL`, and the value
 stays personal data under the GDPR.
 """.
 
@@ -78,7 +79,8 @@ The options of an `{encrypted, Inner, Opts}` field. Every key is optional:
   applied to a deterministic `string` or `text` value before it is
   encrypted or compared. `casefold` is Unicode full case folding
   (`string:casefold/1`) without the Turkic mappings, so dotless `ı` and `I`
-  stay distinct;
+  stay distinct. `nfc_casefold` decomposes, folds and recomposes, so
+  canonically equivalent forms of a value compare equal;
 - `context` - the `{Table, Column}` the ciphertext is bound to, in place of
   the schema's table and the field's column;
 - `legacy` - `reject` (the default) or `accept`: whether the column reads a
@@ -638,7 +640,9 @@ the column to equal ciphertexts, so `kura_query:where/2` can look it up by
 equality and a unique index on it works. In exchange it reveals which rows
 hold the same value (frequency analysis), and its ciphertext, which
 `where/2` binds as a query parameter and so appears in telemetry and logged
-parameters, is a stable pseudonym of the value. Both modes reveal a value's
+parameters, is a stable pseudonym of the value. Equality is visible across
+tenants in both tenancy modes, since the context is the unprefixed table.
+Both modes reveal a value's
 length and whether it is `NULL`. The value is still personal data under the
 GDPR: pseudonymised, not anonymised. Use it only where an equality lookup or
 uniqueness is needed. A column holds at most 2^32 distinct values per key.
@@ -887,11 +891,18 @@ normalize(_Normalize, _Value) ->
 
 normalized(nfc, Value) -> nfc(Value);
 normalized(casefold, Value) -> casefold(Value);
-normalized(nfc_casefold, Value) -> nfc(casefold(Value)).
+%% Decomposed first, as Unicode's canonical caseless match requires: folding
+%% a precomposed character and its decomposed form can differ.
+normalized(nfc_casefold, Value) -> nfc(casefold(nfd(Value))).
 
 nfc(Value) ->
     case unicode:characters_to_nfc_binary(Value) of
         Nfc when is_binary(Nfc) -> Nfc
+    end.
+
+nfd(Value) ->
+    case unicode:characters_to_nfd_binary(Value) of
+        Nfd when is_binary(Nfd) -> Nfd
     end.
 
 casefold(Value) ->
