@@ -23,7 +23,8 @@ seam_test_() ->
         {"load_row decrypts v1 and v2 frames", fun t_load_row/0},
         {"load_row refuses a frame from another column", fun t_load_row_transplant/0},
         {"load_row of an array field", fun t_load_row_array/0},
-        {"load_row keeps a value its type cannot load", fun t_load_row_unloadable/0},
+        {"load_row keeps an unloadable plain value, raises on an encrypted one",
+            fun t_load_row_unloadable/0},
         {"dump_field threads the context", fun t_dump_field/0},
         {"audit redacts a field loaded from a v2 frame", fun t_audit_redaction/0}
     ]}.
@@ -120,7 +121,13 @@ t_null_and_bad() ->
     ?assertError({kura_crypto, malformed_frame}, kura_types:load(Enc, 42, ?SSN_CTX)),
     ?assertError({kura_crypto, invalid_context}, kura_types:dump(Enc, ~"x", {~"", ~"ssn"})),
     ?assertMatch({error, _}, kura_types:dump({array, Enc}, ~"x", ?SSN_CTX)),
-    ?assertMatch({error, _}, kura_types:load({array, Enc}, 42, ?SSN_CTX)).
+    ?assertError({kura_crypto, malformed_frame}, kura_types:load({array, Enc}, 42, ?SSN_CTX)),
+    ?assertError(
+        {kura_crypto, malformed_frame}, kura_types:load({array, {array, Enc}}, [42], ?SSN_CTX)
+    ),
+    ?assertEqual(
+        {error, ~"cannot load array_integer"}, kura_types:load({array, integer}, 42, ?SSN_CTX)
+    ).
 
 t_arrays() ->
     write_v2(),
@@ -166,7 +173,9 @@ t_load_row_array() ->
 
 t_load_row_unloadable() ->
     ?assertEqual(#{id => ~"x"}, kura_db:load_row(?SCHEMA, #{id => ~"x"})),
-    ?assertEqual(#{tags => 42}, kura_db:load_row(kura_test_enc_array_schema, #{tags => 42})),
+    ?assertError(
+        {kura_crypto, malformed_frame}, kura_db:load_row(kura_test_enc_array_schema, #{tags => 42})
+    ),
     ?assertEqual(#{age => ~"x"}, kura_db:load_row(kura_test_schema, #{age => ~"x"})).
 
 t_dump_field() ->

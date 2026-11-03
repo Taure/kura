@@ -497,7 +497,15 @@ load({vector, _}, V) when is_binary(V) ->
     {ok, parse_vector(V)};
 load({custom, Mod}, V) ->
     Mod:load(V);
+load({array, Inner} = Type, _V) ->
+    case encryption(Inner) of
+        none -> cannot_load(Type);
+        _ -> erlang:error({kura_crypto, malformed_frame})
+    end;
 load(Type, _V) ->
+    cannot_load(Type).
+
+cannot_load(Type) ->
     {error, <<"cannot load ", (format_type(Type))/binary>>}.
 
 -doc """
