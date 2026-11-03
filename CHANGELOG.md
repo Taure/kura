@@ -57,15 +57,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changeset's associations, like `insert/2`. `after_insert/1` runs
   whenever the statement returns a row, including when an upsert updated
   one. A changeset with associations refuses any `on_conflict` action but
-  `nothing`, raising `{kura, on_conflict_with_assocs}`.
-- `kura_query:where/2` converts a value compared to a field of the `from`
-  schema only where it then binds what the database would parse from it:
-  an enum atom binds its binary, and a binary in cast form binds the
-  scalar it spells on `id`, `integer`, `bigint`, `smallint`, `float`,
-  `boolean`, `date` and `time` fields, and on datetimes without an offset
-  other than `Z` or a fraction. Every other value, `decimal` included, is
-  bound as given. On SQLite, `{flag, ~"true"}` on a boolean field used to
-  match no row and now matches the true ones.
+  `nothing` (with or without a guard), raising
+  `{kura, on_conflict_with_assocs}`.
+- On PostgreSQL, a where value compared to a field of the `from` schema
+  is converted when the query is compiled, only where it then binds what
+  the database would parse from it: an enum atom binds its binary, and a
+  binary in cast form binds the scalar it spells on `id`, `integer`,
+  `bigint`, `smallint`, `float`, `boolean`, `date` and `time` fields, and
+  on datetimes without an offset other than `Z` or a fraction. An integer
+  binary over 20 bytes or a float binary over 64 is not parsed. Every
+  other value, `decimal` included, is bound as given. The conversion is
+  the new optional `kura_dialect` callback `prepare_query/1`, implemented
+  by `kura_dialect_pg`; `kura_query:where/2` stores the condition as
+  given, and a dialect without the callback (kura_sqlite) binds every
+  value as given, so a boolean filter on SQLite is not turned into the
+  text `'true'`. The conversion reaches the subqueries, CTEs and combined
+  queries of a query, each against its own `from` schema.
+- `kura_repo_worker:update_all/3` and `delete_all/2` raise
+  `{kura, {unsupported_in_bulk_write, Clause}}` for a query with a join,
+  `order_by`, `group_by`, having, limit, offset, distinct, CTE or
+  combination. The bulk statements compile only the `from` table, the
+  where conditions and the prefix, so these clauses used to be dropped
+  silently: `delete_all` on a joined query deleted every row its where
+  matched in the `from` table, or every row when the where was on the
+  joined table. Filter with a `{id, in, {subquery, Q}}` condition instead.
+- `kura_types:cast/2` (and so `kura_changeset:cast/4`) refuses an
+  out-of-range date or time: an hour over 23 (but `24:00:00`), a minute
+  over 59, a second over 60, a year outside 1..9999 or not four digits,
+  and a day the month does not have. These used to be accepted as given.
 - After a join, the PostgreSQL dialect qualifies a bare field of the
   `from` schema with the `from` table in select, where, having, order_by,
   group_by, distinct and window specs, so a column both tables have is no
@@ -79,7 +98,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Unicode code points, the unit of `VARCHAR(N)`) rather than bytes, so a
   multibyte string counts fewer units than before. A value that is not
   valid UTF-8 gets the error `is not valid UTF-8`. On a field typed
-  `binary` it still counts bytes, and the messages say byte(s).
+  `binary` or `{encrypted, binary}` it still counts bytes, and the
+  messages say byte(s).
 - `cast/4` looks up `table/0` only when the schema declares constraints
   or indexes, so an embedded schema module needs only `fields/0`.
 - Map-form `create_index` honours `name`. It used to be ignored, the
