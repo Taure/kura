@@ -44,7 +44,8 @@ fields() ->
     field_types/1,
     is_schema/1,
     encrypted_fields/1,
-    encryption_contexts/1,
+    encryption_specs/1,
+    field_specs/1,
     column_map/1,
     key/1,
     key_fields/1,
@@ -185,21 +186,31 @@ encrypted_fields(Mod) when is_atom(Mod) ->
     end).
 
 -doc """
-Return the column context (see `kura_crypto`) of each of `Mod`'s encrypted
-fields: `#{Field => {Table, FieldName}}`, with `Table` the schema's
-unprefixed `table()` and `FieldName` the field name as a binary. A v2
-ciphertext is bound to it, so renaming the table or the field makes stored
-v2 values undecryptable; a `column` mapping can change freely. `#{}` if
-`Mod` has no encrypted fields or is not a schema.
+Return how each of `Mod`'s stored encrypted fields is encrypted:
+`#{Field => #{context => {Table, Column}}}`. `context` is the column a v2
+ciphertext is bound to (see `kura_crypto`): `Table` is the schema's
+unprefixed `table()` and `Column` the field's column name (see
+`column_map/1`). Renaming the table or the column makes its stored v2
+values undecryptable. Virtual fields are left out. `#{}` if `Mod` has no
+encrypted fields or is not a schema.
 """.
--spec encryption_contexts(atom()) -> #{atom() => kura_crypto:context()}.
-encryption_contexts(Mod) when is_atom(Mod) ->
-    cache({kura_schema, encryption_contexts, Mod}, fun() ->
+-spec encryption_specs(atom()) -> #{atom() => #{context := kura_crypto:context()}}.
+encryption_specs(Mod) when is_atom(Mod) ->
+    cache({kura_schema, encryption_specs, Mod}, fun() ->
         case encrypted_fields(Mod) of
             [] -> #{};
-            Fields -> #{F => {Mod:table(), atom_to_binary(F)} || F <- Fields}
+            Fields -> encryption_specs(Mod:table(), Fields, column_map(Mod))
         end
     end).
+
+-doc false.
+-spec field_specs(module()) ->
+    {#{atom() => kura_types:kura_type()}, #{atom() => #{context := kura_crypto:context()}}}.
+field_specs(Mod) ->
+    cache({kura_schema, field_specs, Mod}, fun() -> {field_types(Mod), encryption_specs(Mod)} end).
+
+encryption_specs(Table, Fields, Columns) ->
+    #{F => #{context => {Table, Column}} || F <- Fields, #{F := Column} <- [Columns]}.
 
 -doc "Return map of field name to column name (binary), excluding virtual fields.".
 -spec column_map(module()) -> #{atom() => binary()}.

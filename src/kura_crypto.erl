@@ -4,8 +4,8 @@ AES-256-GCM authenticated encryption for kura's at-rest field encryption
 (`{encrypted, InnerType}` fields).
 
 A ciphertext is a self-framed binary. Its first byte is the frame version,
-and decryption dispatches on it, so every release reads every version it
-has ever written.
+and decryption dispatches on it, so by default a release reads every
+version earlier releases wrote.
 
 **v1** (`encrypt/1`, and `encrypt/2` while the write format is `v1`):
 
@@ -15,7 +15,9 @@ has ever written.
 
 Encrypted under the keyring's root key with AAD `<<1, KeyId>>`. It is not
 bound to a column: a v1 ciphertext copied into another encrypted column
-decrypts there.
+decrypts there. Every column accepts v1 frames on read, including a column
+written only in v2, so column binding is complete only once v1 reads are
+refused, which no release does yet.
 
 **v2** (`encrypt/2` while the write format is `v2`):
 
@@ -35,9 +37,10 @@ to its column context `{Table, Column}` in two ways:
 where `Ctx = <<TLen:16, Table/binary, CLen:16, Column/binary>>` (HKDF-SHA256,
 RFC 5869). A v2 ciphertext moved to another column or table, or with its
 mode or key id changed, fails the tag check. Neither the row nor the tenant
-is bound, so a database-level writer can still swap two ciphertexts of the
-same column between rows. No key material is cached: subkeys are derived
-per operation.
+(prefix or attribute) is bound, so a database-level writer can still swap
+two ciphertexts of the same column between rows or tenants, and reorder or
+splice the elements of encrypted arrays within the column. No key material
+is cached: subkeys are derived per operation.
 
 The write format comes from the `kura` application environment,
 `{encryption_write_format, v1 | v2}` (default `v1`). Reading accepts both.
@@ -62,8 +65,12 @@ Writing or reading a v2 frame without a column context raises
 -export([subkey/2]).
 -endif.
 
--doc "The column a v2 ciphertext is bound to: `{Table, Column}`, each 1-65535 bytes.".
--type context() :: {binary(), binary()}.
+-doc """
+The column a v2 ciphertext is bound to: the table name and the column name,
+each 1-65535 bytes. The deterministic mode planned for #137 binds to the
+same shape.
+""".
+-type context() :: {Table :: binary(), Column :: binary()}.
 
 -doc "The frame version new ciphertexts are written in.".
 -type write_format() :: v1 | v2.
@@ -89,11 +96,14 @@ encrypt(Plain) when is_binary(Plain) ->
     case write_format() of
         v1 -> encrypt_v1(Plain);
         v2 -> erlang:error({kura_crypto, no_context})
-    end.
+    end;
+encrypt(_Plain) ->
+    erlang:error({kura_crypto, malformed_plaintext}).
 
 -doc """
 Encrypt a plaintext binary for the column `Context`, in the configured write
-format (`write_format/0`). Raises on failure.
+format (`write_format/0`). Raises on failure. Schema-aware callers reach it
+through `kura_types:dump/3`.
 """.
 -spec encrypt(binary(), context()) -> binary().
 encrypt(Plain, Context) when is_binary(Plain) ->
@@ -101,7 +111,9 @@ encrypt(Plain, Context) when is_binary(Plain) ->
     case write_format() of
         v1 -> encrypt_v1(Plain);
         v2 -> encrypt_v2(Plain, Ctx)
-    end.
+    end;
+encrypt(_Plain, _Context) ->
+    erlang:error({kura_crypto, malformed_plaintext}).
 
 -doc """
 Decrypt a v1 frame. Raises on a bad tag, unknown key or bad frame, and with

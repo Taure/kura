@@ -8,6 +8,9 @@ Supported types: `id`, `integer`, `float`, `string`, `text`, `boolean`,
 - `cast/2` - coerce external input to Erlang terms
 - `dump/2` - convert Erlang terms to values the driver can bind
 - `load/2` - convert driver results back to Erlang terms
+- `dump/3`, `load/3` - the same for a value of a known column
+  `{Table, Column}`, which an encrypted value needs to be written or read
+  as a column-bound v2 frame (see `kura_crypto`)
 """.
 
 -export([

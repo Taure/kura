@@ -9,7 +9,10 @@ forget_test_schemas_before_test() ->
 
 seam_test_() ->
     {foreach, fun setup/0, fun teardown/1, [
-        {"encryption contexts come from table() and the field name", fun t_contexts/0},
+        {"encryption specs come from table() and the field name", fun t_specs/0},
+        {"encryption specs bind the column name", fun t_specs_use_the_column_name/0},
+        {"a v1 frame from another column still loads after the flip",
+            fun t_load_row_v1_downgrade/0},
         {"dump/3 writes v1 by default", fun t_dump3_default_v1/0},
         {"dump/3 writes v2 when configured", fun t_dump3_v2/0},
         {"dump/2 raises no_context when writing v2", fun t_dump2_no_context/0},
@@ -45,14 +48,34 @@ v2(Plain, Ctx) ->
     {ok, Frame} = kura_types:dump({encrypted, string}, Plain, Ctx),
     Frame.
 
-t_contexts() ->
-    ?assertEqual(#{ssn => ?SSN_CTX}, kura_schema:encryption_contexts(?SCHEMA)),
+t_specs() ->
+    ?assertEqual(#{ssn => #{context => ?SSN_CTX}}, kura_schema:encryption_specs(?SCHEMA)),
     ?assertEqual(
-        #{tags => {~"enc_array", ~"tags"}},
-        kura_schema:encryption_contexts(kura_test_enc_array_schema)
+        #{tags => #{context => {~"enc_array", ~"tags"}}},
+        kura_schema:encryption_specs(kura_test_enc_array_schema)
     ),
-    ?assertEqual(#{}, kura_schema:encryption_contexts(kura_test_schema)),
-    ?assertEqual(#{}, kura_schema:encryption_contexts(kura_no_such_schema_module)).
+    ?assertEqual(#{}, kura_schema:encryption_specs(kura_test_schema)),
+    ?assertEqual(#{}, kura_schema:encryption_specs(kura_no_such_schema_module)).
+
+t_specs_use_the_column_name() ->
+    Ctx = {~"enc_column", ~"ssn_ciphertext"},
+    ?assertEqual(
+        #{ssn => #{context => Ctx}}, kura_schema:encryption_specs(kura_test_enc_column_schema)
+    ),
+    Frame = v2(~"x", Ctx),
+    ?assertEqual(
+        #{ssn => ~"x"}, kura_db:load_row(kura_test_enc_column_schema, #{ssn => Frame})
+    ),
+    ?assertError(
+        {kura_crypto, {bad_tag, 1}},
+        kura_db:load_row(kura_test_enc_column_schema, #{ssn => v2(~"x", {~"enc_column", ~"ssn"})})
+    ).
+
+t_load_row_v1_downgrade() ->
+    {ok, V1} = kura_types:dump({encrypted, string}, ~"from nickname", {~"secrets", ~"nickname"}),
+    ?assertMatch(<<1, 1, _/binary>>, V1),
+    write_v2(),
+    ?assertEqual(#{ssn => ~"from nickname"}, kura_db:load_row(?SCHEMA, #{ssn => V1})).
 
 t_dump3_default_v1() ->
     {ok, Frame} = kura_types:dump({encrypted, string}, ~"x", ?SSN_CTX),
@@ -163,5 +186,8 @@ t_audit_redaction() ->
     ?assertEqual(#{old => ~"[encrypted]", new => ~"[encrypted]"}, maps:get(ssn, Changes)).
 
 forget_test_schemas() ->
-    [kura_schema:forget(M) || M <- [?SCHEMA, kura_test_enc_array_schema, kura_test_schema]],
+    [
+        kura_schema:forget(M)
+     || M <- [?SCHEMA, kura_test_enc_array_schema, kura_test_schema, kura_test_enc_column_schema]
+    ],
     ok.

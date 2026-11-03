@@ -8,6 +8,7 @@
 %% kura_crypto moduledoc: root key 1 is the bytes 1..32.
 -define(SSN_SUBKEY, ~"38d15dc8071980bbbc667608ba83e12c3944cf4606b90d9cbd4c224b0172e6aa").
 -define(NICKNAME_SUBKEY, ~"315b162e5c2e8070b73d7387d6a743f78ebb8980f159ecdc0545015bf7607be6").
+-define(LONG_COLUMN_SUBKEY, ~"d8686599f5621c48cfb6cda888b54cb8ab738eab781569f092af1834fcf985c3").
 %% Key id 1, IV the bytes 16#a0..16#ab, plaintext "123-45-6789", context ?CTX.
 -define(PINNED_FRAME,
     ~"02000001a0a1a2a3a4a5a6a7a8a9aaab6d60a388e8bee23d2e36218f7a4b7c5154ffc23d867aee8524a206"
@@ -25,6 +26,7 @@ v2_test_() ->
         {"v2 IVs are fresh", fun t_fresh_iv/0},
         {"v2 frame without a context raises", fun t_no_context_decrypt/0},
         {"writing v2 without a context raises", fun t_no_context_encrypt/0},
+        {"a non-binary plaintext raises malformed_plaintext", fun t_non_binary_plaintext/0},
         {"an invalid write format raises", fun t_invalid_write_format/0},
         {"an invalid context raises", fun t_invalid_context/0},
         {"the context is length-prefixed", fun t_unambiguous_context/0},
@@ -62,7 +64,11 @@ write_v2() ->
 
 t_subkeys() ->
     ?assertEqual(hex(?SSN_SUBKEY), kura_crypto:subkey(root_key(1), ?CTX)),
-    ?assertEqual(hex(?NICKNAME_SUBKEY), kura_crypto:subkey(root_key(1), {~"secrets", ~"nickname"})).
+    ?assertEqual(hex(?NICKNAME_SUBKEY), kura_crypto:subkey(root_key(1), {~"secrets", ~"nickname"})),
+    ?assertEqual(
+        hex(?LONG_COLUMN_SUBKEY),
+        kura_crypto:subkey(root_key(1), {~"secrets", binary:copy(~"c", 300)})
+    ).
 
 t_pinned_frame() ->
     ?assertEqual(~"123-45-6789", kura_crypto:decrypt(hex(?PINNED_FRAME), ?CTX)).
@@ -126,6 +132,18 @@ t_no_context_decrypt() ->
 t_no_context_encrypt() ->
     write_v2(),
     ?assertError({kura_crypto, no_context}, kura_crypto:encrypt(~"x")).
+
+t_non_binary_plaintext() ->
+    Secret = ill_typed("do-not-leak"),
+    [
+        assert_clean(Call, [~"do-not-leak"])
+     || Call <- [
+            fun() -> kura_crypto:encrypt(Secret) end, fun() -> kura_crypto:encrypt(Secret, ?CTX) end
+        ]
+    ],
+    ?assertError({kura_crypto, malformed_plaintext}, kura_crypto:encrypt(Secret)),
+    write_v2(),
+    ?assertError({kura_crypto, malformed_plaintext}, kura_crypto:encrypt(Secret, ?CTX)).
 
 t_invalid_write_format() ->
     application:set_env(kura, encryption_write_format, v3),

@@ -888,7 +888,7 @@ delete_record(RepoMod, SchemaMod, Data) ->
     {ok, map()} | {error, {dump_failed, atom(), binary()}}.
 dump_set_map(From, Updates) when is_atom(From), From =/= undefined ->
     case is_schema_module(From) of
-        true -> dump_set_fields(maps:to_list(Updates), field_dump_specs(From), #{});
+        true -> dump_set_fields(maps:to_list(Updates), kura_schema:field_specs(From), #{});
         false -> {ok, Updates}
     end;
 dump_set_map(_From, Updates) ->
@@ -896,10 +896,10 @@ dump_set_map(_From, Updates) ->
 
 dump_set_fields([], _Specs, Acc) ->
     {ok, Acc};
-dump_set_fields([{K, V} | Rest], {Types, Contexts} = Specs, Acc) ->
+dump_set_fields([{K, V} | Rest], {Types, Encryption} = Specs, Acc) ->
     case Types of
         #{K := Type} ->
-            case dump_field(Type, V, field_context(K, Contexts)) of
+            case dump_field(Type, V, field_context(K, Encryption)) of
                 {ok, Dumped} -> dump_set_fields(Rest, Specs, Acc#{K => Dumped});
                 {error, Msg} -> {error, {dump_failed, K, Msg}}
             end;
@@ -907,13 +907,11 @@ dump_set_fields([{K, V} | Rest], {Types, Contexts} = Specs, Acc) ->
             dump_set_fields(Rest, Specs, Acc#{K => V})
     end.
 
-field_dump_specs(SchemaMod) ->
-    {kura_schema:field_types(SchemaMod), kura_schema:encryption_contexts(SchemaMod)}.
-
-%% An encrypted field is dumped with its column context, so it can be written
-%% as a column-bound v2 frame; every other field needs none.
-field_context(K, Contexts) ->
-    maps:get(K, Contexts, no_context).
+field_context(K, EncryptionSpecs) ->
+    case EncryptionSpecs of
+        #{K := #{context := Context}} -> Context;
+        #{} -> no_context
+    end.
 
 %% The bulk paths take raw maps rather than cast changesets, so a caller
 %% reasonably passes a value in the form `cast/2` accepts - `~"admin"` for an
@@ -976,16 +974,16 @@ dump_entries(SchemaMod, NonVirtual, [Entry | Rest], Acc) ->
 -spec dump_changes(module(), map()) -> {ok, map()} | {error, {atom(), binary()}}.
 dump_changes(SchemaMod, Changes) ->
     NonVirtual = kura_schema:non_virtual_fields(SchemaMod),
-    dump_change_fields(maps:to_list(Changes), field_dump_specs(SchemaMod), NonVirtual, #{}).
+    dump_change_fields(maps:to_list(Changes), kura_schema:field_specs(SchemaMod), NonVirtual, #{}).
 
 dump_change_fields([], _Specs, _NonVirtual, Acc) ->
     {ok, Acc};
-dump_change_fields([{K, V} | Rest], {Types, Contexts} = Specs, NonVirtual, Acc) ->
+dump_change_fields([{K, V} | Rest], {Types, Encryption} = Specs, NonVirtual, Acc) ->
     case {lists:member(K, NonVirtual), Types} of
         {false, _} ->
             dump_change_fields(Rest, Specs, NonVirtual, Acc);
         {true, #{K := Type}} ->
-            case dump_field(Type, V, field_context(K, Contexts)) of
+            case dump_field(Type, V, field_context(K, Encryption)) of
                 {ok, Dumped} -> dump_change_fields(Rest, Specs, NonVirtual, Acc#{K => Dumped});
                 {error, Msg} -> {error, {K, Msg}}
             end;
