@@ -338,6 +338,9 @@ the schema is first read (an unknown key or a bad value raises
 | `context` | `{Table, Column}`, binaries | the schema's `table()` and the column name |
 | `legacy` | `accept`, `reject` | `reject` |
 
+`casefold` is Unicode full case folding (`string:casefold/1`) without the
+Turkic mappings, so dotless `ı` and `I` fold to different values.
+
 The options form is always written as a v2 frame, whatever
 `encryption_write_format` says. With `legacy => reject` a column refuses a
 v1 frame (`{kura_crypto, {refused_version, 1}}`) and a v2 frame of the

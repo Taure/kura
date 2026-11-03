@@ -76,7 +76,9 @@ The options of an `{encrypted, Inner, Opts}` field. Every key is optional:
 - `mode` - `randomized` (the default) or `deterministic`;
 - `normalize` - `none` (the default), `casefold`, `nfc` or `nfc_casefold`,
   applied to a deterministic `string` or `text` value before it is
-  encrypted or compared;
+  encrypted or compared. `casefold` is Unicode full case folding
+  (`string:casefold/1`) without the Turkic mappings, so dotless `ı` and `I`
+  stay distinct;
 - `context` - the `{Table, Column}` the ciphertext is bound to, in place of
   the schema's table and the field's column;
 - `legacy` - `reject` (the default) or `accept`: whether the column reads a
