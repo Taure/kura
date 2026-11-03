@@ -638,10 +638,31 @@ compiler_check_skips_value_positions_test() ->
     D = kura_query:distance(embedding, l2, [1, 2, 3]),
     Q = #kura_query{
         from = ?VEC_SCHEMA,
-        wheres = [{id, in, [D]}, {[id, content], in, [{1, D}]}, {content, D}],
+        wheres = [{id, in, [D]}, {[id, content], in, [{1, D}]}],
         havings = [{id, between, {D, D}}]
     },
     ?assertEqual(ok, kura_query:check_distances(Q)).
+
+compiler_check_refuses_a_distance_bound_as_the_value_test_() ->
+    D = kura_query:distance(embedding, l2, [1, 2, 3]),
+    Plain = #kura_query{from = ?VEC_SCHEMA},
+    Ordered = Plain#kura_query{order_bys = [{id, asc}]},
+    Where = {kura, {distance_not_supported_here, where}},
+    Having = {kura, {distance_not_supported_here, having}},
+    [
+        ?_assertError(
+            Where, kura_query:check_distances(Plain#kura_query{wheres = [{content, '=', D}]})
+        ),
+        ?_assertError(Where, kura_query:check_distances(Plain#kura_query{wheres = [{content, D}]})),
+        ?_assertError(
+            Where, kura_query:check_distances(Ordered#kura_query{wheres = [{'not', {id, '>', D}}]})
+        ),
+        ?_assertError(
+            Having,
+            kura_query:check_distances(Plain#kura_query{havings = [{'or', [{id, 1}, {id, '<', D}]}]})
+        ),
+        ?_assertError(Having, kura_query:check_distances(Ordered#kura_query{havings = [{id, D}]}))
+    ].
 
 compiler_check_walks_thresholds_on_both_paths_test_() ->
     D = kura_query:distance(embedding, l2, [1, 2, 3]),

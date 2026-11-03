@@ -223,9 +223,10 @@ vector_text(Floats) ->
 %% nodes of select expressions (windows included), order_bys and the
 %% thresholds of wheres and havings, in the query and in its CTEs,
 %% combinations and condition subqueries, as the builders do. It walks
-%% structure only, never bound values, so a distance in a value position
-%% or in a hand-built group_by, distinct, plain select or join is not
-%% inspected: where/2 and having/2 refuse those.
+%% structure only, never into bound values: a distance that is itself a
+%% condition's value is refused, but one inside a list, a range or a
+%% hand-built group_by, distinct, plain select or join is not inspected.
+%% where/2 and having/2 refuse those.
 -doc false.
 -spec check_distances(#kura_query{}) -> ok.
 check_distances(#kura_query{
@@ -239,7 +240,7 @@ check_distances(#kura_query{
 }) when
     is_list(Select)
 ->
-    case query_thresholds(Wheres) ++ query_thresholds(Havings) of
+    case query_thresholds(where, Wheres) ++ query_thresholds(having, Havings) of
         [] -> ok;
         Thresholds -> check_thresholds(From, Thresholds)
     end;
@@ -252,7 +253,7 @@ check_distances(#kura_query{
     ctes = Ctes,
     combinations = Combinations
 }) ->
-    Thresholds = query_thresholds(Wheres) ++ query_thresholds(Havings),
+    Thresholds = query_thresholds(where, Wheres) ++ query_thresholds(having, Havings),
     check_distances(
         From,
         select_distances(Select) ++ [D || {D, _} <- Thresholds] ++ order_distances(Orders)
@@ -415,23 +416,31 @@ cond_thresholds(Clause, Cond) ->
 
 %% The compiler's walk: thresholds and subqueries, and nothing in a bound
 %% position, so its cost does not grow with the values.
-query_thresholds([Cond | Rest]) ->
-    query_thresholds(Cond) ++ query_thresholds(Rest);
-query_thresholds({Op, Conds}) when (Op =:= 'and' orelse Op =:= 'or'), is_list(Conds) ->
-    query_thresholds(Conds);
-query_thresholds({'not', Cond}) ->
-    query_thresholds(Cond);
-query_thresholds({{distance, _, _, _} = D, Op, Threshold}) when ?KURA_IS_THRESHOLD_OP(Op) ->
+query_thresholds(Clause, [Cond | Rest]) ->
+    query_thresholds(Clause, Cond) ++ query_thresholds(Clause, Rest);
+query_thresholds(Clause, {Op, Conds}) when (Op =:= 'and' orelse Op =:= 'or'), is_list(Conds) ->
+    query_thresholds(Clause, Conds);
+query_thresholds(Clause, {'not', Cond}) ->
+    query_thresholds(Clause, Cond);
+query_thresholds(_Clause, {{distance, _, _, _} = D, Op, Threshold}) when
+    ?KURA_IS_THRESHOLD_OP(Op)
+->
     [{D, Threshold}];
-query_thresholds({Exists, {subquery, #kura_query{} = Sub}}) when
+query_thresholds(_Clause, {Exists, {subquery, #kura_query{} = Sub}}) when
     Exists =:= exists; Exists =:= not_exists
 ->
     check_distances(Sub),
     [];
-query_thresholds({_Field, in, {subquery, #kura_query{} = Sub}}) ->
+query_thresholds(_Clause, {_Field, in, {subquery, #kura_query{} = Sub}}) ->
     check_distances(Sub),
     [];
-query_thresholds(_Cond) ->
+%% A distance bound as a value would reach the driver, which would put the
+%% vector in its crash reason.
+query_thresholds(Clause, {_Field, _Op, {distance, _, _, _}}) ->
+    erlang:error({kura, {distance_not_supported_here, Clause}});
+query_thresholds(Clause, {_Field, {distance, _, _, _}}) ->
+    erlang:error({kura, {distance_not_supported_here, Clause}});
+query_thresholds(_Clause, _Cond) ->
     [].
 
 %% The distances first, so a malformed node raises the distance's reason

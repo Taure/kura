@@ -20,9 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vector and the threshold with markers. The compiler's distance check
   now covers the thresholds of a hand-built where or having, and the
   subqueries of `in`, `exists` and `not_exists` conditions; it walks
-  structure only, never bound values. A distance in any other condition
-  still raises `{kura, {distance_not_supported_here, Clause}}` from
-  `where/2` and `having/2`.
+  structure only, never into bound values, and refuses a distance that
+  is itself a condition's value with
+  `{kura, {distance_not_supported_here, Clause}}`. A distance in any other
+  condition still raises that from `where/2` and `having/2`.
 
 ### Changed
 

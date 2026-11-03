@@ -260,6 +260,8 @@ threshold can leave fewer rows than the `limit`, or none. With
 continues until it has `limit` rows or has visited `hnsw.max_scan_tuples`
 tuples (20,000 by default); it does not stop when the distances pass the
 threshold, so a threshold that few rows meet costs the full scan budget.
+For IVFFlat with `ivfflat.iterative_scan` on, the limit is
+`ivfflat.max_probes`, the most lists the scan probes.
 pgvector's recommended form for a distance filter is a materialized CTE
 that orders by distance with a `limit`, with the threshold applied
 outside it. The query builder cannot express that yet.
