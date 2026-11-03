@@ -143,7 +143,9 @@ reject_window_spec_distances(_Spec) ->
 
 -doc """
 Build a pgvector distance between the vector field `Field` and `Vector`,
-for use in `order_by/2` and `select_expr/2`.
+for use in `order_by/2`, `select_expr/2`, and as a threshold
+`{Distance, Op, Number}` in `where/2` and `having/2`, where `Op` is
+`'<'`, `'<='`, `'>'` or `'>='`.
 
 `Metric` is `l2`, `cosine` or `inner_product`. For every metric a smaller
 value is nearer: `inner_product` is the negative inner product, as
@@ -156,17 +158,20 @@ holds anything but numbers raises.
 
 The query must be `from/1` a schema in which `Field` is a `vector` or
 `{vector, N}` field, and for `{vector, N}` the vector must have `N`
-elements. `order_by/2` and `select_expr/2` raise otherwise.
+elements. `order_by/2`, `select_expr/2`, `where/2` and `having/2` raise
+otherwise. A threshold that is not a number raises `{kura,
+{invalid_distance_threshold, Field}}`.
 
-A distance anywhere else, in `where/2`, `having/2`, `group_by/2`,
-`distinct/2`, `select/2` (and the aggregate helpers), `count/2`, a `join`
-column or a window from `over/2`, raises `{kura,
-{distance_not_supported_here, Clause}}`.
+A distance anywhere else, in any other condition of `where/2` or
+`having/2`, `group_by/2`, `distinct/2`, `select/2` (and the aggregate
+helpers), `count/2`, a `join` column or a window from `over/2`, raises
+`{kura, {distance_not_supported_here, Clause}}`.
 
 ```erlang
 D = kura_query:distance(embedding, cosine, QueryVector),
 Q = kura_query:select_expr(kura_query:from(memory), [{id, id}, {dist, D}]),
-Q1 = kura_query:limit(kura_query:order_by(Q, [{dist, asc}]), 10).
+Q1 = kura_query:where(Q, {D, '<', 0.35}),
+Q2 = kura_query:limit(kura_query:order_by(Q1, [{dist, asc}]), 10).
 ```
 
 Ordering by the alias of a selected distance sends the vector once and
@@ -215,20 +220,45 @@ vector_text(Floats) ->
     end.
 
 %% Called by kura_query_compiler before it compiles. Checks the distance
-%% nodes of select expressions (windows included) and order_bys, in the
-%% query and in its CTEs and combinations, as order_by/2 and select_expr/2
-%% do. A hand-built where, having, group_by, distinct, plain select or join
-%% is not inspected.
+%% nodes of select expressions (windows included), order_bys and the
+%% thresholds of wheres and havings, in the query and in its CTEs,
+%% combinations and condition subqueries, as the builders do. It walks
+%% structure only, never into bound values: a distance that is itself a
+%% condition's value is refused, but one inside a list, a range or a
+%% hand-built group_by, distinct, plain select or join is not inspected.
+%% where/2 and having/2 refuse those.
 -doc false.
 -spec check_distances(#kura_query{}) -> ok.
-check_distances(#kura_query{select = Select, order_bys = [], ctes = [], combinations = []}) when
+check_distances(#kura_query{
+    from = From,
+    select = Select,
+    wheres = Wheres,
+    havings = Havings,
+    order_bys = [],
+    ctes = [],
+    combinations = []
+}) when
     is_list(Select)
 ->
-    ok;
+    case query_thresholds(where, Wheres) ++ query_thresholds(having, Havings) of
+        [] -> ok;
+        Thresholds -> check_thresholds(From, Thresholds)
+    end;
 check_distances(#kura_query{
-    from = From, select = Select, order_bys = Orders, ctes = Ctes, combinations = Combinations
+    from = From,
+    select = Select,
+    wheres = Wheres,
+    havings = Havings,
+    order_bys = Orders,
+    ctes = Ctes,
+    combinations = Combinations
 }) ->
-    check_distances(From, select_distances(Select) ++ order_distances(Orders)),
+    Thresholds = query_thresholds(where, Wheres) ++ query_thresholds(having, Havings),
+    check_distances(
+        From,
+        select_distances(Select) ++ [D || {D, _} <- Thresholds] ++ order_distances(Orders)
+    ),
+    check_threshold_values(Thresholds),
     check_bodies(Ctes),
     check_bodies(Combinations).
 
@@ -346,24 +376,85 @@ reject_join_distances({Left, Right}) ->
 reject_join_distances(On) ->
     reject_distance(join, On).
 
-%% A distance in a condition would be bound as a parameter wherever it
-%% sits: as the field, the value, an element of a list value or of a row,
-%% or an end of a `between`.
-reject_distance_cond(Clause, {Op, Conds}) when (Op =:= 'and' orelse Op =:= 'or'), is_list(Conds) ->
-    reject_distance_conds(Clause, Conds);
-reject_distance_cond(Clause, {'not', Cond}) ->
-    reject_distance_cond(Clause, Cond);
-reject_distance_cond(_Clause, {fragment, _SQL, _Params}) ->
-    ok;
-reject_distance_cond(Clause, {Field, Value}) ->
+%% A distance anywhere but a threshold would be bound as a parameter
+%% wherever it sits, so where/2 and having/2 refuse it.
+cond_thresholds(Clause, [Cond | Rest]) ->
+    cond_thresholds(Clause, Cond) ++ cond_thresholds(Clause, Rest);
+cond_thresholds(_Clause, []) ->
+    [];
+cond_thresholds(Clause, {Op, Conds}) when (Op =:= 'and' orelse Op =:= 'or'), is_list(Conds) ->
+    cond_thresholds(Clause, Conds);
+cond_thresholds(Clause, {'not', Cond}) ->
+    cond_thresholds(Clause, Cond);
+cond_thresholds(_Clause, {fragment, _SQL, _Params}) ->
+    [];
+cond_thresholds(_Clause, {{distance, _, _, _} = D, Op, Threshold}) when
+    ?KURA_IS_THRESHOLD_OP(Op)
+->
+    [{D, Threshold}];
+cond_thresholds(_Clause, {Exists, {subquery, #kura_query{} = Sub}}) when
+    Exists =:= exists; Exists =:= not_exists
+->
+    check_distances(Sub),
+    [];
+cond_thresholds(Clause, {Field, in, {subquery, #kura_query{} = Sub}}) ->
     reject_distance_field(Clause, Field),
-    reject_distance_value(Clause, '=', Value);
-reject_distance_cond(Clause, {Field, Op, Value}) ->
+    check_distances(Sub),
+    [];
+cond_thresholds(Clause, {Field, Value}) ->
+    reject_distance_field(Clause, Field),
+    reject_distance_value(Clause, '=', Value),
+    [];
+cond_thresholds(Clause, {Field, Op, Value}) ->
     reject_distance_field(Clause, Field),
     reject_distance(Clause, Op),
-    reject_distance_value(Clause, Op, Value);
-reject_distance_cond(Clause, Cond) ->
-    reject_distance(Clause, Cond).
+    reject_distance_value(Clause, Op, Value),
+    [];
+cond_thresholds(Clause, Cond) ->
+    reject_distance(Clause, Cond),
+    [].
+
+%% The compiler's walk: thresholds and subqueries, and nothing in a bound
+%% position, so its cost does not grow with the values.
+query_thresholds(Clause, [Cond | Rest]) ->
+    query_thresholds(Clause, Cond) ++ query_thresholds(Clause, Rest);
+query_thresholds(Clause, {Op, Conds}) when (Op =:= 'and' orelse Op =:= 'or'), is_list(Conds) ->
+    query_thresholds(Clause, Conds);
+query_thresholds(Clause, {'not', Cond}) ->
+    query_thresholds(Clause, Cond);
+query_thresholds(_Clause, {{distance, _, _, _} = D, Op, Threshold}) when
+    ?KURA_IS_THRESHOLD_OP(Op)
+->
+    [{D, Threshold}];
+query_thresholds(_Clause, {Exists, {subquery, #kura_query{} = Sub}}) when
+    Exists =:= exists; Exists =:= not_exists
+->
+    check_distances(Sub),
+    [];
+query_thresholds(_Clause, {_Field, in, {subquery, #kura_query{} = Sub}}) ->
+    check_distances(Sub),
+    [];
+%% A distance bound as a value would reach the driver, which would put the
+%% vector in its crash reason.
+query_thresholds(Clause, {_Field, _Op, {distance, _, _, _}}) ->
+    erlang:error({kura, {distance_not_supported_here, Clause}});
+query_thresholds(Clause, {_Field, {distance, _, _, _}}) ->
+    erlang:error({kura, {distance_not_supported_here, Clause}});
+query_thresholds(_Clause, _Cond) ->
+    [].
+
+%% The distances first, so a malformed node raises the distance's reason
+%% and a threshold reason always names an atom field.
+check_thresholds(From, Thresholds) ->
+    check_distances(From, [D || {D, _} <- Thresholds]),
+    check_threshold_values(Thresholds).
+
+check_threshold_values([]) ->
+    ok;
+check_threshold_values([{_D, Threshold} | Rest]) when is_number(Threshold) ->
+    check_threshold_values(Rest);
+check_threshold_values([{{distance, Field, _Metric, _Vector}, _Threshold} | _]) ->
+    erlang:error({kura, {invalid_distance_threshold, Field}}).
 
 reject_distance_field(Clause, Fields) when is_list(Fields) ->
     reject_distances(Clause, Fields);
@@ -393,17 +484,14 @@ reject_distance_values(Clause, [Value | Rest]) ->
 reject_distance_values(_Clause, _Improper) ->
     erlang:error({kura, unrecognised_condition}).
 
-%% An improper tail is checked as one more condition rather than crashing,
-%% so the encrypted guard that runs next reports it without the values.
-reject_distance_conds(Clause, [Cond | Rest]) ->
-    reject_distance_cond(Clause, Cond),
-    reject_distance_conds(Clause, Rest);
-reject_distance_conds(Clause, Tail) ->
-    reject_distance_cond(Clause, Tail).
-
 -doc """
 Add a WHERE condition. Conditions: `{field, value}`, `{field, op, value}`,
 `{'and', [...]}`, etc.
+
+`{Distance, Op, Threshold}` keeps the rows whose vector distance from
+`distance/3` compares to the number `Threshold` by `'<'`, `'<='`, `'>'`
+or `'>='`. The distance is checked against the schema as in
+`order_by/2`, and its column by the encrypted-field guard below.
 
 A condition that compares an encrypted field (see
 `kura_types:encryption/1`) to a value raises
@@ -423,8 +511,8 @@ not checked. A `{subquery, Q}` anywhere but `exists`, `not_exists` or a
 single-column `in` raises `{kura, unrecognised_condition}`.
 """.
 -spec where(#kura_query{}, term()) -> #kura_query{}.
-where(Q = #kura_query{wheres = W}, Condition) ->
-    reject_distance_cond(where, Condition),
+where(Q = #kura_query{from = From, wheres = W}, Condition) ->
+    check_thresholds(From, cond_thresholds(where, Condition)),
     refuse_each([Condition], guard_scope(Q, [], []), encrypted_field_in_where),
     Q#kura_query{wheres = W ++ [Condition]}.
 
@@ -557,6 +645,10 @@ refuse_encrypted_cond({Field, Op}, _Scope, _Reason) when
     is_atom(Field), ?KURA_IS_UNARY_OP(Op)
 ->
     ok;
+refuse_encrypted_cond({{distance, Field, _Metric, _Vector}, Op, _Threshold}, Scope, Reason) when
+    is_atom(Field), ?KURA_IS_THRESHOLD_OP(Op)
+->
+    refuse_field(Field, Scope, Reason);
 refuse_encrypted_cond({Field, Value}, Scope, Reason) when is_atom(Field) ->
     refuse_field(Field, Scope, Reason),
     refuse_subquery_value(Value);
@@ -813,8 +905,8 @@ compares an encrypted field to a value raises
 `{kura, {encrypted_field_in_having, Field}}`, as `where/2` does.
 """.
 -spec having(#kura_query{}, term()) -> #kura_query{}.
-having(Q = #kura_query{havings = H}, Condition) ->
-    reject_distance_cond(having, Condition),
+having(Q = #kura_query{from = From, havings = H}, Condition) ->
+    check_thresholds(From, cond_thresholds(having, Condition)),
     refuse_each([Condition], guard_scope(Q, [], []), encrypted_field_in_having),
     Q#kura_query{havings = H ++ [Condition]}.
 
