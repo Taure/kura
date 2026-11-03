@@ -254,10 +254,15 @@ the threshold share one compiled entry.
 
 A threshold alone does not use an HNSW or IVFFlat index: the index serves
 an `ORDER BY` distance with a `limit`. With both, the index returns the
-nearest rows and the threshold filters them afterwards, so a tight
-threshold can leave fewer rows than the `limit`. Turn on
-`hnsw.iterative_scan` (see search-time settings below) so the scan keeps
-going until it has `limit` rows or runs out of rows within the threshold.
+nearest candidates and the threshold filters them afterwards, so a tight
+threshold can leave fewer rows than the `limit`, or none. With
+`hnsw.iterative_scan` on (see search-time settings below) the scan
+continues until it has `limit` rows or has visited `hnsw.max_scan_tuples`
+tuples (20,000 by default); it does not stop when the distances pass the
+threshold, so a threshold that few rows meet costs the full scan budget.
+pgvector's recommended form for a distance filter is a materialized CTE
+that orders by distance with a `limit`, with the threshold applied
+outside it. The query builder cannot express that yet.
 
 ### Checks
 
@@ -276,8 +281,9 @@ Not supported: a distance in any other condition of `where` or `having`
 condition), in `group_by/2`, `distinct/2`, `select/2` (and the aggregate
 helpers), `count/2`, a `join` column or a window from `over/2`. Each
 raises `{kura, {distance_not_supported_here, Clause}}`. The SQLite backend
-has no distance operators, and kura_sqlite raises `{unsupported,
-vector_distance}` on a query that holds one.
+has no distance operators. From the release after kura_sqlite 1.0.1,
+kura_sqlite raises `{unsupported, vector_distance}` on a query that holds
+one; earlier releases fail with a SQLite syntax error.
 
 A distance is checked like its column by the encrypted-field guard. Over
 a CTE whose encrypted columns cannot be named, every column may hold
@@ -317,9 +323,10 @@ an HNSW index with an `execute` step in a migration:
 ### Search-time settings
 
 HNSW recall depends on `hnsw.ef_search` (default 40). A filtered search,
-a `where` on a tenant, on any other column or on a distance threshold,
-can return fewer rows than the `limit` unless `hnsw.iterative_scan`
-(pgvector 0.8+) is on. Set both with
+a `where` on a tenant or any other column, can return fewer rows than
+the `limit` unless `hnsw.iterative_scan` (pgvector 0.8+) is on. For a
+distance threshold it helps only within `hnsw.max_scan_tuples`, as
+described above. Set both with
 `SET LOCAL` inside a transaction, so they last until the transaction
 ends and never reach the next query that checks out the connection:
 

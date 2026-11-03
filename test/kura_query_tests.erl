@@ -594,8 +594,16 @@ distance_threshold_must_be_a_number_test_() ->
                 kura_query:having(Q, {D, '>', ill_typed(~"1")})
             ),
             ?_assertError(
-                {kura, invalid_distance_threshold},
+                {kura, invalid_distance},
                 kura_query:where(Q, {non_atom_field_distance(), '<', ill_typed(~"1")})
+            ),
+            ?_assertError(
+                {kura, {invalid_distance, embedding}},
+                kura_query:where(Q, {bad_metric_distance(), '<', ill_typed(~"1")})
+            ),
+            ?_assertError(
+                {kura, {distance_requires_schema, items}},
+                kura_query:where(kura_query:from(items), {D, '<', ill_typed(~"1")})
             )
         ].
 
@@ -623,3 +631,40 @@ where_checks_the_distances_of_a_subquery_test_() ->
 
 -spec ill_typed(term()) -> dynamic().
 ill_typed(Term) -> Term.
+
+%% The compiler's check walks structure, not bound values; where/2 and
+%% having/2 refuse a distance in a value position.
+compiler_check_skips_value_positions_test() ->
+    D = kura_query:distance(embedding, l2, [1, 2, 3]),
+    Q = #kura_query{
+        from = ?VEC_SCHEMA,
+        wheres = [{id, in, [D]}, {[id, content], in, [{1, D}]}, {content, D}],
+        havings = [{id, between, {D, D}}]
+    },
+    ?assertEqual(ok, kura_query:check_distances(Q)).
+
+compiler_check_walks_thresholds_on_both_paths_test_() ->
+    D = kura_query:distance(embedding, l2, [1, 2, 3]),
+    Bad = {kura, {invalid_distance_threshold, embedding}},
+    Plain = #kura_query{from = ?VEC_SCHEMA},
+    Ordered = Plain#kura_query{order_bys = [{id, asc}]},
+    Sub = Plain#kura_query{wheres = [{D, '<', nil}]},
+    [
+        ?_assertEqual(ok, kura_query:check_distances(Plain#kura_query{wheres = [{D, '<', 0.5}]})),
+        ?_assertEqual(ok, kura_query:check_distances(Ordered#kura_query{havings = [{D, '>=', 1}]})),
+        ?_assertError(Bad, kura_query:check_distances(Plain#kura_query{wheres = [{D, '>=', nil}]})),
+        ?_assertError(
+            Bad, kura_query:check_distances(Ordered#kura_query{havings = [{D, '>', nil}]})
+        ),
+        ?_assertError(
+            Bad,
+            kura_query:check_distances(Plain#kura_query{wheres = [{D, '<', 1}, {D, '<=', nil}]})
+        ),
+        ?_assertError(
+            Bad,
+            kura_query:check_distances(Plain#kura_query{wheres = [{not_exists, {subquery, Sub}}]})
+        ),
+        ?_assertError(
+            Bad, kura_query:check_distances(Plain#kura_query{wheres = [{exists, {subquery, Sub}}]})
+        )
+    ].

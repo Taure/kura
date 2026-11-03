@@ -18,9 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{kura, {invalid_distance_threshold, Field}}`, and the encrypted-field
   guard checks the distance's column. The query cache replaces both the
   vector and the threshold with markers. The compiler's distance check
-  now covers a hand-built where or having, and the subqueries of `in`,
-  `exists` and `not_exists` conditions. A distance in any other condition
-  still raises `{kura, {distance_not_supported_here, Clause}}`.
+  now covers the thresholds of a hand-built where or having, and the
+  subqueries of `in`, `exists` and `not_exists` conditions; it walks
+  structure only, never bound values. A distance in any other condition
+  still raises `{kura, {distance_not_supported_here, Clause}}` from
+  `where/2` and `having/2`.
 
 ### Changed
 

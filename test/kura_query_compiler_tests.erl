@@ -537,12 +537,12 @@ hand_built_distance_queries_raise_before_compiling_test_() ->
             {kura, {invalid_distance_threshold, embedding}}
         },
         {
-            #kura_query{from = Vec, wheres = [{Threshold, '=', 0.5}]},
-            {kura, {distance_not_supported_here, where}}
+            #kura_query{from = Vec, wheres = [{{distance, "embedding", l2, ~"[1.0]"}, '<', ~"x"}]},
+            {kura, invalid_distance}
         },
         {
-            #kura_query{from = Vec, havings = [{id, in, [Threshold]}]},
-            {kura, {distance_not_supported_here, having}}
+            #kura_query{from = Vec, havings = [{'and', [{id, 1}, {Threshold, '>', nil}]}]},
+            {kura, {invalid_distance_threshold, embedding}}
         },
         {
             #kura_query{

@@ -169,7 +169,7 @@ condition({fragment, SQL, Params}, Acc0) when is_list(Params) ->
     {Markers, Acc1} = values(Params, Acc0),
     {{fragment, SQL, Markers}, Acc1};
 condition({{distance, Field, Metric, Vector}, Op, Threshold}, Acc0) when
-    Op =:= '<'; Op =:= '<='; Op =:= '>'; Op =:= '>='
+    ?KURA_IS_THRESHOLD_OP(Op)
 ->
     {VectorMarker, Acc1} = value(Vector, Acc0),
     {ThresholdMarker, Acc2} = value(Threshold, Acc1),

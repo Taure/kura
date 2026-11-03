@@ -356,7 +356,7 @@ compile_condition({fragment, SQL, Params}, Counter) ->
     {RewrittenSQL, NewCounter} = rewrite_fragment_placeholders(SQL, Counter),
     {RewrittenSQL, Params, NewCounter};
 compile_condition({{distance, _, _, _} = Distance, Op, Threshold}, Counter) when
-    Op =:= '<'; Op =:= '<='; Op =:= '>'; Op =:= '>='
+    ?KURA_IS_THRESHOLD_OP(Op)
 ->
     {DistanceSQL, DistanceParams, Next} = compile_distance(Distance, Counter),
     {

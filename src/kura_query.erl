@@ -63,7 +63,6 @@ Q3 = kura_query:limit(Q2, 10).
 -type order() :: {atom() | distance(), asc | desc}.
 
 -define(IS_METRIC(M), (M =:= l2 orelse M =:= cosine orelse M =:= inner_product)).
--define(IS_THRESHOLD_OP(Op), (Op =:= '<' orelse Op =:= '<=' orelse Op =:= '>' orelse Op =:= '>=')).
 %% pgvector's VECTOR_MAX_DIM.
 -define(MAX_DIMENSIONS, 16000).
 
@@ -221,18 +220,29 @@ vector_text(Floats) ->
     end.
 
 %% Called by kura_query_compiler before it compiles. Checks the distance
-%% nodes of select expressions (windows included), order_bys, wheres and
-%% havings, in the query and in its CTEs, combinations and condition
-%% subqueries, as the builders do. A hand-built group_by, distinct, plain
-%% select or join is not inspected.
+%% nodes of select expressions (windows included), order_bys and the
+%% thresholds of wheres and havings, in the query and in its CTEs,
+%% combinations and condition subqueries, as the builders do. It walks
+%% structure only, never bound values, so a distance in a value position
+%% or in a hand-built group_by, distinct, plain select or join is not
+%% inspected: where/2 and having/2 refuse those.
 -doc false.
 -spec check_distances(#kura_query{}) -> ok.
 check_distances(#kura_query{
-    select = Select, wheres = [], havings = [], order_bys = [], ctes = [], combinations = []
+    from = From,
+    select = Select,
+    wheres = Wheres,
+    havings = Havings,
+    order_bys = [],
+    ctes = [],
+    combinations = []
 }) when
     is_list(Select)
 ->
-    ok;
+    case query_thresholds(Wheres) ++ query_thresholds(Havings) of
+        [] -> ok;
+        Thresholds -> check_thresholds(From, Thresholds)
+    end;
 check_distances(#kura_query{
     from = From,
     select = Select,
@@ -242,13 +252,12 @@ check_distances(#kura_query{
     ctes = Ctes,
     combinations = Combinations
 }) ->
+    Thresholds = query_thresholds(Wheres) ++ query_thresholds(Havings),
     check_distances(
         From,
-        select_distances(Select) ++
-            cond_distances(where, Wheres) ++
-            cond_distances(having, Havings) ++
-            order_distances(Orders)
+        select_distances(Select) ++ [D || {D, _} <- Thresholds] ++ order_distances(Orders)
     ),
+    check_threshold_values(Thresholds),
     check_bodies(Ctes),
     check_bodies(Combinations).
 
@@ -366,54 +375,77 @@ reject_join_distances({Left, Right}) ->
 reject_join_distances(On) ->
     reject_distance(join, On).
 
-%% Returns the distances of the thresholds in a condition, or in a list
-%% of conditions, and checks the distances of its subqueries. A distance
-%% anywhere else would be bound as a parameter wherever it sits: as the
-%% field, the value, an element of a list value or of a row, or an end of
-%% a `between`.
-cond_distances(Clause, [Cond | Rest]) ->
-    cond_distances(Clause, Cond) ++ cond_distances(Clause, Rest);
-cond_distances(_Clause, []) ->
+%% A distance anywhere but a threshold would be bound as a parameter
+%% wherever it sits, so where/2 and having/2 refuse it.
+cond_thresholds(Clause, [Cond | Rest]) ->
+    cond_thresholds(Clause, Cond) ++ cond_thresholds(Clause, Rest);
+cond_thresholds(_Clause, []) ->
     [];
-cond_distances(Clause, {Op, Conds}) when (Op =:= 'and' orelse Op =:= 'or'), is_list(Conds) ->
-    cond_distances(Clause, Conds);
-cond_distances(Clause, {'not', Cond}) ->
-    cond_distances(Clause, Cond);
-cond_distances(_Clause, {fragment, _SQL, _Params}) ->
+cond_thresholds(Clause, {Op, Conds}) when (Op =:= 'and' orelse Op =:= 'or'), is_list(Conds) ->
+    cond_thresholds(Clause, Conds);
+cond_thresholds(Clause, {'not', Cond}) ->
+    cond_thresholds(Clause, Cond);
+cond_thresholds(_Clause, {fragment, _SQL, _Params}) ->
     [];
-cond_distances(_Clause, {{distance, _, _, _} = D, Op, Threshold}) when ?IS_THRESHOLD_OP(Op) ->
-    ok = check_threshold(D, Threshold),
-    [D];
-cond_distances(_Clause, {Exists, {subquery, #kura_query{} = Sub}}) when
+cond_thresholds(_Clause, {{distance, _, _, _} = D, Op, Threshold}) when
+    ?KURA_IS_THRESHOLD_OP(Op)
+->
+    [{D, Threshold}];
+cond_thresholds(_Clause, {Exists, {subquery, #kura_query{} = Sub}}) when
     Exists =:= exists; Exists =:= not_exists
 ->
     check_distances(Sub),
     [];
-cond_distances(Clause, {Field, in, {subquery, #kura_query{} = Sub}}) ->
+cond_thresholds(Clause, {Field, in, {subquery, #kura_query{} = Sub}}) ->
     reject_distance_field(Clause, Field),
     check_distances(Sub),
     [];
-cond_distances(Clause, {Field, Value}) ->
+cond_thresholds(Clause, {Field, Value}) ->
     reject_distance_field(Clause, Field),
     reject_distance_value(Clause, '=', Value),
     [];
-cond_distances(Clause, {Field, Op, Value}) ->
+cond_thresholds(Clause, {Field, Op, Value}) ->
     reject_distance_field(Clause, Field),
     reject_distance(Clause, Op),
     reject_distance_value(Clause, Op, Value),
     [];
-cond_distances(Clause, Cond) ->
+cond_thresholds(Clause, Cond) ->
     reject_distance(Clause, Cond),
     [].
 
-%% The reason names the field only when it is an atom, so a hand-built
-%% node never puts its vector in it.
-check_threshold(_D, Threshold) when is_number(Threshold) ->
+%% The compiler's walk: thresholds and subqueries, and nothing in a bound
+%% position, so its cost does not grow with the values.
+query_thresholds([Cond | Rest]) ->
+    query_thresholds(Cond) ++ query_thresholds(Rest);
+query_thresholds({Op, Conds}) when (Op =:= 'and' orelse Op =:= 'or'), is_list(Conds) ->
+    query_thresholds(Conds);
+query_thresholds({'not', Cond}) ->
+    query_thresholds(Cond);
+query_thresholds({{distance, _, _, _} = D, Op, Threshold}) when ?KURA_IS_THRESHOLD_OP(Op) ->
+    [{D, Threshold}];
+query_thresholds({Exists, {subquery, #kura_query{} = Sub}}) when
+    Exists =:= exists; Exists =:= not_exists
+->
+    check_distances(Sub),
+    [];
+query_thresholds({_Field, in, {subquery, #kura_query{} = Sub}}) ->
+    check_distances(Sub),
+    [];
+query_thresholds(_Cond) ->
+    [].
+
+%% The distances first, so a malformed node raises the distance's reason
+%% and a threshold reason always names an atom field.
+check_thresholds(From, Thresholds) ->
+    check_distances(From, [D || {D, _} <- Thresholds]),
+    check_threshold_values(Thresholds).
+
+check_threshold_values([]) ->
     ok;
-check_threshold({distance, Field, _Metric, _Vector}, _Threshold) when is_atom(Field) ->
-    erlang:error({kura, {invalid_distance_threshold, Field}});
-check_threshold(_D, _Threshold) ->
-    erlang:error({kura, invalid_distance_threshold}).
+check_threshold_values([{_D, Threshold} | Rest]) when is_number(Threshold) ->
+    check_threshold_values(Rest);
+check_threshold_values([{{distance, Field, _Metric, _Vector}, _Threshold} | _]) ->
+    erlang:error({kura, {invalid_distance_threshold, Field}}).
 
 reject_distance_field(Clause, Fields) when is_list(Fields) ->
     reject_distances(Clause, Fields);
@@ -471,7 +503,7 @@ single-column `in` raises `{kura, unrecognised_condition}`.
 """.
 -spec where(#kura_query{}, term()) -> #kura_query{}.
 where(Q = #kura_query{from = From, wheres = W}, Condition) ->
-    check_distances(From, cond_distances(where, Condition)),
+    check_thresholds(From, cond_thresholds(where, Condition)),
     refuse_each([Condition], guard_scope(Q, [], []), encrypted_field_in_where),
     Q#kura_query{wheres = W ++ [Condition]}.
 
@@ -605,7 +637,7 @@ refuse_encrypted_cond({Field, Op}, _Scope, _Reason) when
 ->
     ok;
 refuse_encrypted_cond({{distance, Field, _Metric, _Vector}, Op, _Threshold}, Scope, Reason) when
-    is_atom(Field), ?IS_THRESHOLD_OP(Op)
+    is_atom(Field), ?KURA_IS_THRESHOLD_OP(Op)
 ->
     refuse_field(Field, Scope, Reason);
 refuse_encrypted_cond({Field, Value}, Scope, Reason) when is_atom(Field) ->
@@ -865,7 +897,7 @@ compares an encrypted field to a value raises
 """.
 -spec having(#kura_query{}, term()) -> #kura_query{}.
 having(Q = #kura_query{from = From, havings = H}, Condition) ->
-    check_distances(From, cond_distances(having, Condition)),
+    check_thresholds(From, cond_thresholds(having, Condition)),
     refuse_each([Condition], guard_scope(Q, [], []), encrypted_field_in_having),
     Q#kura_query{havings = H ++ [Condition]}.
 
