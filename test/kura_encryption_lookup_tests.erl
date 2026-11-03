@@ -13,6 +13,7 @@ setup() ->
     application:set_env(kura, encryption, #{
         active => 1,
         deterministic_active => 1,
+        deterministic_keys => [2],
         keys => [
             {1, base64:encode(crypto:strong_rand_bytes(32))},
             {2, base64:encode(crypto:strong_rand_bytes(32))}

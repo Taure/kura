@@ -13,11 +13,20 @@ Deterministic encryption (`{encrypted, Inner, #{mode => deterministic}}`)
 writes under a separate key, `deterministic_active/0`, so rotating `active`
 never changes the ciphertext of a value a deterministic column is looked up
 by. A lookup encrypts its value under `deterministic_active/0` and under
-every other id of `key_ids/0`, at most 8 in all, so rows written under an
-earlier deterministic key are still found. Both callbacks are optional:
+every other id of `deterministic_key_ids/0`, at most 8 in all, so rows
+written under an earlier deterministic key are still found. Keys used only
+for randomized writes never enter a lookup. Both callbacks are optional:
 without `deterministic_active/0` every deterministic write and lookup
-raises `{kura_crypto, no_deterministic_key}`, and without `key_ids/0` a
-lookup searches under `deterministic_active/0` alone.
+raises `{kura_crypto, no_deterministic_key}`, and without
+`deterministic_key_ids/0` a lookup searches under `deterministic_active/0`
+alone.
+
+To rotate a deterministic key, add the new key to the ring, make it
+`deterministic_active/0` and keep the old id in `deterministic_key_ids/0`
+until no stored value is encrypted under it, then drop it. A `!=` or
+`not_in` lookup is correct only while every key a stored value is encrypted
+under is in that set: a row under a key outside it never matches the
+excluded value, so it is returned.
 
 The default implementation is `kura_keyring_env`. A regulated deployment
 can supply its own module (e.g. reading from a KMS or Vault) by setting
@@ -49,9 +58,11 @@ raise).
 -callback deterministic_active() -> {key_id(), key()} | undefined.
 
 -doc """
-Return the ids of every key in the ring that `fetch/1` resolves. A
-deterministic lookup is encrypted under each of them.
+Return the ids of the earlier deterministic keys whose values a lookup must
+still find. A deterministic lookup is encrypted under each of them and under
+`deterministic_active/0`, which may be listed or not. Each id must resolve
+through `fetch/1`.
 """.
--callback key_ids() -> [key_id()].
+-callback deterministic_key_ids() -> [key_id()].
 
--optional_callbacks([deterministic_active/0, key_ids/0]).
+-optional_callbacks([deterministic_active/0, deterministic_key_ids/0]).

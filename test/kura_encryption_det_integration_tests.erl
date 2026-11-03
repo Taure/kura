@@ -17,7 +17,7 @@ integration_test_() ->
             {"a duplicate surfaces through unique_constraint", fun t_unique/0},
             {"casefold makes uniqueness case-insensitive", fun t_casefold_unique/0},
             {"a uuid is unique in any case", fun t_uuid_unique/0},
-            {"rotation: rows under both keys are found", fun t_rotation/0},
+            {"rotation: rows under every deterministic key are found", fun t_rotation/0},
             {"rotation: uniqueness holds within one key only", fun t_rotation_unique/0},
             {"legacy reject refuses a v1 frame", fun t_legacy_reject/0},
             {"a frame copied to another column raises", fun t_transplant/0}
@@ -49,13 +49,16 @@ teardown(_) ->
     application:unset_env(kura, encryption).
 
 reset() ->
-    keys(1, [1]),
+    keys(1, [], [1]),
     {ok, _} = kura_test_repo:query("TRUNCATE det_users", []),
     ok.
 
-keys(Active, Ids) ->
+keys(Active, Generations, Ids) ->
     application:set_env(kura, encryption, #{
-        active => 1, deterministic_active => Active, keys => [{Id, key(Id)} || Id <- Ids]
+        active => 1,
+        deterministic_active => Active,
+        deterministic_keys => Generations,
+        keys => [{Id, key(Id)} || Id <- Ids]
     }).
 
 key(Id) ->
@@ -177,16 +180,19 @@ t_uuid_unique() ->
 
 t_rotation() ->
     _ = insert(#{name => ~"old", pin => 7}),
-    keys(2, [1, 2]),
+    keys(2, [], [1, 2]),
     #{id := Id} = insert(#{name => ~"new", pin => 7}),
     ?assertMatch(<<2, 1, 2:16, _/binary>>, raw(~"pin", Id)),
+    ?assertEqual([~"new"], all({pin, 7})),
+    ?assertEqual([~"old"], all({pin, '!=', 7})),
+    keys(2, [1], [1, 2, 3]),
     ?assertEqual([~"new", ~"old"], all({pin, 7})),
     ?assertEqual([~"new", ~"old"], all({pin, in, [7, 8]})),
     ?assertEqual([], all({pin, '!=', 7})).
 
 t_rotation_unique() ->
     _ = insert(#{name => ~"old", ssn => ~"rotated"}),
-    keys(2, [1, 2]),
+    keys(2, [1], [1, 2]),
     _ = insert(#{name => ~"new", ssn => ~"rotated"}),
     ?assertEqual([~"new", ~"old"], all({ssn, ~"rotated"})).
 

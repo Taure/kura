@@ -380,8 +380,22 @@ closed without one (`{kura_crypto, no_deterministic_key}`):
 {encryption, #{active => 1, deterministic_active => 2, keys => [...]}}
 ```
 
-A lookup is encrypted under `deterministic_active` and every other key in
-the ring (at most 8), so rows written under an earlier key are still found.
+A lookup is encrypted under `deterministic_active` and every id in
+`deterministic_keys` (default `[]`; at most 8 ids in all, beyond which a
+lookup raises `{kura_crypto, {too_many_lookup_keys, N}}`). Keys used only
+by `active` never enter a lookup. To rotate a deterministic key, add the
+new key to `keys`, set `deterministic_active` to it and keep the old id in
+`deterministic_keys` until no stored value is encrypted under it, then drop
+it:
+
+```erlang
+{encryption, #{active => 1, deterministic_active => 3, deterministic_keys => [2],
+               keys => [...]}}
+```
+
+`!=` and `not_in` are correct only while every key a stored value is
+encrypted under is in `deterministic_keys` or is `deterministic_active`: a
+row under any other key never equals the excluded value, so it is returned.
 
 What deterministic mode gives away, compared with randomized:
 

@@ -48,12 +48,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `kura_encryption:lookup_params/3` returns the ciphertexts a lookup binds,
   for a `{fragment, SQL, Params}`.
 - `kura_keyring` gains the optional callbacks `deterministic_active/0` and
-  `key_ids/0`, and `kura_keyring_env` implements both
-  (`deterministic_active` in the `encryption` config). Deterministic
-  writes use `deterministic_active`, never `active`, and raise
+  `deterministic_key_ids/0`, and `kura_keyring_env` implements both
+  (`deterministic_active` and `deterministic_keys` in the `encryption`
+  config; an id in `deterministic_keys` that is not in `keys` raises
+  `{kura_crypto, {unknown_key_id, Id}}`, anything but a list of key ids
+  `{kura_crypto, invalid_deterministic_keys}`). Deterministic writes use
+  `deterministic_active`, never `active`, and raise
   `{kura_crypto, no_deterministic_key}` without one. A lookup is encrypted
-  under `deterministic_active` and every other `key_ids/0` id, at most 8
-  (`{kura_crypto, {too_many_lookup_keys, N}}` beyond).
+  under `deterministic_active` and every other `deterministic_key_ids/0`
+  id, at most 8 (`{kura_crypto, {too_many_lookup_keys, N}}` beyond);
+  randomized rotation keys never enter a lookup. Rotate a deterministic
+  key by making the new key `deterministic_active` and keeping the old id
+  in `deterministic_keys` until no stored value uses it; `!=` and
+  `not_in` are correct only while every stored generation is a lookup
+  key.
 - `kura_crypto:encrypt/3`, `decrypt/3`, `lookup/2` and
   `is_deterministic_frame/1`; `kura_types:validate_encryption/1` and
   `deterministic_inner/1`.

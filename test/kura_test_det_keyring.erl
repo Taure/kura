@@ -1,7 +1,7 @@
 -module(kura_test_det_keyring).
 -behaviour(kura_keyring).
 
--export([active/0, fetch/1, deterministic_active/0, key_ids/0]).
+-export([active/0, fetch/1, deterministic_active/0, deterministic_key_ids/0]).
 
 -spec active() -> {kura_keyring:key_id(), kura_keyring:key()} | undefined.
 active() ->
@@ -17,9 +17,9 @@ fetch(_KeyId) ->
 deterministic_active() ->
     application:get_env(kura, test_det_active, {1, key(1)}).
 
--spec key_ids() -> dynamic().
-key_ids() ->
-    application:get_env(kura, test_key_ids, [1]).
+-spec deterministic_key_ids() -> dynamic().
+deterministic_key_ids() ->
+    application:get_env(kura, test_det_key_ids, [1]).
 
 key(KeyId) ->
     binary:copy(<<KeyId>>, 32).

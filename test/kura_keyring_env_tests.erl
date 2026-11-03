@@ -42,18 +42,61 @@ keyring_env_test_() ->
             application:set_env(kura, encryption, #{deterministic_active => 3, keys => []}),
             ?assertEqual(undefined, kura_keyring_env:deterministic_active())
         end},
-        {"key_ids/0 lists the ids that resolve", fun() ->
+        {"deterministic_key_ids/0 returns deterministic_keys", fun() ->
+            K = base64:encode(crypto:strong_rand_bytes(32)),
+            application:set_env(kura, encryption, #{
+                active => 3,
+                deterministic_active => 1,
+                deterministic_keys => [255, 0, 1],
+                keys => [{1, K}, {3, K}, {0, K}, {255, K}]
+            }),
+            ?assertEqual([255, 0, 1], kura_keyring_env:deterministic_key_ids()),
+            application:set_env(kura, encryption, #{deterministic_active => 1, keys => [{1, K}]}),
+            ?assertEqual([], kura_keyring_env:deterministic_key_ids()),
+            application:set_env(kura, encryption, #{}),
+            ?assertEqual([], kura_keyring_env:deterministic_key_ids())
+        end},
+        {"deterministic_key_ids/0 raises on an id not in the ring", fun() ->
             K = base64:encode(crypto:strong_rand_bytes(32)),
             Short = base64:encode(crypto:strong_rand_bytes(31)),
-            application:set_env(kura, encryption, #{
-                keys => [{1, K}, {2, Short}, {3, K}, {0, K}, {255, K}, {256, K}, {-1, K}, {x, K}]
-            }),
-            ?assertEqual([1, 3, 0, 255], kura_keyring_env:key_ids()),
-            application:set_env(kura, encryption, #{}),
-            ?assertEqual([], kura_keyring_env:key_ids())
+            [
+                begin
+                    application:set_env(kura, encryption, #{
+                        deterministic_keys => [1, Id], keys => [{1, K}, {2, Short}]
+                    }),
+                    ?assertError(
+                        {kura_crypto, {unknown_key_id, Id}},
+                        kura_keyring_env:deterministic_key_ids()
+                    )
+                end
+             || Id <- [2, 3]
+            ]
+        end},
+        {"deterministic_key_ids/0 raises on a malformed deterministic_keys", fun() ->
+            K = base64:encode(crypto:strong_rand_bytes(32)),
+            [
+                begin
+                    application:set_env(kura, encryption, #{
+                        deterministic_keys => Bad, keys => [{1, K}, {256, K}, {-1, K}]
+                    }),
+                    ?assertError(
+                        {kura_crypto, invalid_deterministic_keys},
+                        kura_keyring_env:deterministic_key_ids()
+                    )
+                end
+             || Bad <- [1, [1, 256], [-1], [one], improper(1, 2), #{1 => 1}]
+            ]
         end},
         {"fetch/1 of an unknown id is error", fun() ->
             application:set_env(kura, encryption, #{keys => []}),
             ?assertEqual(error, kura_keyring_env:fetch(7))
         end}
     ]}.
+
+-spec improper(term(), term()) -> dynamic().
+improper(Head, Tail) ->
+    [Head | ill_typed(Tail)].
+
+-spec ill_typed(term()) -> dynamic().
+ill_typed(Term) ->
+    Term.

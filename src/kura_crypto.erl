@@ -213,9 +213,9 @@ decrypt(Frame, Context, Policy) ->
 The deterministic frames a lookup of each plaintext in `Plains` compares a
 column `Context` against: one per plaintext under each key a stored value
 may be encrypted under. That is the keyring's `deterministic_active/0` key
-first, then every other id of the optional `key_ids/0` callback. More than
-8 keys raise `{too_many_lookup_keys, Count}`, so a lookup binds at most
-8 values per plaintext. Raises on any failure.
+first, then every other id of the optional `deterministic_key_ids/0`
+callback. More than 8 keys raise `{too_many_lookup_keys, Count}`, so a
+lookup binds at most 8 values per plaintext. Raises on any failure.
 """.
 -spec lookup([binary()], context()) -> [binary()].
 lookup(Plains, Context) ->
@@ -407,10 +407,11 @@ valid_key(_) ->
     error.
 
 %% The deterministic_active key first, so the most likely match is the first
-%% parameter; a ring without key_ids/0 is searched under that key alone.
+%% parameter; a ring without deterministic_key_ids/0 is searched under that
+%% key alone.
 lookup_keys() ->
     {ActiveId, _Key} = Active = deterministic_key(),
-    Others = [Id || Id <- lists:uniq(ring_key_ids()), Id =/= ActiveId],
+    Others = [Id || Id <- lists:uniq(deterministic_key_ids()), Id =/= ActiveId],
     case length(Others) + 1 of
         Count when Count > ?MAX_LOOKUP_KEYS ->
             erlang:error({kura_crypto, {too_many_lookup_keys, Count}});
@@ -418,10 +419,10 @@ lookup_keys() ->
             [Active | [{Id, fetch_key(Id)} || Id <- Others]]
     end.
 
-ring_key_ids() ->
+deterministic_key_ids() ->
     Keyring = keyring_module(),
-    case optional_callback(Keyring, key_ids) of
-        true -> valid_key_ids(Keyring:key_ids());
+    case optional_callback(Keyring, deterministic_key_ids) of
+        true -> valid_key_ids(Keyring:deterministic_key_ids());
         false -> []
     end.
 

@@ -98,9 +98,11 @@ Q = kura_query:where(kura_query:from(user), {email, ~"ada@example.com"}).
 %% wheres: [{email, encrypted_in, [Ciphertext1, ...]}]
 ```
 
-The value is cast, normalised and encrypted under every lookup key when the
+The value is cast, normalised and encrypted under every lookup key
+(`deterministic_active` and each id in `deterministic_keys`) when the
 condition is added, so only ciphertexts enter the query, its cache entry,
-telemetry and logs. The dialect compiles `encrypted_in` and
+telemetry and logs. `!=` and `not_in` are correct only while every key a
+stored value is encrypted under is a lookup key. The dialect compiles `encrypted_in` and
 `encrypted_not_in` to `IN` and `NOT IN`. They are kura's own operators:
 passing one to `where/2` raises `{kura, {reserved_operator, Op}}`, and the
 compile-time check refuses one on a field that is not deterministic, or

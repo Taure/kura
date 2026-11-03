@@ -43,6 +43,7 @@ measure_all() ->
     OneKey = time_per_call(lookup),
     {ok, #{keys := Keys} = Encryption} = application:get_env(kura, encryption),
     application:set_env(kura, encryption, Encryption#{
+        deterministic_keys => [2],
         keys => Keys ++ [{2, base64:encode(crypto:strong_rand_bytes(32))}]
     }),
     TwoKeys = time_per_call(lookup),
