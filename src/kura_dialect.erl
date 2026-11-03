@@ -55,6 +55,20 @@ that should fail would instead return rows in a meaningless order. A
 dialect that delegates to `kura_dialect_pg` has to catch the node before
 it does.
 
+## Deterministic lookups
+
+`kura_query:where/2` and `kura_query:having/2` rewrite a comparison on a
+deterministic encrypted field into `{Field, encrypted_in, Frames}` or
+`{Field, encrypted_not_in, Frames}`, meaning the column is `IN` or
+`NOT IN` the values. The values are bound like any other (the shape cache
+replaces them with markers), so an implementation passes them through to
+`params()` unchanged. They are ciphertext bytes: bind each in the column's
+byte type, never as text. The list holds one value per lookup key per
+looked-up value, so never assume it has one element. The operator atoms
+are kura's own and must never appear in the SQL. A dialect that delegates
+to `kura_dialect_pg` but binds binaries as text, as SQLite does, has to
+catch the node before it delegates and cast each placeholder to bytes.
+
 ## Public API entry point
 
 Consumers go through `kura_query_compiler`, which delegates to the

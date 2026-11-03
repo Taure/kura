@@ -168,7 +168,9 @@ encrypt(_Plain, _Context) ->
 Encrypt a plaintext binary for the column `Context` as a v2 frame of
 `Mode`, whatever the write format. A `deterministic` frame is written under
 the keyring's `deterministic_active/0` key and raises
-`no_deterministic_key` when there is none. Raises on failure.
+`no_deterministic_key` when there is none. A deterministic `Plain` must
+already be canonical, as `kura_types:dump/3` produces it, or its frames will
+not match lookups. Raises on failure.
 """.
 -spec encrypt(binary(), context(), mode()) -> binary().
 encrypt(Plain, Context, Mode) when is_binary(Plain) ->
@@ -209,25 +211,18 @@ not accept.
 decrypt(Frame, Context, Policy) ->
     decrypt_frame(Frame, context_bytes(Context), valid_policy(Policy)).
 
--doc """
-The deterministic frames a lookup of each plaintext in `Plains` compares a
-column `Context` against: one per plaintext under each key a stored value
-may be encrypted under. That is the keyring's `deterministic_active/0` key
-first, then every other id of the optional `deterministic_key_ids/0`
-callback. More than 8 keys raise `{too_many_lookup_keys, Count}`, so a
-lookup binds at most 8 values per plaintext. Raises on any failure.
-""".
+%% The frames a lookup of each plaintext compares the column against: one per
+%% plaintext under deterministic_active/0, then under every other id of
+%% deterministic_key_ids/0. More than 8 keys raise too_many_lookup_keys.
+-doc false.
 -spec lookup([binary()], context()) -> [binary()].
 lookup(Plains, Context) ->
     ok = check_plaintexts(Plains),
     Ctx = context_bytes(Context),
     lookup_frames(lookup_keys(), Plains, Ctx).
 
--doc """
-Return `true` for a binary laid out as a deterministic v2 frame: version 2,
-mode 1 and at least the 32-byte header. It says nothing about whether the
-frame decrypts.
-""".
+%% The layout of a deterministic v2 frame, not whether it decrypts.
+-doc false.
 -spec is_deterministic_frame(term()) -> boolean().
 is_deterministic_frame(
     <<?V2:8, ?MODE_DETERMINISTIC:8, _KeyId:16, _IV:?NONCE_BYTES/binary, _Tag:?TAG_BYTES/binary,

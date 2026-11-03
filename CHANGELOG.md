@@ -45,6 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{kura, {invalid_encrypted_lookup, Field}}`. A field encrypted in two
   sources of a query, or read through a CTE, is not looked up. The query
   cache keys a lookup by shape only when every value has the frame layout.
+  For a deterministic field `where/2` and `having/2` read the keyring, so
+  they can raise a keyring error such as
+  `{kura_crypto, no_deterministic_key}`. On a schema without encrypted
+  fields the rewrite costs about 30-60 ns per `where/2` (best of 7 x 50,000
+  calls on `kura_test_schema`: equality 0.096 us before, 0.128 us after;
+  three-way `and` 0.158, 0.222 us; a 100-value `in` 1.19-1.24 us both).
 - `kura_encryption:lookup_params/3` returns the ciphertexts a lookup binds,
   for a `{fragment, SQL, Params}`.
 - `kura_keyring` gains the optional callbacks `deterministic_active/0` and
@@ -62,9 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in `deterministic_keys` until no stored value uses it; `!=` and
   `not_in` are correct only while every stored generation is a lookup
   key.
-- `kura_crypto:encrypt/3`, `decrypt/3`, `lookup/2` and
-  `is_deterministic_frame/1`; `kura_types:validate_encryption/1` and
-  `deterministic_inner/1`.
+- `kura_crypto:encrypt/3` and `decrypt/3`;
+  `kura_types:validate_encryption/1` and `deterministic_inner/1`.
 - Deterministic mode reveals which rows share a value, and a lookup's
   ciphertext is a stable pseudonym in telemetry and logged parameters;
   both modes reveal length and `NULL`-ness, and the value stays personal

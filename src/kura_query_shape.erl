@@ -16,8 +16,8 @@ subquery it contains:
 - the elements of an `in`/`not_in` list, and of each row tuple in a
   row-value `in` whose tuples all match the column count;
 - the elements of a deterministic lookup (`?KURA_IS_LOOKUP_OP`) whose
-  elements are all laid out as deterministic frames
-  (`kura_crypto:is_deterministic_frame/1`);
+  elements are all laid out as deterministic frames (version 2, mode 1, a
+  full header);
 - both ends of a `between`;
 - the parameters of a condition fragment, in `wheres` or `havings`;
 - the parameters of a select-expression fragment;

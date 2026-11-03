@@ -345,7 +345,10 @@ The options form is always written as a v2 frame, whatever
 `encryption_write_format` says. With `legacy => reject` a column refuses a
 v1 frame (`{kura_crypto, {refused_version, 1}}`) and a v2 frame of the
 other mode (`{kura_crypto, {refused_mode, Mode}}`); `accept` reads both,
-which is how a column moves between modes. `{encrypted, Inner}` keeps its
+which is how a column moves between modes. Moving a column is complete only
+once every row has been rewritten: until a reencrypt tool rewrites them, an
+old randomized row never matches a lookup, `!=` and `not_in` return it, and
+a unique index does not cover it. `{encrypted, Inner}` keeps its
 behaviour: randomized, `legacy => accept`, and the write format decides
 the frame.
 
@@ -415,8 +418,9 @@ rewritten. Renaming the table or column without pinning `context` makes the
 stored values undecryptable. A shared `context` gives two columns equal
 ciphertexts for equal values, which raw SQL can compare (`join/5` still
 refuses an encrypted column), at the cost of a value being movable between
-them. On SQLite, deterministic lookups need kura_sqlite's
-support for the `encrypted_in` condition.
+them. On SQLite, `{encrypted, Inner, Opts}` fields are unsupported until a
+kura_sqlite release after 1.1.0, which reads the options form through
+`kura_types:encryption/1` and binds the `encrypted_in` condition as bytes.
 
 ## Configuration
 

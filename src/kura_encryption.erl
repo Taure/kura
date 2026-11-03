@@ -7,8 +7,9 @@ Equality lookups on deterministic encrypted fields
 and `{Field, in, Values}` on a deterministic field into a lookup that compares
 the column to ciphertexts, and `{Field, '!=', Value}` and
 `{Field, not_in, Values}` into its negation. A value is cast and normalised as
-a write of it would be, then encrypted under every key a stored value may be
-under (see `kura_crypto:lookup/2`), so the plaintext never enters the query.
+a write of it would be, then encrypted under the keyring's
+`deterministic_active/0` key and every id of its `deterministic_key_ids/0`,
+so the plaintext never enters the query.
 
 `lookup_params/3` returns the same ciphertexts for a `{fragment, SQL, Params}`
 condition, which `where/2` does not inspect:
@@ -21,7 +22,9 @@ Q = kura_query:where(kura_query:from(my_user), {fragment, SQL, Params}).
 ```
 
 The number of ciphertexts is the number of lookup keys in the keyring (one to
-eight), so build the placeholders from the list rather than assuming one.
+eight), so build the placeholders from the list rather than assuming one. On
+SQLite, which binds a binary as text, write each placeholder as
+`CAST(? AS BLOB)`.
 
 A lookup reveals which rows hold the looked-up value, and its ciphertexts are
 a stable pseudonym of the value wherever the query's parameters are recorded,

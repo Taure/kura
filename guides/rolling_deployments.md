@@ -139,6 +139,15 @@ nothing, so a v1 ciphertext copied into a column decrypts there. That gap
 stays open until a release can refuse v1 reads, after every stored value
 has been rewritten as v2.
 
+### Write Deterministic Frames into an Existing Column
+
+A kura older than the deterministic release raises
+`{kura_crypto, {unsupported_mode, 1}}` on every deterministic value it
+loads. Deploy this release to every node, and wait until no node runs an
+older one, before any node writes deterministic frames into an existing
+column: switching a field to `{encrypted, Inner, #{mode => deterministic,
+legacy => accept}}` is that write.
+
 A v2 value is bound to its table name and column name. Renaming either, or
 copying ciphertexts between columns in SQL (`UPDATE t SET new = old`),
 makes them undecryptable. To rename an encrypted v2 column or its table,
