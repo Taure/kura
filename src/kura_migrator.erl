@@ -160,6 +160,8 @@ one.
     release_session_lock/1,
     run_non_transactional/3,
     refuse_unsupported_concurrently/3,
+    refuse_invalid_indexes/3,
+    check_index_options/4,
     lock_retry_interval/0,
     without_row_values/1
 ]).
@@ -1123,7 +1125,7 @@ run_plan(RepoMod, Dir, PlanFun) ->
         refuse_non_transactional_when_enclosed(Enclosed, Todo),
         refuse_concurrently_in_transaction(Todo, Dir),
         refuse_unsupported_concurrently(RepoMod, Todo, Dir),
-        refuse_invalid_indexes(RepoMod, Todo, Dir),
+        ok = refuse_invalid_indexes(RepoMod, Todo, Dir),
         emit_migrate_start(RepoMod, Dir, length(Todo)),
         run_transactional_prefix(Todo, Dir, RepoMod)
     end),

@@ -1033,6 +1033,8 @@ concurrent_index_compile_test_() ->
         fun concurrently_without_a_dialect_is_taken_as_postgres/0,
         fun unsupported_concurrently_is_refused_while_planning/0,
         fun postgres_index_options_are_refused_on_another_dialect/0,
+        fun invalid_indexes_are_refused_while_planning/0,
+        fun index_options_are_checked_without_compiling/0,
         fun postgres_index_options_are_compiled_on_postgres/0
     ]}.
 
@@ -1146,6 +1148,28 @@ postgres_index_options_are_refused_on_another_dialect() ->
         Compile(#{with => #{m => 16}})
     ),
     ?assertEqual(~"CREATE INDEX \"t_c_index\" ON \"t\" (\"c\")", Compile(#{})).
+
+invalid_indexes_are_refused_while_planning() ->
+    Good = {2, m20250301110000_nontx_index_items},
+    Bad = {7, m20250307100000_nontx_bad_index},
+    ?assertError(
+        {migration_aborted, {invalid_index_option, 7, using, 'Hash'}},
+        kura_migrator:refuse_invalid_indexes(?PG_POOL_REPO, [Good, Bad], up)
+    ),
+    ?assertEqual(ok, kura_migrator:refuse_invalid_indexes(?PG_POOL_REPO, [Good, Good], up)),
+    ?assertEqual(ok, kura_migrator:refuse_invalid_indexes(?PG_POOL_REPO, [], up)).
+
+index_options_are_checked_without_compiling() ->
+    Check = fun(Columns, Opts) ->
+        kura_migrator:check_index_options(?PG_POOL_REPO, ~"t", Columns, Opts)
+    end,
+    ?assertEqual(ok, Check([c], #{using => hnsw, opclass => vector_l2_ops, with => #{m => 16}})),
+    ?assertError({invalid_index_option, name, ~""}, Check([c], #{name => ~""})),
+    ?assertError({invalid_index_option, using, 'Hash'}, Check([c], #{using => 'Hash'})),
+    ?assertError(
+        {invalid_index_option, opclass, {columns, [a, b]}}, Check([a, b], #{opclass => ops})
+    ),
+    ?assertError({invalid_index_option, with, #{}}, Check([c], #{with => #{}})).
 
 postgres_index_options_are_compiled_on_postgres() ->
     ?assertEqual(

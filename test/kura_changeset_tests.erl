@@ -775,6 +775,22 @@ named_unique_index_maps_generated_name_too_test() ->
         Named#kura_constraint.type, Named#kura_constraint.field, Named#kura_constraint.message
     }).
 
+named_unique_index_name_is_checked_as_the_migrator_checks_it_test_() ->
+    Build = fun(Name) ->
+        kura_changeset:build_index_constraints(
+            [{[code], #{unique => true, name => Name}}], ~"items"
+        )
+    end,
+    Long = binary:copy(~"n", 64),
+    [
+        ?_assertError({invalid_index_option, name, ~""}, Build(~"")),
+        ?_assertError({invalid_index_option, name, Long}, Build(Long)),
+        ?_assertError({invalid_index_option, name, idx}, Build(ill_typed(idx)))
+    ].
+
+-spec ill_typed(term()) -> dynamic().
+ill_typed(Term) -> Term.
+
 named_unique_index_under_the_generated_name_is_registered_once_test() ->
     ?assertMatch(
         [#kura_constraint{constraint = ~"items_code_index"}],
