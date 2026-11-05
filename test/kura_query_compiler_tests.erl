@@ -307,6 +307,23 @@ facade_delegates_all_callbacks_to_dialect_test_() ->
 %% Two repos with different dialects don't share cache entries.
 %%----------------------------------------------------------------------
 
+%% erlang:function_exported/3 is false for a module the code server has not
+%% loaded yet, so the first query through a cold dialect must load it rather
+%% than skip its convert_values/1.
+converts_with_a_dialect_not_yet_loaded_test() ->
+    _ = code:purge(kura_test_cold_dialect),
+    _ = code:delete(kura_test_cold_dialect),
+    _ = code:purge(kura_test_cold_dialect),
+    ?assertNot(erlang:module_loaded(kura_test_cold_dialect)),
+    set_repo_dialect(kura_test_cold_dialect),
+    try
+        Q = kura_query:where(kura_query:from(kura_test_schema), {id, ~"42"}),
+        {_SQL, Params} = kura_query_compiler:to_sql(?REPO, Q),
+        ?assertEqual([42], Params)
+    after
+        unset_repo()
+    end.
+
 two_repos_different_dialects_test() ->
     application:set_env(kura, repos, #{
         repo_a => #{dialect => ?MODULE},
@@ -633,4 +650,135 @@ large_result_is_never_interned_test() ->
         ?assertEqual(miss, kura_query_cache:get(Key))
     after
         kura_query_cache:flush()
+    end.
+
+%%----------------------------------------------------------------------
+%% Where values are converted by the dialect, not by kura_query:where/2
+%%----------------------------------------------------------------------
+
+boolean_filter() ->
+    Q0 = kura_query:from(kura_test_schema),
+    Q1 = kura_query:where(Q0, {active, '!=', ~"1"}),
+    Q2 = kura_query:where(Q1, {status, in, [active]}),
+    kura_query:where(Q2, {age, ~"42"}).
+
+pg_dialect_converts_where_values_test() ->
+    set_repo_dialect(kura_dialect_pg),
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        Q = boolean_filter(),
+        {_, Direct} = kura_query_compiler:to_sql(?REPO, Q),
+        {_, Miss} = kura_query_compiler:to_sql_cached(?REPO, Q),
+        {_, Hit} = kura_query_compiler:to_sql_cached(?REPO, Q),
+        ?assertEqual([true, ~"active", 42], Direct),
+        ?assertEqual(Direct, Miss),
+        ?assertEqual(Direct, Hit)
+    after
+        kura_query_cache:flush(),
+        unset_repo()
+    end.
+
+sqlite_dialect_leaves_where_values_unconverted_test() ->
+    set_repo_dialect(kura_test_sqlite_dialect),
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        Q = boolean_filter(),
+        {SQL, Direct} = kura_query_compiler:to_sql(?REPO, Q),
+        {_, Cached} = kura_query_compiler:to_sql_cached(?REPO, Q),
+        ?assertEqual([~"1", active, ~"42"], Direct),
+        ?assertEqual(Direct, Cached),
+        ?assertEqual(nomatch, binary:match(iolist_to_binary(SQL), ~"$"))
+    after
+        kura_query_cache:flush(),
+        unset_repo()
+    end.
+
+cached_compile_refuses_an_encrypted_field_after_converting_test() ->
+    set_repo_dialect(kura_dialect_pg),
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        Q = #kura_query{from = kura_test_enc_scalar_schema, wheres = [{owner_id, ~"1"}]},
+        ?assertError(
+            {kura, {encrypted_field_in_where, owner_id}},
+            kura_query_compiler:to_sql_cached(?REPO, Q)
+        ),
+        ?assertEqual(0, kura_query_cache:entry_count())
+    after
+        kura_query_cache:flush(),
+        unset_repo()
+    end.
+
+pg_dialect_converts_the_attribute_tenant_value_test() ->
+    set_repo_dialect(kura_dialect_pg),
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        Q = kura_query:from(kura_test_schema),
+        {_, Params} = kura_tenant:with_tenant({attribute, {age, ~"7"}}, fun() ->
+            kura_query_compiler:to_sql_cached(?REPO, Q)
+        end),
+        ?assertEqual([7], Params)
+    after
+        kura_query_cache:flush(),
+        unset_repo()
+    end.
+
+%%----------------------------------------------------------------------
+%% Bulk writes refuse the clauses they would otherwise drop
+%%----------------------------------------------------------------------
+
+bulk_write_refuses_clauses_that_change_the_rows_test_() ->
+    Base = kura_query:where(kura_query:from(kura_test_schema), {age, '>', 1}),
+    Sub = kura_query:from(kura_test_schema),
+    Cases = [
+        {joins, kura_query:join(Base, inner, kura_test_post_schema, {id, author_id})},
+        {order_bys, kura_query:order_by(Base, [{id, asc}])},
+        {group_bys, kura_query:group_by(Base, [age])},
+        {havings, Base#kura_query{havings = [{age, '>', 1}]}},
+        {limit, kura_query:limit(Base, 1)},
+        {offset, kura_query:offset(Base, 1)},
+        {distinct, kura_query:distinct(Base)},
+        {distinct, kura_query:distinct(Base, [age])},
+        {ctes, kura_query:with_cte(Base, ~"c", Sub)},
+        {combinations, kura_query:union(Base, Sub)},
+        {order_bys, kura_query:limit(kura_query:order_by(Base, [{id, asc}]), 1)},
+        {limit, kura_query:union(kura_query:limit(Base, 1), Sub)}
+    ],
+    [
+        {atom_to_list(Clause) ++ " " ++ atom_to_list(Dialect), fun() ->
+            set_repo_dialect(Dialect),
+            try
+                ?assertError(
+                    {kura, {unsupported_in_bulk_write, Clause}},
+                    kura_query_compiler:delete_all(?REPO, Q)
+                ),
+                ?assertError(
+                    {kura, {unsupported_in_bulk_write, Clause}},
+                    kura_query_compiler:update_all(?REPO, Q, #{age => 2})
+                )
+            after
+                unset_repo()
+            end
+        end}
+     || {Clause, Q} <- Cases, Dialect <- [kura_dialect_pg, kura_test_sqlite_dialect]
+    ].
+
+bulk_write_on_a_where_filter_compiles_test() ->
+    set_repo_dialect(kura_dialect_pg),
+    try
+        Q0 = kura_query:where(kura_query:from(kura_test_schema), {age, '>', ~"1"}),
+        Q = kura_query:lock(kura_query:select(Q0, [id]), ~"FOR UPDATE"),
+        ?assertEqual(
+            {~"DELETE FROM \"users\" WHERE \"age\" > $1", [1]},
+            kura_query_compiler:delete_all(?REPO, Q)
+        ),
+        ?assertEqual(
+            {~"UPDATE \"users\" SET \"age\" = $1 WHERE \"age\" > $2", [2, 1]},
+            kura_query_compiler:update_all(?REPO, Q, #{age => 2})
+        )
+    after
+        unset_repo()
     end.

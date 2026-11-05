@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `kura_dialect:qualified_columns/1`, public: which bare fields of a joined
+  query a dialect qualifies with the `from` table (see Changed).
+- The exported type `kura_repo_worker:hook_error/0`, a hook's
+  `{error, Reason}` in the specs of `insert/2,3` and `update/2`.
+- `kura_query:from/1` and `join/4,5` specs accept a binary table or CTE
+  name.
+- Optional `kura_dialect` callback `convert_values/1`: a dialect converts
+  a query's bound values before it is compiled. `kura_dialect_pg`
+  implements it (see Changed).
+- `kura_changeset:delete_change/2` removes a field from a changeset's
+  changes, leaving data and params as they are (as Ecto does), for example
+  to drop a virtual password once it is hashed.
 - Deterministic field encryption and equality lookups (kura#137).
   `{encrypted, Inner, Opts}` takes a closed set of options, checked when a
   schema is first read: `mode` (`randomized` | `deterministic`, default
@@ -114,6 +126,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `count/2`, `aggregate/3,4` and `kura_stream:stream/3,4` leave out
+  soft-deleted rows, as `all/2`, `update_all/3` and `delete_all/2`
+  already did; mark the query with `kura_query:with_deleted/1` to keep
+  them. `all/2` on a query `from` a CTE name or a bare table atom no
+  longer crashes.
+- `insert/3` (an insert with options such as `on_conflict`) runs
+  `prepare_changes/2`, `before_insert/1`, `after_insert/1` and the
+  changeset's associations, like `insert/2`. `after_insert/1` runs
+  whenever the statement returns a row, including when an upsert updated
+  one. A changeset with associations refuses any `on_conflict` action but
+  `nothing` (with or without a guard), raising
+  `{kura, on_conflict_with_assocs}`.
+- On PostgreSQL, a where value compared to a field of the `from` schema
+  is converted when the query is compiled, only where it then binds what
+  the database would parse from it: an enum atom binds its binary, and a
+  binary in cast form binds the scalar it spells on `id`, `integer`,
+  `bigint`, `smallint`, `float`, `boolean`, `date` and `time` fields, and
+  on datetimes without an offset other than `Z` or a fraction. An integer
+  binary over 20 bytes or a float binary over 64 is not parsed. Every
+  other value, `decimal` included, is bound as given. The conversion is
+  the new optional `kura_dialect` callback `convert_values/1`, implemented
+  by `kura_dialect_pg`; `kura_query:where/2` stores the condition as
+  given, and a dialect without the callback (kura_sqlite) binds every
+  value as given, so a boolean filter on SQLite is not turned into the
+  text `'true'`. The conversion reaches the subqueries, CTEs and combined
+  queries of a query, each against its own `from` schema.
+- `kura_repo_worker:update_all/3` and `delete_all/2` raise
+  `{kura, {unsupported_in_bulk_write, Clause}}` for a query with a join,
+  `order_by`, `group_by`, having, limit, offset, distinct, CTE or
+  combination. The bulk statements compile only the `from` table, the
+  where conditions and the prefix, so these clauses used to be dropped
+  silently: `delete_all` on a joined query deleted every row its where
+  matched in the `from` table, or every row when the where was on the
+  joined table. Filter with a `{id, in, {subquery, Q}}` condition instead.
+- `kura_types:cast/2` (and so `kura_changeset:cast/4`) refuses an
+  out-of-range date or time: an hour over 23 (but `24:00:00`), a minute
+  over 59, a second over 60, a year outside 1..9999 or not four digits,
+  and a day the month does not have. These used to be accepted as given.
+- After a join, the PostgreSQL dialect qualifies a bare field of the
+  `from` schema with the `from` table in select, where, having, order_by,
+  group_by, distinct and window specs, so a column both tables have is no
+  longer ambiguous. The attribute-tenancy field and `order_by` names that
+  are `select_expr/2` aliases stay bare. Which fields are qualified is
+  decided by the new `kura_dialect:qualified_columns/1`. kura_sqlite
+  delegates to this dialect and inherits the qualification; a where on a
+  byte field of the `from` schema under a join needs the kura_sqlite
+  release that uses `kura_dialect:qualified_columns/1`. A deterministic
+  lookup on a field of the `from` schema is offered only by the `from`
+  schema, so a plain `from` field with a deterministic namesake in a
+  joined schema raises `{kura, {encrypted_field_in_where, Field}}`
+  instead of comparing the joined schema's ciphertexts with the plain
+  column.
+- `kura_changeset:validate_length/3` measures a binary in characters
+  (Unicode code points, the unit of `VARCHAR(N)`) rather than bytes, so a
+  multibyte string counts fewer units than before. A value that is not
+  valid UTF-8 gets the error `is not valid UTF-8`. On a field typed
+  `binary` or `{encrypted, binary}` it still counts bytes, and the
+  messages say byte(s).
+- `cast/4` looks up `table/0` only when the schema declares constraints
+  or indexes, so an embedded schema module needs only `fields/0`.
 - `kura_types:encryption/1` returns the full spec, with `mode`,
   `legacy` and `normalize`, and `kura_schema:encryption_specs/1` returns it
   with `context` resolved, in place of `#{context => Ctx}` alone.
@@ -558,6 +630,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `kura_types:cast/2` on an empty time (`~""`, `~"2024-01-01T"`) raised
+  `badarg`; it now returns a cast error, so a changeset gets a field error.
+- A `utc_datetime` with an offset other than `Z` dropped the offset, so
+  `~"2024-01-01T10:00:00+02:00"` was stored as 10:00 UTC. The offset
+  (`+HH:MM`, `+HHMM` or `+HH`) is now applied, giving 08:00 UTC; a
+  malformed one is a cast error. A `naive_datetime` and a `time` keep
+  their wall-clock value, as before.
+- A time fraction longer than nine digits is refused, and the digits are
+  checked over the binary, so a very long fraction no longer allocates a
+  list of its bytes.
+- A parsed datetime is normalised through gregorian seconds, so
+  `24:00:00` and a leap second (`:60`) become the next day or minute, the
+  value a read returns. A `time` keeps `{24, 0, 0}`.
 - In a sandboxed test, a `COMMIT`, `END` or `ROLLBACK` run through a
   query raises `{DriverMod, transaction_ended_by_statement}` with a driver
   that checks for it, and so does every later statement on that sandbox

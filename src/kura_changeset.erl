@@ -44,6 +44,7 @@ CS3 = kura_changeset:unique_constraint(CS2, email).
     get_field/2,
     get_field/3,
     put_change/3,
+    delete_change/2,
     apply_changes/1,
     apply_action/2,
     traverse_errors/2,
@@ -135,7 +136,19 @@ validate_format(CS, Field, Pattern) ->
             CS
     end.
 
--doc "Validate length of `Field`. Opts: `{min, N}`, `{max, N}`, `{is, N}`.".
+-doc """
+Validate length of `Field`. Opts: `{min, N}`, `{max, N}`, `{is, N}`.
+
+A binary is measured in characters, counted as Unicode code points: the
+unit PostgreSQL's `VARCHAR(N)` limit counts, so a value that passes always
+fits the column. `~"日本語"` has length 3 and four emoji have length 4. A
+binary that is not valid UTF-8 gets the error `is not valid UTF-8` instead
+of a length check.
+
+On a field typed `binary` or `{encrypted, binary}` the value is bytes, so it
+is measured with `byte_size/1` and the messages say byte(s). A list is
+measured by its length.
+""".
 -spec validate_length(#kura_changeset{}, atom(), [{atom(), non_neg_integer()}]) ->
     #kura_changeset{}.
 validate_length(CS, Field, Opts) ->
@@ -143,11 +156,10 @@ validate_length(CS, Field, Opts) ->
         undefined ->
             CS;
         Val when is_binary(Val) ->
-            Len = byte_size(Val),
-            check_length(CS, Field, Len, Opts);
+            binary_length(CS, Field, Val, Opts);
         Val when is_list(Val) ->
             Len = length(Val),
-            check_length(CS, Field, Len, Opts);
+            check_length(CS, Field, Len, ~"character(s)", Opts);
         _ ->
             CS
     end.
@@ -375,6 +387,33 @@ get_field(#kura_changeset{changes = Changes, data = Data}, Field, Default) ->
 put_change(CS = #kura_changeset{changes = Changes}, Field, Value) ->
     CS#kura_changeset{changes = Changes#{Field => Value}}.
 
+-doc """
+Remove `Field` from the changeset's changes. Data, params and errors are
+left as they are, as in Ecto's `delete_change/2`, so `get_field/2` falls
+back to the field's value in the data. Removing a field that has no change
+is a no-op.
+
+Scrub a virtual secret once it has been used:
+
+```erlang
+hash_password(CS) ->
+    case kura_changeset:get_change(CS, password) of
+        undefined ->
+            CS;
+        Password ->
+            CS1 = kura_changeset:put_change(CS, password_hash, hash(Password)),
+            kura_changeset:delete_change(CS1, password)
+    end.
+```
+
+The plain password is then not in `changes`, so neither `apply_changes/1`
+nor a hook sees it. `params` still holds the raw input: do not log or
+return the changeset itself.
+""".
+-spec delete_change(#kura_changeset{}, atom()) -> #kura_changeset{}.
+delete_change(CS = #kura_changeset{changes = Changes}, Field) ->
+    CS#kura_changeset{changes = maps:remove(Field, Changes)}.
+
 -doc "Merge changes into data, returning the resulting map (does not validate).".
 -spec apply_changes(#kura_changeset{}) -> map().
 apply_changes(#kura_changeset{data = Data, changes = Changes}) ->
@@ -522,7 +561,30 @@ group_errors([{F, M} | Rest], Acc) ->
         end,
     group_errors(Rest, NewAcc).
 
-check_length(CS, Field, Len, Opts) ->
+binary_length(#kura_changeset{types = Types} = CS, Field, Val, Opts) ->
+    case Types of
+        #{Field := binary} ->
+            check_length(CS, Field, byte_size(Val), ~"byte(s)", Opts);
+        #{Field := {encrypted, binary}} ->
+            check_length(CS, Field, byte_size(Val), ~"byte(s)", Opts);
+        #{} ->
+            text_length(CS, Field, Val, Opts)
+    end.
+
+text_length(CS, Field, Val, Opts) ->
+    case codepoints(Val, 0) of
+        invalid -> add_error(CS, Field, ~"is not valid UTF-8");
+        Len -> check_length(CS, Field, Len, ~"character(s)", Opts)
+    end.
+
+codepoints(<<_/utf8, Rest/binary>>, N) ->
+    codepoints(Rest, N + 1);
+codepoints(<<>>, N) ->
+    N;
+codepoints(_Invalid, _N) ->
+    invalid.
+
+check_length(CS, Field, Len, Unit, Opts) ->
     lists:foldl(
         fun
             ({min, Min}, Acc = #kura_changeset{}) when Len < Min ->
@@ -530,7 +592,7 @@ check_length(CS, Field, Len, Opts) ->
                     Acc,
                     Field,
                     iolist_to_binary(
-                        io_lib:format("should be at least ~B character(s)", [Min])
+                        io_lib:format("should be at least ~B ~ts", [Min, Unit])
                     )
                 );
             ({max, Max}, Acc = #kura_changeset{}) when Len > Max ->
@@ -538,7 +600,7 @@ check_length(CS, Field, Len, Opts) ->
                     Acc,
                     Field,
                     iolist_to_binary(
-                        io_lib:format("should be at most ~B character(s)", [Max])
+                        io_lib:format("should be at most ~B ~ts", [Max, Unit])
                     )
                 );
             ({is, Exact}, Acc = #kura_changeset{}) when Len =/= Exact ->
@@ -546,7 +608,7 @@ check_length(CS, Field, Len, Opts) ->
                     Acc,
                     Field,
                     iolist_to_binary(
-                        io_lib:format("should be ~B character(s)", [Exact])
+                        io_lib:format("should be ~B ~ts", [Exact, Unit])
                     )
                 );
             (_, Acc = #kura_changeset{}) ->
@@ -606,11 +668,17 @@ check_number(CS, Field, Val, Opts) ->
         Opts
     ).
 
+%% An embedded schema declares no constraints or indexes and need not
+%% export `table/0`, so the table is only looked up when there are some.
 build_schema_constraints(SchemaMod) ->
-    Table = schema_table(SchemaMod),
-    TableConstraints = build_table_constraints(kura_schema:constraints(SchemaMod), Table),
-    IndexConstraints = build_index_constraints(kura_schema:indexes(SchemaMod), Table),
-    TableConstraints ++ IndexConstraints.
+    case {kura_schema:constraints(SchemaMod), kura_schema:indexes(SchemaMod)} of
+        {[], []} ->
+            [];
+        {Constraints, Indexes} ->
+            Table = schema_table(SchemaMod),
+            build_table_constraints(Constraints, Table) ++
+                build_index_constraints(Indexes, Table)
+    end.
 
 -spec schema_table(module()) -> binary().
 schema_table(SchemaMod) -> SchemaMod:table().

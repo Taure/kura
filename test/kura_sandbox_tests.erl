@@ -25,6 +25,10 @@ tests() ->
             fun t_raised_transaction_undoes_its_work/0},
         {"a failed statement in a sandboxed transaction leaves the sandbox usable",
             fun t_failed_statement_keeps_sandbox/0},
+        {"a failed statement outside a transaction aborts the sandbox",
+            fun t_failed_bare_statement_aborts_sandbox/0},
+        {"an expected failure run in a rolled-back transaction keeps the sandbox",
+            fun t_expected_failure_in_transaction_keeps_sandbox/0},
         {"a raise two transactions down undoes only the innermost work",
             fun t_doubly_nested_raise/0},
         {"a savepoint refused in an aborted sandbox raises a reduced reason",
@@ -236,6 +240,41 @@ t_failed_statement_keeps_sandbox() ->
         ok = kura_sandbox:checkin(kura_test_repo)
     end,
     ?assertEqual(Before, count_users()).
+
+t_failed_bare_statement_aborts_sandbox() ->
+    kura_sandbox:checkout(kura_test_repo),
+    try
+        {ok, _} = insert_user(<<"First">>, <<"bare@test.com">>),
+        {error, _} = insert_user(<<"Dup">>, <<"bare@test.com">>),
+        ?assertMatch(
+            {error, {pgsql_error, #{code := ~"25P02"}}},
+            kura_test_repo:query(~"SELECT 1", [])
+        )
+    after
+        ok = kura_sandbox:checkin(kura_test_repo)
+    end.
+
+t_expected_failure_in_transaction_keeps_sandbox() ->
+    Before = count_users(),
+    kura_sandbox:checkout(kura_test_repo),
+    try
+        {ok, _} = insert_user(<<"First">>, <<"kept@test.com">>),
+        ?assertMatch(
+            {error, #kura_changeset{}},
+            rolled_back(fun() -> insert_user(<<"Dup">>, <<"kept@test.com">>) end)
+        ),
+        {ok, _} = insert_user(<<"Second">>, <<"kept2@test.com">>),
+        ?assertEqual(Before + 2, count_users())
+    after
+        ok = kura_sandbox:checkin(kura_test_repo)
+    end.
+
+rolled_back(Fun) ->
+    try
+        kura_repo_worker:transaction(kura_test_repo, fun() -> throw({rolled_back, Fun()}) end)
+    catch
+        throw:{rolled_back, Result} -> Result
+    end.
 
 t_doubly_nested_raise() ->
     Before = count_users(),

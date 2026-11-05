@@ -129,6 +129,80 @@ validate_length_is_test() ->
     CS2 = kura_changeset:validate_length(CS, name, [{is, 3}]),
     ?assert(CS2#kura_changeset.valid).
 
+validate_length_counts_code_points_not_bytes_test() ->
+    Name = <<"日本語"/utf8>>,
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{name => Name}, [name]),
+    ?assert((kura_changeset:validate_length(CS, name, [{max, 3}]))#kura_changeset.valid),
+    ?assert((kura_changeset:validate_length(CS, name, [{is, 3}]))#kura_changeset.valid),
+    ?assertNot((kura_changeset:validate_length(CS, name, [{min, 4}]))#kura_changeset.valid).
+
+validate_length_counts_each_emoji_once_test() ->
+    Name = <<"😀😃😄😁"/utf8>>,
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{name => Name}, [name]),
+    ?assert((kura_changeset:validate_length(CS, name, [{is, 4}]))#kura_changeset.valid),
+    CS2 = kura_changeset:validate_length(CS, name, [{max, 3}]),
+    ?assertEqual([{name, ~"should be at most 3 character(s)"}], CS2#kura_changeset.errors).
+
+validate_length_reports_invalid_utf8_test() ->
+    CS = kura_changeset:put_change(
+        kura_changeset:cast(kura_test_schema, #{}, #{}, []), name, <<255, 254, 253>>
+    ),
+    CS2 = kura_changeset:validate_length(CS, name, [{is, 3}]),
+    ?assertEqual([{name, ~"is not valid UTF-8"}], CS2#kura_changeset.errors).
+
+validate_length_counts_bytes_on_a_binary_field_test() ->
+    Types = #{digest => binary},
+    CS = kura_changeset:cast(Types, #{}, #{digest => <<"日本"/utf8, 255>>}, [digest]),
+    ?assert((kura_changeset:validate_length(CS, digest, [{is, 7}]))#kura_changeset.valid),
+    CS2 = kura_changeset:validate_length(CS, digest, [{max, 2}]),
+    ?assertEqual([{digest, ~"should be at most 2 byte(s)"}], CS2#kura_changeset.errors).
+
+validate_length_counts_bytes_on_an_encrypted_binary_field_test() ->
+    Types = #{secret => {encrypted, binary}},
+    CS = kura_changeset:put_change(
+        kura_changeset:cast(Types, #{}, #{}, []), secret, <<"日本"/utf8, 255>>
+    ),
+    ?assert((kura_changeset:validate_length(CS, secret, [{is, 7}]))#kura_changeset.valid),
+    CS2 = kura_changeset:validate_length(CS, secret, [{max, 2}]),
+    ?assertEqual([{secret, ~"should be at most 2 byte(s)"}], CS2#kura_changeset.errors).
+
+validate_length_measures_a_list_by_its_length_test() ->
+    CS = kura_changeset:cast(#{tags => {array, string}}, #{}, #{tags => [~"a", ~"b", ~"c"]}, [tags]),
+    ?assert((kura_changeset:validate_length(CS, tags, [{is, 3}]))#kura_changeset.valid),
+    CS2 = kura_changeset:validate_length(CS, tags, [{max, 2}]),
+    ?assertEqual([{tags, ~"should be at most 2 character(s)"}], CS2#kura_changeset.errors).
+
+validate_length_is_reports_the_exact_length_test() ->
+    CS = kura_changeset:cast(kura_test_schema, #{}, #{name => ~"Alice"}, [name]),
+    CS2 = kura_changeset:validate_length(CS, name, [{is, 3}]),
+    ?assertEqual([{name, ~"should be 3 character(s)"}], CS2#kura_changeset.errors).
+
+cast_of_an_empty_or_offset_form_time_test() ->
+    Types = #{at => utc_datetime, starts => time},
+    CS = kura_changeset:cast(Types, #{}, #{at => ~"2024-01-01T", starts => ~"12::00"}, [at, starts]),
+    ?assertNot(CS#kura_changeset.valid),
+    ?assertMatch([_, _], CS#kura_changeset.errors),
+    CS2 = kura_changeset:cast(Types, #{}, #{at => ~"2024-01-01T10:00:00+02:00"}, [at]),
+    ?assertEqual(#{at => {{2024, 1, 1}, {8, 0, 0}}}, CS2#kura_changeset.changes).
+
+delete_change_removes_only_the_change_test() ->
+    Types = #{password => string, password_hash => string, email => string},
+    CS = kura_changeset:cast(
+        Types,
+        #{email => ~"old@x.io"},
+        #{password => ~"hunter22", email => ~"new@x.io"},
+        [password, email]
+    ),
+    CS1 = kura_changeset:delete_change(
+        kura_changeset:put_change(CS, password_hash, ~"h"), password
+    ),
+    ?assertEqual(#{email => ~"new@x.io", password_hash => ~"h"}, CS1#kura_changeset.changes),
+    ?assertEqual(CS#kura_changeset.params, CS1#kura_changeset.params),
+    ?assertNot(maps:is_key(password, kura_changeset:apply_changes(CS1))),
+    CS2 = kura_changeset:delete_change(CS1, email),
+    ?assertEqual(~"old@x.io", kura_changeset:get_field(CS2, email)),
+    ?assertEqual(CS2, kura_changeset:delete_change(CS2, email)).
+
 validate_length_ok_test() ->
     CS = kura_changeset:cast(kura_test_schema, #{}, #{name => <<"Alice">>}, [name]),
     CS2 = kura_changeset:validate_length(CS, name, [{min, 1}, {max, 100}]),

@@ -74,7 +74,8 @@ to_sql(RepoMod, Query) ->
 %% run them on the query.
 -spec compile_query(module(), #kura_query{}) -> {iodata(), [term()]}.
 compile_query(RepoMod, Query) ->
-    (dialect(RepoMod)):to_sql(scope(Query)).
+    Dialect = dialect(RepoMod),
+    Dialect:to_sql(convert(Dialect, scope(Query))).
 
 -doc """
 Cached `to_sql/2`. The cache key includes `RepoMod` so two repos with
@@ -117,7 +118,7 @@ cannot take apart, such as one with an improper condition list, goes through
 """.
 -spec to_sql_cached(module(), #kura_query{}) -> {iodata(), [term()]}.
 to_sql_cached(RepoMod, Query) ->
-    case split(Query) of
+    case split(convert(dialect(RepoMod), Query)) of
         {ok, Shape, Values} -> cached(RepoMod, Query, Shape, Values);
         malformed -> to_sql(RepoMod, Query)
     end.
@@ -174,7 +175,8 @@ compile_shape(RepoMod, Shape, Arity) ->
 to_sql_from(RepoMod, Query, StartCounter) ->
     ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
-    (dialect(RepoMod)):to_sql_from(scope(Query), StartCounter).
+    Dialect = dialect(RepoMod),
+    Dialect:to_sql_from(convert(Dialect, scope(Query)), StartCounter).
 
 -spec insert(module(), atom() | module(), [atom()], map()) -> {iodata(), [term()]}.
 insert(RepoMod, SchemaOrTable, Fields, Data) ->
@@ -197,13 +199,17 @@ delete(RepoMod, SchemaOrTable, KeyClauses) ->
 update_all(RepoMod, Query, SetMap) ->
     ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
-    (dialect(RepoMod)):update_all(scope(Query), SetMap).
+    ok = check_bulk_write(Query),
+    Dialect = dialect(RepoMod),
+    Dialect:update_all(convert(Dialect, scope(Query)), SetMap).
 
 -spec delete_all(module(), #kura_query{}) -> {iodata(), [term()]}.
 delete_all(RepoMod, Query) ->
     ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
-    (dialect(RepoMod)):delete_all(scope(Query)).
+    ok = check_bulk_write(Query),
+    Dialect = dialect(RepoMod),
+    Dialect:delete_all(convert(Dialect, scope(Query))).
 
 -spec insert_all(module(), atom() | module(), [atom()], [map()]) -> {iodata(), [term()]}.
 insert_all(RepoMod, SchemaOrTable, Fields, Rows) ->
@@ -213,6 +219,46 @@ insert_all(RepoMod, SchemaOrTable, Fields, Rows) ->
     {iodata(), [term()]}.
 insert_all(RepoMod, SchemaOrTable, Fields, Rows, Opts) ->
     (dialect(RepoMod)):insert_all(SchemaOrTable, Fields, Rows, Opts).
+
+%% A dialect's convert_values/1 is optional (see kura_dialect).
+-spec convert(module(), #kura_query{}) -> #kura_query{}.
+convert(Dialect, Query) ->
+    case has_convert_values(Dialect) of
+        true -> Dialect:convert_values(Query);
+        false -> Query
+    end.
+
+%% function_exported/3 is false for a module not yet loaded.
+-spec has_convert_values(module()) -> boolean().
+has_convert_values(Dialect) ->
+    erlang:function_exported(Dialect, convert_values, 1) orelse
+        (not erlang:module_loaded(Dialect) andalso
+            code:ensure_loaded(Dialect) =:= {module, Dialect} andalso
+            erlang:function_exported(Dialect, convert_values, 1)).
+
+%% A bulk write compiles only the from table, the where conditions and the
+%% prefix, so a clause that narrows or widens the rows a SELECT would read
+%% must be refused rather than dropped: a dropped join or limit turns
+%% `DELETE ... WHERE <joined condition>` into a delete of every row.
+%% select, lock, preloads and include_deleted (applied by the repo worker
+%% before this) do not change which rows are written.
+-spec check_bulk_write(#kura_query{}) -> ok.
+check_bulk_write(#kura_query{} = Q) ->
+    Clauses = [
+        {joins, Q#kura_query.joins =/= []},
+        {order_bys, Q#kura_query.order_bys =/= []},
+        {group_bys, Q#kura_query.group_bys =/= []},
+        {havings, Q#kura_query.havings =/= []},
+        {limit, Q#kura_query.limit =/= undefined},
+        {offset, Q#kura_query.offset =/= undefined},
+        {distinct, Q#kura_query.distinct =/= false},
+        {ctes, Q#kura_query.ctes =/= []},
+        {combinations, Q#kura_query.combinations =/= []}
+    ],
+    case [Clause || {Clause, true} <- Clauses] of
+        [] -> ok;
+        [Clause | _] -> erlang:error({kura, {unsupported_in_bulk_write, Clause}})
+    end.
 
 -spec scope(#kura_query{}) -> #kura_query{}.
 scope(Query) ->

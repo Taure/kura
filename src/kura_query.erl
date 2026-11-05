@@ -67,8 +67,12 @@ Q3 = kura_query:limit(Q2, 10).
 %% pgvector's VECTOR_MAX_DIM.
 -define(MAX_DIMENSIONS, 16000).
 
--doc "Start a query from the given schema module or table atom.".
--spec from(atom() | module()) -> #kura_query{}.
+-doc """
+Start a query from a schema module, a bare table atom, or a binary table or
+CTE name (see `with_cte/3`). Rows read from a schema are loaded through its
+field types; rows read from a name come back as the driver returns them.
+""".
+-spec from(module() | binary()) -> #kura_query{}.
 from(Source) ->
     #kura_query{from = Source}.
 
@@ -539,6 +543,11 @@ allowed. A `{fragment, SQL, Params}` is not inspected: what it binds is the
 caller's responsibility. A query over a bare table name has no schema and is
 not checked. A `{subquery, Q}` anywhere but `exists`, `not_exists` or a
 single-column `in` raises `{kura, unrecognised_condition}`.
+
+The condition is stored as given. Whether a value is converted to the
+field's type before it is bound is up to the dialect, when the query is
+compiled: `kura_dialect_pg` does it (see `kura_dialect_pg:convert_values/1`),
+a dialect without `convert_values/1` binds every value as given.
 """.
 -spec where(#kura_query{}, term()) -> #kura_query{}.
 where(Q = #kura_query{from = From, wheres = W}, Condition) ->
@@ -610,7 +619,9 @@ lookup_op(Op) when Op =:= '!='; Op =:= not_in -> encrypted_not_in.
 %% source of Q declares encrypted, and declares deterministic. A source that
 %% reads a CTE holds whatever the CTE selects, and a CTE whose encrypted
 %% columns cannot be named may hold ciphertext under any name, so neither
-%% offers a lookup.
+%% offers a lookup. After a join a dialect names a field of the `from`
+%% schema with the `from` table (kura_dialect:qualified_columns/1), so
+%% only the `from` schema can offer a lookup on such a field.
 lookup_specs(_Q, {[], _Ctes}) ->
     #{};
 lookup_specs(Q, {Encrypted, Ctes}) ->
@@ -618,13 +629,21 @@ lookup_specs(Q, {Encrypted, Ctes}) ->
         true ->
             #{};
         false ->
+            FromOwned = from_owned_fields(Q),
             maps:from_list([
                 {F, Spec}
              || Source <- sources(Q),
                 not reads_cte(Source, Ctes),
                 F := #{mode := deterministic} = Spec <- source_specs(Source),
-                declared_once(F, Encrypted)
+                declared_once(F, Encrypted),
+                Source =:= Q#kura_query.from orelse not is_map_key(F, FromOwned)
             ])
+    end.
+
+from_owned_fields(Q) ->
+    case kura_dialect:qualified_columns(Q) of
+        {_Table, FromFields} -> FromFields;
+        undefined -> #{}
     end.
 
 declared_once(Field, Encrypted) ->
@@ -987,7 +1006,8 @@ refuse_field(Field, {Encrypted, _Ctes}, Reason) ->
     end.
 
 -doc """
-Add a JOIN clause. `Table` can be a schema module or raw table atom.
+Add a JOIN clause. `Table` can be a schema module, a raw table atom, or a
+binary table or CTE name.
 Conditions already added with `where/2` or `having/2` are checked against the
 joined schema's encrypted fields, as if added after the join.
 `On` is `{LeftCol, RightCol}` where LeftCol is on the previous table
@@ -1004,12 +1024,17 @@ Q2 = kura_query:join(Q1, inner, comment_schema, {id, post_id}).
 %% => posts.id = comments.post_id
 ```
 """.
--spec join(#kura_query{}, inner | left | right | full, atom(), {atom(), atom()}) -> #kura_query{}.
+-spec join(#kura_query{}, inner | left | right | full, module() | binary(), {atom(), atom()}) ->
+    #kura_query{}.
 join(Q, Type, Table, On) ->
     join(Q, Type, Table, On, undefined).
 
 -spec join(
-    #kura_query{}, inner | left | right | full, atom(), {atom(), atom()}, atom() | undefined
+    #kura_query{},
+    inner | left | right | full,
+    module() | binary(),
+    {atom(), atom()},
+    atom() | undefined
 ) -> #kura_query{}.
 join(Q = #kura_query{joins = J}, Type, Table, On, As) ->
     reject_join_distances(On),
@@ -1168,7 +1193,17 @@ except(Q = #kura_query{combinations = C}, Q2) ->
 scope(Query, Fun) when is_function(Fun, 1) ->
     Fun(Query).
 
--doc "Include soft-deleted records in query results.".
+-doc """
+Include soft-deleted records in query results.
+
+A schema with a `deleted_at` field is soft-deletable: `kura_repo_worker`'s
+reads (`all/2`, `get/3`, `one/2`, `exists/2`, `count/2`, `aggregate/3,4`),
+`update_all/3`, `delete_all/2` and `kura_stream:stream/3,4` leave out its
+rows whose `deleted_at` is set unless the query is marked with this
+function. The filter applies to the query's own `from` schema; the bodies
+of its CTEs, subqueries and combined queries are not filtered, so add
+`{deleted_at, is_nil}` to them where needed.
+""".
 -spec with_deleted(#kura_query{}) -> #kura_query{}.
 with_deleted(Q) ->
     Q#kura_query{include_deleted = true}.

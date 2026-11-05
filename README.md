@@ -70,17 +70,27 @@ update(CS) -> kura_repo_worker:update(?MODULE, CS).
 delete(CS) -> kura_repo_worker:delete(?MODULE, CS).
 ```
 
-Configure the database connection in `sys.config`:
+Add Kura and a backend to your deps:
 
 ```erlang
-[{my_app, [
-    {my_repo, #{
-        database => ~"myapp",
-        hostname => ~"localhost",
-        port => 5432,
-        username => ~"postgres",
-        password => <<>>,
-        pool_size => 10
+{deps, [kura, kura_postgres]}.
+```
+
+Configure the repo under the `kura` app in `sys.config`; Kura starts its
+pool at boot (see [Configuration](#configuration) for every key):
+
+```erlang
+[{kura, [
+    {repos, #{
+        my_repo => #{
+            backend => kura_backend_postgres,
+            host => "localhost",
+            port => 5432,
+            database => "my_app_dev",
+            user => "postgres",
+            password => "postgres",
+            pool_size => 10
+        }
     }}
 ]}].
 ```
@@ -577,9 +587,9 @@ The per-app form:
     {my_repo, #{
         backend => kura_backend_postgres,
         database => ~"my_app_dev",
-        hostname => ~"localhost",
+        host => ~"localhost",
         port => 5432,
-        username => ~"postgres",
+        user => ~"postgres",
         password => ~"postgres",
         pool_size => 10
     }}

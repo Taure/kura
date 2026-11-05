@@ -24,11 +24,17 @@ end, #{batch_size => 100}).
 stream(RepoMod, Query, Fun) ->
     stream(RepoMod, Query, Fun, #{}).
 
--doc "Stream query results with options. Opts: `#{batch_size => pos_integer()}`.".
+-doc """
+Stream query results with options. Opts: `#{batch_size => pos_integer()}`.
+
+The query is scoped as `kura_repo_worker:all/2` scopes it: soft-deleted rows
+are left out unless the query asks for them with `kura_query:with_deleted/1`,
+and a prefix tenant applies.
+""".
 -spec stream(module(), #kura_query{}, fun(([map()]) -> ok), map()) -> ok | {error, term()}.
 stream(RepoMod, Query, Fun, Opts) ->
     BatchSize = maps:get(batch_size, Opts, 500),
-    {SQL, Params} = kura_query_compiler:to_sql(RepoMod, Query),
+    {SQL, Params} = kura_query_compiler:to_sql(RepoMod, kura_repo_worker:scope_read(Query)),
     Schema = Query#kura_query.from,
     CursorName = generate_cursor_name(),
     DeclareSQL = iolist_to_binary([

@@ -17,6 +17,39 @@ Q1 = kura_query:where(Q, {active, true}),
 
 ## WHERE Conditions
 
+On PostgreSQL, a value compared to a field of the `from` schema is
+converted when the query is compiled, only where it then binds the value
+the database would parse from it: an enum atom binds its binary, and a
+binary in cast form binds the value it spells on an `id`, `integer`,
+`bigint`, `smallint`, `float`, `boolean`, `date` or `time` field (`~"42"`
+for an integer), or on a datetime without an offset other than `Z` and
+without fractional seconds (`~"2026-01-01T00:00:00Z"`). Everything else is
+bound as given: decimal, jsonb, embed, string, uuid, array and custom
+fields, values the type rejects, and fields of joined schemas, CTEs and
+bare table names. Conditions from `having/2` are not converted. An integer
+binary over 20 bytes or a float binary over 64 is bound as given. Other
+dialects bind every value as given (see
+`kura_dialect_pg:convert_values/1`).
+
+`kura_repo_worker:update_all/3` and `delete_all/2` write the rows the
+`from` table's where conditions match. A query with a join, `order_by`,
+`group_by`, having, limit, offset, distinct, CTE or combination raises
+`{kura, {unsupported_in_bulk_write, Clause}}` there; filter with a subquery
+instead (`{id, in, {subquery, Q}}`). `Clause` is the first of these atoms,
+in this order, that the query sets:
+
+| Clause | Set by |
+|---|---|
+| `joins` | `join/4,5` |
+| `order_bys` | `order_by/2` |
+| `group_bys` | `group_by/2` |
+| `havings` | `having/2` |
+| `limit` | `limit/2` |
+| `offset` | `offset/2` |
+| `distinct` | `distinct/1,2` |
+| `ctes` | `with_cte/3` |
+| `combinations` | `union/2`, `union_all/2`, `intersect/2`, `except/2` |
+
 ### Equality
 
 ```erlang
@@ -202,6 +235,31 @@ Q2 = kura_query:join(Q1, inner, my_comment, {id, post_id}).
 ```
 
 Join types: `inner`, `left`, `right`, `full`.
+
+Once a query has a join, a bare field of the `from` schema is qualified
+with the `from` table in `select`, `where`, `having`, `order_by`,
+`group_by` and `distinct`, so a column both tables have (`id`,
+`inserted_at`) names the `from` table's column. A name the `from` schema
+does not declare is left bare, for the database to find in the joined
+tables; it must be unique among them. Under attribute tenancy the tenant
+field stays bare too, so a join of two tables that both carry it is still
+refused (see the [Multitenancy](multitenancy.md) guide). An `order_by`
+name that is a `select_expr/2` alias stays bare, so it keeps naming the
+expression. To read a column of a joined table
+that the `from` schema also has, select it with a fragment:
+
+```erlang
+Q = kura_query:join(kura_query:from(post), inner, user, {author_id, id}),
+Q1 = kura_query:select_expr(Q, [
+    {id, id},
+    {title, title},
+    {author_id_check, {fragment, ~"\"users\".\"id\"", []}}
+]),
+Q2 = kura_query:where(Q1, {id, PostId}).
+%% => SELECT "posts"."id" AS "id", "posts"."title" AS "title", "users"."id" AS ...
+%%      FROM "posts" INNER JOIN "users" ON "posts"."author_id" = "users"."id"
+%%      WHERE "posts"."id" = $1
+```
 
 ## Aggregates
 

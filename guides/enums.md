@@ -67,13 +67,21 @@ value will fail to load until you migrate them.
 
 ## Querying
 
-Since enums are stored as `VARCHAR(255)`, use binary values in where clauses:
+A where condition on an enum field of the query's `from` schema takes the
+atom, as the changeset does; on PostgreSQL the query is compiled with the
+atom dumped to the stored binary. The binary works too:
 
 ```erlang
 Q = kura_query:from(post),
-Q1 = kura_query:where(Q, {status, ~"published"}),
+Q1 = kura_query:where(Q, {status, published}),
+Q2 = kura_query:where(Q, {status, in, [draft, published]}),
 {ok, Posts} = my_repo:all(Q1).
 ```
+
+A condition on a joined schema's enum field, a CTE or a bare table name is
+bound as given, so pass the binary there (`~"published"`).
+
+For untrusted input pass the binary; never `binary_to_atom/2`.
 
 ## Migration Behavior
 

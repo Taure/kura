@@ -40,6 +40,11 @@ assoc_test_() ->
 
             %% cast_assoc / put_assoc
             {"cast_assoc has_many inserts children", fun t_cast_assoc_has_many/0},
+            {"insert/3 persists cast_assoc children", fun t_insert_opts_cast_assoc/0},
+            {"insert/3 takes a guarded nothing with assocs",
+                fun t_insert_opts_guarded_nothing_with_assocs/0},
+            {"insert/3 refuses an updating upsert with associations",
+                fun t_insert_opts_upsert_with_assocs_refused/0},
             {"cast_assoc single child via has_many", fun t_cast_assoc_single_child/0},
             {"put_assoc many_to_many", fun t_put_assoc_many_to_many/0},
             {"put_assoc many_to_many via composite keys", fun t_put_assoc_many_to_many_composite/0},
@@ -51,6 +56,7 @@ assoc_test_() ->
 
             %% Join queries
             {"inner join query", fun t_join_inner/0},
+            {"join selects and filters on a column both tables have", fun t_join_shared_column/0},
             {"left join query", fun t_join_left/0},
 
             %% Foreign key constraint on assoc table
@@ -676,6 +682,71 @@ t_cast_assoc_has_many() ->
     [Loaded] = kura_test_repo:preload(kura_test_post_schema, [Post], [comments]),
     ?assertEqual(2, length(maps:get(comments, Loaded))).
 
+t_insert_opts_cast_assoc() ->
+    {ok, User} = insert_user(<<"CAO_Author">>, <<"cao_author@test.com">>),
+    UserId = maps:get(id, User),
+    CS = kura_changeset:cast(
+        kura_test_post_schema,
+        #{},
+        #{
+            title => <<"CAO Post">>,
+            author_id => UserId,
+            comments => [#{body => <<"opts child">>, author_id => UserId}]
+        },
+        [title, author_id]
+    ),
+    {ok, Post} = kura_repo_worker:insert(
+        kura_test_repo, kura_changeset:cast_assoc(CS, comments), #{on_conflict => {id, nothing}}
+    ),
+    ?assertMatch([#{body := <<"opts child">>}], maps:get(comments, Post)),
+    [Loaded] = kura_test_repo:preload(kura_test_post_schema, [Post], [comments]),
+    ?assertMatch([#{body := <<"opts child">>}], maps:get(comments, Loaded)).
+
+t_insert_opts_guarded_nothing_with_assocs() ->
+    {ok, User} = insert_user(<<"CAG_Author">>, <<"cag_author@test.com">>),
+    UserId = maps:get(id, User),
+    CS = kura_changeset:cast(
+        kura_test_post_schema,
+        #{},
+        #{
+            title => <<"CAG Post">>,
+            author_id => UserId,
+            comments => [#{body => <<"guarded child">>, author_id => UserId}]
+        },
+        [title, author_id]
+    ),
+    {ok, Post} = kura_repo_worker:insert(
+        kura_test_repo,
+        kura_changeset:cast_assoc(CS, comments),
+        #{on_conflict => {id, nothing, #{guard => [author_id]}}}
+    ),
+    ?assertMatch([#{body := <<"guarded child">>}], maps:get(comments, Post)).
+
+t_insert_opts_upsert_with_assocs_refused() ->
+    {ok, User} = insert_user(<<"CAU_Author">>, <<"cau_author@test.com">>),
+    UserId = maps:get(id, User),
+    CS = kura_changeset:cast(
+        kura_test_post_schema,
+        #{},
+        #{
+            title => <<"CAU Post">>,
+            author_id => UserId,
+            comments => [#{body => <<"upsert child">>, author_id => UserId}]
+        },
+        [title, author_id]
+    ),
+    CS1 = kura_changeset:cast_assoc(CS, comments),
+    ?assertError(
+        {kura, on_conflict_with_assocs},
+        kura_repo_worker:insert(kura_test_repo, CS1, #{on_conflict => {id, replace_all}})
+    ),
+    ?assertError(
+        {kura, on_conflict_with_assocs},
+        kura_repo_worker:insert(kura_test_repo, CS1, #{on_conflict => {id, {replace, [title]}}})
+    ),
+    Q = kura_query:where(kura_query:from(kura_test_post_schema), {title, <<"CAU Post">>}),
+    ?assertEqual({ok, []}, kura_test_repo:all(Q)).
+
 t_cast_assoc_single_child() ->
     {ok, User} = insert_user(<<"CO_Author">>, <<"co_author@test.com">>),
     UserId = maps:get(id, User),
@@ -865,6 +936,21 @@ t_join_inner() ->
     {ok, Results} = kura_test_repo:all(Q4),
     ?assertMatch([_ | _], Results),
     ?assertEqual(<<"JoinA">>, maps:get(name, hd(Results))).
+
+t_join_shared_column() ->
+    {ok, User} = insert_user(<<"JoinShared">>, <<"joinshared@test.com">>),
+    UserId = maps:get(id, User),
+    {ok, Post} = insert_post(<<"Shared Post">>, <<"body">>, UserId),
+    PostId = maps:get(id, Post),
+    Q0 = kura_query:join(kura_query:from(kura_test_post_schema), inner, kura_test_schema, {
+        author_id, id
+    }),
+    Q1 = kura_query:select(Q0, [id, title, name, inserted_at]),
+    Q2 = kura_query:where(Q1, {id, PostId}),
+    Q3 = kura_query:order_by(Q2, [{inserted_at, desc}]),
+    {ok, Rows} = kura_test_repo:all(Q3),
+    ?assertMatch([#{id := PostId, title := <<"Shared Post">>, name := <<"JoinShared">>}], Rows),
+    ?assertEqual({ok, 1}, kura_repo_worker:count(kura_test_repo, Q2)).
 
 t_join_left() ->
     {ok, _User} = insert_user(<<"LeftJoin">>, <<"leftjoin@test.com">>),

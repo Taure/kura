@@ -41,7 +41,11 @@ CS1 = kura_changeset:validate_length(CS, name, [{min, 2}, {max, 100}]).
 CS2 = kura_changeset:validate_length(CS, code, [{is, 6}]).
 ```
 
-Options: `{min, N}`, `{max, N}`, `{is, N}`. Works on binaries (byte size) and lists (length).
+Options: `{min, N}`, `{max, N}`, `{is, N}`. A binary is measured in
+characters (Unicode code points, the unit `VARCHAR(N)` counts), so four
+emoji have length 4; a value that is not valid UTF-8 gets the error
+`is not valid UTF-8`. On a `binary` field the length is the byte size. A
+list is measured by its length.
 
 ### Number
 
@@ -125,6 +129,11 @@ Email = kura_changeset:get_field(CS, email).
 
 %% Manually set a change
 CS1 = kura_changeset:put_change(CS, role, ~"admin").
+
+%% Remove a change, e.g. a virtual password once it is hashed
+CS2 = kura_changeset:delete_change(
+    kura_changeset:put_change(CS, password_hash, Hash), password
+).
 
 %% Add a custom error
 CS1 = kura_changeset:add_error(CS, email, ~"is not allowed").

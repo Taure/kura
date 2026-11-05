@@ -540,6 +540,54 @@ cast_time_invalid_hm_test() ->
 cast_time_no_colon_test() ->
     ?assertMatch({error, _}, kura_types:cast(utc_datetime, <<"2024-01-15T1030">>)).
 
+cast_rejects_out_of_range_dates_and_times_test_() ->
+    [
+        ?_assertMatch({error, _}, kura_types:cast(Type, V))
+     || {Type, V} <- [
+            {utc_datetime, ~"2024-01-01T24:59:60Z"},
+            {utc_datetime, ~"2024-01-01T24:00:01Z"},
+            {utc_datetime, ~"2024-01-01T24:00:00.5Z"},
+            {utc_datetime, ~"2024-01-01T23:60:00Z"},
+            {utc_datetime, ~"2024-01-01T23:59:61Z"},
+            {utc_datetime, ~"2024-01-01T+1:00:00Z"},
+            {time, ~"25:00:00"},
+            {time, ~"00000000001:00:00"},
+            {date, ~"0000-01-01"},
+            {date, ~"+202-01-01"},
+            {date, ~"-001-01-01"},
+            {date, ~"2024-02-30"},
+            {date, ~"2024-13-01"},
+            {date, ~"2024-00-10"},
+            {naive_datetime, ~"0000-01-01 00:00:00"},
+            {time, ~"12::00"},
+            {time, ~"10:00:00000"},
+            {date, ~"02024-01-01"},
+            {time, ~""},
+            {utc_datetime, ~"2024-01-01T"},
+            {naive_datetime, ~"2024-01-01 "},
+            {utc_datetime, ~"2024-01-01T10:00:00+25:00"},
+            {utc_datetime, ~"2024-01-01T10:00:00+02:60"},
+            {utc_datetime, ~"2024-01-01T10:00:00+2"},
+            {time, ~"10:00:00+aa:00"}
+        ]
+    ].
+
+cast_accepts_the_end_of_day_and_a_leap_second_test_() ->
+    [
+        ?_assertEqual(
+            {ok, {{2024, 1, 2}, {0, 0, 0}}}, kura_types:cast(utc_datetime, ~"2024-01-01T24:00:00Z")
+        ),
+        ?_assertEqual(
+            {ok, {{2025, 1, 1}, {0, 0, 0}}},
+            kura_types:cast(naive_datetime, ~"2024-12-31 23:59:60")
+        ),
+        ?_assertEqual({ok, {1, 1, 1}}, kura_types:cast(date, ~"0001-01-01")),
+        ?_assertEqual({ok, {24, 0, 0}}, kura_types:cast(time, ~"24:00:00.000")),
+        ?_assertEqual({ok, {23, 59, 60}}, kura_types:cast(time, ~"23:59:60")),
+        ?_assertEqual({ok, {9999, 12, 31}}, kura_types:cast(date, ~"9999-12-31")),
+        ?_assertEqual({ok, {2024, 2, 29}}, kura_types:cast(date, ~"2024-02-29"))
+    ].
+
 %%----------------------------------------------------------------------
 %% embed load through kura_types
 %%----------------------------------------------------------------------
@@ -633,3 +681,68 @@ encrypted_type_errors_test_() ->
 encrypted_options_form_errors_test() ->
     V2 = kura_test_enc_v2_schema:v2_type(),
     ?assertError({kura_crypto, malformed_frame}, kura_types:load({array, V2}, ~"secret-value")).
+
+cast_utc_datetime_applies_the_offset_test_() ->
+    [
+        ?_assertEqual({ok, Expected}, kura_types:cast(utc_datetime, V))
+     || {V, Expected} <- [
+            {~"2024-01-01T10:00:00+02:00", {{2024, 1, 1}, {8, 0, 0}}},
+            {~"2024-01-01T10:00:00-05:00", {{2024, 1, 1}, {15, 0, 0}}},
+            {~"2024-01-01T10:00:00+0530", {{2024, 1, 1}, {4, 30, 0}}},
+            {~"2024-01-01T10:00:00+01", {{2024, 1, 1}, {9, 0, 0}}},
+            {~"2024-01-01T01:00:00+02:00", {{2023, 12, 31}, {23, 0, 0}}},
+            {~"2024-01-01 10:00:00.250+02:00", {{2024, 1, 1}, {8, 0, 0}}},
+            {~"2024-01-01T10:00:00Z", {{2024, 1, 1}, {10, 0, 0}}},
+            {~"2024-01-01T10:00:00+23:59", {{2023, 12, 31}, {10, 1, 0}}},
+            {~"2024-01-01T10:00:00-00:59", {{2024, 1, 1}, {10, 59, 0}}},
+            {~"2024-01-01T1:2", {{2024, 1, 1}, {1, 2, 0}}},
+            {~"2024-01-01T1:2+01", {{2024, 1, 1}, {0, 2, 0}}}
+        ]
+    ].
+
+cast_accepts_a_fraction_of_up_to_nine_digits_test_() ->
+    [
+        ?_assertEqual({ok, {{2024, 1, 1}, {10, 0, 0}}}, kura_types:cast(utc_datetime, V))
+     || V <- [~"2024-01-01T10:00:00.123456789Z", ~"2024-01-01T10:00:00.Z"]
+    ] ++ [?_assertEqual({ok, {10, 0, 0}}, kura_types:cast(time, ~"10:00:00.123456789"))].
+
+cast_refuses_a_fraction_over_nine_digits_test_() ->
+    [
+        ?_assertMatch(
+            {error, _}, kura_types:cast(utc_datetime, ~"2024-01-01T10:00:00.1234567890Z")
+        ),
+        ?_assertMatch({error, _}, kura_types:cast(time, ~"10:00:00.1234567890")),
+        ?_assertMatch(
+            {error, _}, kura_types:cast(naive_datetime, ~"2024-01-01 10:00:00.0000000000")
+        )
+    ].
+
+%% A long fraction is refused by its size, before any per-digit work.
+cast_refuses_a_large_fraction_cheaply_test() ->
+    Frac = binary:copy(~"1", 8 * 1024 * 1024),
+    Input = <<"2024-01-01T10:00:00.", Frac/binary, "Z">>,
+    erlang:garbage_collect(),
+    {memory, Before} = process_info(self(), memory),
+    ?assertMatch({error, _}, kura_types:cast(utc_datetime, Input)),
+    {memory, After} = process_info(self(), memory),
+    ?assert(After - Before < 1024 * 1024).
+
+cast_refuses_a_malformed_offset_or_fraction_test_() ->
+    [
+        ?_assertMatch({error, _}, kura_types:cast(Type, V))
+     || {Type, V} <- [
+            {utc_datetime, ~"2024-01-01T10:00:00+24:00"},
+            {utc_datetime, ~"2024-01-01T10:00:00.5a"},
+            {time, ~"1"}
+        ]
+    ].
+
+cast_naive_datetime_and_time_keep_the_wall_clock_test_() ->
+    [
+        ?_assertEqual(
+            {ok, {{2024, 1, 1}, {10, 0, 0}}},
+            kura_types:cast(naive_datetime, ~"2024-01-01T10:00:00+02:00")
+        ),
+        ?_assertEqual({ok, {10, 0, 0}}, kura_types:cast(time, ~"10:00:00+02:00")),
+        ?_assertEqual({ok, {24, 0, 0}}, kura_types:cast(time, ~"24:00:00"))
+    ].

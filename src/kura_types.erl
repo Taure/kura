@@ -289,11 +289,11 @@ cast(time, V) when is_binary(V) ->
 cast(utc_datetime, {{_, _, _}, {_, _, _}} = V) ->
     {ok, V};
 cast(utc_datetime, V) when is_binary(V) ->
-    parse_datetime(V);
+    parse_datetime(V, utc);
 cast(naive_datetime, {{_, _, _}, {_, _, _}} = V) ->
     {ok, V};
 cast(naive_datetime, V) when is_binary(V) ->
-    parse_datetime(V);
+    parse_datetime(V, naive);
 cast(uuid, V) when is_binary(V), byte_size(V) =:= 36 ->
     {ok, V};
 cast(uuid, V) when is_binary(V), byte_size(V) =:= 32 ->
@@ -1027,63 +1027,142 @@ try_parse_float(Bin) ->
     end.
 
 parse_date(<<Y:4/binary, $-, M:2/binary, $-, D:2/binary>>) ->
-    try
-        {ok, {binary_to_integer(Y), binary_to_integer(M), binary_to_integer(D)}}
-    catch
-        error:badarg -> {error, ~"is not a valid date"}
+    case {digits(Y), digits(M), digits(D)} of
+        {{ok, Year}, {ok, Month}, {ok, Day}} when Year >= 1, Year =< 9999 ->
+            valid_date({Year, Month, Day});
+        _ ->
+            {error, ~"is not a valid date"}
     end;
 parse_date(_) ->
     {error, ~"is not a valid date"}.
 
-parse_datetime(Bin) ->
+valid_date(Date) ->
+    case calendar:valid_date(Date) of
+        true -> {ok, Date};
+        false -> {error, ~"is not a valid date"}
+    end.
+
+%% A datetime is normalised through gregorian seconds, so 24:00:00 and a leap
+%% second read back as the instant PostgreSQL stores. A utc_datetime is moved
+%% to UTC by its offset; a naive_datetime keeps its wall-clock time.
+parse_datetime(Bin, Kind) ->
     case binary:split(Bin, [~"T", ~" "]) of
         [DatePart, TimePart] ->
-            case parse_date(DatePart) of
-                {ok, Date} ->
-                    case parse_time(TimePart) of
-                        {ok, Time} -> {ok, {Date, Time}};
-                        Err -> Err
-                    end;
-                Err ->
-                    Err
+            case {parse_date(DatePart), parse_time_offset(TimePart)} of
+                {{ok, Date}, {ok, Time, Offset}} -> {ok, normalise({Date, Time}, Kind, Offset)};
+                {{error, _} = Err, _} -> Err;
+                {_, {error, _} = Err} -> Err
             end;
         _ ->
             {error, ~"is not a valid datetime"}
     end.
 
+normalise({Date, {H, M, S}}, Kind, Offset) ->
+    Seconds = calendar:date_to_gregorian_days(Date) * 86400 + H * 3600 + M * 60 + S,
+    Shift =
+        case Kind of
+            utc -> Offset;
+            naive -> 0
+        end,
+    calendar:gregorian_seconds_to_datetime(Seconds - Shift).
+
+%% A time keeps its wall-clock value; an offset is accepted and dropped.
 parse_time(Bin) ->
-    Stripped = strip_tz(Bin),
-    case binary:split(Stripped, ~":", [global]) of
+    case parse_time_offset(Bin) of
+        {ok, Time, _Offset} -> {ok, Time};
+        {error, _} = Err -> Err
+    end.
+
+parse_time_offset(Bin) ->
+    case split_offset(Bin) of
+        {ok, Time, Offset} ->
+            case parse_clock(Time) of
+                {ok, Clock} -> {ok, Clock, Offset};
+                {error, _} = Err -> Err
+            end;
+        error ->
+            {error, ~"is not a valid time"}
+    end.
+
+parse_clock(Bin) ->
+    case binary:split(Bin, ~":", [global]) of
         [H, M, S] ->
-            try
-                Sec =
-                    case binary:split(S, ~".") of
-                        [SecWhole, _Frac] -> binary_to_integer(SecWhole);
-                        [SecWhole] -> binary_to_integer(SecWhole)
-                    end,
-                {ok, {binary_to_integer(H), binary_to_integer(M), Sec}}
-            catch
-                error:badarg -> {error, ~"is not a valid time"}
+            case binary:split(S, ~".") of
+                [Whole, Frac] -> valid_time(H, M, Whole, Frac);
+                [Whole] -> valid_time(H, M, Whole, ~"")
             end;
         [H, M] ->
-            try
-                {ok, {binary_to_integer(H), binary_to_integer(M), 0}}
-            catch
-                error:badarg -> {error, ~"is not a valid time"}
-            end;
+            valid_time(H, M, ~"0", ~"");
         _ ->
             {error, ~"is not a valid time"}
     end.
 
-strip_tz(Bin) ->
+%% 24:00:00 is the end of a day, which PostgreSQL accepts; a leap second
+%% is 60. A fraction has at most nine digits (nanoseconds).
+valid_time(H, M, S, Frac) ->
+    case {digits(H), digits(M), digits(S), byte_size(Frac) =< 9 andalso all_digits(Frac)} of
+        {{ok, 24}, {ok, 0}, {ok, 0}, true} ->
+            end_of_day(Frac);
+        {{ok, Hour}, {ok, Min}, {ok, Sec}, true} when Hour =< 23, Min =< 59, Sec =< 60 ->
+            {ok, {Hour, Min, Sec}};
+        _ ->
+            {error, ~"is not a valid time"}
+    end.
+
+end_of_day(Frac) ->
+    case binary:replace(Frac, ~"0", ~"", [global]) of
+        ~"" -> {ok, {24, 0, 0}};
+        _ -> {error, ~"is not a valid time"}
+    end.
+
+%% A date or time field has at most four digits, so a longer one is
+%% refused before it is parsed.
+digits(Bin) when byte_size(Bin) >= 1, byte_size(Bin) =< 4 ->
+    case all_digits(Bin) of
+        true -> {ok, binary_to_integer(Bin)};
+        false -> error
+    end;
+digits(_Bin) ->
+    error.
+
+all_digits(<<C, Rest/binary>>) when C >= $0, C =< $9 -> all_digits(Rest);
+all_digits(<<>>) -> true;
+all_digits(_) -> false.
+
+%% Splits a trailing `Z` or `+HH:MM`, `+HHMM` or `+HH` (or `-`) off a time,
+%% returning the offset in seconds east of UTC.
+split_offset(<<>>) ->
+    error;
+split_offset(Bin) ->
+    Size = byte_size(Bin),
     case binary:last(Bin) of
         $Z ->
-            binary:part(Bin, 0, byte_size(Bin) - 1);
+            {ok, binary:part(Bin, 0, Size - 1), 0};
+        _ when Size =< 3 ->
+            {ok, Bin, 0};
         _ ->
-            case binary:match(Bin, [~"+", ~"-"], [{scope, {3, byte_size(Bin) - 3}}]) of
-                {Pos, _} -> binary:part(Bin, 0, Pos);
-                nomatch -> Bin
+            case binary:match(Bin, [~"+", ~"-"], [{scope, {3, Size - 3}}]) of
+                {Pos, 1} ->
+                    <<Time:Pos/binary, Sign, Offset/binary>> = Bin,
+                    signed_offset(Sign, Time, offset_seconds(Offset));
+                nomatch ->
+                    {ok, Bin, 0}
             end
+    end.
+
+signed_offset(_Sign, _Time, error) -> error;
+signed_offset($+, Time, Seconds) -> {ok, Time, Seconds};
+signed_offset($-, Time, Seconds) -> {ok, Time, -Seconds}.
+
+offset_seconds(<<H:2/binary, ":", M:2/binary>>) -> offset_seconds(H, M);
+offset_seconds(<<H:2/binary, M:2/binary>>) -> offset_seconds(H, M);
+offset_seconds(<<H:2/binary>>) -> offset_seconds(H, ~"00");
+offset_seconds(_) -> error.
+
+offset_seconds(H, M) ->
+    case {digits(H), digits(M)} of
+        {{ok, Hour}, {ok, Min}} when Hour =< 23, Min =< 59 -> Hour * 3600 + Min * 60;
+        _ -> error
     end.
 
 format_uuid(<<A:8/binary, B:4/binary, C:4/binary, D:4/binary, E:12/binary>>) ->

@@ -40,6 +40,7 @@ ok = kura_repo_worker:start(MyRepo),
     multi/2,
     preload/4,
     query/3,
+    scope_read/1,
     pgo_query/3,
     build_log_event/5,
     build_telemetry_metadata/4,
@@ -60,8 +61,10 @@ ok = kura_repo_worker:start(MyRepo),
 -endif.
 
 -type write_error() :: {error, read_only}.
+-doc "What a failing `after_insert/1` or `after_update/1` hook returns.".
+-type hook_error() :: {error, term()}.
 -type assoc_change() :: #kura_changeset{} | [#kura_changeset{}].
--export_type([write_error/0]).
+-export_type([write_error/0, hook_error/0]).
 
 %%----------------------------------------------------------------------
 %% Pool management
@@ -100,8 +103,7 @@ start(RepoMod) ->
 -doc "Execute a query and return all matching rows.".
 -spec all(module(), #kura_query{}) -> {ok, [map()]} | {error, term()}.
 all(RepoMod, Query) ->
-    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_prefix(Query)),
-    {SQL, Params} = kura_query_compiler:to_sql_cached(RepoMod, Q1),
+    {SQL, Params} = kura_query_compiler:to_sql_cached(RepoMod, scope_read(Query)),
 
     case kura_db:query(RepoMod, SQL, Params) of
         #{command := select, rows := Rows} ->
@@ -192,6 +194,10 @@ reload(RepoMod, SchemaMod, Record) ->
 -doc """
 Run an aggregate function on a query. Supported: `count`, `sum`, `avg`, `min`, `max`.
 
+The query is scoped as `all/2` scopes it: soft-deleted rows are left out
+unless the query asks for them with `kura_query:with_deleted/1`, and the
+current tenant applies.
+
 ```erlang
 {ok, 42} = kura_repo_worker:aggregate(MyRepo, Q, count).
 {ok, 150.5} = kura_repo_worker:aggregate(MyRepo, Q, {sum, score}).
@@ -210,7 +216,7 @@ aggregate(RepoMod, Query, {Agg, Field}) ->
         preloads = [],
         distinct = false
     },
-    {SQL, Params} = kura_query_compiler:to_sql(RepoMod, AggQ),
+    {SQL, Params} = kura_query_compiler:to_sql(RepoMod, scope_read(AggQ)),
     case kura_db:query(RepoMod, SQL, Params) of
         #{rows := [Row]} -> {ok, maps:get(Agg, Row)};
         #{rows := []} -> {ok, nil};
@@ -286,59 +292,77 @@ guard_write(RepoMod, Fun) ->
 
 -doc "Insert a record from a changeset. Returns `{error, Changeset}` with errors on failure.".
 -spec insert(module(), #kura_changeset{}) ->
-    {ok, map()} | {error, #kura_changeset{}} | write_error().
+    {ok, map()} | {error, #kura_changeset{}} | hook_error() | write_error().
 insert(RepoMod, CS) ->
-    guard_write(RepoMod, fun() -> do_insert(RepoMod, CS) end).
+    insert(RepoMod, CS, #{}).
 
-do_insert(_RepoMod, CS = #kura_changeset{valid = false}) ->
-    {error, CS#kura_changeset{action = insert}};
-do_insert(RepoMod, CS = #kura_changeset{assoc_changes = AC}) when map_size(AC) > 0 ->
-    atomically(RepoMod, fun() ->
-        case insert_record(RepoMod, CS) of
-            {ok, ParentRow} ->
-                persist_assoc_changes(RepoMod, CS#kura_changeset{action = insert}, ParentRow);
-            {error, _} = Err ->
-                Err
-        end
-    end);
-do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
-    case needs_transaction(SchemaMod, insert) of
-        true -> atomically(RepoMod, fun() -> insert_record(RepoMod, CS) end);
-        false -> insert_record(RepoMod, CS)
-    end.
+-doc """
+Insert a record from a changeset with options, such as
+`#{on_conflict => {Target, Action}}` for an upsert.
 
+Runs the same pipeline as `insert/2`: `prepare_changes/2` functions,
+`before_insert/1` and `after_insert/1`, and the changeset's associations, in
+one transaction when there are any.
+
+`after_insert/1` runs whenever the statement returns a row, so on an upsert
+it also runs when the conflict updated an existing row. When the conflict
+leaves the row as it was (`nothing`, or a row the tenant guard refuses), no
+row comes back: the result is the changeset's data with its changes applied,
+`after_insert/1` does not run and no association is written.
+
+A changeset with associations takes no `on_conflict` action but `nothing`,
+since an upsert that updates a row would insert its children again: it
+raises `{kura, on_conflict_with_assocs}`.
+""".
 -spec insert(module(), #kura_changeset{}, map()) ->
-    {ok, map()} | {error, #kura_changeset{}} | write_error().
+    {ok, map()} | {error, #kura_changeset{}} | hook_error() | write_error().
 insert(RepoMod, CS, Opts) ->
     guard_write(RepoMod, fun() -> do_insert(RepoMod, CS, Opts) end).
 
 do_insert(_RepoMod, CS = #kura_changeset{valid = false}, _Opts) ->
     {error, CS#kura_changeset{action = insert}};
-do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes}, Opts0) ->
+do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}, Opts0) when
+    map_size(AC) > 0
+->
+    ok = refuse_upsert_with_assocs(Opts0),
     Opts = guard_upsert(SchemaMod, Opts0),
-    Changes0 = maybe_generate_pk(RepoMod, SchemaMod, maybe_apply_tenant_changes(Changes)),
-    Changes1 = maybe_add_timestamps(SchemaMod, Changes0, insert),
-    case dump_changes(SchemaMod, Changes1) of
-        {error, DumpErr} ->
-            dump_error_changeset(CS, insert, DumpErr);
-        {ok, DumpedChanges} ->
-            Fields = maps:keys(DumpedChanges),
-            {SQL, Params} = kura_query_compiler:insert(
-                RepoMod, SchemaMod, Fields, DumpedChanges, Opts
-            ),
-            case kura_db:query(RepoMod, SQL, Params) of
-                #{command := insert, rows := [Row]} ->
-                    {ok, kura_db:load_row(SchemaMod, Row)};
-                #{command := insert, rows := []} ->
-                    {ok, kura_changeset:apply_changes(CS)};
-                {error, PgError} ->
-                    {error, handle_pg_error(CS#kura_changeset{action = insert}, PgError)}
-            end
+    atomically(RepoMod, fun() ->
+        case insert_record(RepoMod, CS, Opts) of
+            {ok, ParentRow} ->
+                persist_assoc_changes(RepoMod, CS#kura_changeset{action = insert}, ParentRow);
+            {unchanged, Data} ->
+                {ok, Data};
+            {error, _} = Err ->
+                Err
+        end
+    end);
+do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod}, Opts0) ->
+    Opts = guard_upsert(SchemaMod, Opts0),
+    case needs_transaction(SchemaMod, insert) of
+        true -> atomically(RepoMod, fun() -> inserted(insert_record(RepoMod, CS, Opts)) end);
+        false -> inserted(insert_record(RepoMod, CS, Opts))
     end.
 
--doc "Update a record from a changeset. No-op if there are no changes.".
+refuse_upsert_with_assocs(#{on_conflict := {_Target, nothing}}) ->
+    ok;
+refuse_upsert_with_assocs(#{on_conflict := {_Target, nothing, _Opts}}) ->
+    ok;
+refuse_upsert_with_assocs(#{on_conflict := _}) ->
+    erlang:error({kura, on_conflict_with_assocs});
+refuse_upsert_with_assocs(#{}) ->
+    ok.
+
+inserted({unchanged, Data}) -> {ok, Data};
+inserted(Result) -> Result.
+
+-doc """
+Update a record from a changeset. No-op if there are no changes.
+
+With `kura_changeset:optimistic_lock/2` set, a row whose lock field no longer
+matches returns `{error, stale}`.
+""".
 -spec update(module(), #kura_changeset{}) ->
-    {ok, map()} | {error, #kura_changeset{}} | write_error().
+    {ok, map()} | {error, #kura_changeset{}} | {error, stale} | hook_error() | write_error().
 update(RepoMod, CS) ->
     guard_write(RepoMod, fun() -> do_update(RepoMod, CS) end).
 
@@ -385,13 +409,24 @@ atomically(RepoMod, Fun) ->
         throw:{Rollback, Reason} -> {error, Reason}
     end.
 
--doc "Bulk update all rows matching the query, returning the count of affected rows.".
+-doc """
+Bulk update all rows matching the query, returning the count of affected rows.
+
+The statement is built from the query's `from`, its where conditions and its
+prefix. A query with a join, an `order_by`, a `group_by`, a having, a limit,
+an offset, a distinct, a CTE or a combination raises
+`{kura, {unsupported_in_bulk_write, Clause}}`, since the write would
+otherwise ignore the clause and touch rows the query does not select.
+`Clause` is the first of `joins`, `order_bys`, `group_bys`, `havings`,
+`limit`, `offset`, `distinct`, `ctes` and `combinations`, in that order,
+that the query sets.
+""".
 -spec update_all(module(), #kura_query{}, map()) -> {ok, non_neg_integer()} | {error, term()}.
 update_all(RepoMod, Query, Updates) ->
     guard_write(RepoMod, fun() -> do_update_all(RepoMod, Query, Updates) end).
 
 do_update_all(RepoMod, Query, Updates) ->
-    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_prefix(Query)),
+    Q1 = scope_read(Query),
     case dump_set_map(Q1#kura_query.from, pin_tenant(Updates)) of
         {error, _} = DumpErr ->
             DumpErr;
@@ -404,13 +439,20 @@ do_update_all(RepoMod, Query, Updates) ->
             end
     end.
 
--doc "Bulk delete all rows matching the query, returning the count of deleted rows.".
+-doc """
+Bulk delete all rows matching the query, returning the count of deleted rows.
+
+Raises `{kura, {unsupported_in_bulk_write, Clause}}` for the same clauses as
+`update_all/3`: `Clause` is the first of `joins`, `order_bys`,
+`group_bys`, `havings`, `limit`, `offset`, `distinct`, `ctes` and
+`combinations`, in that order, that the query sets.
+""".
 -spec delete_all(module(), #kura_query{}) -> {ok, non_neg_integer()} | {error, term()}.
 delete_all(RepoMod, Query) ->
     guard_write(RepoMod, fun() -> do_delete_all(RepoMod, Query) end).
 
 do_delete_all(RepoMod, Query) ->
-    Q1 = maybe_apply_soft_delete(maybe_apply_tenant_prefix(Query)),
+    Q1 = scope_read(Query),
     {SQL, Params} = kura_query_compiler:delete_all(RepoMod, Q1),
 
     case kura_db:query(RepoMod, SQL, Params) of
@@ -478,7 +520,15 @@ multi(RepoMod, Multi) ->
             {error, Name, Value, Completed}
     end.
 
--doc "Execute raw SQL with parameters.".
+-doc """
+Execute raw SQL with parameters.
+
+Rows come back as the driver decodes them: no schema is involved, so no
+field type is applied. A `jsonb` column arrives as its JSON text, and an
+enum column as a binary. Decode such a column yourself (`json:decode/1`),
+extract the value in SQL (`metadata->>'key'`), or read through a schema
+query, which loads every column through its field type.
+""".
 -spec query(module(), iodata(), [term()]) -> {ok, list()} | {error, term()}.
 query(RepoMod, SQL, Params) ->
     case kura_db:query(RepoMod, SQL, Params) of
@@ -539,7 +589,7 @@ build_telemetry_metadata(RepoMod, SQL, Params, Result) ->
 extract_source(SQL) ->
     kura_db:extract_source(SQL).
 
-insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}) ->
+insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}, Opts) ->
     CS1 = run_prepare(CS0),
     case kura_schema:run_before_insert(SchemaMod, CS1) of
         {error, ErrCS} ->
@@ -552,19 +602,23 @@ insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}) ->
                 {error, DumpErr} ->
                     dump_error_changeset(CS, insert, DumpErr);
                 {ok, DumpedChanges} ->
-                    Fields = maps:keys(DumpedChanges),
-                    {SQL, Params} = kura_query_compiler:insert(
-                        RepoMod, SchemaMod, Fields, DumpedChanges
-                    ),
+                    {SQL, Params} = insert_sql(RepoMod, SchemaMod, DumpedChanges, Opts),
                     case kura_db:query(RepoMod, SQL, Params) of
                         #{command := insert, rows := [Row]} ->
                             Row1 = kura_db:load_row(SchemaMod, Row),
                             kura_schema:run_after_insert(SchemaMod, Row1);
+                        #{command := insert, rows := []} ->
+                            {unchanged, kura_changeset:apply_changes(CS)};
                         {error, PgError} ->
                             {error, handle_pg_error(CS#kura_changeset{action = insert}, PgError)}
                     end
             end
     end.
+
+insert_sql(RepoMod, SchemaMod, DumpedChanges, Opts) when map_size(Opts) =:= 0 ->
+    kura_query_compiler:insert(RepoMod, SchemaMod, maps:keys(DumpedChanges), DumpedChanges);
+insert_sql(RepoMod, SchemaMod, DumpedChanges, Opts) ->
+    kura_query_compiler:insert(RepoMod, SchemaMod, maps:keys(DumpedChanges), DumpedChanges, Opts).
 
 update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) ->
     CS1 = run_prepare(CS0),
@@ -776,7 +830,7 @@ set_owned_fk(CS, [{Col, Value} | Rest]) ->
     set_owned_fk(kura_changeset:put_change(CS, Col, Value), Rest).
 
 persist_child(RepoMod, _Kind, CS = #kura_changeset{action = insert}) ->
-    insert_record(RepoMod, CS);
+    insert_record(RepoMod, CS, #{});
 persist_child(RepoMod, _Kind, CS = #kura_changeset{action = update}) ->
     update_record(RepoMod, CS);
 persist_child(_RepoMod, many_to_many, CS = #kura_changeset{action = undefined}) ->
@@ -1145,6 +1199,11 @@ needs_transaction(undefined, _Action) ->
 needs_transaction(SchemaMod, Action) ->
     kura_schema:has_after_hook(SchemaMod, Action).
 
+-doc false.
+-spec scope_read(#kura_query{}) -> #kura_query{}.
+scope_read(Query) ->
+    maybe_apply_soft_delete(maybe_apply_tenant_prefix(Query)).
+
 maybe_apply_soft_delete(Query) ->
     case Query#kura_query.include_deleted of
         true ->
@@ -1157,11 +1216,13 @@ maybe_apply_soft_delete(Query) ->
             end
     end.
 
-has_soft_delete(undefined) ->
-    false;
-has_soft_delete(SchemaMod) ->
-    Types = kura_schema:field_types(SchemaMod),
-    maps:is_key(deleted_at, Types).
+%% A table name, a CTE name or a bare table atom has no schema to declare
+%% `deleted_at`.
+has_soft_delete(SchemaMod) when is_atom(SchemaMod), SchemaMod =/= undefined ->
+    kura_schema:is_schema(SchemaMod) andalso
+        maps:is_key(deleted_at, kura_schema:field_types(SchemaMod));
+has_soft_delete(_From) ->
+    false.
 
 maybe_apply_tenant_prefix(Query) ->
     case kura_tenant:get_tenant() of

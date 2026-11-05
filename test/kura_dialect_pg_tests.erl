@@ -1203,6 +1203,141 @@ distance_before_a_select_fragment_keeps_param_order_test() ->
         kura_dialect_pg:to_sql(kura_query:limit(Q0, 3))
     ).
 
+%%----------------------------------------------------------------------
+%% Columns after a join
+%%----------------------------------------------------------------------
+
+join_qualifies_from_schema_columns_test() ->
+    Q0 = kura_query:join(kura_query:from(kura_test_post_schema), inner, kura_test_schema, {
+        author_id, id
+    }),
+    Q1 = kura_query:select(Q0, [id, title, name]),
+    Q2 = kura_query:where(Q1, {id, 1}),
+    Q3 = kura_query:order_by(Q2, [{inserted_at, desc}]),
+    {SQL, Params} = kura_dialect_pg:to_sql(Q3),
+    ?assertEqual(
+        <<
+            "SELECT \"posts\".\"id\", \"posts\".\"title\", \"name\" FROM \"posts\" "
+            "INNER JOIN \"users\" ON \"posts\".\"author_id\" = \"users\".\"id\" "
+            "WHERE \"posts\".\"id\" = $1 ORDER BY \"posts\".\"inserted_at\" DESC"
+        >>,
+        SQL
+    ),
+    ?assertEqual([1], Params).
+
+join_qualifies_group_by_aggregates_and_nested_conditions_test() ->
+    Q0 = kura_query:join(kura_query:from(kura_test_post_schema), inner, kura_test_schema, {
+        author_id, id
+    }),
+    Q1 = kura_query:select(Q0, [author_id, {count, id}]),
+    Q2 = kura_query:where(Q1, {'or', [{id, in, [1, 2]}, {'not', {title, is_nil}}]}),
+    Q3 = kura_query:group_by(Q2, [author_id]),
+    {SQL, _} = kura_dialect_pg:to_sql(Q3),
+    ?assertEqual(
+        <<
+            "SELECT \"posts\".\"author_id\", count(\"posts\".\"id\") AS \"count\" FROM \"posts\" "
+            "INNER JOIN \"users\" ON \"posts\".\"author_id\" = \"users\".\"id\" "
+            "WHERE (\"posts\".\"id\" IN ($1, $2) OR NOT (\"posts\".\"title\" IS NULL)) "
+            "GROUP BY \"posts\".\"author_id\""
+        >>,
+        SQL
+    ).
+
+join_select_expr_and_distinct_are_qualified_test() ->
+    Q0 = kura_query:join(kura_query:from(kura_test_post_schema), inner, kura_test_schema, {
+        author_id, id
+    }),
+    Q1 = kura_query:distinct(
+        kura_query:select_expr(Q0, [{post_id, id}, {user_id, {fragment, ~"\"users\".\"id\"", []}}]),
+        [id]
+    ),
+    {SQL, _} = kura_dialect_pg:to_sql(Q1),
+    ?assertEqual(
+        <<
+            "SELECT DISTINCT ON (\"posts\".\"id\") \"posts\".\"id\" AS \"post_id\", "
+            "\"users\".\"id\" AS \"user_id\" FROM \"posts\" "
+            "INNER JOIN \"users\" ON \"posts\".\"author_id\" = \"users\".\"id\""
+        >>,
+        SQL
+    ).
+
+no_join_leaves_columns_bare_test() ->
+    Q = kura_query:where(kura_query:select(kura_query:from(kura_test_post_schema), [id]), {id, 1}),
+    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    ?assertEqual(<<"SELECT \"id\" FROM \"posts\" WHERE \"id\" = $1">>, SQL).
+
+join_from_bare_table_leaves_columns_bare_test() ->
+    Q = kura_query:where(
+        kura_query:join(kura_query:from(user), inner, post, {id, user_id}), {id, 1}
+    ),
+    {SQL, _} = kura_dialect_pg:to_sql(Q),
+    ?assertEqual(
+        <<
+            "SELECT * FROM \"user\" INNER JOIN \"post\" ON \"user\".\"id\" = \"post\".\"user_id\" "
+            "WHERE \"id\" = $1"
+        >>,
+        SQL
+    ).
+
+join_leaves_the_attribute_tenant_field_bare_test() ->
+    Q0 = kura_query:join(kura_query:from(kura_test_post_schema), inner, kura_test_schema, {
+        author_id, id
+    }),
+    Q = kura_query:where(Q0, {author_id, 7}),
+    {SQL, _} = kura_tenant:with_tenant({attribute, {author_id, 7}}, fun() ->
+        kura_dialect_pg:to_sql(Q)
+    end),
+    ?assertEqual(
+        <<
+            "SELECT * FROM \"posts\" "
+            "INNER JOIN \"users\" ON \"posts\".\"author_id\" = \"users\".\"id\" "
+            "WHERE \"author_id\" = $1"
+        >>,
+        SQL
+    ).
+
+join_leaves_an_order_by_alias_bare_test() ->
+    Q0 = kura_query:join(kura_query:from(kura_test_post_schema), inner, kura_test_schema, {
+        author_id, id
+    }),
+    Q1 = kura_query:select_expr(Q0, [{title, {fragment, ~"upper(\"posts\".\"title\")", []}}]),
+    Q2 = kura_query:order_by(Q1, [{title, asc}, {inserted_at, desc}]),
+    {SQL, _} = kura_dialect_pg:to_sql(Q2),
+    ?assertEqual(
+        <<
+            "SELECT upper(\"posts\".\"title\") AS \"title\" FROM \"posts\" "
+            "INNER JOIN \"users\" ON \"posts\".\"author_id\" = \"users\".\"id\" "
+            "ORDER BY \"title\" ASC, \"posts\".\"inserted_at\" DESC"
+        >>,
+        SQL
+    ).
+
+qualified_columns_test_() ->
+    Joined = kura_query:join(kura_query:from(kura_test_post_schema), inner, kura_test_schema, {
+        author_id, id
+    }),
+    [
+        ?_assertEqual(
+            undefined, kura_dialect:qualified_columns(kura_query:from(kura_test_post_schema))
+        ),
+        ?_assertEqual(
+            undefined,
+            kura_dialect:qualified_columns(
+                kura_query:join(kura_query:from(user), inner, post, {id, user_id})
+            )
+        ),
+        ?_assertMatch(
+            {~"posts", #{id := id, author_id := integer}},
+            kura_dialect:qualified_columns(Joined)
+        ),
+        ?_test(begin
+            {~"posts", Fields} = kura_tenant:with_tenant({attribute, {author_id, 1}}, fun() ->
+                kura_dialect:qualified_columns(Joined)
+            end),
+            ?assertNot(is_map_key(author_id, Fields))
+        end)
+    ].
+
 distance_threshold_operator_per_comparison_test_() ->
     D = kura_query:distance(embedding, cosine, [1, 2, 3]),
     [
@@ -1298,4 +1433,54 @@ distance_threshold_in_delete_all_test() ->
     ?assertEqual(
         {~"DELETE FROM \"kura_vector_items\" WHERE \"embedding\" <-> $1 > $2", [~"[1.0,2.0,3.0]", 2]},
         {iolist_to_binary(SQL), Params}
+    ).
+
+distance_threshold_under_a_join_qualifies_the_vector_column_test() ->
+    D = kura_query:distance(embedding, l2, [1, 2, 3]),
+    Q0 = kura_query:join(kura_query:from(?VEC_SCHEMA), inner, kura_test_schema, {id, id}),
+    Q1 = kura_query:order_by(kura_query:where(Q0, {D, '<', 2}), [{D, asc}]),
+    {SQL, Params} = kura_dialect_pg:to_sql(Q1),
+    ?assertEqual(
+        <<
+            "SELECT * FROM \"kura_vector_items\" "
+            "INNER JOIN \"users\" ON \"kura_vector_items\".\"id\" = \"users\".\"id\" "
+            "WHERE \"kura_vector_items\".\"embedding\" <-> $1 < $2 "
+            "ORDER BY \"kura_vector_items\".\"embedding\" <-> $3 ASC"
+        >>,
+        iolist_to_binary(SQL)
+    ),
+    ?assertEqual([~"[1.0,2.0,3.0]", 2, ~"[1.0,2.0,3.0]"], Params).
+
+join_qualifies_having_and_window_spec_test() ->
+    Joined = kura_query:join(kura_query:from(kura_test_post_schema), inner, kura_test_schema, {
+        author_id, id
+    }),
+    Grouped = kura_query:having(
+        kura_query:group_by(kura_query:select(Joined, [author_id]), [author_id]),
+        {author_id, '>', 1}
+    ),
+    {GroupedSQL, GroupedParams} = kura_dialect_pg:to_sql(Grouped),
+    ?assertEqual(
+        <<
+            "SELECT \"posts\".\"author_id\" FROM \"posts\" "
+            "INNER JOIN \"users\" ON \"posts\".\"author_id\" = \"users\".\"id\" "
+            "GROUP BY \"posts\".\"author_id\" HAVING \"posts\".\"author_id\" > $1"
+        >>,
+        iolist_to_binary(GroupedSQL)
+    ),
+    ?assertEqual([1], GroupedParams),
+    Window = kura_query:select_expr(Joined, [
+        {total,
+            kura_query:over({sum, id}, #{
+                partition_by => [author_id], order_by => [{inserted_at, desc}]
+            })}
+    ]),
+    {WindowSQL, []} = kura_dialect_pg:to_sql(Window),
+    ?assertEqual(
+        <<
+            "SELECT sum(\"posts\".\"id\") OVER (PARTITION BY \"posts\".\"author_id\" "
+            "ORDER BY \"posts\".\"inserted_at\" DESC) AS \"total\" FROM \"posts\" "
+            "INNER JOIN \"users\" ON \"posts\".\"author_id\" = \"users\".\"id\""
+        >>,
+        iolist_to_binary(WindowSQL)
     ).
