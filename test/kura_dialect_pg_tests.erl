@@ -730,6 +730,18 @@ lock_text_warning_is_logged_once_test() ->
     end),
     ?assertMatch([#{lock := ~"FOR UPDATE SKIP"}], Warnings).
 
+lock_text_allowed_on_purpose_logs_no_warning_test_() ->
+    [
+        {lists:flatten(io_lib:format("~0p", [Text])), fun() ->
+            {Q, Warnings} = lock_warnings(false, fun() ->
+                kura_query:lock(kura_query:from(user), Text)
+            end),
+            ?assertEqual({fragment, Text}, Q#kura_query.lock),
+            ?assertEqual([], Warnings)
+        end}
+     || Text <- unread_lock_texts()
+    ].
+
 lock_kura_reads_logs_no_warning_test_() ->
     [
         {lists:flatten(io_lib:format("~0p", [Lock])), fun() ->
@@ -776,7 +788,7 @@ lock_set_on_the_record_is_checked_at_compile_test() ->
     {ok, []} = lock_warnings(true, fun() ->
         ?assertError({kura, {invalid_lock, _}}, kura_dialect_pg:to_sql(Q))
     end),
-    {Lenient, [_]} = lock_warnings(false, fun() -> kura_dialect_pg:to_sql(Q) end),
+    {Lenient, []} = lock_warnings(false, fun() -> kura_dialect_pg:to_sql(Q) end),
     ?assertEqual({~"SELECT * FROM \"user\" FOR UPDATE; DELETE FROM \"user\"", []}, Lenient),
     Known = (kura_query:from(user))#kura_query{lock = ~"FOR SHARE"},
     ?assertEqual({~"SELECT * FROM \"user\" FOR SHARE", []}, kura_dialect_pg:to_sql(Known)).

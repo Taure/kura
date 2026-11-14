@@ -280,7 +280,8 @@ The same clauses written as SQL text are read into those terms:
 `~"FOR UPDATE"`, `~"FOR SHARE NOWAIT"`, `~"FOR UPDATE OF posts, comments"`.
 
 Text that is not a PostgreSQL locking clause is written into the statement
-as it is, as in 2.30, and logs one warning per boot. Set
+as it is, as in 2.30. While `strict_locks` is unset that logs one warning
+per boot; `{strict_locks, false}` allows the text without the warning. Set
 
 ```erlang
 {kura, [{strict_locks, true}]}

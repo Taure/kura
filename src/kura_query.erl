@@ -1200,9 +1200,11 @@ stored as the term: `~"FOR UPDATE"`, `~"for share nowait"`,
 folded to lower case, as PostgreSQL folds it.
 
 Text that is not such a clause is written into the statement as it is, as
-2.30 wrote any text, and logs one warning per boot that names it. With
-`{strict_locks, true}` in the `kura` application environment it raises
-`{kura, {invalid_lock, Lock}}` instead; that is the default in kura 3.0.
+2.30 wrote any text. While `strict_locks` is unset in the `kura`
+application environment that logs one warning per boot, naming the text;
+`{strict_locks, false}` allows it without the warning. With
+`{strict_locks, true}` it raises `{kura, {invalid_lock, Lock}}` instead;
+that is the default in kura 3.0.
 For SQL kura should not read, say so with `{fragment, SQL}`: it is written
 as it is under either setting, without a warning, and must never hold
 outside input.
@@ -1256,7 +1258,9 @@ unread_lock(Text) ->
     case kura_settings:flag(strict_locks) of
         true ->
             invalid_lock(Text);
-        _FalseOrUnset ->
+        false ->
+            {fragment, Text};
+        unset ->
             ok = kura_boot_warning:once(lock_text, #{
                 msg =>
                     ~"kura: a lock given as text is not a locking clause kura reads, and is written into the statement as it is",
