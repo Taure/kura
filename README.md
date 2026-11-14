@@ -673,4 +673,4 @@ Report a vulnerability privately through the repository's Security tab.
 ## Requirements
 
 - Erlang/OTP 28+
-- One backend: PostgreSQL 14+ (via [kura_postgres](https://github.com/Taure/kura_postgres)) or SQLite 3.35+ (via [kura_sqlite](https://github.com/Taure/kura_sqlite))
+- One backend: PostgreSQL 14 to 18, each tested in CI (via [kura_postgres](https://github.com/Taure/kura_postgres)) or SQLite 3.35+ (via [kura_sqlite](https://github.com/Taure/kura_sqlite))
