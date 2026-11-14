@@ -1295,6 +1295,85 @@ chained_union_test() ->
     ),
     ?assertEqual([<<"a">>, <<"b">>, <<"c">>], Params).
 
+combination_order_limit_and_offset_follow_the_branches_test() ->
+    Q1 = kura_query:where(kura_query:from(user), {role, ~"a"}),
+    Q2 = kura_query:where(kura_query:from(user), {role, ~"b"}),
+    Q = kura_query:offset(
+        kura_query:limit(kura_query:order_by(kura_query:union(Q1, Q2), [{name, desc}]), 10), 5
+    ),
+    ?assertEqual(
+        {
+            <<
+                "SELECT * FROM \"user\" WHERE \"role\" = $1 "
+                "UNION SELECT * FROM \"user\" WHERE \"role\" = $2 "
+                "ORDER BY \"name\" DESC LIMIT $3 OFFSET $4"
+            >>,
+            [~"a", ~"b", 10, 5]
+        },
+        kura_dialect_pg:to_sql(Q)
+    ).
+
+combination_branch_with_its_own_clauses_is_parenthesised_test() ->
+    Q1 = kura_query:from(user),
+    Limited = kura_query:limit(kura_query:order_by(kura_query:from(admin), [{id, asc}]), 3),
+    Nested = kura_query:union(kura_query:from(staff), kura_query:from(guest)),
+    WithCte = kura_query:with_cte(kura_query:from(recent), ~"recent", kura_query:from(user)),
+    ?assertEqual(
+        {
+            <<
+                "SELECT * FROM \"user\" "
+                "UNION ALL (SELECT * FROM \"admin\" ORDER BY \"id\" ASC LIMIT $1) "
+                "LIMIT $2"
+            >>,
+            [3, 7]
+        },
+        kura_dialect_pg:to_sql(kura_query:limit(kura_query:union_all(Q1, Limited), 7))
+    ),
+    ?assertEqual(
+        {
+            <<
+                "SELECT * FROM \"user\" "
+                "EXCEPT (SELECT * FROM \"staff\" UNION SELECT * FROM \"guest\")"
+            >>,
+            []
+        },
+        kura_dialect_pg:to_sql(kura_query:except(Q1, Nested))
+    ),
+    ?assertEqual(
+        {
+            <<
+                "SELECT * FROM \"user\" "
+                "INTERSECT (WITH \"recent\" AS (SELECT * FROM \"user\") SELECT * FROM \"recent\")"
+            >>,
+            []
+        },
+        kura_dialect_pg:to_sql(kura_query:intersect(Q1, WithCte))
+    ).
+
+combination_order_names_result_columns_test() ->
+    Joined = kura_query:join(kura_query:from(kura_test_post_schema), inner, kura_test_schema, {
+        author_id, id
+    }),
+    Q = kura_query:order_by(
+        kura_query:union(
+            kura_query:select(Joined, [title]),
+            kura_query:select(kura_query:from(kura_test_post_schema), [title])
+        ),
+        [{title, asc}]
+    ),
+    ?assertEqual(
+        {
+            <<
+                "SELECT \"posts\".\"title\" FROM \"posts\" "
+                "INNER JOIN \"users\" ON \"posts\".\"author_id\" = \"users\".\"id\" "
+                "UNION SELECT \"title\" FROM \"posts\" "
+                "ORDER BY \"title\" ASC"
+            >>,
+            []
+        },
+        kura_dialect_pg:to_sql(Q)
+    ).
+
 %%----------------------------------------------------------------------
 %% Query Scopes
 %%----------------------------------------------------------------------

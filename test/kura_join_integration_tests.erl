@@ -22,7 +22,11 @@ join_test_() ->
             {"a group and an aggregate on a joined schema's renamed field",
                 fun t_group_on_a_joined_rename/0},
             {"a join on a renamed column from a joined schema to the next",
-                fun t_chained_join_on_renames/0}
+                fun t_chained_join_on_renames/0},
+            {"an order and a limit on a union apply to the union", fun t_union_order_and_limit/0},
+            {"a union branch keeps its own order and limit", fun t_union_branch_limit/0},
+            {"an order and an offset on an intersect and an except",
+                fun t_intersect_and_except_order/0}
         ]
     end}.
 
@@ -146,4 +150,45 @@ t_chained_join_on_renames() ->
     ?assertError(
         {kura, {ambiguous_field, rating, [~"book_rating", ~"stars"]}},
         kura_test_repo:all(kura_query:where(Q0, {rating, 3}))
+    ).
+
+authors(Names) ->
+    kura_query:where(kura_query:from(?AUTHOR), {name, in, Names}).
+
+author_names(Query) ->
+    {ok, Rows} = kura_test_repo:all(Query),
+    [Name || #{name := Name} <- Rows].
+
+t_union_order_and_limit() ->
+    Union = kura_query:union(authors([~"Cy"]), authors([~"Ann", ~"Bob"])),
+    Ordered = kura_query:order_by(Union, [{name, desc}]),
+    ?assertEqual([~"Cy", ~"Bob", ~"Ann"], author_names(Ordered)),
+    ?assertEqual([~"Cy", ~"Bob"], author_names(kura_query:limit(Ordered, 2))),
+    ?assertEqual([~"Bob"], author_names(kura_query:offset(kura_query:limit(Ordered, 1), 1))),
+    ?assertEqual(
+        [~"Ann", ~"Bob", ~"Cy"],
+        author_names(
+            kura_query:union_all(
+                kura_query:order_by(authors([~"Cy"]), [{name, asc}]), authors([~"Ann", ~"Bob"])
+            )
+        )
+    ).
+
+t_union_branch_limit() ->
+    Branch = kura_query:limit(
+        kura_query:order_by(authors([~"Ann", ~"Bob"]), [{name, desc}]), 1
+    ),
+    Union = kura_query:order_by(kura_query:union(authors([~"Cy"]), Branch), [{name, asc}]),
+    ?assertEqual([~"Bob", ~"Cy"], author_names(Union)).
+
+t_intersect_and_except_order() ->
+    All = authors([~"Ann", ~"Bob", ~"Cy"]),
+    Intersect = kura_query:intersect(All, authors([~"Bob", ~"Cy"])),
+    ?assertEqual(
+        [~"Cy", ~"Bob"], author_names(kura_query:order_by(Intersect, [{name, desc}]))
+    ),
+    Except = kura_query:except(All, authors([~"Bob"])),
+    ?assertEqual(
+        [~"Cy"],
+        author_names(kura_query:offset(kura_query:order_by(Except, [{name, asc}]), 1))
     ).

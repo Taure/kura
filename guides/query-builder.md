@@ -345,6 +345,22 @@ Q2 = kura_query:where(Q1, {id, PostId}).
 %%      WHERE "posts"."id" = $1
 ```
 
+## UNION / INTERSECT / EXCEPT
+
+```erlang
+Q = kura_query:union(Admins, Moderators),
+Q1 = kura_query:limit(kura_query:order_by(Q, [{name, asc}]), 10).
+%% => SELECT ... UNION SELECT ... ORDER BY "name" ASC LIMIT $n
+```
+
+`union/2`, `union_all/2`, `intersect/2` and `except/2` combine two queries.
+An `order_by`, `limit` or `offset` on the first query applies to the
+combination, whether it was added before or after the second query, and an
+`order_by` names result columns. To order or limit one side on its own, put
+the clause on the second query: it is then parenthesised, as is a second
+query with CTEs or combinations of its own. PostgreSQL runs a parenthesised
+branch; SQLite does not.
+
 ## Aggregates
 
 ```erlang

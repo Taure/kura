@@ -71,17 +71,21 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
     ),
     {GroupSQL, _, Counter3} = compile_group_by(Q#kura_query.group_bys, Ctx, Counter2),
     {HavingSQL, Params3, Counter4} = compile_havings(Q#kura_query.havings, Ctx, Counter3),
-    {OrderSQL, OrderParams, Counter5} = compile_order_by(
-        Q#kura_query.order_bys, order_context(Q, Ctx), Counter4
+    Combinations = Q#kura_query.combinations,
+    {CombinationSQL, CombinationParams, Counter5} = compile_combinations(Combinations, Counter4),
+    {OrderSQL, OrderParams, Counter6} = compile_order_by(
+        Q#kura_query.order_bys, combined_context(Combinations, order_context(Q, Ctx)), Counter5
     ),
-    {LimitSQL, Params4, Counter6} = compile_limit(Q#kura_query.limit, Counter5),
-    {OffsetSQL, Params5, Counter7} = compile_offset(Q#kura_query.offset, Counter6),
+    {LimitSQL, Params4, Counter7} = compile_limit(Q#kura_query.limit, Counter6),
+    {OffsetSQL, Params5, Counter8} = compile_offset(Q#kura_query.offset, Counter7),
     LockSQL = compile_lock(Q#kura_query.lock),
     DistinctSQL = compile_distinct(Q#kura_query.distinct, Ctx),
 
     FromClause = [~"FROM ", qualified_table(Table, Prefix)],
 
-    MainSQL = iolist_to_binary([
+    %% An ORDER BY, a LIMIT or an OFFSET of a combined query belongs to the
+    %% combination, so it follows the last branch.
+    SQL = iolist_to_binary([
         CteSQL,
         ~"SELECT ",
         DistinctSQL,
@@ -92,19 +96,16 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
         WhereSQL,
         GroupSQL,
         HavingSQL,
+        CombinationSQL,
         OrderSQL,
         LimitSQL,
         OffsetSQL,
         LockSQL
     ]),
-    MainParams =
-        CteParams ++ Params0 ++ Params2 ++ Params1 ++ Params3 ++ OrderParams ++ Params4 ++ Params5,
-
-    %% Combinations (UNION, INTERSECT, EXCEPT)
-    {FinalSQL, FinalParams, FinalCounter} = compile_combinations(
-        Q#kura_query.combinations, MainSQL, MainParams, Counter7
-    ),
-    {FinalSQL, FinalParams, FinalCounter}.
+    Params =
+        CteParams ++ Params0 ++ Params2 ++ Params1 ++ Params3 ++ CombinationParams ++
+            OrderParams ++ Params4 ++ Params5,
+    {SQL, Params, Counter8}.
 
 -spec placeholder(pos_integer()) -> iodata().
 placeholder(N) ->
@@ -927,12 +928,35 @@ compile_ctes(CTEs, Counter) ->
 %% Internal: UNION / INTERSECT / EXCEPT compilation
 %%----------------------------------------------------------------------
 
-compile_combinations([], MainSQL, MainParams, Counter) ->
-    {MainSQL, MainParams, Counter};
-compile_combinations(Combinations, MainSQL, MainParams, Counter) ->
-    {CombParts, AllParams, NewCounter} = compile_combinations_loop(Combinations, Counter),
-    FinalSQL = iolist_to_binary([MainSQL | CombParts]),
-    {FinalSQL, MainParams ++ AllParams, NewCounter}.
+compile_combinations([], Counter) ->
+    {[], [], Counter};
+compile_combinations(Combinations, Counter) ->
+    compile_combinations_loop(Combinations, Counter).
+
+%% The ORDER BY of a combination names its result columns, which have no
+%% table to be qualified with.
+-spec combined_context([term()], column_context()) -> column_context().
+combined_context([], Ctx) -> Ctx;
+combined_context(_Combinations, {renamed, Renames, _Qualified}) -> {renamed, Renames, undefined};
+combined_context(_Combinations, _Qualified) -> undefined.
+
+%% A branch with a clause of its own that would otherwise be read as the
+%% combination's, or with CTEs or combinations of its own, is parenthesised.
+-spec branch_sql(#kura_query{}, iodata()) -> iodata().
+branch_sql(
+    #kura_query{
+        order_bys = [],
+        limit = undefined,
+        offset = undefined,
+        lock = undefined,
+        ctes = [],
+        combinations = []
+    },
+    SQL
+) ->
+    SQL;
+branch_sql(#kura_query{}, SQL) ->
+    [~"(", SQL, ~")"].
 
 combination_type(union) -> ~"UNION";
 combination_type(union_all) -> ~"UNION ALL";
@@ -1437,7 +1461,7 @@ compile_combinations_loop([], Counter) ->
 compile_combinations_loop([{Type, Q2} | Rest], Counter) ->
     {SQL2, Params2, C2} = to_sql_from(Q2, Counter),
     TypeBin = combination_type(Type),
-    Part = [~" ", TypeBin, ~" ", SQL2],
+    Part = [~" ", TypeBin, ~" ", branch_sql(Q2, SQL2)],
     {Parts, MoreParams, C3} = compile_combinations_loop(Rest, C2),
     {[Part | Parts], Params2 ++ MoreParams, C3}.
 
