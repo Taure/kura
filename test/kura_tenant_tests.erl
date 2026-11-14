@@ -71,8 +71,8 @@ get_tenant_refuses_a_malformed_stored_tenant_test() ->
 
 with_tenant_test() ->
     kura_tenant:clear_tenant(),
-    Result = kura_tenant:with_tenant({prefix, <<"tmp">>}, fun kura_tenant:get_tenant/0),
-    ?assertEqual({prefix, <<"tmp">>}, Result),
+    Result = kura_tenant:with_tenant({prefix, ~"tmp"}, fun kura_tenant:get_tenant/0),
+    ?assertEqual({prefix, ~"tmp"}, Result),
     ?assertEqual(undefined, kura_tenant:get_tenant()).
 
 with_tenant_restores_previous_test() ->

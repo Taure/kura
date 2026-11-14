@@ -154,7 +154,6 @@ observed(RepoMod, SQL, Params, T0, Result, Source) ->
     emit_telemetry(RepoMod, SQL, Params, Result, DurationNative, DurationUs, Source),
     Result.
 
-%% As kura_redact shows a statement's parameters.
 -type shown() :: [term()] | {redacted, [term()]}.
 
 %% What a statement reads or writes, as telemetry names it: the table kura
@@ -1124,7 +1123,6 @@ table_name(Rest) ->
             Word
     end.
 
-%% A word and what follows it, the quotes around the word dropped.
 word(<<$", Rest/binary>>) ->
     Size = word_size(Rest, 0),
     case Rest of

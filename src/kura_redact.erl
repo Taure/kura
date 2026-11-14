@@ -119,7 +119,6 @@ changeset(#kura_changeset{schema = Schema} = CS) ->
             }
     end.
 
-%% The redacted fields' values as an error message would quote them.
 quotable(#kura_changeset{data = Data, changes = Changes, params = Params}, Redacted) ->
     lists:usort([
         Text

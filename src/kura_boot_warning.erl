@@ -5,7 +5,6 @@
 
 -export([once/2, forget/1]).
 
-%% Logs `Report` as a warning unless a warning for `Key` was logged since boot.
 -spec once(atom(), logger:report()) -> ok.
 once(Key, Report) ->
     case persistent_term:get({?MODULE, Key}, pending) of

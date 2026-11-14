@@ -1356,7 +1356,6 @@ is_identifier(Name) ->
     binary:match(Name, <<0>>) =:= nomatch andalso
         is_binary(unicode:characters_to_binary(Name, utf8, utf8)).
 
-%% A locking clause as SQL text: words, quoted names and commas.
 lock_tokens(<<>>, Acc) ->
     {ok, lists:reverse(Acc)};
 lock_tokens(<<C, Rest/binary>>, Acc) when ?IS_BLANK(C) ->

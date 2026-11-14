@@ -1239,7 +1239,7 @@ fragment_dollar_quoted(Text, Tag, Counter, Acc) ->
 dollar_quote_tag(Rest, Before) ->
     case identifier_byte(last_byte(Before)) of
         true -> none;
-        false -> dollar_quote_tag(Rest, <<"$">>, first)
+        false -> dollar_quote_tag(Rest, ~"$", first)
     end.
 
 dollar_quote_tag(<<"$", Rest/binary>>, Tag, _Position) ->
