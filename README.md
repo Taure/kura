@@ -617,6 +617,15 @@ Optional telemetry/logging config:
 ]}].
 ```
 
+### Defaults that change in 3.0
+
+These settings keep their 2.x behaviour when left out, and kura logs one
+warning per boot when the permissive default is in effect. Set them now.
+
+| Setting | 2.x default | 3.0 default | Effect |
+| --- | --- | --- | --- |
+| `max_page_size` | not capped | `1000` | largest `page_size` / `limit` `kura_paginator` accepts; see the [pagination guide](guides/pagination.md) |
+
 ## Plugins
 
 - [rebar3_kura](https://github.com/Taure/rebar3_kura) - Rebar3 plugin that auto-generates migration files from schema changes. Add a field to your schema, run `rebar3 compile`, and the migration is created for you.

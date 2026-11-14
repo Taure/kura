@@ -3,6 +3,8 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-export([log/2]).
+
 %%----------------------------------------------------------------------
 %% Test fixture
 %%----------------------------------------------------------------------
@@ -27,7 +29,12 @@ paginator_test_() ->
             {"end of results", fun t_cursor_end_of_results/0},
             {"empty table", fun t_cursor_empty/0},
             {"custom cursor field", fun t_cursor_custom_field/0},
-            {"with where clause", fun t_cursor_with_where/0}
+            {"with where clause", fun t_cursor_with_where/0},
+
+            %% Maximum page size
+            {"size at the maximum is served", fun t_size_at_the_maximum/0},
+            {"infinity lifts the configured maximum", fun t_infinity_lifts_the_maximum/0},
+            {"no maximum set: served, warned once", fun t_no_maximum_warns_once/0}
         ]
     end}.
 
@@ -228,3 +235,65 @@ cursor_paginate_refuses_a_distance_order_by_test() ->
         {kura, {distance_not_supported_here, cursor_paginate}},
         kura_paginator:cursor_paginate(no_such_repo, Q, #{limit => 10})
     ).
+
+%%----------------------------------------------------------------------
+%% Maximum page size
+%%----------------------------------------------------------------------
+
+t_size_at_the_maximum() ->
+    Q = kura_query:from(kura_test_schema),
+    {ok, Page} = kura_paginator:paginate(kura_test_repo, Q, #{
+        page_size => 10, max_page_size => 10
+    }),
+    ?assertEqual(10, length(maps:get(entries, Page))),
+    {ok, Cursor} = kura_paginator:cursor_paginate(kura_test_repo, Q, #{
+        limit => 10, max_page_size => 10
+    }),
+    ?assertEqual(10, length(maps:get(entries, Cursor))).
+
+t_infinity_lifts_the_maximum() ->
+    application:set_env(kura, max_page_size, 5),
+    try
+        Q = kura_query:from(kura_test_schema),
+        ?assertEqual(
+            {error, {page_size_too_large, 2000, 5}},
+            kura_paginator:paginate(kura_test_repo, Q, #{page_size => 2000})
+        ),
+        {ok, Page} = kura_paginator:paginate(kura_test_repo, Q, #{
+            page_size => 2000, max_page_size => infinity
+        }),
+        ?assertEqual(30, length(maps:get(entries, Page)))
+    after
+        application:unset_env(kura, max_page_size)
+    end.
+
+t_no_maximum_warns_once() ->
+    Q = kura_query:from(kura_test_schema),
+    kura_boot_warning:forget(max_page_size),
+    ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
+    try
+        {ok, Small} = kura_paginator:paginate(kura_test_repo, Q, #{page_size => 1000}),
+        ?assertEqual(30, length(maps:get(entries, Small))),
+        ?assertEqual([], max_page_size_warnings()),
+        {ok, Page} = kura_paginator:paginate(kura_test_repo, Q, #{page_size => 1001}),
+        ?assertEqual(30, length(maps:get(entries, Page))),
+        {ok, Cursor} = kura_paginator:cursor_paginate(kura_test_repo, Q, #{limit => 5000}),
+        ?assertEqual(30, length(maps:get(entries, Cursor))),
+        ?assertMatch([#{requested := 1001, next_major_default := 1000}], max_page_size_warnings())
+    after
+        logger:remove_handler(?MODULE),
+        kura_boot_warning:forget(max_page_size)
+    end.
+
+max_page_size_warnings() ->
+    receive
+        {logged, #{next_major_default := _} = Report} -> [Report | max_page_size_warnings()];
+        {logged, _} -> max_page_size_warnings()
+    after 100 -> []
+    end.
+
+log(#{msg := {report, Report}}, #{config := Pid}) ->
+    Pid ! {logged, Report},
+    ok;
+log(_Event, _Config) ->
+    ok.
