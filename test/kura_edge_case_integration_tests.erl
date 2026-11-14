@@ -16,7 +16,10 @@ edge_case_test_() ->
             {"case-insensitive text matches", fun t_text_match_ignores_case/0},
             {"escape_like makes a like pattern literal", fun t_escape_like/0},
             {"a question mark in a fragment literal binds nothing",
-                fun t_fragment_literal_question_mark/0}
+                fun t_fragment_literal_question_mark/0},
+            {"insert_all of no entries inserts nothing", fun t_insert_all_empty/0},
+            {"insert_all binds up to the statement limit",
+                fun t_insert_all_at_the_parameter_limit/0}
         ]
     end}.
 
@@ -155,3 +158,30 @@ t_fragment_literal_question_mark() ->
             )
         )
     ).
+
+t_insert_all_empty() ->
+    reset(),
+    ?assertEqual({ok, 0}, kura_test_repo:insert_all(kura_test_edge_schema, [])),
+    ?assertEqual(
+        {ok, 0, []},
+        kura_repo_worker:insert_all(kura_test_repo, kura_test_edge_schema, [], #{
+            returning => true
+        })
+    ),
+    ?assertEqual([], names(kura_query:from(kura_test_edge_schema))).
+
+t_insert_all_at_the_parameter_limit() ->
+    reset(),
+    Entries = [#{name => ~"n", note => ~"t", qty => N} || N <- lists:seq(1, 21845)],
+    ?assertEqual({ok, 21845}, kura_test_repo:insert_all(kura_test_edge_schema, Entries)),
+    ?assertError(
+        {kura, {too_many_parameters, 65538, 65535}},
+        kura_test_repo:insert_all(kura_test_edge_schema, [
+            #{name => ~"n", note => ~"t", qty => 0} | Entries
+        ])
+    ),
+    {ok, [#{count := Count}]} = kura_test_repo:all(
+        kura_query:select(kura_query:from(kura_test_edge_schema), [{count, '*'}])
+    ),
+    ?assertEqual(21845, Count),
+    reset().

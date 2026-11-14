@@ -24,6 +24,8 @@ configured for the running app.
 -define(ESCAPED_TEXT_CLOSE, ~", '!', '!!'), '%', '!%'), '_', '!_')").
 -define(LIKE_ESCAPE, ~") ESCAPE '!'").
 
+-define(MAX_BIND_PARAMETERS, 65535).
+
 -define(NO_ROWS, ~"1 = 0").
 -define(EVERY_ROW, ~"1 = 1").
 
@@ -475,6 +477,7 @@ delete_all(#kura_query{from = From, wheres = Wheres, prefix = QPrefix}) ->
 
 -spec insert_all(kura_dialect:table(), [atom()], [map()]) -> {iodata(), [term()]}.
 insert_all(SchemaOrTable, Fields, Rows) ->
+    ok = check_parameter_count(length(Rows) * length(Fields)),
     Table = resolve_table(SchemaOrTable),
     Cols = [quote_ident(atom_to_binary(F, utf8)) || F <- Fields],
     {ValueGroups, AllParams, _} = build_value_groups(Rows, Fields, 1),
@@ -487,6 +490,11 @@ insert_all(SchemaOrTable, Fields, Rows) ->
         join_comma(ValueGroups)
     ]),
     {SQL, AllParams}.
+
+%% The Bind message counts its parameters in an unsigned 16-bit field.
+check_parameter_count(Count) when Count =< ?MAX_BIND_PARAMETERS -> ok;
+check_parameter_count(Count) ->
+    erlang:error({kura, {too_many_parameters, Count, ?MAX_BIND_PARAMETERS}}).
 
 -spec insert_all(kura_dialect:table(), [atom()], [map()], map()) -> {iodata(), [term()]}.
 insert_all(SchemaOrTable, Fields, Rows, Opts) ->

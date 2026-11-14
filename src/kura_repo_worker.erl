@@ -467,7 +467,22 @@ do_delete_all(RepoMod, Query) ->
         {error, _} = Err -> Err
     end.
 
--doc "Bulk insert a list of maps, returning the count of inserted rows.".
+-doc """
+Bulk insert a list of maps in one statement, returning the count of
+inserted rows.
+
+An empty list inserts nothing and returns `{ok, 0}` without a statement.
+
+Every entry must set the same fields. The statement has one column list,
+so an entry with a field the others lack, or without one they have,
+returns `{error, {entries_differ, Fields, EntryFields}}` and nothing is
+written.
+
+A statement holds a limited number of bound values, 65535 on PostgreSQL,
+and each entry binds one per field. A list over the limit raises
+`{kura, {too_many_parameters, Count, Max}}`. Split the list and insert
+the parts inside one transaction.
+""".
 -spec insert_all(module(), module(), [map()]) -> {ok, non_neg_integer()} | {error, term()}.
 insert_all(RepoMod, SchemaMod, Entries) ->
     guard_write(RepoMod, fun() -> do_insert_all(RepoMod, SchemaMod, Entries) end).
@@ -475,7 +490,11 @@ insert_all(RepoMod, SchemaMod, Entries) ->
 do_insert_all(RepoMod, SchemaMod, Entries) ->
     do_insert_all(RepoMod, SchemaMod, Entries, #{}).
 
--doc "Bulk insert with options. `#{returning => true | [atom()]}` returns inserted rows.".
+-doc """
+Bulk insert with options. `#{returning => true | [atom()]}` returns
+inserted rows, so an empty list returns `{ok, 0, []}`. See `insert_all/3`
+for the limits on the entries.
+""".
 -spec insert_all(module(), module(), [map()], map()) ->
     {ok, non_neg_integer()} | {ok, non_neg_integer(), [map()]} | {error, term()}.
 insert_all(RepoMod, SchemaMod, Entries, Opts) ->
@@ -487,9 +506,28 @@ do_insert_all(RepoMod, SchemaMod, Entries, Opts) ->
         {ok, Rows} -> do_insert_all_rows(RepoMod, SchemaMod, Rows, guard_upsert(SchemaMod, Opts))
     end.
 
-do_insert_all_rows(RepoMod, SchemaMod, Rows, Opts) ->
-    [First | _] = Rows,
+do_insert_all_rows(_RepoMod, _SchemaMod, [], #{returning := RetOpt}) when
+    RetOpt =:= true; is_list(RetOpt)
+->
+    {ok, 0, []};
+do_insert_all_rows(_RepoMod, _SchemaMod, [], _Opts) ->
+    {ok, 0};
+do_insert_all_rows(RepoMod, SchemaMod, [First | _] = Rows, Opts) ->
     Fields = maps:keys(First),
+    case entry_with_other_fields(Rows, Fields, length(Fields)) of
+        none -> insert_rows(RepoMod, SchemaMod, Fields, Rows, Opts);
+        Row -> {error, {entries_differ, Fields, maps:keys(Row)}}
+    end.
+
+entry_with_other_fields([], _Fields, _Count) ->
+    none;
+entry_with_other_fields([Row | Rest], Fields, Count) ->
+    case map_size(Row) =:= Count andalso lists:all(fun(F) -> is_map_key(F, Row) end, Fields) of
+        true -> entry_with_other_fields(Rest, Fields, Count);
+        false -> Row
+    end.
+
+insert_rows(RepoMod, SchemaMod, Fields, Rows, Opts) ->
     {SQL, Params} = kura_query_compiler:insert_all(RepoMod, SchemaMod, Fields, Rows, Opts),
 
     case Opts of

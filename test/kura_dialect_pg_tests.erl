@@ -1727,3 +1727,27 @@ join_qualifies_having_and_window_spec_test() ->
         >>,
         iolist_to_binary(WindowSQL)
     ).
+
+insert_all_parameter_limit_test_() ->
+    Rows = fun(Count) -> [#{name => ~"n"} || _ <- lists:seq(1, Count)] end,
+    [
+        {"the limit itself compiles", fun() ->
+            {_SQL, Params} = kura_dialect_pg:insert_all(kura_test_schema, [name], Rows(65535)),
+            ?assertEqual(65535, length(Params))
+        end},
+        {"one over the limit is refused", fun() ->
+            ?assertError(
+                {kura, {too_many_parameters, 65536, 65535}},
+                kura_dialect_pg:insert_all(kura_test_schema, [name], Rows(65536))
+            )
+        end},
+        {"the limit counts every field", fun() ->
+            ?assertError(
+                {kura, {too_many_parameters, 65536, 65535}},
+                kura_dialect_pg:insert_all(kura_test_schema, [name, email], [
+                    #{name => ~"n", email => ~"e"}
+                 || _ <- lists:seq(1, 32768)
+                ])
+            )
+        end}
+    ].
