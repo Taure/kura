@@ -287,9 +287,8 @@ query_needs(#kura_query{} = Q) ->
         select_needs(Q#kura_query.select),
         orders_need(Q#kura_query.order_bys),
         lock_needs(Q#kura_query.lock),
-        distinct_needs(Q#kura_query.distinct),
-        bodies_need(Q#kura_query.ctes),
-        bodies_need(Q#kura_query.combinations)
+        distinct_needs(Q#kura_query.distinct)
+        | [query_needs(Nested) || Nested <- kura_query:nested(Q)]
     ]).
 
 conditions_need([Condition | Rest]) -> condition_needs(Condition) ++ conditions_need(Rest);
@@ -303,12 +302,6 @@ condition_needs({{distance, _, _, _}, _Op, _Threshold}) ->
     [vector];
 condition_needs({_Field, matches, _Query}) ->
     [full_text_search];
-condition_needs({_Field, in, {subquery, #kura_query{} = Q}}) ->
-    query_needs(Q);
-condition_needs({Exists, {subquery, #kura_query{} = Q}}) when
-    Exists =:= exists; Exists =:= not_exists
-->
-    query_needs(Q);
 condition_needs(_Condition) ->
     [].
 
@@ -339,7 +332,3 @@ skips_locked(_Clause) -> false.
 
 distinct_needs(Fields) when is_list(Fields) -> [distinct_on];
 distinct_needs(_Distinct) -> [].
-
-bodies_need([{_NameOrType, #kura_query{} = Q} | Rest]) -> query_needs(Q) ++ bodies_need(Rest);
-bodies_need([_ | Rest]) -> bodies_need(Rest);
-bodies_need(_) -> [].

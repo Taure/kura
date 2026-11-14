@@ -49,7 +49,9 @@ Q3 = kura_query:limit(Q2, 10).
     min/2,
     max/2,
     check_encrypted/1,
-    where_unrewritten/2
+    where_unrewritten/2,
+    sources/1,
+    nested/1
 ]).
 
 -export_type([
@@ -61,7 +63,8 @@ Q3 = kura_query:limit(Q2, 10).
     lock/0,
     row_lock/0,
     lock_strength/0,
-    lock_wait/0
+    lock_wait/0,
+    source/0
 ]).
 
 %% Stands for every column of a CTE whose ciphertext columns cannot be named.
@@ -707,7 +710,7 @@ lookup_specs(Q, {Encrypted, Ctes}) ->
             FromOwned = from_owned_fields(Q),
             maps:from_list([
                 {F, Spec}
-             || Source <- sources(Q),
+             || Source <- from_and_joins(Q),
                 not reads_cte(Source, Ctes),
                 F := #{mode := deterministic} = Spec <- source_specs(Source),
                 declared_once(F, Encrypted),
@@ -739,7 +742,7 @@ guard_scope(#kura_query{ctes = Own} = Q, OuterEncrypted, OuterCtes) ->
     {encrypted_in_scope(Q, Ctes) ++ unshadowed(OuterEncrypted, Q, Ctes), Ctes}.
 
 encrypted_in_scope(Q, Ctes) ->
-    lists:append([source_encrypted(S, Ctes) || S <- sources(Q)]).
+    lists:append([source_encrypted(S, Ctes) || S <- from_and_joins(Q)]).
 
 source_encrypted(Source, Ctes) ->
     encrypted_fields(Source) ++ cte_encrypted(Source, Ctes).
@@ -1049,10 +1052,10 @@ refuse_bodies(_Malformed, _OuterEncrypted, _Ctes) ->
 unshadowed([], _Q, _Ctes) ->
     [];
 unshadowed(OuterEncrypted, Q, Ctes) ->
-    Defined = lists:append([columns(S, Ctes) || S <- sources(Q)]),
+    Defined = lists:append([columns(S, Ctes) || S <- from_and_joins(Q)]),
     [F || F <- OuterEncrypted, not lists:member(F, Defined)].
 
-sources(#kura_query{from = From, joins = Joins}) ->
+from_and_joins(#kura_query{from = From, joins = Joins}) ->
     [From | [T || {_, T, _, _} <- Joins]].
 
 columns(Source, Ctes) when is_atom(Source) ->
@@ -1497,6 +1500,171 @@ whose shape already passed. So a `#kura_query{}` built or updated without
 -spec check_encrypted(#kura_query{}) -> ok.
 check_encrypted(Q) ->
     refuse_encrypted_query(Q, [], []).
+
+-doc """
+A schema or table a query reads, and how: as its `from`, through a `join`,
+or in a `preload`. `cte` marks a `from` or a join that names one of the
+query's CTEs, which is a name and not a table: what the CTE reads is listed
+from its body.
+""".
+-type source() :: {from | join | cte | preload, module() | atom() | binary()}.
+
+-doc """
+Every schema and table `Query` reads, at any depth: its `from` and joins,
+then those of its CTE bodies, of the queries combined with it, and of the
+`in`, `exists` and `not_exists` subqueries in its `WHERE` and `HAVING`
+conditions, and last what its preloads read.
+
+A preload is resolved from the associations of the `from` schema: the
+associated schema, the join table of a many-to-many, and each step of a
+`through`. Only the preloads of `Query` itself are listed, since those of a
+nested query are never run. A source may be listed more than once.
+
+```erlang
+Q = kura_query:preload(kura_query:join(kura_query:from(post), inner, author, {author_id, id}), [tags]),
+[{from, post}, {join, author}, {preload, tag}, {preload, ~"posts_tags"}] = kura_query:sources(Q).
+```
+""".
+-spec sources(#kura_query{}) -> [source()].
+sources(#kura_query{from = From, preloads = Preloads} = Query) ->
+    read_sources(Query, []) ++ preload_sources(From, Preloads).
+
+-doc false.
+-spec nested(#kura_query{}) -> [#kura_query{}].
+nested(#kura_query{ctes = Ctes, combinations = Combinations, wheres = Wheres, havings = Havings}) ->
+    bodies(Ctes) ++ bodies(Combinations) ++ subqueries(Wheres) ++ subqueries(Havings).
+
+%% A nested query reads its own CTEs before those of the queries around it.
+-spec read_sources(#kura_query{}, [term()]) -> [source()].
+read_sources(#kura_query{from = From, joins = Joins, ctes = Ctes} = Query, OuterNames) ->
+    Names = cte_names(Ctes) ++ OuterNames,
+    read_source(from, From, Names) ++ joined_sources(Joins, Names) ++
+        nested_sources(nested(Query), Names).
+
+-spec nested_sources([#kura_query{}], [term()]) -> [source()].
+nested_sources([], _Names) ->
+    [];
+nested_sources([Query | Rest], Names) ->
+    read_sources(Query, Names) ++ nested_sources(Rest, Names).
+
+-spec joined_sources(term(), [term()]) -> [source()].
+joined_sources([{_Type, Joined, _On, _As} | Rest], Names) ->
+    read_source(join, Joined, Names) ++ joined_sources(Rest, Names);
+joined_sources([_ | Rest], Names) ->
+    joined_sources(Rest, Names);
+joined_sources(_, _Names) ->
+    [].
+
+-spec read_source(from | join, term(), [term()]) -> [source()].
+read_source(_Role, undefined, _Names) ->
+    [];
+read_source(Role, Source, Names) when is_atom(Source); is_binary(Source) ->
+    case names_cte(Source, Names) of
+        true -> [{cte, Source}];
+        false -> [{Role, Source}]
+    end;
+read_source(_Role, _Source, _Names) ->
+    [].
+
+-spec names_cte(atom() | binary(), [term()]) -> boolean().
+names_cte(Source, Names) when is_binary(Source) -> lists:member(Source, Names);
+names_cte(Source, Names) when is_atom(Source) -> lists:member(atom_to_binary(Source), Names).
+
+-spec cte_names(term()) -> [term()].
+cte_names([{Name, _Body} | Rest]) -> [Name | cte_names(Rest)];
+cte_names([_ | Rest]) -> cte_names(Rest);
+cte_names(_) -> [].
+
+-spec bodies(term()) -> [#kura_query{}].
+bodies([{_NameOrKind, #kura_query{} = Body} | Rest]) -> [Body | bodies(Rest)];
+bodies([_ | Rest]) -> bodies(Rest);
+bodies(_) -> [].
+
+-spec subqueries(term()) -> [#kura_query{}].
+subqueries([Condition | Rest]) -> condition_subqueries(Condition) ++ subqueries(Rest);
+subqueries(_) -> [].
+
+-spec condition_subqueries(term()) -> [#kura_query{}].
+condition_subqueries({Op, Conditions}) when Op =:= 'and'; Op =:= 'or' ->
+    subqueries(Conditions);
+condition_subqueries({'not', Inner}) ->
+    condition_subqueries(Inner);
+condition_subqueries({_Field, in, {subquery, #kura_query{} = Sub}}) ->
+    [Sub];
+condition_subqueries({Exists, {subquery, #kura_query{} = Sub}}) when
+    Exists =:= exists; Exists =:= not_exists
+->
+    [Sub];
+condition_subqueries(_Condition) ->
+    [].
+
+-spec preload_sources(term(), term()) -> [source()].
+preload_sources(_Schema, []) ->
+    [];
+preload_sources(Schema, Preloads) when is_atom(Schema), Schema =/= undefined ->
+    case kura_schema:is_schema(Schema) of
+        true -> preloaded(Schema, Preloads);
+        false -> []
+    end;
+preload_sources(_Schema, _Preloads) ->
+    [].
+
+-spec preloaded(module(), term()) -> [source()].
+preloaded(Schema, [Preload | Rest]) ->
+    preload_reads(Schema, Preload) ++ preloaded(Schema, Rest);
+preloaded(_Schema, _) ->
+    [].
+
+%% As kura_preloader reads them: a bare name follows a `through`, a name
+%% with options does not, and a nested list goes on from the association's
+%% schema.
+-spec preload_reads(module(), term()) -> [source()].
+preload_reads(Schema, {Name, Nested}) when is_atom(Name), is_list(Nested) ->
+    case kura_schema:association(Schema, Name) of
+        {ok, #kura_assoc{schema = Related}} ->
+            preload_reads(Schema, Name) ++ preload_sources(Related, Nested);
+        {error, not_found} ->
+            []
+    end;
+preload_reads(Schema, {Name, Opts}) when is_atom(Name), is_map(Opts) ->
+    case kura_schema:association(Schema, Name) of
+        {ok, Assoc} -> association_reads(Assoc);
+        {error, not_found} -> []
+    end;
+preload_reads(Schema, Name) when is_atom(Name) ->
+    case kura_schema:association(Schema, Name) of
+        {ok, #kura_assoc{through = [_ | _] = Through}} -> through_reads(Schema, Through);
+        {ok, Assoc} -> association_reads(Assoc);
+        {error, not_found} -> []
+    end;
+preload_reads(_Schema, _Preload) ->
+    [].
+
+-spec through_reads(module(), [atom()]) -> [source()].
+through_reads(_Schema, []) ->
+    [];
+through_reads(Schema, [Step | Rest]) ->
+    case kura_schema:association(Schema, Step) of
+        {ok, #kura_assoc{schema = Next} = Assoc} ->
+            association_reads(Assoc) ++ through_reads(Next, Rest);
+        {error, not_found} ->
+            []
+    end.
+
+-spec association_reads(#kura_assoc{}) -> [source()].
+association_reads(#kura_assoc{type = many_to_many, join_through = JoinTable} = Assoc) when
+    JoinTable =/= undefined
+->
+    association_target(Assoc) ++ [{preload, JoinTable}];
+association_reads(Assoc) ->
+    association_target(Assoc).
+
+-spec association_target(#kura_assoc{}) -> [source()].
+association_target(Assoc) ->
+    case kura_schema:assoc_target(Assoc) of
+        undefined -> [];
+        Target -> [{preload, Target}]
+    end.
 
 -doc "Combine queries with UNION (removes duplicates).".
 -spec union(#kura_query{}, #kura_query{}) -> #kura_query{}.

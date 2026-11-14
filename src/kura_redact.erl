@@ -210,14 +210,19 @@ error_reason({Tag, Reason}) when is_atom(Tag), is_map(Reason) -> {Tag, error_rea
 error_reason(_Reason) -> redacted.
 
 reads_redacted(Query) ->
-    redacted_in(Query) =/= [] orelse lists:any(fun reads_redacted/1, nested(Query)).
+    lists:any(
+        fun({Role, Source}) -> Role =/= preload andalso redacted_of(Source) =/= [] end,
+        kura_query:sources(Query)
+    ).
 
 filters_redacted(Query) ->
     Redacted = redacted_in(Query),
     names_field(Query#kura_query.wheres, Redacted) orelse
         names_field(Query#kura_query.havings, Redacted) orelse
-        lists:any(fun filters_redacted/1, nested(Query)).
+        lists:any(fun filters_redacted/1, kura_query:nested(Query)).
 
+%% The fields a condition of this query can name: those of its own sources
+%% and those its CTEs hand it.
 redacted_in(#kura_query{from = From, joins = Joins, ctes = Ctes}) ->
     lists:append([
         redacted_of(From),
@@ -227,14 +232,6 @@ redacted_in(#kura_query{from = From, joins = Joins, ctes = Ctes}) ->
 
 redacted_of(From) when is_atom(From), From =/= undefined -> kura_schema:redacted_fields(From);
 redacted_of(_From) -> [].
-
-nested(#kura_query{ctes = Ctes, combinations = Combinations, wheres = Wheres, havings = Havings}) ->
-    lists:append([
-        [Body || {_Name, #kura_query{} = Body} <- Ctes],
-        [Body || {_Kind, #kura_query{} = Body} <- Combinations],
-        subqueries(Wheres),
-        subqueries(Havings)
-    ]).
 
 names_field(_Conditions, []) ->
     false;
@@ -255,21 +252,3 @@ condition_names(Condition, Redacted) when is_tuple(Condition), tuple_size(Condit
     end;
 condition_names(_Condition, _Redacted) ->
     false.
-
-subqueries([Condition | Rest]) ->
-    condition_subqueries(Condition) ++ subqueries(Rest);
-subqueries(_) ->
-    [].
-
-condition_subqueries({Op, Conditions}) when Op =:= 'and'; Op =:= 'or' ->
-    subqueries(Conditions);
-condition_subqueries({'not', Inner}) ->
-    condition_subqueries(Inner);
-condition_subqueries({_Field, in, {subquery, #kura_query{} = Sub}}) ->
-    [Sub];
-condition_subqueries({Exists, {subquery, #kura_query{} = Sub}}) when
-    Exists =:= exists; Exists =:= not_exists
-->
-    [Sub];
-condition_subqueries(_Condition) ->
-    [].

@@ -269,33 +269,26 @@ require(Source) ->
 
 unless_required(QueryOrSource) ->
     case required() =:= true andalso erlang:get(?UNSCOPED) =/= true of
-        true -> check_scoped(QueryOrSource, []);
+        true -> check_scoped(QueryOrSource);
         false -> ok
     end.
 
 %% A source that names one of the query's CTEs is not a table: the CTE's
 %% own body is checked instead.
-check_scoped(#kura_query{from = From, ctes = Ctes} = Query, OuterNames) ->
-    Names = [Name || {Name, _Body} <- Ctes] ++ OuterNames,
-    ok = check_source(From, Names),
-    ok = check_bodies(Ctes, Names),
-    ok = check_bodies(Query#kura_query.combinations, Names),
-    ok = check_conditions(Query#kura_query.wheres, Names),
-    check_conditions(Query#kura_query.havings, Names);
-check_scoped(Source, Names) ->
-    check_source(Source, Names).
-
-check_source(undefined, _Names) ->
+check_scoped(#kura_query{} = Query) ->
+    check_sources([Source || {from, Source} <- kura_query:sources(Query)]);
+check_scoped(undefined) ->
     ok;
-check_source(Source, Names) ->
-    case names_cte(Source, Names) orelse not tenant_scoped(Source) of
-        true -> ok;
-        false -> error({kura, {tenant_required, Source}})
-    end.
+check_scoped(Source) ->
+    check_sources([Source]).
 
-names_cte(Source, Names) when is_binary(Source) -> lists:member(Source, Names);
-names_cte(Source, Names) when is_atom(Source) -> lists:member(atom_to_binary(Source), Names);
-names_cte(_Source, _Names) -> false.
+check_sources([]) ->
+    ok;
+check_sources([Source | Rest]) ->
+    case tenant_scoped(Source) of
+        true -> error({kura, {tenant_required, Source}});
+        false -> check_sources(Rest)
+    end.
 
 tenant_scoped(Source) when is_atom(Source) ->
     case kura_schema:is_schema(Source) andalso erlang:function_exported(Source, tenant_scoped, 0) of
@@ -304,33 +297,6 @@ tenant_scoped(Source) when is_atom(Source) ->
     end;
 tenant_scoped(_Table) ->
     true.
-
-check_bodies([{_NameOrKind, #kura_query{} = Body} | Rest], Names) ->
-    ok = check_scoped(Body, Names),
-    check_bodies(Rest, Names);
-check_bodies([_ | Rest], Names) ->
-    check_bodies(Rest, Names);
-check_bodies(_, _Names) ->
-    ok.
-
-check_conditions([Condition | Rest], Names) ->
-    ok = check_condition(Condition, Names),
-    check_conditions(Rest, Names);
-check_conditions(_, _Names) ->
-    ok.
-
-check_condition({Op, Conditions}, Names) when Op =:= 'and'; Op =:= 'or' ->
-    check_conditions(Conditions, Names);
-check_condition({'not', Inner}, Names) ->
-    check_condition(Inner, Names);
-check_condition({_Field, in, {subquery, #kura_query{} = Sub}}, Names) ->
-    check_scoped(Sub, Names);
-check_condition({Exists, {subquery, #kura_query{} = Sub}}, Names) when
-    Exists =:= exists; Exists =:= not_exists
-->
-    check_scoped(Sub, Names);
-check_condition(_Other, _Names) ->
-    ok.
 
 -doc """
 Confine `Query` to the tenant `Strategy` names.
