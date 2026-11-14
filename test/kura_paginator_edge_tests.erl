@@ -102,7 +102,7 @@ invalid_max_page_size_setting_raises_test_() ->
 invalid_max_page_size_raises_test_() ->
     [
         ?_assertError(
-            {kura, {invalid_max_page_size, Max}},
+            {kura, {invalid_setting, max_page_size, Max}},
             kura_paginator:paginate(no_such_repo, kura_query:from(user), #{max_page_size => Max})
         )
      || Max <- [0, -1, ~"100", 1.5]

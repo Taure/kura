@@ -36,7 +36,9 @@ Q = kura_query:from(my_schema),
 or per call with the `max_page_size` option, which wins over the
 application setting. A larger size returns
 `{error, {page_size_too_large, Size, Max}}`; it is refused, not silently
-lowered. `infinity` turns the cap off on purpose.
+lowered. `infinity` turns the cap off on purpose. Any other value, as the
+setting or as the option, raises
+`{kura, {invalid_setting, max_page_size, Value}}`.
 
 With no `max_page_size` set, nothing is capped, and the first request for
 more than 1000 rows logs one warning per boot. In kura 3.0 the default
@@ -244,14 +246,9 @@ page_size(limit, Size, _Opts) ->
 
 -spec max_page_size(map()) -> pos_integer() | infinity | unset.
 max_page_size(#{max_page_size := Max}) ->
-    checked_max_page_size(Max);
+    kura_settings:checked_max_page_size(Max);
 max_page_size(_Opts) ->
     kura_settings:max_page_size().
-
--spec checked_max_page_size(term()) -> pos_integer() | infinity.
-checked_max_page_size(infinity) -> infinity;
-checked_max_page_size(Max) when is_integer(Max), Max >= 1 -> Max;
-checked_max_page_size(Max) -> erlang:error({kura, {invalid_max_page_size, Max}}).
 
 -doc "Calculate total number of pages given total entries and page size.".
 -spec total_pages(non_neg_integer(), pos_integer()) -> non_neg_integer().

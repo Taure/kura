@@ -143,7 +143,10 @@ Set a maximum so a request cannot ask for the whole table:
 
 The `max_page_size` option on a call wins over the application setting,
 and `infinity` turns the cap off for that call. A size over the maximum is
-refused, not lowered, so the caller decides whether to clamp.
+refused, not lowered, so the caller decides whether to clamp. A maximum
+that is neither a positive integer nor `infinity` raises
+`{kura, {invalid_setting, max_page_size, Value}}`, as the setting or as the
+option.
 
 With no `max_page_size` set, nothing is capped. The first request for more
 than 1000 rows then logs one warning per boot. In kura 3.0 the default
