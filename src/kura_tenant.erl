@@ -236,7 +236,28 @@ current_scope() ->
 
 -doc """
 Take on a scope read with `current_scope/0` in another process, for the
-rest of this process's life.
+rest of this process's life. Nothing puts the process back: the tenant
+stays, and so does the mark of a scope read inside `without_tenant/1`,
+under which `require_tenant` refuses nothing.
+
+So call it only in a process that ends with the work it was started for,
+as a spawned preload or a `Task`-like worker does. A process that goes on
+to other work, such as a pool worker, a job runner or a `gen_server`,
+would do that work under the adopted scope: there, hand the process the
+tenant itself (`get_tenant/0`) and run the work in `with_tenant/2`, which
+ends with it.
+
+```erlang
+Tenant = kura_tenant:get_tenant(),
+gen_server:cast(Worker, {run, Tenant, Job}),
+
+handle_cast({run, Tenant, Job}, State) ->
+    kura_tenant:with_tenant(Tenant, {my_jobs, run, [Job]}),
+    {noreply, State}.
+```
+
+Raises `{invalid_tenant, Tenant}` for a scope whose tenant `put_tenant/1`
+would refuse.
 """.
 -spec adopt(scope()) -> ok.
 adopt({Tenant, Unscoped}) ->
