@@ -46,6 +46,8 @@ kura_tenant:put_tenant({attribute, {org_id, 42}}).
 
 Returns the previously set tenant (or `undefined`). Anything that is not one of the two strategies raises `{invalid_tenant, Tenant}`, as does an attribute value of `is_nil` or `is_not_nil`.
 
+`put_tenant/1` sets the tenant for the rest of the process's life. That fits a process that serves one request and ends. In a process that outlives its work (a pool worker, a job runner, a `gen_server`) use [`with_tenant/2`](#temporary-tenant-scope), or the next piece of work runs under the last one's tenant.
+
 ### Getting the Current Tenant
 
 ```erlang
@@ -79,7 +81,13 @@ end).
 %% Tenant is back to "tenant_acme" here
 ```
 
-This is useful when you need to temporarily access a different tenant's data without affecting the surrounding context.
+The process is put back as it was however the function ends: on a return, an error, a throw or an exit. A tenant set inside it with `put_tenant/1` ends with it too. The work can also be given as `{Module, Function, Args}`:
+
+```erlang
+kura_tenant:with_tenant({attribute, {org_id, OrgId}}, {my_jobs, run, [Job]}).
+```
+
+This is the form for any process that is reused, and for temporarily reading another tenant's data without affecting the surrounding context.
 
 ## How Scoping Works
 
@@ -151,8 +159,9 @@ end).
 ```
 
 Inside the fun the process has no tenant, and the one it had is restored
-afterwards. Keep these calls few and easy to find: each is a place where
-tenants are not isolated.
+afterwards, however the fun ends. `without_tenant/1` takes
+`{Module, Function, Args}` as well. Keep these calls few and easy to find:
+each is a place where tenants are not isolated.
 
 Raw SQL through `query/3` is not checked, as it is not scoped.
 
@@ -187,6 +196,6 @@ pre_request(Req, State) ->
     {ok, Req, State}.
 ```
 
-Since Cowboy spawns a process per request, the tenant is naturally isolated between concurrent requests. Remember to clear the tenant if the process is reused: a pooled worker that keeps the last request's tenant reads that tenant's rows. `with_tenant/2` restores the previous tenant for you.
+Since Cowboy spawns a process per request, the tenant is naturally isolated between concurrent requests. A process that is reused is different: a pool worker or a job runner that called `put_tenant/1` keeps that tenant for whatever it does next. Run each piece of work there inside `with_tenant/2`, which ends the tenant with the work.
 
-The tenant lives in the process dictionary, so a process you spawn does not have it. kura hands it to the processes it starts for a preload of several associations; for your own, read it with `get_tenant/0` and set it in the new process before it touches the repo. With [`require_tenant`](#requiring-a-tenant) set, forgetting to is an error instead of an unscoped query.
+The tenant lives in the process dictionary, so a process you spawn does not have it. kura hands the caller's scope to the processes it starts for a preload of several associations; for your own, read it with `kura_tenant:scope/0` and call `kura_tenant:adopt/1` in the new process before it touches the repo. With [`require_tenant`](#requiring-a-tenant) set, forgetting to is an error instead of an unscoped query.

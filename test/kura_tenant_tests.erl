@@ -69,6 +69,95 @@ with_tenant_restores_previous_test() ->
     ?assertEqual({prefix, <<"original">>}, kura_tenant:get_tenant()),
     kura_tenant:clear_tenant().
 
+with_tenant_ends_on_every_exit_test_() ->
+    Tenant = {prefix, ~"scoped"},
+    [
+        {Label, fun() ->
+            kura_tenant:clear_tenant(),
+            ?assertException(Class, boom, kura_tenant:with_tenant(Tenant, Raise)),
+            ?assertEqual(undefined, kura_tenant:get_tenant())
+        end}
+     || {Label, Class, Raise} <- [
+            {"error", error, fun() -> error(boom) end},
+            {"throw", throw, fun() -> throw(boom) end},
+            {"exit", exit, fun() -> exit(boom) end}
+        ]
+    ].
+
+with_tenant_that_is_refused_leaves_the_process_as_it_was_test() ->
+    kura_tenant:put_tenant({prefix, ~"original"}),
+    try
+        ?assertError(
+            {invalid_tenant, {prefix, "list"}},
+            kura_tenant:with_tenant({prefix, "list"}, fun() -> ok end)
+        ),
+        ?assertEqual({prefix, ~"original"}, kura_tenant:get_tenant())
+    after
+        kura_tenant:clear_tenant()
+    end.
+
+%% A value put in the process dictionary by hand must not make the scope's
+%% own tenant outlive it.
+with_tenant_over_an_invalid_stored_value_test() ->
+    erlang:put(kura_tenant, not_a_tenant),
+    try
+        ?assertEqual(
+            {prefix, ~"scoped"},
+            kura_tenant:with_tenant({prefix, ~"scoped"}, fun kura_tenant:get_tenant/0)
+        ),
+        ?assertEqual(not_a_tenant, erlang:get(kura_tenant)),
+        ?assertEqual(ok, kura_tenant:without_tenant(fun() -> ok end)),
+        ?assertEqual(not_a_tenant, erlang:get(kura_tenant))
+    after
+        erlang:erase(kura_tenant)
+    end.
+
+a_tenant_put_inside_a_scope_ends_with_it_test() ->
+    kura_tenant:clear_tenant(),
+    kura_tenant:with_tenant({prefix, ~"outer"}, fun() ->
+        kura_tenant:put_tenant({prefix, ~"inner"})
+    end),
+    ?assertEqual(undefined, kura_tenant:get_tenant()),
+    kura_tenant:without_tenant(fun() -> kura_tenant:put_tenant({prefix, ~"inner"}) end),
+    ?assertEqual(undefined, kura_tenant:get_tenant()).
+
+scopes_take_a_module_function_and_arguments_test() ->
+    kura_tenant:clear_tenant(),
+    ?assertEqual(
+        {prefix, ~"mfa"},
+        kura_tenant:with_tenant({prefix, ~"mfa"}, {kura_tenant, get_tenant, []})
+    ),
+    ?assertEqual(undefined, kura_tenant:get_tenant()),
+    kura_tenant:put_tenant({prefix, ~"original"}),
+    try
+        ?assertEqual(undefined, kura_tenant:without_tenant({kura_tenant, get_tenant, []})),
+        ?assertEqual([3, 2, 1], kura_tenant:without_tenant({lists, reverse, [[1, 2, 3]]})),
+        ?assertEqual({prefix, ~"original"}, kura_tenant:get_tenant())
+    after
+        kura_tenant:clear_tenant()
+    end.
+
+a_scope_is_handed_to_another_process_test() ->
+    kura_tenant:clear_tenant(),
+    Adopted = fun(Scope) ->
+        Caller = self(),
+        Pid = spawn(fun() ->
+            ok = kura_tenant:adopt(Scope),
+            Caller ! {self(), kura_tenant:get_tenant(), kura_tenant:scope()}
+        end),
+        receive
+            {Pid, Tenant, Seen} -> {Tenant, Seen}
+        end
+    end,
+    Tenant = {attribute, {org_id, 1}},
+    ?assertEqual({undefined, kura_tenant:scope()}, Adopted(kura_tenant:scope())),
+    ?assertMatch(
+        {Tenant, _}, kura_tenant:with_tenant(Tenant, fun() -> Adopted(kura_tenant:scope()) end)
+    ),
+    Unscoped = kura_tenant:without_tenant(fun kura_tenant:scope/0),
+    ?assertEqual({undefined, Unscoped}, Adopted(Unscoped)),
+    ?assertNotEqual(Unscoped, kura_tenant:scope()).
+
 attribute_tenant_test() ->
     kura_tenant:clear_tenant(),
     kura_tenant:put_tenant({attribute, {org_id, 42}}),

@@ -103,6 +103,13 @@ required_test_() ->
                     ?assertMatch({?REFUSED(?SCOPED), _Stack}, Reason)
             end
         end},
+        {"a preload inside without_tenant runs unscoped in its own processes", fun() ->
+            Posts = [#{id => 1, title => ~"a", author_id => 2}],
+            Loaded = kura_tenant:without_tenant(fun() ->
+                kura_repo_worker:preload(?REPO, kura_test_post_schema, Posts, [author, comments])
+            end),
+            ?assertMatch([#{id := 1, author := nil, comments := []}], Loaded)
+        end},
         {"a table that is not a schema is refused", fun() ->
             ?assertError(
                 ?REFUSED(some_table), kura_query_compiler:to_sql(?REPO, kura_query:from(some_table))

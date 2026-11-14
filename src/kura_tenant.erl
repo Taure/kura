@@ -9,6 +9,19 @@ Under the attribute strategy every query kura compiles is passed through
 query nested in it. Under the prefix strategy the dialect qualifies each
 table with the schema when it emits SQL.
 
+## Scope and lifetime
+
+`with_tenant/2` sets the tenant for one piece of work and puts the process
+back as it was when the work ends, however it ends. `put_tenant/1` sets it
+for the rest of the process's life. Use `with_tenant/2` in any process that
+outlives a request, such as a pool worker or a job runner: a tenant left
+there by `put_tenant/1` is the tenant of whatever that process does next.
+
+A process kura starts for a parallel preload takes on the caller's scope
+and ends with the preload. No other process inherits a tenant, and kura
+keeps none on a pooled connection: a prefix tenant qualifies each table in
+the statement and never changes the connection's `search_path`.
+
 ## Requiring a tenant
 
 The tenant lives in the process dictionary, so a process that never set
@@ -45,6 +58,8 @@ Raw SQL through a repo's `query/2` is never scoped and never checked.
     clear_tenant/0,
     with_tenant/2,
     without_tenant/1,
+    scope/0,
+    adopt/1,
     scope_query/2,
     tenant_for/1,
     require/1,
@@ -55,10 +70,24 @@ Raw SQL through a repo's `query/2` is never scoped and never checked.
 -define(UNSCOPED, kura_tenant_unscoped).
 
 -type strategy() :: {prefix, binary()} | {attribute, {atom(), term()}}.
--export_type([strategy/0]).
+
+-doc "What a scope runs: a fun, or a module, function and arguments.".
+-type scoped(Result) :: fun(() -> Result) | {module(), atom(), [term()]}.
+
+-doc "A process's tenant and whether it is inside `without_tenant/1`.".
+-opaque scope() :: {undefined | strategy(), boolean()}.
+
+-export_type([strategy/0, scoped/1, scope/0]).
 
 -doc """
 Set the current tenant strategy in the process dictionary.
+
+The tenant stays for the life of the process, or until `clear_tenant/0` or
+another `put_tenant/1`. That suits a process that serves one request and
+ends. A process that outlives the work it was given, such as a pool worker,
+a job runner or a `gen_server`, would carry the tenant into the next piece
+of work: there, set the tenant with `with_tenant/2`, which ends with the
+work.
 
 Raises `{invalid_tenant, Tenant}` on anything that is not a strategy, rather
 than storing something that would scope nothing. The attribute value cannot be
@@ -107,44 +136,80 @@ validate_tenant({attribute, {Field, Value}}) when
 validate_tenant(Other) ->
     error({invalid_tenant, Other}).
 
--doc "Execute a function with a temporary tenant, restoring the previous tenant after.".
--spec with_tenant(strategy(), fun(() -> T)) -> T.
-with_tenant(Tenant, Fun) ->
-    Old = put_tenant(Tenant),
+-doc """
+Run `Scoped` under `Tenant` and put the process back as it was, whether
+`Scoped` returns, raises, throws or exits: the tenant it had before, or
+none. A tenant set inside `Scoped` with `put_tenant/1` ends with it too.
+
+`Scoped` is a fun or `{Module, Function, Args}`. An invalid `Tenant`
+raises before anything changes.
+""".
+-spec with_tenant(undefined | strategy(), scoped(Result)) -> Result.
+with_tenant(Tenant, Scoped) ->
+    Valid = validate_tenant(Tenant),
+    ok = warn_unless_decided(Valid),
+    Previous = erlang:put(kura_tenant, Valid),
     try
-        Fun()
+        run(Scoped)
     after
-        case Old of
-            undefined -> clear_tenant();
-            _ -> put_tenant(Old)
-        end
+        restore(kura_tenant, Previous)
     end.
 
 -doc """
-Run `Fun` with no tenant, on purpose: queries and writes inside it are not
-scoped, and `require_tenant` does not refuse them. The tenant the process
-had is restored afterwards. A `with_tenant/2` inside `Fun` scopes as usual.
+Run `Scoped` with no tenant, on purpose: queries and writes inside it are
+not scoped, and `require_tenant` does not refuse them. The process is put
+back as it was afterwards, as with `with_tenant/2`. A `with_tenant/2`
+inside `Scoped` scopes as usual.
 
 Use it for the few paths that must cross tenants. It is the only way to
 run unscoped once `require_tenant` is set.
 """.
--spec without_tenant(fun(() -> T)) -> T.
-without_tenant(Fun) ->
-    Tenant = clear_tenant(),
+-spec without_tenant(scoped(Result)) -> Result.
+without_tenant(Scoped) ->
+    Previous = erlang:erase(kura_tenant),
     Unscoped = erlang:put(?UNSCOPED, true),
     try
-        Fun()
+        run(Scoped)
     after
-        _ =
-            case Unscoped of
-                true -> ok;
-                _ -> erlang:erase(?UNSCOPED)
-            end,
-        case Tenant of
-            undefined -> clear_tenant();
-            _ -> put_tenant(Tenant)
-        end
+        restore(?UNSCOPED, Unscoped),
+        restore(kura_tenant, Previous)
     end.
+
+-spec run(scoped(Result)) -> Result.
+run(Fun) when is_function(Fun, 0) -> Fun();
+run({Module, Function, Args}) -> erlang:apply(Module, Function, Args).
+
+%% The value is put back as it was read, valid or not: a scope neither
+%% repairs nor adds to what the process held before it.
+-spec restore(atom(), term()) -> ok.
+restore(Key, undefined) ->
+    _ = erlang:erase(Key),
+    ok;
+restore(Key, Previous) ->
+    _ = erlang:put(Key, Previous),
+    ok.
+
+-doc """
+The calling process's scope, for `adopt/1` in a process that does part of
+its work, as kura's parallel preloads do. A process that is not handed the
+scope has no tenant.
+""".
+-spec scope() -> scope().
+scope() ->
+    {get_tenant(), erlang:get(?UNSCOPED) =:= true}.
+
+-doc """
+Take on a scope read with `scope/0` in another process, for the rest of
+this process's life.
+""".
+-spec adopt(scope()) -> ok.
+adopt({Tenant, Unscoped}) ->
+    restore(kura_tenant, validate_tenant(Tenant)),
+    restore(?UNSCOPED, flag(Unscoped)).
+
+-spec flag(boolean()) -> true | undefined.
+flag(true) -> true;
+flag(false) -> undefined.
 
 -doc """
 Re-read `require_tenant` from the application environment. The setting is

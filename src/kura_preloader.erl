@@ -55,12 +55,12 @@ preload_in_parallel(RepoMod, Records, Schema, Assocs) ->
     %% Parallel preload: spawn each association query concurrently,
     %% then merge results sequentially to preserve record ordering.
     Self = self(),
-    Tenant = kura_tenant:get_tenant(),
+    Scope = kura_tenant:scope(),
     Refs = lists:map(
         fun(Assoc) ->
             Ref = make_ref(),
             spawn_link(fun() ->
-                ok = inherit_tenant(Tenant),
+                ok = kura_tenant:adopt(Scope),
                 Result = preload_assoc(RepoMod, Records, Schema, Assoc),
                 Self ! {preload_done, Ref, Assoc, Result}
             end),
@@ -69,12 +69,6 @@ preload_in_parallel(RepoMod, Records, Schema, Assocs) ->
         Assocs
     ),
     collect_preload_results(Refs, Records).
-
-inherit_tenant(undefined) ->
-    ok;
-inherit_tenant(Tenant) ->
-    _ = kura_tenant:put_tenant(Tenant),
-    ok.
 
 collect_preload_results([], Records) ->
     Records;
