@@ -913,6 +913,8 @@ load_row(RepoMod, Schema, Row) ->
 %% the result set.
 -doc false.
 -spec load_rows(module(), kura_dialect:table(), [map()]) -> [map()].
+load_rows(_RepoMod, _Schema, []) ->
+    [];
 load_rows(_RepoMod, Table, Rows) when is_binary(Table) ->
     Rows;
 load_rows(RepoMod, SchemaMod, Rows) when is_atom(SchemaMod) ->
@@ -941,13 +943,15 @@ keyed_by_field(Row, ByColumn) -> #{field_key(Key, ByColumn) => V || Key := V <- 
 field_key(Key, ByColumn) when is_atom(Key) -> maps:get(atom_to_binary(Key, utf8), ByColumn, Key);
 field_key(Key, _ByColumn) -> Key.
 
-load_fields(Row, Types, Specs, Stored) ->
-    #{K => loaded(K, V, Types, Specs, Stored) || K := V <- Row}.
+load_fields(Row, Types, Specs, undefined) ->
+    #{K => loaded(K, V, Types, Specs) || K := V <- Row};
+load_fields(Row, Types, Specs, Dialect) ->
+    #{K => loaded_stored(K, V, Types, Specs, Dialect) || K := V <- Row}.
 
-loaded(K, V, Types, Specs, Stored) ->
+loaded(K, V, Types, Specs) ->
     case Types of
         #{K := Type} ->
-            case load_field(Type, erlang_form(Stored, Type, V), Specs, K) of
+            case load_field(Type, V, Specs, K) of
                 {ok, Loaded} -> Loaded;
                 {error, _} -> V
             end;
@@ -955,7 +959,17 @@ loaded(K, V, Types, Specs, Stored) ->
             V
     end.
 
-erlang_form(undefined, _Type, V) -> V;
+loaded_stored(K, V, Types, Specs, Dialect) ->
+    case Types of
+        #{K := Type} ->
+            case load_field(Type, erlang_form(Dialect, Type, V), Specs, K) of
+                {ok, Loaded} -> Loaded;
+                {error, _} -> V
+            end;
+        #{} ->
+            V
+    end.
+
 erlang_form(_Dialect, _Type, null) -> null;
 erlang_form(Dialect, Type, V) -> Dialect:load_stored(Type, V).
 
