@@ -28,7 +28,7 @@ Emitted after every query execution.
 | `repo` | `module()` | The repo module that ran the query |
 | `source` | `binary() \| undefined` | The table name extracted from the query |
 | `tenant` | `undefined \| {prefix, binary()} \| {attribute, {atom(), term()}}` | Current tenant (if any) at query time |
-| `error_reason` | `term() \| undefined` | The error term when `result =:= error`, cut down for a schema with redacted fields |
+| `error_reason` | `term() \| undefined` | The error when `result =:= error`: its code and the names in it, without its message and detail |
 
 ### Redacted Fields
 
@@ -54,18 +54,35 @@ the legacy query log, their values are replaced by `~"[redacted]"`:
 | a query, `update_all` or `delete_all` that filters on or sets a redacted field | every parameter |
 | any statement that touches no redacted field | nothing |
 
-A query is judged by the schema it reads from. A subquery over another
-schema is looked at when the outer schema has redacted fields of its own,
-or the query has a CTE or a combination.
+A query is judged by every schema it reads: the one it is from, the ones
+it joins, and those of its subqueries, CTEs and combined queries.
 
-When a statement on a schema with redacted fields fails, `error_reason`
-keeps the error's code and the constraint, table and column it names, and
-drops its message and detail: a database quotes the offending value there,
-or the whole failing row. The caller of the repo function still gets the
-full error.
+Not covered: `{fragment, SQL, Params}` values in a query that names no
+redacted field, and the database's own statement log, which kura does not
+write. Raw SQL through `kura_repo_worker:query/3` is reported as it is,
+since kura cannot tell what its parameters hold. Mark such a call
+sensitive to have every parameter replaced:
 
-Not covered: raw SQL through `query/3`, and the database's own statement
-log, which kura does not write.
+```erlang
+kura_repo_worker:query(my_repo, SQL, [Token], #{sensitive => true}).
+```
+
+### Errors
+
+When a statement fails, `error_reason` keeps the error's code and the
+constraint, table and column it names, and drops its message and detail:
+a database quotes the offending value there, or the whole failing row.
+The caller of the repo function still gets the full error.
+
+To report the whole error for statements that touch no schema with
+redacted fields, opt in:
+
+```erlang
+{kura, [{telemetry_error_detail, true}]}
+```
+
+A statement on a schema with redacted fields, and a raw query marked
+sensitive, is cut down either way.
 
 For your own log lines, `kura_redact:record(Schema, Map)` and
 `kura_redact:changeset(Changeset)` return copies with the same fields

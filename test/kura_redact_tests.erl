@@ -87,7 +87,12 @@ telemetry_test_() ->
             {"update_all: every value when it sets or filters one", fun t_update_all/0},
             {"delete_all and aggregate", fun t_delete_all_and_aggregate/0},
             {"a schema with no redacted field is shown as it is", fun t_plain_schema/0},
-            {"a failed statement's error keeps its code, not its text", fun t_error_reason/0}
+            {"a subquery over a redacted schema: every value", fun t_subquery_of_another_schema/0},
+            {"a join with a redacted schema: every value", fun t_joined_schema/0},
+            {"a CTE over a redacted schema: every value", fun t_cte/0},
+            {"a failed statement's error keeps its code, not its text", fun t_error_reason/0},
+            {"error detail is opt-in, never for a redacted schema", fun t_error_detail/0},
+            {"raw SQL is shown as it is unless marked sensitive", fun t_raw_sql/0}
         ]}.
 
 forward(_Event, _Measurements, Metadata, #{pid := Pid}) ->
@@ -233,13 +238,55 @@ t_plain_schema() ->
         {[[~"token"]], [[~"token"]]}, shown(fun() -> kura_repo_worker:all(?REPO, Q) end)
     ).
 
-t_error_reason() ->
-    Error = #{
+t_subquery_of_another_schema() ->
+    Plain = kura_query:from(kura_test_edge_schema),
+    ByToken = kura_query:select(
+        kura_query:where(kura_query:from(?S), {token, '=', ~"t"}), [id]
+    ),
+    In = kura_query:where(Plain, {id, in, {subquery, ByToken}}),
+    ?assertEqual({[[?R]], [[~"t"]]}, shown(fun() -> kura_repo_worker:all(?REPO, In) end)),
+    Exists = kura_query:where(
+        Plain, {'or', [{name, '=', ~"n"}, {'not', {exists, {subquery, ByToken}}}]}
+    ),
+    ?assertEqual(
+        {[[?R, ?R]], [[~"n", ~"t"]]}, shown(fun() -> kura_repo_worker:all(?REPO, Exists) end)
+    ),
+    ByEmail = kura_query:select(
+        kura_query:where(kura_query:from(?S), {email, '=', ~"a@b.c"}), [id]
+    ),
+    Others = kura_query:where(Plain, {id, in, {subquery, ByEmail}}),
+    ?assertEqual(
+        {[[~"a@b.c"]], [[~"a@b.c"]]}, shown(fun() -> kura_repo_worker:all(?REPO, Others) end)
+    ),
+    ?assertEqual(
+        {[[?R]], [[~"t"]]},
+        shown(fun() -> kura_repo_worker:delete_all(?REPO, In) end)
+    ).
+
+t_joined_schema() ->
+    Joined = kura_query:join(kura_query:from(kura_test_edge_schema), inner, ?S, {id, id}),
+    ByToken = kura_query:where(Joined, {token, '=', ~"t"}),
+    ?assertEqual({[[?R]], [[~"t"]]}, shown(fun() -> kura_repo_worker:all(?REPO, ByToken) end)),
+    ByName = kura_query:where(Joined, {name, '=', ~"n"}),
+    ?assertEqual({[[~"n"]], [[~"n"]]}, shown(fun() -> kura_repo_worker:all(?REPO, ByName) end)).
+
+t_cte() ->
+    Body = kura_query:from(?S),
+    Q = kura_query:where(
+        kura_query:with_cte(kura_query:from(~"recent"), ~"recent", Body), {token, '=', ~"t"}
+    ),
+    ?assertEqual({[[?R]], [[~"t"]]}, shown(fun() -> kura_repo_worker:all(?REPO, Q) end)).
+
+duplicate_error() ->
+    #{
         code => ~"23505",
         constraint => ~"accounts_token_key",
         message => ~"duplicate key value violates unique constraint",
         detail => ~"Key (token)=(t) already exists."
-    },
+    }.
+
+t_error_reason() ->
+    Error = duplicate_error(),
     kura_test_recording_driver:reply_with([{error, Error}, {error, Error}]),
     {Result, [Event], _Given} = observed(fun() ->
         kura_repo_worker:insert(?REPO, changeset(#{}, #{email => ~"a@b.c", token => ~"t"}))
@@ -256,12 +303,63 @@ t_error_reason() ->
         maps:get(error_reason, NoSecret)
     ),
     kura_test_recording_driver:reply_with([{error, Error}]),
-    {_, [Plain], _} = observed(fun() ->
-        kura_repo_worker:insert(
-            ?REPO, kura_changeset:cast(kura_test_edge_schema, #{}, #{name => ~"n"}, [name])
+    {_, [Plain], _} = observed(fun() -> insert_plain() end),
+    ?assertEqual(
+        #{code => ~"23505", constraint => ~"accounts_token_key"}, maps:get(error_reason, Plain)
+    ).
+
+t_error_detail() ->
+    Error = duplicate_error(),
+    application:set_env(kura, telemetry_error_detail, true),
+    try
+        kura_test_recording_driver:reply_with([{error, Error}, {error, Error}]),
+        {_, [Plain], _} = observed(fun() -> insert_plain() end),
+        ?assertEqual(Error, maps:get(error_reason, Plain)),
+        {_, [Secret], _} = observed(fun() ->
+            kura_repo_worker:insert(?REPO, changeset(#{}, #{email => ~"a@b.c"}))
+        end),
+        ?assertEqual(
+            #{code => ~"23505", constraint => ~"accounts_token_key"},
+            maps:get(error_reason, Secret)
         )
-    end),
-    ?assertEqual(Error, maps:get(error_reason, Plain)).
+    after
+        application:unset_env(kura, telemetry_error_detail)
+    end.
+
+insert_plain() ->
+    kura_repo_worker:insert(
+        ?REPO, kura_changeset:cast(kura_test_edge_schema, #{}, #{name => ~"n"}, [name])
+    ).
+
+t_raw_sql() ->
+    SQL = ~"SELECT 1 FROM accounts WHERE token = $1",
+    ?assertEqual(
+        {[[~"t"]], [[~"t"]]}, shown(fun() -> kura_repo_worker:query(?REPO, SQL, [~"t"]) end)
+    ),
+    ?assertEqual(
+        {[[~"t"]], [[~"t"]]},
+        shown(fun() -> kura_repo_worker:query(?REPO, SQL, [~"t"], #{sensitive => false}) end)
+    ),
+    ?assertEqual(
+        {[[?R]], [[~"t"]]},
+        shown(fun() -> kura_repo_worker:query(?REPO, SQL, [~"t"], #{sensitive => true}) end)
+    ),
+    Error = {pgsql_error, #{code => ~"22P02", message => ~"invalid input syntax: \"t\""}},
+    application:set_env(kura, telemetry_error_detail, true),
+    try
+        kura_test_recording_driver:reply_with([{error, Error}]),
+        {Result, [Event], _} = observed(fun() ->
+            kura_repo_worker:query(?REPO, SQL, [~"t"], #{sensitive => true})
+        end),
+        ?assertEqual({error, Error}, Result),
+        ?assertEqual({pgsql_error, #{code => ~"22P02"}}, maps:get(error_reason, Event))
+    after
+        application:unset_env(kura, telemetry_error_detail)
+    end.
+
+sensitive_params_test() ->
+    ?assertEqual({redacted, [?R, ?R]}, kura_redact:sensitive_params([~"t", 1])),
+    ?assertEqual({redacted, []}, kura_redact:sensitive_params([])).
 
 error_reason_test_() ->
     [

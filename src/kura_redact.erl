@@ -23,18 +23,21 @@ replaced by `~"[redacted]"`:
   query that filters on a redacted field, an `update_all` that sets one
   and an upsert, every value of the statement is replaced. A statement
   that touches no redacted field is shown as it is. A query is judged by
-  the schema it reads from: a subquery over another schema is looked at
-  only when the outer schema has redacted fields of its own, or the query
-  has a CTE or a combination;
-- in the same event's `error_reason`, which for a statement on a schema
-  with redacted fields keeps only the error's code and the names it
-  carries (constraint, table, column), since a database error message can
-  quote a value, or the whole failing row;
+  every schema it reads: the one it is from, the ones it joins, and those
+  of its subqueries, CTEs and combined queries;
 - in what `record/2` and `changeset/1` return, for your own logging.
 
-Raw SQL through a repo's `query/2` and `{fragment, SQL, Params}` values
-inside a query that names no redacted field are not redacted: kura cannot
-tell what they hold.
+The same event's `error_reason` keeps only the error's code and the names
+it carries (constraint, table, column) for every statement, since a
+database error message can quote a value, or the whole failing row. With
+`{telemetry_error_detail, true}` in the `kura` application environment the
+whole error is reported for a statement that reads or writes no schema
+with redacted fields.
+
+Raw SQL through `kura_repo_worker:query/3` and `{fragment, SQL, Params}`
+values inside a query that names no redacted field are not redacted: kura
+cannot tell what they hold. Run raw SQL whose parameters are sensitive
+with `kura_repo_worker:query/4` and `#{sensitive => true}`.
 """.
 
 -include("kura.hrl").
@@ -43,6 +46,7 @@ tell what they hold.
     record/2,
     changeset/1,
     query_params/2,
+    sensitive_params/1,
     update_all_params/3,
     write_params/3,
     error_reason/1
@@ -108,19 +112,25 @@ names_redacted(_Key, _Redacted) ->
 
 -doc """
 What telemetry may show of the parameters of a compiled `Query`: `Params`
-itself when the schema it reads from has no redacted field, else
+itself when no schema it reads has a redacted field, else
 `{redacted, Shown}`. `Shown` holds one `~"[redacted]"` per parameter when
 the query, or a query nested in it, filters on a redacted field, and is
 `Params` otherwise.
 """.
 -spec query_params(#kura_query{}, [term()]) -> shown().
-query_params(#kura_query{from = From, ctes = [], combinations = []} = Query, Params) ->
-    case redacted_of(From) of
-        [] -> Params;
-        _ -> {redacted, filtered_params(Query, Params)}
-    end;
 query_params(Query, Params) ->
-    {redacted, filtered_params(Query, Params)}.
+    case reads_redacted(Query) of
+        true -> {redacted, filtered_params(Query, Params)};
+        false -> Params
+    end.
+
+-doc """
+What telemetry may show of parameters the caller says are sensitive: one
+`~"[redacted]"` for each.
+""".
+-spec sensitive_params([term()]) -> shown().
+sensitive_params(Params) ->
+    {redacted, all_redacted(Params)}.
 
 filtered_params(Query, Params) ->
     case filters_redacted(Query) of
@@ -189,9 +199,9 @@ all_redacted(Params) ->
     [?REDACTED || _ <- Params].
 
 -doc """
-What telemetry may show of the error of a failed statement on a schema
-with redacted fields: the error's code and the names in it, never its
-message or detail, which can quote a value.
+What telemetry may show of the error of a failed statement: the error's
+code and the names in it, never its message or detail, which can quote a
+value.
 """.
 -spec error_reason(term()) -> term().
 error_reason(Reason) when is_map(Reason) -> maps:with(?ERROR_KEYS, Reason);
@@ -199,16 +209,32 @@ error_reason(Reason) when is_atom(Reason) -> Reason;
 error_reason({Tag, Reason}) when is_atom(Tag), is_map(Reason) -> {Tag, error_reason(Reason)};
 error_reason(_Reason) -> redacted.
 
-filters_redacted(#kura_query{from = From} = Query) ->
-    names_field(Query#kura_query.wheres, redacted_of(From)) orelse
-        names_field(Query#kura_query.havings, redacted_of(From)) orelse
-        any_body(Query#kura_query.ctes) orelse
-        any_body(Query#kura_query.combinations) orelse
-        any_subquery(Query#kura_query.wheres) orelse
-        any_subquery(Query#kura_query.havings).
+reads_redacted(Query) ->
+    redacted_in(Query) =/= [] orelse lists:any(fun reads_redacted/1, nested(Query)).
+
+filters_redacted(Query) ->
+    Redacted = redacted_in(Query),
+    names_field(Query#kura_query.wheres, Redacted) orelse
+        names_field(Query#kura_query.havings, Redacted) orelse
+        lists:any(fun filters_redacted/1, nested(Query)).
+
+redacted_in(#kura_query{from = From, joins = Joins, ctes = Ctes}) ->
+    lists:append([
+        redacted_of(From),
+        lists:append([redacted_of(Joined) || {_Type, Joined, _On, _As} <- Joins]),
+        lists:append([redacted_in(Body) || {_Name, #kura_query{} = Body} <- Ctes])
+    ]).
 
 redacted_of(From) when is_atom(From), From =/= undefined -> kura_schema:redacted_fields(From);
 redacted_of(_From) -> [].
+
+nested(#kura_query{ctes = Ctes, combinations = Combinations, wheres = Wheres, havings = Havings}) ->
+    lists:append([
+        [Body || {_Name, #kura_query{} = Body} <- Ctes],
+        [Body || {_Kind, #kura_query{} = Body} <- Combinations],
+        subqueries(Wheres),
+        subqueries(Havings)
+    ]).
 
 names_field(_Conditions, []) ->
     false;
@@ -230,27 +256,20 @@ condition_names(Condition, Redacted) when is_tuple(Condition), tuple_size(Condit
 condition_names(_Condition, _Redacted) ->
     false.
 
-any_body([{_NameOrKind, #kura_query{} = Body} | Rest]) ->
-    filters_redacted(Body) orelse any_body(Rest);
-any_body([_ | Rest]) ->
-    any_body(Rest);
-any_body(_) ->
-    false.
+subqueries([Condition | Rest]) ->
+    condition_subqueries(Condition) ++ subqueries(Rest);
+subqueries(_) ->
+    [].
 
-any_subquery([Condition | Rest]) ->
-    subquery_filters(Condition) orelse any_subquery(Rest);
-any_subquery(_) ->
-    false.
-
-subquery_filters({Op, Conditions}) when Op =:= 'and'; Op =:= 'or' ->
-    any_subquery(Conditions);
-subquery_filters({'not', Inner}) ->
-    subquery_filters(Inner);
-subquery_filters({_Field, in, {subquery, #kura_query{} = Sub}}) ->
-    filters_redacted(Sub);
-subquery_filters({Exists, {subquery, #kura_query{} = Sub}}) when
+condition_subqueries({Op, Conditions}) when Op =:= 'and'; Op =:= 'or' ->
+    subqueries(Conditions);
+condition_subqueries({'not', Inner}) ->
+    condition_subqueries(Inner);
+condition_subqueries({_Field, in, {subquery, #kura_query{} = Sub}}) ->
+    [Sub];
+condition_subqueries({Exists, {subquery, #kura_query{} = Sub}}) when
     Exists =:= exists; Exists =:= not_exists
 ->
-    filters_redacted(Sub);
-subquery_filters(_Condition) ->
-    false.
+    [Sub];
+condition_subqueries(_Condition) ->
+    [].

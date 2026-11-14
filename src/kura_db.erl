@@ -76,8 +76,9 @@ query(RepoMod, SQL, Params) ->
 Run `SQL` with `Params`, and report the statement to telemetry and the
 query log as `Shown` says (see `t:kura_redact:shown/0`). With
 `{redacted, ShownParams}` those are reported in place of `Params`, and the
-error of a failed statement is cut down with `kura_redact:error_reason/1`.
-The caller gets the result as it is either way.
+error of a failed statement is cut down with `kura_redact:error_reason/1`
+whatever `telemetry_error_detail` says. The caller gets the result as it is
+either way.
 """.
 -spec query(module(), iodata(), [term()], kura_redact:shown()) -> map() | {error, term()}.
 query(RepoMod, SQL, Params, Shown) ->
@@ -920,7 +921,7 @@ build_telemetry_metadata(RepoMod, SQL, Params, Result) ->
         case Result of
             #{rows := Rows} -> {ok, length(Rows), undefined};
             #{num_rows := N} -> {ok, N, undefined};
-            {error, Reason} -> {error, 0, Reason};
+            {error, Reason} -> {error, 0, shown_error(Reason)};
             _ -> {ok, 0, undefined}
         end,
     Source = extract_source(SQLBin),
@@ -934,6 +935,12 @@ build_telemetry_metadata(RepoMod, SQL, Params, Result) ->
         tenant => kura_tenant:get_tenant(),
         error_reason => ErrorReason
     }.
+
+shown_error(Reason) ->
+    case application:get_env(kura, telemetry_error_detail) of
+        {ok, true} -> Reason;
+        _ -> kura_redact:error_reason(Reason)
+    end.
 
 extract_source(SQL) ->
     case

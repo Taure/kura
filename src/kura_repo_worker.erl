@@ -40,6 +40,7 @@ ok = kura_repo_worker:start(MyRepo),
     multi/2,
     preload/4,
     query/3,
+    query/4,
     scope_read/1,
     pgo_query/3,
     build_log_event/5,
@@ -575,10 +576,29 @@ field type is applied. A `jsonb` column arrives as its JSON text, and an
 enum column as a binary. Decode such a column yourself (`json:decode/1`),
 extract the value in SQL (`metadata->>'key'`), or read through a schema
 query, which loads every column through its field type.
+
+`Params` are reported to telemetry and the query log as they are: kura
+cannot tell which of them is sensitive. Use `query/4` when one is.
 """.
 -spec query(module(), iodata(), [term()]) -> {ok, list()} | {error, term()}.
 query(RepoMod, SQL, Params) ->
-    case kura_db:query(RepoMod, SQL, Params) of
+    query(RepoMod, SQL, Params, #{}).
+
+-doc """
+Execute raw SQL as `query/3` does. With `#{sensitive => true}` telemetry
+and the query log get `~"[redacted]"` in place of each parameter, and a
+failure's code and names without its message or detail. The SQL text is
+reported as it is, so keep values out of it.
+""".
+-spec query(module(), iodata(), [term()], #{sensitive => boolean()}) ->
+    {ok, list()} | {error, term()}.
+query(RepoMod, SQL, Params, Opts) ->
+    Shown =
+        case Opts of
+            #{sensitive := true} -> kura_redact:sensitive_params(Params);
+            #{} -> Params
+        end,
+    case kura_db:query(RepoMod, SQL, Params, Shown) of
         #{rows := Rows} -> {ok, Rows};
         {error, _} = Err -> Err
     end.
