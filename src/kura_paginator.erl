@@ -246,10 +246,7 @@ page_size(limit, Size, _Opts) ->
 max_page_size(#{max_page_size := Max}) ->
     checked_max_page_size(Max);
 max_page_size(_Opts) ->
-    case application:get_env(kura, max_page_size) of
-        {ok, Max} -> checked_max_page_size(Max);
-        undefined -> unset
-    end.
+    kura_settings:max_page_size().
 
 -spec checked_max_page_size(term()) -> pos_integer() | infinity.
 checked_max_page_size(infinity) -> infinity;

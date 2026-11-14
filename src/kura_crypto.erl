@@ -264,11 +264,11 @@ write_format() ->
     Format.
 
 configured_write_format() ->
-    case application:get_env(kura, encryption_write_format) of
-        undefined -> {v1, default};
-        {ok, v1} -> {v1, chosen};
+    case kura_settings:read(encryption_write_format) of
+        unset -> {v1, default};
         {ok, v2} -> {v2, chosen};
-        {ok, _} -> erlang:error({kura_crypto, invalid_write_format})
+        {ok, _V1} -> {v1, chosen};
+        {invalid, _} -> erlang:error({kura_crypto, invalid_write_format})
     end.
 
 %% v1 by default is kept for nodes that cannot read v2 yet. A v1 frame is

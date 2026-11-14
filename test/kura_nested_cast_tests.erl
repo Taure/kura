@@ -194,7 +194,7 @@ strict_refuses_a_cast_without_an_allow_list_test_() ->
 invalid_setting_test_() ->
     strict(yes, [
         ?_assertError(
-            {kura, {invalid_strict_assoc_cast, yes}},
+            {kura, {invalid_setting, strict_assoc_cast, yes}},
             kura_changeset:cast_assoc(post(#{}), comments)
         )
     ]).

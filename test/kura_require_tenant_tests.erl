@@ -337,7 +337,8 @@ not_required_runs_unscoped_test_() ->
 invalid_setting_test_() ->
     with_setting(strict, [
         ?_assertError(
-            {kura, {invalid_require_tenant, strict}}, kura_repo_worker:all(?REPO, scoped())
+            {kura, {invalid_setting, require_tenant, strict}},
+            kura_repo_worker:all(?REPO, scoped())
         )
     ]).
 

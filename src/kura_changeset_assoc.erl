@@ -154,12 +154,12 @@ field_caster(Child, Allowed) ->
 %% params. `strict_assoc_cast` refuses that; left unset it is allowed, with
 %% one warning per boot.
 every_field_allowed(Parent, Name) ->
-    case application:get_env(kura, strict_assoc_cast) of
-        {ok, true} ->
+    case kura_settings:flag(strict_assoc_cast) of
+        true ->
             erlang:error({kura, {nested_cast_needs_allow_list, Parent, Name}});
-        {ok, false} ->
+        false ->
             ok;
-        undefined ->
+        unset ->
             kura_boot_warning:once(strict_assoc_cast, #{
                 msg =>
                     ~"kura: a nested cast names no allow-list, so params can set every field of the child",
@@ -167,9 +167,7 @@ every_field_allowed(Parent, Name) ->
                 name => Name,
                 fix =>
                     ~"pass cast or with to cast_assoc, cast_embed and put_assoc, then set {kura, [{strict_assoc_cast, true}]}; that is the default in 3.0"
-            });
-        {ok, Other} ->
-            erlang:error({kura, {invalid_strict_assoc_cast, Other}})
+            })
     end.
 
 %% Key columns the framework owns and the caller may not cast: only the

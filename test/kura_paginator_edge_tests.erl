@@ -90,6 +90,15 @@ max_page_size_setting_refuses_a_larger_size_test_() ->
             )
         ]}.
 
+invalid_max_page_size_setting_raises_test_() ->
+    {setup, fun() -> application:set_env(kura, max_page_size, 0) end,
+        fun(_) -> application:unset_env(kura, max_page_size) end, [
+            ?_assertError(
+                {kura, {invalid_setting, max_page_size, 0}},
+                kura_paginator:paginate(no_such_repo, kura_query:from(user), #{})
+            )
+        ]}.
+
 invalid_max_page_size_raises_test_() ->
     [
         ?_assertError(

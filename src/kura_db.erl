@@ -983,7 +983,7 @@ build_telemetry_metadata(RepoMod, SQL, Params, Result) ->
     }.
 
 shown_error(Reason) ->
-    case application:get_env(kura, telemetry_error_detail) of
+    case kura_settings:read(telemetry_error_detail) of
         {ok, true} -> Reason;
         _ -> kura_redact:error_reason(Reason)
     end.

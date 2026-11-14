@@ -1253,10 +1253,10 @@ lock_clause(Lock) ->
 %% 2.30 wrote the text into the statement; kura 3.0 refuses it.
 -spec unread_lock(binary()) -> lock().
 unread_lock(Text) ->
-    case application:get_env(kura, strict_locks, false) of
+    case kura_settings:flag(strict_locks) of
         true ->
             invalid_lock(Text);
-        _ ->
+        _FalseOrUnset ->
             ok = kura_boot_warning:once(lock_text, #{
                 msg =>
                     ~"kura: a lock given as text is not a locking clause kura reads, and is written into the statement as it is",

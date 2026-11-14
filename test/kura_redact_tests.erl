@@ -92,6 +92,8 @@ telemetry_test_() ->
             {"a CTE over a redacted schema: every value", fun t_cte/0},
             {"a failed statement's error keeps its code, not its text", fun t_error_reason/0},
             {"error detail is opt-in, never for a redacted schema", fun t_error_detail/0},
+            {"a telemetry_error_detail that is not a boolean shows no detail",
+                fun t_error_detail_not_a_boolean/0},
             {"raw SQL is shown as it is unless marked sensitive", fun t_raw_sql/0}
         ]}.
 
@@ -321,6 +323,20 @@ t_error_detail() ->
         ?assertEqual(
             #{code => ~"23505", constraint => ~"accounts_token_key"},
             maps:get(error_reason, Secret)
+        )
+    after
+        application:unset_env(kura, telemetry_error_detail)
+    end.
+
+t_error_detail_not_a_boolean() ->
+    Error = duplicate_error(),
+    application:set_env(kura, telemetry_error_detail, yes),
+    try
+        kura_test_recording_driver:reply_with([{error, Error}]),
+        {_, [Plain], _} = observed(fun insert_plain/0),
+        ?assertEqual(
+            #{code => ~"23505", constraint => ~"accounts_token_key"},
+            maps:get(error_reason, Plain)
         )
     after
         application:unset_env(kura, telemetry_error_detail)

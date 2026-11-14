@@ -234,11 +234,7 @@ required() ->
     end.
 
 setting() ->
-    case application:get_env(kura, require_tenant) of
-        undefined -> unset;
-        {ok, Required} when is_boolean(Required) -> Required;
-        {ok, Other} -> error({kura, {invalid_require_tenant, Other}})
-    end.
+    kura_settings:flag(require_tenant).
 
 -doc """
 The tenant to compile `Query` under: the process's tenant, or `undefined`
