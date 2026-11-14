@@ -695,6 +695,48 @@ sqlite_dialect_leaves_where_values_unconverted_test() ->
         unset_repo()
     end.
 
+%% The stand-in must do what the dialect it stands for does: a `$` that is
+%% not a placeholder is text.
+sqlite_stand_in_rewrites_only_placeholders_test_() ->
+    Q0 = kura_query:where(kura_query:from(user), {name, ~"a"}),
+    Fragment = fun(SQL) ->
+        {Text, _} = kura_test_sqlite_dialect:to_sql(kura_query:where(Q0, {fragment, SQL, []})),
+        Text
+    end,
+    Where = ~"SELECT * FROM \"user\" WHERE \"name\" = ?1 AND ",
+    [
+        ?_assertEqual(
+            <<Where/binary, "price = '$5'">>, Fragment(~"price = '$5'")
+        ),
+        ?_assertEqual(
+            <<Where/binary, "\"cost$1\" > 0">>, Fragment(~"\"cost$1\" > 0")
+        ),
+        ?_assertEqual(
+            <<Where/binary, "total$1 > 0">>, Fragment(~"total$1 > 0")
+        ),
+        ?_assertEqual(
+            <<Where/binary, "note = 'it''s $2' -- $3\n AND a /* $4 */ = 1">>,
+            Fragment(~"note = 'it''s $2' -- $3\n AND a /* $4 */ = 1")
+        ),
+        ?_assertEqual(
+            <<Where/binary, "tag = $ || 'x'">>, Fragment(~"tag = $ || 'x'")
+        ),
+        ?_assertEqual(
+            {~"SELECT * FROM \"user\" WHERE \"a\" = ?1 AND \"b\" IN (?2, ?3) LIMIT ?4", [
+                1, 2, 3, 10
+            ]},
+            kura_test_sqlite_dialect:to_sql(
+                kura_query:limit(
+                    kura_query:where(
+                        kura_query:where(kura_query:from(user), {a, 1}), {b, in, [2, 3]}
+                    ),
+                    10
+                )
+            )
+        ),
+        ?_assertEqual(~"?12", iolist_to_binary(kura_test_sqlite_dialect:placeholder(12)))
+    ].
+
 cached_compile_refuses_an_encrypted_field_after_converting_test() ->
     set_repo_dialect(kura_dialect_pg),
     kura_query_cache:init(),
