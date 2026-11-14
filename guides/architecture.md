@@ -211,7 +211,11 @@ argument.
   `select_for_update_skip_locked`, ...). Consumers call
   `kura_capabilities:require/2` from supervisor init so the
   application refuses to start on a backend that lacks a required
-  feature instead of failing at runtime.
+  feature instead of failing at runtime. The query compiler checks each
+  query the same way: a full-text match, a window function, a vector
+  distance or a `skip_locked` lock on a backend that does not declare it
+  raises `{kura, {unsupported_capability, Capability, PoolModule}}`
+  before any SQL is built.
 
 ## Data Flow
 

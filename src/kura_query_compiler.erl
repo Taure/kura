@@ -68,7 +68,19 @@ plaintext either.
 to_sql(RepoMod, Query) ->
     ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
+    ok = check_capabilities(RepoMod, Query),
     compile_query(RepoMod, Query).
+
+%% A repo whose settings name no pool module, as in a unit test that sets
+%% only a dialect, is not checked.
+-spec check_capabilities(module(), #kura_query{}) -> ok.
+check_capabilities(RepoMod, Query) ->
+    case kura_repo:settings(RepoMod) of
+        #{pool_module := PoolMod} when is_atom(PoolMod) ->
+            kura_capabilities:check_query(PoolMod, Query);
+        _ ->
+            ok
+    end.
 
 %% Compiles without the distance and encrypted checks; every caller has
 %% run them on the query.
@@ -112,7 +124,9 @@ before anything is stored, and on every call that compiles directly. A hit
 skips it: the guard reads the sources, joins, selects, CTEs, combinations and
 the structure of every condition and subquery, all of which the shape keeps,
 and never a bound value, which is all the shape replaces. A hit therefore
-means a query of the same shape already passed. A query the shape split
+means a query of the same shape already passed. The capability check
+(`kura_capabilities:check_query/2`) runs at the same points for the same
+reason. A query the shape split
 cannot take apart, such as one with an improper condition list, goes through
 `to_sql/2`, so it is checked and never cached.
 """.
@@ -141,9 +155,11 @@ cached(RepoMod, Query, Shape, Values) ->
             {SQL, kura_query_shape:bind(Template, Values)};
         {ok, uncacheable} ->
             ok = kura_query:check_encrypted(Query),
+            ok = check_capabilities(RepoMod, Query),
             compile_query(RepoMod, Query);
         miss ->
             ok = kura_query:check_encrypted(Query),
+            ok = check_capabilities(RepoMod, Query),
             case compile_shape(RepoMod, Shape, tuple_size(Values)) of
                 {ok, {SQL, Template} = Entry} ->
                     kura_query_cache:put(Key, Entry),
@@ -175,6 +191,7 @@ compile_shape(RepoMod, Shape, Arity) ->
 to_sql_from(RepoMod, Query, StartCounter) ->
     ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
+    ok = check_capabilities(RepoMod, Query),
     Dialect = dialect(RepoMod),
     Dialect:to_sql_from(convert(Dialect, scope(Query)), StartCounter).
 
@@ -200,6 +217,7 @@ update_all(RepoMod, Query, SetMap) ->
     ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
     ok = check_bulk_write(Query),
+    ok = check_capabilities(RepoMod, Query),
     Dialect = dialect(RepoMod),
     Dialect:update_all(convert(Dialect, scope(Query)), SetMap).
 
@@ -208,6 +226,7 @@ delete_all(RepoMod, Query) ->
     ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
     ok = check_bulk_write(Query),
+    ok = check_capabilities(RepoMod, Query),
     Dialect = dialect(RepoMod),
     Dialect:delete_all(convert(Dialect, scope(Query))).
 

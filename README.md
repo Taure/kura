@@ -129,7 +129,10 @@ Supported conditions: `=`, `!=`, `<`, `>`, `<=`, `>=`, `like`, `ilike`, `matches
 to `to_tsvector(Field) @@ plainto_tsquery($n)`, with the query text bound
 as a parameter (`plainto_tsquery` treats it as plain words, so no query
 syntax is needed or trusted). Requires a backend declaring the
-`full_text_search` capability.
+`full_text_search` capability; on any other backend the query raises
+`{kura, {unsupported_capability, full_text_search, PoolModule}}` when it is
+compiled. Window functions, vector distances and `skip_locked` locks are
+checked the same way.
 
 ```erlang
 Q = kura_query:where(kura_query:from(article), {body, matches, ~"erlang database"}),
