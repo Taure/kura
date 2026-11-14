@@ -74,6 +74,10 @@ kura_query:where(Q, {role, in, [~"admin", ~"moderator"]}).
 kura_query:where(Q, {status, not_in, [~"banned", ~"deleted"]}).
 ```
 
+An empty list is valid: `{role, in, []}` matches no row and
+`{role, not_in, []}` matches every row, a `NULL` one included. They compile
+to `1 = 0` and `1 = 1`, since `IN ()` is not SQL.
+
 ### BETWEEN
 
 ```erlang

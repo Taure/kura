@@ -14,6 +14,11 @@ configured for the running app.
 
 -type column_context() :: undefined | {binary(), #{atom() => kura_types:kura_type()}}.
 
+%% `x IN ()` is not SQL. An empty list matches no row, NULL included, and
+%% its negation every row, so each compiles to a constant predicate.
+-define(NO_ROWS, ~"1 = 0").
+-define(EVERY_ROW, ~"1 = 1").
+
 -export([
     to_sql/1,
     to_sql_from/2,
@@ -650,6 +655,10 @@ compile_condition({exists, {subquery, SubQ}}, _Ctx, Counter) ->
 compile_condition({not_exists, {subquery, SubQ}}, _Ctx, Counter) ->
     {SubSQL, SubParams, Counter2} = to_sql_from(SubQ, Counter),
     {[~"NOT EXISTS (", SubSQL, ~")"], SubParams, Counter2};
+compile_condition({Columns, in, []}, _Ctx, Counter) when is_atom(Columns); is_list(Columns) ->
+    {?NO_ROWS, [], Counter};
+compile_condition({Field, not_in, []}, _Ctx, Counter) when is_atom(Field) ->
+    {?EVERY_ROW, [], Counter};
 compile_condition({[Col], in, Tuples}, Ctx, Counter) when is_atom(Col), is_list(Tuples) ->
     compile_condition({Col, in, [single_value(T) || T <- Tuples]}, Ctx, Counter);
 compile_condition({Cols, in, Tuples}, Ctx, Counter) when is_list(Cols), is_list(Tuples) ->

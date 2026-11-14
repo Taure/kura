@@ -53,6 +53,36 @@ composite_in_where_test() ->
     ?assertNotEqual(nomatch, binary:match(SQL, ~"$1, $2), ($3, $4)")),
     ?assertEqual([<<"o1">>, <<"u1">>, <<"o2">>, <<"u2">>], Params).
 
+empty_in_matches_no_row_test() ->
+    [
+        ?assertEqual(
+            {~"SELECT * FROM \"users\" WHERE 1 = 0", []},
+            kura_dialect_pg:to_sql(kura_query:where(kura_query:from(kura_test_schema), Cond))
+        )
+     || Cond <- [{id, in, []}, {[id], in, []}, {[id, name], in, []}]
+    ].
+
+empty_not_in_matches_every_row_test() ->
+    Q = kura_query:where(kura_query:from(kura_test_schema), {id, not_in, []}),
+    ?assertEqual({~"SELECT * FROM \"users\" WHERE 1 = 1", []}, kura_dialect_pg:to_sql(Q)).
+
+empty_in_keeps_placeholder_numbering_test() ->
+    Q = kura_query:where(
+        kura_query:from(kura_test_schema),
+        {'or', [{name, ~"a"}, {'not', {id, in, []}}, {id, not_in, []}, {age, '>', 3}]}
+    ),
+    ?assertEqual(
+        {
+            ~"SELECT * FROM \"users\" WHERE (\"name\" = $1 OR NOT (1 = 0) OR 1 = 1 OR \"age\" > $2)",
+            [~"a", 3]
+        },
+        kura_dialect_pg:to_sql(Q)
+    ).
+
+empty_in_bulk_write_test() ->
+    Q = kura_query:where(kura_query:from(kura_test_schema), {id, in, []}),
+    ?assertEqual({~"DELETE FROM \"users\" WHERE 1 = 0", []}, kura_dialect_pg:delete_all(Q)).
+
 single_col_composite_in_unwraps_test() ->
     Q = kura_query:where(kura_query:from(kura_test_schema), {[id], in, [{1}, {2}]}),
     {<<SQL/binary>>, Params} = kura_dialect_pg:to_sql(Q),
