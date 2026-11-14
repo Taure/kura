@@ -1299,21 +1299,23 @@ row_lock(Strength) when ?IS_LOCK_STRENGTH(Strength) ->
 row_lock({Strength, Wait}) when ?IS_LOCK_STRENGTH(Strength), ?IS_LOCK_WAIT(Wait) ->
     {ok, {Strength, [], Wait}};
 row_lock({Strength, Spec}) when ?IS_LOCK_STRENGTH(Strength), is_map(Spec) ->
-    Wait = maps:get(wait, Spec, undefined),
-    case map_size(maps:without([tables, wait], Spec)) =:= 0 andalso lock_wait_given(Spec, Wait) of
-        true ->
-            case lock_tables(Spec) of
-                {ok, Tables} -> {ok, {Strength, Tables, Wait}};
-                error -> error
-            end;
-        false ->
-            error
+    case map_size(maps:without([tables, wait], Spec)) of
+        0 -> map_lock(Strength, lock_tables(Spec), lock_wait(Spec));
+        _ -> error
     end;
 row_lock(_Lock) ->
     error.
 
-lock_wait_given(Spec, Wait) ->
-    not is_map_key(wait, Spec) orelse ?IS_LOCK_WAIT(Wait).
+-spec map_lock(
+    lock_strength(), {ok, [binary()]} | error, {ok, lock_wait() | undefined} | error
+) -> {ok, parsed_lock()} | error.
+map_lock(Strength, {ok, Tables}, {ok, Wait}) -> {ok, {Strength, Tables, Wait}};
+map_lock(_Strength, _Tables, _Wait) -> error.
+
+-spec lock_wait(map()) -> {ok, lock_wait() | undefined} | error.
+lock_wait(#{wait := Wait}) when ?IS_LOCK_WAIT(Wait) -> {ok, Wait};
+lock_wait(#{wait := _}) -> error;
+lock_wait(#{}) -> {ok, undefined}.
 
 lock_tables(#{tables := [_ | _] = Tables}) -> lock_table_names(Tables, []);
 lock_tables(#{tables := _}) -> error;

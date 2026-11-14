@@ -146,9 +146,9 @@ t_hit_requires_a_tenant() ->
     ?assertEqual(3, length(kura_test_recording_driver:statements())).
 
 t_malformed() ->
-    Q = (kura_query:from(?SECRET))#kura_query{wheres = ill_typed([{token, '=', ~"t"} | improper])},
+    Q = (kura_query:from(?SECRET))#kura_query{wheres = ill_typed(not_a_list)},
     ?assertEqual(
-        #{shown => hidden, source => ~"accounts", tenant_scoped => [?SECRET]},
+        #{shown => redacted, source => ~"accounts", tenant_scoped => [?SECRET]},
         kura_query_compiler:facts(Q)
     ).
 

@@ -37,21 +37,18 @@ load_schema(Module) ->
         #kura_field{name = id, type = id, primary_key = true},
         #kura_field{name = state, type = {enum, [open, closed]}}
     ],
-    Exports = [
-        erl_syntax:arity_qualifier(erl_syntax:atom(Name), erl_syntax:integer(0))
-     || Name <- [table, fields]
-    ],
     Forms = [
-        erl_syntax:attribute(erl_syntax:atom(module), [erl_syntax:atom(Module)]),
-        erl_syntax:attribute(erl_syntax:atom(export), [erl_syntax:list(Exports)]),
-        constant(table, ~"late_items"),
-        constant(fields, Fields)
+        form(io_lib:format("-module(~w).", [Module])),
+        form("-export([table/0, fields/0])."),
+        form("table() -> <<\"late_items\">>."),
+        form(io_lib:format("fields() -> ~w.", [Fields]))
     ],
-    {ok, Module, Binary} = compile:forms([erl_syntax:revert(Form) || Form <- Forms]),
+    {ok, Module, Binary} = compile:forms(Forms),
     {module, Module} = code:load_binary(Module, "kura_test_late_schema.erl", Binary),
     ok.
 
-constant(Name, Value) ->
-    erl_syntax:function(erl_syntax:atom(Name), [
-        erl_syntax:clause([], none, [erl_syntax:abstract(Value)])
-    ]).
+-spec form(io_lib:chars()) -> erl_parse:abstract_form().
+form(Text) ->
+    {ok, Tokens, _End} = erl_scan:string(binary_to_list(iolist_to_binary(Text))),
+    {ok, Form} = erl_parse:parse_form(Tokens),
+    Form.

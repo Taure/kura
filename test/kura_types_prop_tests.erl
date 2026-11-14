@@ -345,6 +345,9 @@ prop_float_cast_from_int() ->
 chars_to_binary(Chars) ->
     list_to_binary(Chars).
 
+parts_to_binary(Parts) ->
+    iolist_to_binary(Parts).
+
 lowercase_hex(Bytes) ->
     binary:encode_hex(Bytes, lowercase).
 
@@ -373,17 +376,17 @@ gen_decimal_text() ->
         {
             oneof([~"", ~"-", ~"+"]),
             gen_digits(),
-            oneof([~"", ?LET(Digits, gen_digits(), <<".", Digits/binary>>)]),
+            oneof([~"", ?LET(Digits, gen_digits(), parts_to_binary([~".", Digits]))]),
             oneof([
                 ~"",
                 ?LET(
                     {E, ExponentSign, Digits},
                     {oneof([~"e", ~"E"]), oneof([~"", ~"-", ~"+"]), gen_digits()},
-                    <<E/binary, ExponentSign/binary, Digits/binary>>
+                    parts_to_binary([E, ExponentSign, Digits])
                 )
             ])
         },
-        <<Sign/binary, Whole/binary, Fraction/binary, Exponent/binary>>
+        parts_to_binary([Sign, Whole, Fraction, Exponent])
     ).
 
 gen_digits() ->

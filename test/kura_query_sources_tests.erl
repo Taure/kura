@@ -148,7 +148,7 @@ preload_sources_test_() ->
             ?_assertEqual(
                 [{from, ?POST}, {preload, ?COMMENT}, {preload, ?POST}, {preload, ?USER}],
                 kura_query:sources(
-                    kura_query:preload(posts(), [{comments, [post]}, {author, #{}}])
+                    kura_query:preload(posts(), ill_typed([{comments, [post]}, {author, #{}}]))
                 )
             )},
         {"each step of a through association",
