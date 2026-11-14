@@ -321,8 +321,6 @@ measures(_, _Redacted) ->
 redacted_of(From) when is_atom(From), From =/= undefined -> kura_schema:redacted_fields(From);
 redacted_of(_From) -> [].
 
-names_field(_Conditions, []) ->
-    false;
 names_field([Condition | Rest], Redacted) ->
     condition_names(Condition, Redacted) orelse names_field(Rest, Redacted);
 names_field(_, _Redacted) ->

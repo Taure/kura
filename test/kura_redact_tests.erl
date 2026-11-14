@@ -367,20 +367,20 @@ t_base_error() ->
     kura_test_recording_driver:reply_with([
         {error, Quoting}, {error, Quoting}, {error, {closed, ~"tok-SECRET"}}, {error, Quoting}
     ]),
-    {error, Inserted} = kura_repo_worker:insert(
+    {error, #kura_changeset{errors = Inserted}} = kura_repo_worker:insert(
         ?REPO, changeset(#{}, #{email => ~"a@b.c", token => ~"tok-SECRET"})
     ),
-    ?assertEqual([{base, ~"database error 22P02"}], Inserted#kura_changeset.errors),
-    {error, Updated} = kura_repo_worker:update(
+    ?assertEqual([{base, ~"database error 22P02"}], Inserted),
+    {error, #kura_changeset{errors = Updated}} = kura_repo_worker:update(
         ?REPO, changeset(#{id => 1}, #{token => ~"tok-SECRET"})
     ),
-    ?assertEqual([{base, ~"database error 22P02"}], Updated#kura_changeset.errors),
-    {error, Closed} = kura_repo_worker:insert(
+    ?assertEqual([{base, ~"database error 22P02"}], Updated),
+    {error, #kura_changeset{errors = Closed}} = kura_repo_worker:insert(
         ?REPO, changeset(#{}, #{email => ~"a@b.c", token => ~"tok-SECRET"})
     ),
-    ?assertEqual([{base, ~"database error"}], Closed#kura_changeset.errors),
-    {error, Plain} = insert_plain(),
-    ?assertEqual([{base, maps:get(message, Quoting)}], Plain#kura_changeset.errors).
+    ?assertEqual([{base, ~"database error"}], Closed),
+    {error, #kura_changeset{errors = Plain}} = insert_plain(),
+    ?assertEqual([{base, maps:get(message, Quoting)}], Plain).
 
 duplicate_error() ->
     #{
