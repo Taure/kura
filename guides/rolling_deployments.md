@@ -123,8 +123,10 @@ kura reads both ciphertext frame versions but writes v1 unless
 A node running a kura older than the v2 reader raises on every v2 value it
 loads, so the switch is two deployments:
 
-1. Deploy a kura that reads v2 to every node, still writing v1 (the
-   default). Wait until no node runs an older release.
+1. Deploy a kura that reads v2 (2.28.0 or later) to every node, still
+   writing v1 (the default). Wait until no node runs an older release.
+   While the setting is absent each node logs one warning per boot at its
+   first encrypted write; set it to `v1` to say the wait is deliberate.
 2. Set `{kura, [{encryption_write_format, v2}]}` and deploy. Values
    written from then on are v2; an existing v1 value stays v1, and keeps
    decrypting, until that field is written again.

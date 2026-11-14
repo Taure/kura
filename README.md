@@ -314,8 +314,13 @@ with:
 ```
 
 Any other value fails `kura` application start. Turn it on only once every
-node runs a kura that reads v2, since an older node cannot read a v2 value
-(see the rolling deployments guide). A later release makes v2 the default.
+node runs a kura that reads v2 (2.28.0 or later), since an older node
+cannot read a v2 value (see the rolling deployments guide). While the
+setting is absent, kura logs one warning per boot at the first encrypted
+write: a v1 value is not bound to its column, so someone who can write to
+the database can copy it into another encrypted column and have it
+decrypted there. Set `v1` explicitly to keep v1 without the warning. kura
+3.0 makes v2 the default.
 An existing v1 value stays v1 until that field is written again; there is
 no in-place re-encryption yet.
 
@@ -628,6 +633,7 @@ warning per boot when the permissive default is in effect. Set them now.
 | Setting | 2.x default | 3.0 default | Effect |
 | --- | --- | --- | --- |
 | `max_page_size` | not capped | `1000` | largest `page_size` / `limit` `kura_paginator` accepts; see the [pagination guide](guides/pagination.md) |
+| `encryption_write_format` | `v1` | `v2` | frame version new encrypted values are written in; v2 binds a value to its column. See [Encryption at rest](#encryption-at-rest) |
 | `require_tenant` | `false` | `true` | a query or changeset write in a process with no tenant raises instead of running unscoped; see [Multitenancy](guides/multitenancy.md#requiring-a-tenant). An application with no tenants sets `false` |
 | `strict_assoc_cast` | `false` | `true` | `cast_assoc`, `cast_embed` and `put_assoc` of a raw map must name the child fields params may set (`cast` or `with`); see [Nested Changesets](guides/cast_assoc.md) |
 
