@@ -483,8 +483,11 @@ A value is accepted in the Erlang form a driver with a native type for it
 returns, and in the form a backend without one stores it in: a `boolean` as
 the integer `1` or `0`, a `date`, `time`, `utc_datetime` or `naive_datetime`
 as ISO 8601 text (a `utc_datetime` with an offset is moved to UTC, and a
-fraction of a second is dropped), a `decimal` as numeric text, and `jsonb`,
-an embed or an array as JSON text. Anything else is `{error, Reason}`.
+fraction of a second is dropped), and `jsonb`, an embed or an array as JSON
+text. Anything else is `{error, Reason}`.
+
+A `decimal` a driver returns as numeric text is returned as that text, since
+a float would not hold all of its digits: `{ok, ~"12345678901234567.89"}`.
 """.
 -spec load(kura_type(), term()) -> {ok, term()} | {error, binary()}.
 load(_Type, null) ->
@@ -500,7 +503,7 @@ load(smallint, V) when is_integer(V) ->
 load(decimal, V) when is_number(V) ->
     {ok, V};
 load(decimal, V) when is_binary(V) ->
-    stored_decimal(V);
+    exact_decimal(V);
 load(binary, V) when is_binary(V) ->
     {ok, V};
 load(float, V) when is_number(V) ->
@@ -604,24 +607,51 @@ stored_array({array, Inner} = Type, Text) ->
         _NotAJsonArray -> cannot_load(Type)
     end.
 
-stored_decimal(Text) ->
-    case try_parse_integer(Text) of
-        {ok, _} = Integer ->
-            Integer;
-        {error, _} ->
-            try
-                {ok, binary_to_float(with_fraction(Text))}
-            catch
-                error:badarg -> {error, ~"is not a valid decimal"}
-            end
+%% A decimal never goes through a float: one a driver returns as text is
+%% checked and kept as that text.
+exact_decimal(Text) ->
+    case decimal_text(Text) of
+        true -> {ok, Text};
+        false -> {error, ~"is not a valid decimal"}
     end.
 
-%% binary_to_float/1 wants a fraction, so `1e3` is read as `1.0e3`.
-with_fraction(Text) ->
-    case {binary:match(Text, ~"."), binary:split(Text, [~"e", ~"E"])} of
-        {nomatch, [Mantissa, Exponent]} -> <<Mantissa/binary, ".0e", Exponent/binary>>;
-        _ -> Text
+decimal_text(<<Sign, Digits/binary>>) when Sign =:= $-; Sign =:= $+ -> decimal_digits(Digits);
+decimal_text(Digits) -> decimal_digits(Digits).
+
+decimal_digits(Text) ->
+    case after_digits(Text, 0) of
+        {0, _Rest} ->
+            false;
+        {_Whole, <<$., Fraction/binary>>} ->
+            case after_digits(Fraction, 0) of
+                {0, _Rest} -> false;
+                {_Count, Rest} -> decimal_exponent(Rest)
+            end;
+        {_Whole, Rest} ->
+            decimal_exponent(Rest)
     end.
+
+decimal_exponent(<<>>) ->
+    true;
+decimal_exponent(<<E, Sign, Digits/binary>>) when
+    (E =:= $e orelse E =:= $E), (Sign =:= $- orelse Sign =:= $+)
+->
+    only_digits(Digits);
+decimal_exponent(<<E, Digits/binary>>) when E =:= $e; E =:= $E ->
+    only_digits(Digits);
+decimal_exponent(_Rest) ->
+    false.
+
+only_digits(Digits) ->
+    case after_digits(Digits, 0) of
+        {Count, <<>>} -> Count > 0;
+        _ -> false
+    end.
+
+after_digits(<<Digit, Rest/binary>>, Count) when Digit >= $0, Digit =< $9 ->
+    after_digits(Rest, Count + 1);
+after_digits(Rest, Count) ->
+    {Count, Rest}.
 
 -doc """
 Like `load/2`, for a value read from the column `Context` (`{Table,

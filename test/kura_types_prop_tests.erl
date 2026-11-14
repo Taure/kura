@@ -32,7 +32,8 @@ property_test_() ->
         {"load null always undefined", fun() -> run(prop_load_null()) end},
         {"id cast from binary", fun() -> run(prop_id_cast_binary()) end},
         {"boolean cast from binary strings", fun() -> run(prop_boolean_cast_binary()) end},
-        {"float cast from integer", fun() -> run(prop_float_cast_from_int()) end}
+        {"float cast from integer", fun() -> run(prop_float_cast_from_int()) end},
+        {"decimal text loads as the same text", fun() -> run(prop_decimal_text_is_kept()) end}
     ]}.
 
 run(Prop) ->
@@ -355,3 +356,35 @@ dump_undefined(Type) ->
 
 load_null(Type) ->
     kura_types:load(Type, null).
+
+%% A decimal a driver hands over as text holds more digits than a float
+%% does, so it is kept as it is, in a row as well.
+prop_decimal_text_is_kept() ->
+    ?FORALL(
+        Text,
+        gen_decimal_text(),
+        kura_types:load(decimal, Text) =:= {ok, Text} andalso
+            kura_db:load_row(kura_test_decimal_schema, #{price => Text}) =:= #{price => Text}
+    ).
+
+gen_decimal_text() ->
+    ?LET(
+        {Sign, Whole, Fraction, Exponent},
+        {
+            oneof([~"", ~"-", ~"+"]),
+            gen_digits(),
+            oneof([~"", ?LET(Digits, gen_digits(), <<".", Digits/binary>>)]),
+            oneof([
+                ~"",
+                ?LET(
+                    {E, ExponentSign, Digits},
+                    {oneof([~"e", ~"E"]), oneof([~"", ~"-", ~"+"]), gen_digits()},
+                    <<E/binary, ExponentSign/binary, Digits/binary>>
+                )
+            ])
+        },
+        <<Sign/binary, Whole/binary, Fraction/binary, Exponent/binary>>
+    ).
+
+gen_digits() ->
+    ?LET(Digits, non_empty(list(range($0, $9))), chars_to_binary(Digits)).
