@@ -16,6 +16,14 @@ configured for the running app.
 
 %% `x IN ()` is not SQL. An empty list matches no row, NULL included, and
 %% its negation every row, so each compiles to a constant predicate.
+%% A text match escapes its value in SQL, so the value is bound untouched and
+%% the statement is the same for every value. The escape character is `!`
+%% rather than a backslash, whose reading inside a string literal depends on
+%% the server's standard_conforming_strings.
+-define(ESCAPED_TEXT_OPEN, ~"replace(replace(replace($").
+-define(ESCAPED_TEXT_CLOSE, ~", '!', '!!'), '%', '!%'), '_', '!_')").
+-define(LIKE_ESCAPE, ~") ESCAPE '!'").
+
 -define(NO_ROWS, ~"1 = 0").
 -define(EVERY_ROW, ~"1 = 1").
 
@@ -383,6 +391,17 @@ compile_row_tuples([Tuple | Rest], Arity, Counter, SQLs, Params) when tuple_size
 compile_row_tuples([Tuple | _], Arity, _Counter, _SQLs, _Params) ->
     error({row_arity_mismatch, Arity, Tuple}).
 
+text_match_keyword(Op) when Op =:= contains; Op =:= starts_with; Op =:= ends_with ->
+    ~" LIKE (";
+text_match_keyword(Op) when Op =:= icontains; Op =:= istarts_with; Op =:= iends_with ->
+    ~" ILIKE (".
+
+text_match_prefix(Op) when Op =:= starts_with; Op =:= istarts_with -> <<>>;
+text_match_prefix(_Op) -> ~"'%' || ".
+
+text_match_suffix(Op) when Op =:= ends_with; Op =:= iends_with -> <<>>;
+text_match_suffix(_Op) -> ~" || '%'".
+
 unary_sql(is_nil) -> ~" IS NULL";
 unary_sql(is_not_nil) -> ~" IS NOT NULL".
 
@@ -631,6 +650,23 @@ compile_condition({Field, like, Value}, Ctx, Counter) when is_atom(Field) ->
 compile_condition({Field, ilike, Value}, Ctx, Counter) when is_atom(Field) ->
     {
         [column(Field, Ctx), ~" ILIKE $", integer_to_binary(Counter)],
+        [Value],
+        Counter + 1
+    };
+compile_condition({Field, Op, Value}, Ctx, Counter) when
+    is_atom(Field), ?KURA_IS_TEXT_MATCH_OP(Op)
+->
+    {
+        [
+            column(Field, Ctx),
+            text_match_keyword(Op),
+            text_match_prefix(Op),
+            ?ESCAPED_TEXT_OPEN,
+            integer_to_binary(Counter),
+            ?ESCAPED_TEXT_CLOSE,
+            text_match_suffix(Op),
+            ?LIKE_ESCAPE
+        ],
         [Value],
         Counter + 1
     };

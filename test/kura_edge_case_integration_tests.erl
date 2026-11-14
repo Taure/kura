@@ -10,7 +10,11 @@ edge_case_test_() ->
             {"empty not_in matches every row, null included", fun t_empty_not_in/0},
             {"empty in deletes nothing", fun t_empty_in_delete_all/0},
             {"get_by compares with a value that spells an operator",
-                fun t_get_by_binds_unary_atoms/0}
+                fun t_get_by_binds_unary_atoms/0},
+            {"text matches treat wildcards as text", fun t_text_match_is_literal/0},
+            {"text matches place the wildcard", fun t_text_match_position/0},
+            {"case-insensitive text matches", fun t_text_match_ignores_case/0},
+            {"escape_like makes a like pattern literal", fun t_escape_like/0}
         ]
     end}.
 
@@ -49,8 +53,8 @@ insert_item(Params) ->
     ).
 
 names(Query) ->
-    {ok, Rows} = kura_test_repo:all(kura_query:order_by(Query, [{name, asc}])),
-    [Name || #{name := Name} <- Rows].
+    {ok, Rows} = kura_test_repo:all(Query),
+    lists:sort([Name || #{name := Name} <- Rows]).
 
 t_empty_in() ->
     ok = reset(),
@@ -88,3 +92,43 @@ t_get_by_binds_unary_atoms() ->
         {ok, #{name := ~"b"}},
         kura_test_repo:get_by(kura_test_edge_schema, [{note, ~"is_not_nil"}])
     ).
+
+t_text_match_is_literal() ->
+    ok = reset(),
+    [{ok, _} = insert_item(#{name => N}) || N <- [~"50% off", ~"500 off", ~"a_b", ~"axb", ~"a!b"]],
+    From = kura_query:from(kura_test_edge_schema),
+    ?assertEqual([~"50% off"], names(kura_query:where(From, {name, contains, ~"0%"}))),
+    ?assertEqual([~"a_b"], names(kura_query:where(From, {name, contains, ~"a_b"}))),
+    ?assertEqual([~"a!b"], names(kura_query:where(From, {name, contains, ~"!"}))),
+    ?assertEqual([], names(kura_query:where(From, {name, contains, ~"%%"}))),
+    ?assertEqual(5, length(names(kura_query:where(From, {name, contains, ~""})))),
+    ?assertEqual(
+        [~"50% off", ~"500 off"], names(kura_query:where(From, {name, like, ~"50% off"}))
+    ).
+
+t_text_match_position() ->
+    ok = reset(),
+    [{ok, _} = insert_item(#{name => N}) || N <- [~"abc", ~"bca", ~"cab"]],
+    From = kura_query:from(kura_test_edge_schema),
+    ?assertEqual([~"abc"], names(kura_query:where(From, {name, starts_with, ~"ab"}))),
+    ?assertEqual([~"cab"], names(kura_query:where(From, {name, ends_with, ~"ab"}))),
+    ?assertEqual([~"abc", ~"cab"], names(kura_query:where(From, {name, contains, ~"ab"}))),
+    ?assertEqual([~"bca"], names(kura_query:where(From, {'not', {name, contains, ~"ab"}}))).
+
+t_text_match_ignores_case() ->
+    ok = reset(),
+    [{ok, _} = insert_item(#{name => N}) || N <- [~"Alice_1", ~"ALICEx1", ~"bob"]],
+    From = kura_query:from(kura_test_edge_schema),
+    ?assertEqual([], names(kura_query:where(From, {name, starts_with, ~"alice_"}))),
+    ?assertEqual([~"Alice_1"], names(kura_query:where(From, {name, istarts_with, ~"alice_"}))),
+    ?assertEqual([~"Alice_1"], names(kura_query:where(From, {name, icontains, ~"E_1"}))),
+    ?assertEqual([~"Alice_1"], names(kura_query:where(From, {name, iends_with, ~"e_1"}))).
+
+t_escape_like() ->
+    ok = reset(),
+    [{ok, _} = insert_item(#{name => N}) || N <- [~"100%", ~"1000", ~"a\\b", ~"axb"]],
+    From = kura_query:from(kura_test_edge_schema),
+    Pattern = fun(Text) -> <<(kura_query:escape_like(Text))/binary, "%">> end,
+    ?assertEqual([~"100%"], names(kura_query:where(From, {name, like, Pattern(~"100%")}))),
+    ?assertEqual([~"a\\b"], names(kura_query:where(From, {name, like, Pattern(~"a\\")}))),
+    ?assertEqual([~"100%", ~"1000"], names(kura_query:where(From, {name, like, ~"100%"}))).

@@ -55,6 +55,21 @@ that should fail would instead return rows in a meaningless order. A
 dialect that delegates to `kura_dialect_pg` has to catch the node before
 it does.
 
+## Text matches
+
+`{Field, Op, Text}` with `Op` one of `contains`, `starts_with`, `ends_with`,
+`icontains`, `istarts_with` and `iends_with` (`?KURA_IS_TEXT_MATCH_OP`)
+matches `Text` literally. `Text` is a bound value, so an implementation
+cannot escape it in Erlang: it escapes the wildcards in SQL and names the
+escape character in an `ESCAPE` clause, as `kura_dialect_pg` does with
+`replace/3`. The `i` forms ignore case; `kura_dialect_pg` emits `ILIKE`,
+which a dialect for a backend without it has to replace.
+
+## Empty lists
+
+`{Field, in, []}` matches no row and `{Field, not_in, []}` every row.
+`kura_dialect_pg` emits `1 = 0` and `1 = 1`, never `IN ()`.
+
 ## Deterministic lookups
 
 `kura_query:where/2` and `kura_query:having/2` rewrite a comparison on a

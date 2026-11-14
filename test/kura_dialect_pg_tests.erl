@@ -53,6 +53,64 @@ composite_in_where_test() ->
     ?assertNotEqual(nomatch, binary:match(SQL, ~"$1, $2), ($3, $4)")),
     ?assertEqual([<<"o1">>, <<"u1">>, <<"o2">>, <<"u2">>], Params).
 
+text_match_escapes_the_value_in_sql_test() ->
+    Escaped = ~"replace(replace(replace($1, '!', '!!'), '%', '!%'), '_', '!_')",
+    [
+        ?assertEqual(
+            {
+                iolist_to_binary([
+                    ~"SELECT * FROM \"users\" WHERE \"name\" ",
+                    Keyword,
+                    ~" (",
+                    Before,
+                    Escaped,
+                    After,
+                    ~") ESCAPE '!'"
+                ]),
+                [~"50%_off"]
+            },
+            kura_dialect_pg:to_sql(
+                kura_query:where(kura_query:from(kura_test_schema), {name, Op, ~"50%_off"})
+            )
+        )
+     || {Op, Keyword, Before, After} <- [
+            {contains, ~"LIKE", ~"'%' || ", ~" || '%'"},
+            {starts_with, ~"LIKE", ~"", ~" || '%'"},
+            {ends_with, ~"LIKE", ~"'%' || ", ~""},
+            {icontains, ~"ILIKE", ~"'%' || ", ~" || '%'"},
+            {istarts_with, ~"ILIKE", ~"", ~" || '%'"},
+            {iends_with, ~"ILIKE", ~"'%' || ", ~""}
+        ]
+    ].
+
+text_match_keeps_placeholder_numbering_test() ->
+    Q = kura_query:where(
+        kura_query:from(kura_test_schema),
+        {'and', [{age, 3}, {name, contains, ~"a"}, {email, ends_with, ~"b"}, {role, ~"c"}]}
+    ),
+    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    ?assertEqual([3, ~"a", ~"b", ~"c"], Params),
+    [
+        ?assertMatch({_, _}, binary:match(SQL, Part))
+     || Part <- [~"\"age\" = $1", ~"replace($2,", ~"replace($3,", ~"\"role\" = $4"]
+    ].
+
+text_match_is_refused_on_an_encrypted_field_test() ->
+    [
+        ?assertError(
+            {kura, {encrypted_field_in_where, ssn}},
+            kura_query:where(kura_query:from(kura_test_encrypted_schema), {ssn, Op, ~"1"})
+        )
+     || Op <- [contains, starts_with, ends_with, icontains, istarts_with, iends_with]
+    ].
+
+escape_like_test() ->
+    ?assertEqual(~"50\\%\\_off\\\\x", kura_query:escape_like(~"50%_off\\x")),
+    ?assertEqual(~"plain", kura_query:escape_like(~"plain")),
+    ?assertEqual(<<>>, kura_query:escape_like(<<>>)),
+    ?assertEqual(~"日本\\%", kura_query:escape_like(~"日本%")),
+    ?assertError(function_clause, kura_query:escape_like("list")).
+
 empty_in_matches_no_row_test() ->
     [
         ?assertEqual(

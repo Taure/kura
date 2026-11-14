@@ -23,6 +23,7 @@ Q3 = kura_query:limit(Q2, 10).
     distance/3,
     check_distances/1,
     where/2,
+    escape_like/1,
     join/4, join/5,
     order_by/2,
     group_by/2,
@@ -499,6 +500,13 @@ whose value is an atom that comes from outside, such as an enum filter read
 from a request, must use the three-element form: `{Field, '=', Value}` always
 binds `Value`.
 
+`{Field, contains, Text}`, `{Field, starts_with, Text}` and
+`{Field, ends_with, Text}` match `Text` as it is: `%` and `_` in it are not
+wildcards. `icontains`, `istarts_with` and `iends_with` do the same ignoring
+case. `{Field, like, Pattern}` and `{Field, ilike, Pattern}` take a pattern,
+in which `%` and `_` are wildcards; see `escape_like/1` before putting
+outside input into one.
+
 `{Distance, Op, Threshold}` keeps the rows whose vector distance from
 `distance/3` compares to the number `Threshold` by `'<'`, `'<='`, `'>'`
 or `'>='`. The distance is checked against the schema as in
@@ -559,6 +567,28 @@ a dialect without `convert_values/1` binds every value as given.
 where(Q = #kura_query{from = From, wheres = W}, Condition) ->
     check_thresholds(From, cond_thresholds(where, Condition)),
     Q#kura_query{wheres = W ++ [lookup_condition(Q, Condition, encrypted_field_in_where)]}.
+
+-doc """
+Escape `Text` for use inside a `like` or `ilike` pattern: `%`, `_` and `\`
+are each prefixed with a backslash, so they match themselves.
+
+```erlang
+Pattern = <<(kura_query:escape_like(Input))/binary, "%">>,
+Q = kura_query:where(kura_query:from(my_user), {name, like, Pattern}).
+```
+
+The backslash is the default `LIKE` escape character on PostgreSQL. A
+backend whose `LIKE` has no default escape character, such as SQLite, reads
+the backslashes as text: there, and wherever the whole value is to be matched
+as it is, use `contains`, `starts_with` or `ends_with` in `where/2`, which
+escape the value in SQL.
+""".
+-spec escape_like(binary()) -> binary().
+escape_like(Text) when is_binary(Text) ->
+    <<<<(escaped_like_byte(Byte))/binary>> || <<Byte>> <= Text>>.
+
+escaped_like_byte(Byte) when Byte =:= $%; Byte =:= $_; Byte =:= $\\ -> <<$\\, Byte>>;
+escaped_like_byte(Byte) -> <<Byte>>.
 
 %% where/2 without deterministic lookups: kura_tenant scopes with it, as
 %% writes refuse an encrypted tenant field in either mode.

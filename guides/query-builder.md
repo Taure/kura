@@ -91,6 +91,37 @@ kura_query:where(Q, {name, like, ~"A%"}).
 kura_query:where(Q, {email, ilike, ~"%@example.com"}).
 ```
 
+In a pattern `%` matches any run of characters and `_` any one character,
+so a pattern built from outside input lets the caller choose the wildcards:
+a search for `%` matches every row.
+
+### Matching text as it is
+
+`contains`, `starts_with` and `ends_with` match their value literally. The
+value is bound as a parameter and its `%`, `_` and escape character are
+escaped in SQL, with an explicit `ESCAPE` clause:
+
+```erlang
+kura_query:where(Q, {name, contains, Input}).
+kura_query:where(Q, {name, starts_with, Input}).
+kura_query:where(Q, {email, ends_with, ~"@example.com"}).
+%% WHERE "name" LIKE ('%' || replace(...) || '%') ESCAPE '!'
+```
+
+`icontains`, `istarts_with` and `iends_with` ignore case (`ILIKE`).
+
+To build a pattern of your own around outside input, escape the input with
+`kura_query:escape_like/1`:
+
+```erlang
+Pattern = <<(kura_query:escape_like(Input))/binary, "%@example.com">>,
+kura_query:where(Q, {email, like, Pattern}).
+```
+
+`escape_like/1` escapes with a backslash, PostgreSQL's default `LIKE` escape
+character. SQLite's `LIKE` has no default escape character, so use the
+`contains` family there.
+
 ### NULL Checks
 
 ```erlang

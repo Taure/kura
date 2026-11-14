@@ -40,8 +40,22 @@ queries(N) ->
                 {bio, matches, integer_to_binary(V(3))}
             ]
         }},
+        {"literal text matching", #kura_query{
+            from = users,
+            wheres = [
+                {email, contains, integer_to_binary(V(1))},
+                {email, starts_with, integer_to_binary(V(2))},
+                {email, ends_with, integer_to_binary(V(3))},
+                {email, icontains, integer_to_binary(V(4))},
+                {email, istarts_with, integer_to_binary(V(5))},
+                {email, iends_with, integer_to_binary(V(6))}
+            ]
+        }},
         {"in and not_in", #kura_query{
             from = users, wheres = [{role, in, [V(1), V(2)]}, {role, not_in, [V(3)]}]
+        }},
+        {"empty in and not_in", #kura_query{
+            from = users, wheres = [{role, in, []}, {role, not_in, []}, {id, V(1)}]
         }},
         {"between", #kura_query{from = users, wheres = [{age, between, {V(1), V(2)}}]}},
         {"row-value in", #kura_query{

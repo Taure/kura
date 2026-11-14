@@ -68,6 +68,14 @@
     (Op =:= '<' orelse Op =:= '<=' orelse Op =:= '>' orelse Op =:= '>=')
 ).
 
+%% The operators that match a field against a literal text: `{Field, Op,
+%% Text}`. The dialect escapes the LIKE wildcards in Text, so it matches
+%% only itself. The `i` forms ignore case.
+-define(KURA_IS_TEXT_MATCH_OP(Op),
+    (Op =:= contains orelse Op =:= starts_with orelse Op =:= ends_with orelse
+        Op =:= icontains orelse Op =:= istarts_with orelse Op =:= iends_with)
+).
+
 %% The operators of a deterministic encrypted lookup `{Field, Op, Frames}`,
 %% which kura_query:where/2 and having/2 build in place of an equality on
 %% a deterministic field. Frames are ciphertexts, never plaintext.

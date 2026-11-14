@@ -11,8 +11,9 @@ where its value would be. `bind/2` puts the values back.
 Bound positions, in the query and in every CTE, combination and
 subquery it contains:
 
-- the right-hand side of a comparison, including `like`, `ilike` and
-  `matches`, and of `{Field, Value}`;
+- the right-hand side of a comparison, including `like`, `ilike`,
+  `matches` and the text matches (`?KURA_IS_TEXT_MATCH_OP`), and of
+  `{Field, Value}`;
 - the elements of an `in`/`not_in` list, and of each row tuple in a
   row-value `in` whose tuples all match the column count;
 - the elements of a deterministic lookup (`?KURA_IS_LOOKUP_OP`) whose
@@ -57,7 +58,8 @@ This module is internal. The marker format is not part of kura's API.
 -define(MARKER, '$kura_param').
 -define(IS_COMPARISON(Op),
     (Op =:= '=' orelse Op =:= '!=' orelse Op =:= '<' orelse Op =:= '>' orelse Op =:= '<=' orelse
-        Op =:= '>=' orelse Op =:= like orelse Op =:= ilike orelse Op =:= matches)
+        Op =:= '>=' orelse Op =:= like orelse Op =:= ilike orelse Op =:= matches orelse
+        ?KURA_IS_TEXT_MATCH_OP(Op))
 ).
 
 -type acc() :: {pos_integer(), [term()]}.
