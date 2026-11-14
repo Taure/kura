@@ -85,7 +85,7 @@ associations() ->
 |------------------------|-------------------------------|--------------------------------------|
 | Table name             | `schema "users" do`           | `table() -> ~"users".`               |
 | Fields                 | `field :name, :string`        | `fields() -> [#kura_field{...}].`    |
-| Timestamps             | `timestamps()`                | `timestamps() -> [{inserted_at, utc_datetime}, ...].` |
+| Timestamps             | `timestamps()`                | fields named `inserted_at` / `updated_at`; `timestamps/0` for other names |
 | Associations           | `has_many :posts, ...`        | `associations() -> [#kura_assoc{...}].` |
 | Embeds                 | `embeds_many :tags, ...`      | `embeds() -> [#kura_embed{...}].`    |
 | Indexes                | (in migrations only)          | `indexes() -> [...].`                |

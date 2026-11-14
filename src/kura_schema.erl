@@ -6,6 +6,28 @@ Implement the `table/0` and `fields/0` callbacks to define a schema module.
 Mark one field with `primary_key = true`. Optionally implement `timestamps/0`
 and `associations/0`.
 
+## Timestamps
+
+A schema with fields named `inserted_at` and `updated_at` has them set to
+the current UTC time: `inserted_at` on insert, `updated_at` on insert and
+on update. A value the write sets itself is kept.
+
+Implement `timestamps/0` to stamp fields of other names, or none. It lists
+the insert field, then the update field, each with its type:
+
+```erlang
+fields() ->
+    [#kura_field{name = id, type = id, primary_key = true},
+     #kura_field{name = created_at, type = utc_datetime},
+     #kura_field{name = modified_at, type = utc_datetime}].
+
+timestamps() -> [{created_at, utc_datetime}, {modified_at, utc_datetime}].
+```
+
+`[{created_at, utc_datetime}]` stamps on insert only and `[]` stamps
+nothing, for a table whose timestamps the database maintains. The fields
+are still declared in `fields/0`; see `timestamp_fields/1`.
+
 ```erlang
 -module(my_user).
 -behaviour(kura_schema).
@@ -65,6 +87,7 @@ ignored.
     column_map/1,
     renamed_columns/1,
     renamed_fields/1,
+    timestamp_fields/1,
     key/1,
     key_fields/1,
     primary_key/1,
@@ -307,6 +330,49 @@ renamed_fields(Mod) ->
     cache({kura_schema, renamed_fields, Mod}, fun() ->
         #{binary_to_atom(Column, utf8) => Field || Field := Column <- renamed_columns(Mod)}
     end).
+
+-doc """
+Return the fields the repo stamps with the current UTC time, as
+`{Inserted, Updated}`: `Inserted` is set on insert, `Updated` on insert and
+on update, each only when the write does not set it itself. `undefined`
+stands for no such field.
+
+Without a `timestamps/0` callback these are the fields named `inserted_at`
+and `updated_at`, where the schema has them. With it they are the fields
+the callback lists, by position: `[{Inserted, Type}, {Updated, Type}]`,
+`[{Inserted, Type}]`, or `[]` to stamp nothing. Each must also be one of
+the schema's `fields/0`, which is where its type and column come from.
+
+Raises `{kura, {invalid_timestamps, Mod, Value}}` for any other value and
+`{kura, {unknown_timestamp_field, Mod, Field}}` for a field the schema
+does not have.
+""".
+-spec timestamp_fields(module()) -> {atom() | undefined, atom() | undefined}.
+timestamp_fields(Mod) ->
+    cache({kura_schema, timestamp_fields, Mod}, fun() ->
+        Types = field_types(Mod),
+        case erlang:function_exported(Mod, timestamps, 0) of
+            true -> listed_timestamps(Mod, Mod:timestamps(), Types);
+            false -> {named_timestamp(inserted_at, Types), named_timestamp(updated_at, Types)}
+        end
+    end).
+
+named_timestamp(Field, Types) when is_map_key(Field, Types) -> Field;
+named_timestamp(_Field, _Types) -> undefined.
+
+listed_timestamps(_Mod, [], _Types) ->
+    {undefined, undefined};
+listed_timestamps(Mod, [{Inserted, _Type}], Types) when is_atom(Inserted) ->
+    {listed_timestamp(Mod, Inserted, Types), undefined};
+listed_timestamps(Mod, [{Inserted, _InsertedType}, {Updated, _UpdatedType}], Types) when
+    is_atom(Inserted), is_atom(Updated)
+->
+    {listed_timestamp(Mod, Inserted, Types), listed_timestamp(Mod, Updated, Types)};
+listed_timestamps(Mod, Value, _Types) ->
+    erlang:error({kura, {invalid_timestamps, Mod, Value}}).
+
+listed_timestamp(_Mod, Field, Types) when is_map_key(Field, Types) -> Field;
+listed_timestamp(Mod, Field, _Types) -> erlang:error({kura, {unknown_timestamp_field, Mod, Field}}).
 
 -doc "Return list of non-virtual field names.".
 -spec non_virtual_fields(module()) -> [atom()].
