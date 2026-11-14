@@ -2,6 +2,8 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-export([log/2]).
+
 %%----------------------------------------------------------------------
 %% SELECT compilation
 %%----------------------------------------------------------------------
@@ -587,23 +589,93 @@ lock_text_is_stored_as_its_term_test() ->
     Q = kura_query:lock(kura_query:from(user), ~"for share skip locked"),
     ?assertEqual({for_share, skip_locked}, Q#kura_query.lock).
 
-lock_outside_the_set_is_refused_test_() ->
+%% PostgreSQL's locking clause in full: tables after OF, and more than one
+%% clause. A table is quoted by the dialect, whichever way it was named.
+lock_of_tables_test_() ->
+    Cases = [
+        {{for_update, #{tables => [posts]}}, ~"FOR UPDATE OF \"posts\""},
+        {{for_update, #{tables => [~"posts", comments]}}, ~"FOR UPDATE OF \"posts\", \"comments\""},
+        {{for_share, #{tables => [posts], wait => nowait}}, ~"FOR SHARE OF \"posts\" NOWAIT"},
+        {
+            {for_no_key_update, #{tables => [posts], wait => skip_locked}},
+            ~"FOR NO KEY UPDATE OF \"posts\" SKIP LOCKED"
+        },
+        {{for_update, #{tables => [kura_test_schema]}}, ~"FOR UPDATE OF \"users\""},
+        {
+            {for_update, #{tables => [~"a\"; DROP TABLE x; --"]}},
+            ~"FOR UPDATE OF \"a\"\"; DROP TABLE x; --\""
+        },
+        {{for_update, #{}}, ~"FOR UPDATE"},
+        {{for_update, #{wait => nowait}}, ~"FOR UPDATE NOWAIT"},
+        {[for_update], ~"FOR UPDATE"},
+        {
+            [{for_update, #{tables => [posts]}}, {for_share, #{tables => [users], wait => nowait}}],
+            ~"FOR UPDATE OF \"posts\" FOR SHARE OF \"users\" NOWAIT"
+        },
+        {[for_key_share, {for_update, skip_locked}], ~"FOR KEY SHARE FOR UPDATE SKIP LOCKED"},
+        {~"FOR UPDATE OF posts", ~"FOR UPDATE OF \"posts\""},
+        {
+            ~"for update of Posts, \"My Table\" nowait",
+            ~"FOR UPDATE OF \"posts\", \"My Table\" NOWAIT"
+        },
+        {~"FOR UPDATE OF \"a\"\"b\"", ~"FOR UPDATE OF \"a\"\"b\""},
+        {~"FOR NO KEY UPDATE OF key SKIP LOCKED", ~"FOR NO KEY UPDATE OF \"key\" SKIP LOCKED"},
+        {
+            ~"FOR UPDATE OF posts FOR SHARE OF users SKIP LOCKED",
+            ~"FOR UPDATE OF \"posts\" FOR SHARE OF \"users\" SKIP LOCKED"
+        },
+        {~"FOR UPDATE\nFOR KEY SHARE", ~"FOR UPDATE FOR KEY SHARE"}
+    ],
+    [
+        {lists:flatten(io_lib:format("~0p", [Lock])), fun() ->
+            Q = kura_query:lock(kura_query:from(user), Lock),
+            ?assertEqual(
+                {<<"SELECT * FROM \"user\" ", Clause/binary>>, []},
+                kura_dialect_pg:to_sql(Q)
+            )
+        end}
+     || {Lock, Clause} <- Cases
+    ].
+
+lock_text_with_tables_is_stored_as_its_term_test_() ->
+    [
+        ?_assertEqual(
+            {for_update, #{tables => [~"posts"]}},
+            kura_query:lock_clause(~"FOR UPDATE OF posts")
+        ),
+        ?_assertEqual(
+            [{for_update, #{tables => [~"posts"]}}, {for_share, nowait}],
+            kura_query:lock_clause(~"FOR UPDATE OF posts FOR SHARE NOWAIT")
+        ),
+        ?_assertEqual(
+            {for_update, #{tables => [~"users", ~"posts"], wait => skip_locked}},
+            kura_query:lock_clause(
+                {for_update, #{tables => [kura_test_schema, posts], wait => skip_locked}}
+            )
+        ),
+        ?_assertEqual(for_update, kura_query:lock_clause([{for_update, #{}}]))
+    ].
+
+%% What is not a lock at all is refused whatever strict_locks says.
+lock_that_is_no_lock_is_refused_test_() ->
     Locks = [
-        ~"FOR UPDATE; DROP TABLE \"user\"",
-        ~"FOR UPDATE OF \"user\"",
-        ~"FOR UPDATE NOWAIT SKIP LOCKED",
-        ~"FOR UPDATE SKIP",
-        ~"UPDATE",
-        ~"FOR",
-        ~"",
-        <<"FOR UPDATE", 255>>,
-        ~"FOR UPDATE -- ",
         for_delete,
         {for_update, wait},
         {for_update, skip_locked, nowait},
         {fragment, for_update},
         "FOR UPDATE",
-        42
+        42,
+        [],
+        [for_update, for_delete],
+        {for_update, #{tables => []}},
+        {for_update, #{tables => posts}},
+        {for_update, #{tables => [~""]}},
+        {for_update, #{tables => [<<"a", 0, "b">>]}},
+        {for_update, #{tables => [<<"a", 255>>]}},
+        {for_update, #{tables => [42]}},
+        {for_update, #{tables => [posts], wait => later}},
+        {for_update, #{tables => [posts], 'of' => [users]}},
+        {for_update, #{wait => undefined}}
     ],
     [
         {lists:flatten(io_lib:format("~0p", [Lock])), fun() ->
@@ -615,11 +687,128 @@ lock_outside_the_set_is_refused_test_() ->
      || Lock <- Locks
     ].
 
+unread_lock_texts() ->
+    [
+        ~"FOR UPDATE; DROP TABLE \"user\"",
+        ~"FOR UPDATE NOWAIT SKIP LOCKED",
+        ~"FOR UPDATE SKIP",
+        ~"FOR UPDATE OF",
+        ~"FOR UPDATE OF posts,",
+        ~"FOR UPDATE OF public.posts",
+        ~"FOR UPDATE OF \"posts",
+        ~"FOR UPDATE OF \"\"",
+        ~"UPDATE",
+        ~"FOR",
+        ~"",
+        <<"FOR UPDATE", 255>>,
+        ~"FOR UPDATE -- ",
+        ~"LOCK IN SHARE MODE"
+    ].
+
+%% 2.30 wrote any text into the statement. Text that is not a locking clause
+%% still goes there, with a warning, until strict_locks refuses it.
+lock_text_kura_cannot_read_is_passed_through_test_() ->
+    [
+        {lists:flatten(io_lib:format("~0p", [Text])), fun() ->
+            {Q, Warnings} = lock_warnings(unset, fun() ->
+                kura_query:lock(kura_query:from(user), Text)
+            end),
+            ?assertEqual({fragment, Text}, Q#kura_query.lock),
+            ?assertEqual(
+                {<<"SELECT * FROM \"user\" ", Text/binary>>, []}, kura_dialect_pg:to_sql(Q)
+            ),
+            ?assertMatch([#{lock := Text}], Warnings)
+        end}
+     || Text <- unread_lock_texts()
+    ].
+
+lock_text_warning_is_logged_once_test() ->
+    {_, Warnings} = lock_warnings(unset, fun() ->
+        _ = kura_query:lock(kura_query:from(user), ~"FOR UPDATE SKIP"),
+        _ = kura_query:lock(kura_query:from(user), ~"LOCK IN SHARE MODE"),
+        kura_dialect_pg:to_sql((kura_query:from(user))#kura_query{lock = ~"FOR UPDATE SKIP"})
+    end),
+    ?assertMatch([#{lock := ~"FOR UPDATE SKIP"}], Warnings).
+
+lock_kura_reads_logs_no_warning_test_() ->
+    [
+        {lists:flatten(io_lib:format("~0p", [Lock])), fun() ->
+            {_, Warnings} = lock_warnings(unset, fun() ->
+                kura_dialect_pg:to_sql(kura_query:lock(kura_query:from(user), Lock))
+            end),
+            ?assertEqual([], Warnings)
+        end}
+     || Lock <- [
+            for_update,
+            ~"FOR UPDATE",
+            ~"FOR UPDATE OF posts",
+            {fragment, ~"FOR UPDATE OF \"user\""}
+        ]
+    ].
+
+lock_outside_the_set_is_refused_test_() ->
+    [
+        {lists:flatten(io_lib:format("~0p", [Text])), fun() ->
+            {ok, Warnings} = lock_warnings(true, fun() ->
+                ?assertError(
+                    {kura, {invalid_lock, Text}}, kura_query:lock(kura_query:from(user), Text)
+                )
+            end),
+            ?assertEqual([], Warnings)
+        end}
+     || Text <- unread_lock_texts()
+    ].
+
+strict_locks_reads_what_kura_reads_test() ->
+    {Stored, []} = lock_warnings(true, fun() ->
+        [
+            (kura_query:lock(kura_query:from(user), Lock))#kura_query.lock
+         || Lock <- [~"FOR UPDATE OF posts", for_share, {fragment, ~"FOR UPDATE OF ONLY x"}]
+        ]
+    end),
+    ?assertEqual(
+        [{for_update, #{tables => [~"posts"]}}, for_share, {fragment, ~"FOR UPDATE OF ONLY x"}],
+        Stored
+    ).
+
 lock_set_on_the_record_is_checked_at_compile_test() ->
     Q = (kura_query:from(user))#kura_query{lock = ~"FOR UPDATE; DELETE FROM \"user\""},
-    ?assertError({kura, {invalid_lock, _}}, kura_dialect_pg:to_sql(Q)),
+    {ok, []} = lock_warnings(true, fun() ->
+        ?assertError({kura, {invalid_lock, _}}, kura_dialect_pg:to_sql(Q))
+    end),
+    {Lenient, [_]} = lock_warnings(false, fun() -> kura_dialect_pg:to_sql(Q) end),
+    ?assertEqual({~"SELECT * FROM \"user\" FOR UPDATE; DELETE FROM \"user\"", []}, Lenient),
     Known = (kura_query:from(user))#kura_query{lock = ~"FOR SHARE"},
     ?assertEqual({~"SELECT * FROM \"user\" FOR SHARE", []}, kura_dialect_pg:to_sql(Known)).
+
+lock_warnings(Strict, Run) ->
+    strict_locks(Strict),
+    kura_boot_warning:forget(lock_text),
+    ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
+    try
+        Result = Run(),
+        {Result, lock_warnings()}
+    after
+        logger:remove_handler(?MODULE),
+        strict_locks(unset),
+        kura_boot_warning:forget(lock_text)
+    end.
+
+strict_locks(unset) -> application:unset_env(kura, strict_locks);
+strict_locks(Strict) -> application:set_env(kura, strict_locks, Strict).
+
+lock_warnings() ->
+    receive
+        {logged, #{lock := _} = Report} -> [Report | lock_warnings()];
+        {logged, _} -> lock_warnings()
+    after 50 -> []
+    end.
+
+log(#{msg := {report, Report}}, #{config := Pid}) ->
+    Pid ! {logged, Report},
+    ok;
+log(_Event, _Config) ->
+    ok.
 
 %%----------------------------------------------------------------------
 %% PREFIX (schema)

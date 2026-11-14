@@ -59,7 +59,9 @@ Q3 = kura_query:limit(Q2, 10).
     distance_metric/0,
     order/0,
     lock/0,
-    lock_strength/0
+    row_lock/0,
+    lock_strength/0,
+    lock_wait/0
 ]).
 
 %% Stands for every column of a CTE whose ciphertext columns cannot be named.
@@ -74,14 +76,31 @@ Q3 = kura_query:limit(Q2, 10).
 -type order() :: {atom() | distance(), asc | desc}.
 
 -type lock_strength() :: for_update | for_no_key_update | for_share | for_key_share.
--type lock() ::
-    lock_strength() | {lock_strength(), nowait | skip_locked} | {fragment, binary()}.
+-type lock_wait() :: nowait | skip_locked.
+
+-doc """
+One locking clause: a strength, alone, with a wait policy, or with the
+tables it locks and a wait policy. A table is a schema module, a table or
+alias name as an atom, or one as a binary.
+""".
+-type row_lock() ::
+    lock_strength()
+    | {lock_strength(), lock_wait()}
+    | {lock_strength(), #{tables => [atom() | binary(), ...], wait => lock_wait()}}.
+
+-doc "What `lock/2` takes: one clause, several, or SQL the caller vouches for.".
+-type lock() :: row_lock() | [row_lock(), ...] | {fragment, binary()}.
 
 -define(IS_LOCK_STRENGTH(S),
     (S =:= for_update orelse S =:= for_no_key_update orelse S =:= for_share orelse
         S =:= for_key_share)
 ).
 -define(IS_LOCK_WAIT(W), (W =:= nowait orelse W =:= skip_locked)).
+-define(IS_BLANK(C), (C =:= $\s orelse (C >= $\t andalso C =< $\r))).
+-define(IS_NAME_START(C),
+    ((C >= $a andalso C =< $z) orelse (C >= $A andalso C =< $Z) orelse C =:= $_)
+).
+-define(IS_NAME_BYTE(C), (?IS_NAME_START(C) orelse (C >= $0 andalso C =< $9) orelse C =:= $$)).
 
 -define(IS_METRIC(M), (M =:= l2 orelse M =:= cosine orelse M =:= inner_product)).
 %% pgvector's VECTOR_MAX_DIM.
@@ -1159,69 +1178,256 @@ distinct(Q, Fields) ->
 Lock the selected rows.
 
 `Lock` is a row-lock strength, `for_update`, `for_no_key_update`, `for_share`
-or `for_key_share`, alone or with a wait policy as `{Strength, nowait}` or
-`{Strength, skip_locked}`:
+or `for_key_share`, alone, with a wait policy, or with the tables to lock:
 
 ```erlang
 kura_query:lock(Q, for_update).
 kura_query:lock(Q, {for_update, skip_locked}).
+kura_query:lock(Q, {for_update, #{tables => [posts], wait => nowait}}).
+kura_query:lock(Q, [{for_update, #{tables => [posts]}}, {for_share, #{tables => [users]}}]).
 ```
 
-The same clauses are accepted as SQL text (`~"FOR UPDATE"`,
-`~"for share nowait"`), whatever the case and spacing, and stored as the
-term. Anything else raises `{kura, {invalid_lock, Lock}}`: the clause is
-never built from text the caller chose.
+`tables` names what `OF` lists: a schema module, or a table or alias name as
+an atom or a binary. The dialect quotes each name, so none is ever written
+into the statement as SQL. A list holds several clauses.
 
-For a clause outside this set, such as `FOR UPDATE OF`, pass
-`{fragment, SQL}`. Its text is written into the statement as it is, so it
-must never hold outside input.
+The same clauses are read from SQL text, whatever the case and spacing, and
+stored as the term: `~"FOR UPDATE"`, `~"for share nowait"`,
+`~"FOR UPDATE OF posts, comments SKIP LOCKED"`. An unquoted table name is
+folded to lower case, as PostgreSQL folds it.
+
+Text that is not such a clause is written into the statement as it is, as
+2.30 wrote any text, and logs one warning per boot that names it. With
+`{strict_locks, true}` in the `kura` application environment it raises
+`{kura, {invalid_lock, Lock}}` instead; that is the default in kura 3.0.
+For SQL kura should not read, say so with `{fragment, SQL}`: it is written
+as it is under either setting, without a warning, and must never hold
+outside input.
+
+Anything else raises `{kura, {invalid_lock, Lock}}`.
 """.
 -spec lock(#kura_query{}, lock() | binary()) -> #kura_query{}.
 lock(Q, Lock) ->
     Q#kura_query{lock = lock_clause(Lock)}.
 
 -doc """
-The lock clause `Lock` stands for, as `lock/2` stores it. A dialect calls
-this on the `lock` of a query, so a record built without `lock/2` cannot
-carry a clause of its own either. Raises `{kura, {invalid_lock, Lock}}`.
+The lock `Lock` stands for, as `lock/2` stores it. A dialect calls this on
+the `lock` of a query, which may be a record built without `lock/2`, and
+compiles what comes back:
+
+- a strength, or `{Strength, Wait}`;
+- `{Strength, #{tables := [Name, ...]}}`, with `wait` when there is one.
+  Each `Name` is a binary, to be quoted as an identifier;
+- a list of two or more of those, one per clause;
+- `{fragment, SQL}`, written as it is.
+
+Raises `{kura, {invalid_lock, Lock}}` as `lock/2` does.
 """.
 -spec lock_clause(term()) -> lock().
 lock_clause({fragment, SQL} = Fragment) when is_binary(SQL) ->
     Fragment;
-lock_clause({Strength, Wait} = Lock) when ?IS_LOCK_STRENGTH(Strength), ?IS_LOCK_WAIT(Wait) ->
-    Lock;
-lock_clause(Strength) when ?IS_LOCK_STRENGTH(Strength) ->
-    Strength;
 lock_clause(Text) when is_binary(Text) ->
-    case lock_words(Text) of
-        {ok, Words} -> worded_lock(Words, Text);
-        error -> invalid_lock(Text)
+    case lock_tokens(Text, []) of
+        {ok, Tokens} ->
+            case worded_locks(Tokens, []) of
+                {ok, Clauses} -> stored_lock(Clauses);
+                error -> unread_lock(Text)
+            end;
+        error ->
+            unread_lock(Text)
+    end;
+lock_clause([_ | _] = Locks) ->
+    case row_locks(Locks, []) of
+        {ok, Clauses} -> stored_lock(Clauses);
+        error -> invalid_lock(Locks)
     end;
 lock_clause(Lock) ->
-    invalid_lock(Lock).
-
-lock_words(Text) ->
-    try
-        {ok, string:lexemes(string:uppercase(Text), " \t\r\n")}
-    catch
-        error:_ -> error
+    case row_lock(Lock) of
+        {ok, Clause} -> stored_lock([Clause]);
+        error -> invalid_lock(Lock)
     end.
 
-worded_lock([~"FOR" | Words], Text) ->
-    case lists:splitwith(fun(Word) -> Word =/= ~"NOWAIT" andalso Word =/= ~"SKIP" end, Words) of
-        {Strength, []} -> worded_strength(Strength, Text);
-        {Strength, [~"NOWAIT"]} -> {worded_strength(Strength, Text), nowait};
-        {Strength, [~"SKIP", ~"LOCKED"]} -> {worded_strength(Strength, Text), skip_locked};
-        _ -> invalid_lock(Text)
-    end;
-worded_lock(_Words, Text) ->
-    invalid_lock(Text).
+%% 2.30 wrote the text into the statement; kura 3.0 refuses it.
+-spec unread_lock(binary()) -> lock().
+unread_lock(Text) ->
+    case application:get_env(kura, strict_locks, false) of
+        true ->
+            invalid_lock(Text);
+        _ ->
+            ok = kura_boot_warning:once(lock_text, #{
+                msg =>
+                    ~"kura: a lock given as text is not a locking clause kura reads, and is written into the statement as it is",
+                lock => Text,
+                fix =>
+                    ~"use a lock term such as {for_update, #{tables => [posts]}}, or {fragment, SQL} for SQL kura should not read; set {kura, [{strict_locks, true}]} to refuse other text, as 3.0 does"
+            }),
+            {fragment, Text}
+    end.
 
-worded_strength([~"UPDATE"], _Text) -> for_update;
-worded_strength([~"NO", ~"KEY", ~"UPDATE"], _Text) -> for_no_key_update;
-worded_strength([~"SHARE"], _Text) -> for_share;
-worded_strength([~"KEY", ~"SHARE"], _Text) -> for_key_share;
-worded_strength(_Words, Text) -> invalid_lock(Text).
+-type parsed_lock() :: {lock_strength(), [binary()], lock_wait() | undefined}.
+
+-spec stored_lock([parsed_lock(), ...]) -> lock().
+stored_lock([Clause]) -> stored_row_lock(Clause);
+stored_lock(Clauses) -> [stored_row_lock(Clause) || Clause <- Clauses].
+
+-spec stored_row_lock(parsed_lock()) -> row_lock().
+stored_row_lock({Strength, [], undefined}) ->
+    Strength;
+stored_row_lock({Strength, [], Wait}) ->
+    {Strength, Wait};
+stored_row_lock({Strength, [_ | _] = Tables, undefined}) ->
+    {Strength, #{tables => Tables}};
+stored_row_lock({Strength, [_ | _] = Tables, Wait}) ->
+    {Strength, #{tables => Tables, wait => Wait}}.
+
+row_locks([], Acc) ->
+    {ok, lists:reverse(Acc)};
+row_locks([Lock | Rest], Acc) ->
+    case row_lock(Lock) of
+        {ok, Clause} -> row_locks(Rest, [Clause | Acc]);
+        error -> error
+    end;
+row_locks(_Improper, _Acc) ->
+    error.
+
+-spec row_lock(term()) -> {ok, parsed_lock()} | error.
+row_lock(Strength) when ?IS_LOCK_STRENGTH(Strength) ->
+    {ok, {Strength, [], undefined}};
+row_lock({Strength, Wait}) when ?IS_LOCK_STRENGTH(Strength), ?IS_LOCK_WAIT(Wait) ->
+    {ok, {Strength, [], Wait}};
+row_lock({Strength, Spec}) when ?IS_LOCK_STRENGTH(Strength), is_map(Spec) ->
+    Wait = maps:get(wait, Spec, undefined),
+    case map_size(maps:without([tables, wait], Spec)) =:= 0 andalso lock_wait_given(Spec, Wait) of
+        true ->
+            case lock_tables(Spec) of
+                {ok, Tables} -> {ok, {Strength, Tables, Wait}};
+                error -> error
+            end;
+        false ->
+            error
+    end;
+row_lock(_Lock) ->
+    error.
+
+lock_wait_given(Spec, Wait) ->
+    not is_map_key(wait, Spec) orelse ?IS_LOCK_WAIT(Wait).
+
+lock_tables(#{tables := [_ | _] = Tables}) -> lock_table_names(Tables, []);
+lock_tables(#{tables := _}) -> error;
+lock_tables(#{}) -> {ok, []}.
+
+lock_table_names([], Acc) ->
+    {ok, lists:reverse(Acc)};
+lock_table_names([Table | Rest], Acc) ->
+    case lock_table_name(Table) of
+        {ok, Name} -> lock_table_names(Rest, [Name | Acc]);
+        error -> error
+    end;
+lock_table_names(_Improper, _Acc) ->
+    error.
+
+lock_table_name(Name) when is_binary(Name) ->
+    case is_identifier(Name) of
+        true -> {ok, Name};
+        false -> error
+    end;
+lock_table_name(Table) when is_atom(Table), Table =/= undefined ->
+    case kura_schema:is_schema(Table) of
+        true -> lock_table_name(Table:table());
+        false -> lock_table_name(atom_to_binary(Table, utf8))
+    end;
+lock_table_name(_Table) ->
+    error.
+
+%% What a dialect can quote: text with something in it and no NUL, which no
+%% identifier holds.
+is_identifier(<<>>) ->
+    false;
+is_identifier(Name) ->
+    binary:match(Name, <<0>>) =:= nomatch andalso
+        is_binary(unicode:characters_to_binary(Name, utf8, utf8)).
+
+%% A locking clause as SQL text: words, quoted names and commas.
+lock_tokens(<<>>, Acc) ->
+    {ok, lists:reverse(Acc)};
+lock_tokens(<<C, Rest/binary>>, Acc) when ?IS_BLANK(C) ->
+    lock_tokens(Rest, Acc);
+lock_tokens(<<$,, Rest/binary>>, Acc) ->
+    lock_tokens(Rest, [comma | Acc]);
+lock_tokens(<<$", Rest/binary>>, Acc) ->
+    case quoted_name(Rest, <<>>) of
+        {ok, Name, After} -> lock_tokens(After, [{name, Name} | Acc]);
+        error -> error
+    end;
+lock_tokens(<<C, _/binary>> = Text, Acc) when ?IS_NAME_START(C) ->
+    {Word, Rest} = bare_word(Text, 0),
+    lock_tokens(Rest, [{word, string:uppercase(Word), string:lowercase(Word)} | Acc]);
+lock_tokens(_Text, _Acc) ->
+    error.
+
+bare_word(Text, Size) ->
+    case Text of
+        <<_:Size/binary, C, _/binary>> when ?IS_NAME_BYTE(C) ->
+            bare_word(Text, Size + 1);
+        <<Word:Size/binary, Rest/binary>> ->
+            {Word, Rest}
+    end.
+
+quoted_name(<<$", $", Rest/binary>>, Acc) ->
+    quoted_name(Rest, <<Acc/binary, $">>);
+quoted_name(<<$", Rest/binary>>, Acc) ->
+    case is_identifier(Acc) of
+        true -> {ok, Acc, Rest};
+        false -> error
+    end;
+quoted_name(<<C, Rest/binary>>, Acc) ->
+    quoted_name(Rest, <<Acc/binary, C>>);
+quoted_name(<<>>, _Acc) ->
+    error.
+
+%% FOR strength [OF table [, ...]] [NOWAIT | SKIP LOCKED], once or more.
+worded_locks([], [_ | _] = Acc) ->
+    {ok, lists:reverse(Acc)};
+worded_locks([{word, ~"FOR", _} | Words], Acc) ->
+    case worded_strength(Words) of
+        {Strength, AfterStrength} ->
+            case worded_tables(AfterStrength) of
+                {Tables, AfterTables} ->
+                    {Wait, Rest} = worded_wait(AfterTables),
+                    worded_locks(Rest, [{Strength, Tables, Wait} | Acc]);
+                error ->
+                    error
+            end;
+        error ->
+            error
+    end;
+worded_locks(_Words, _Acc) ->
+    error.
+
+worded_strength([{word, ~"UPDATE", _} | Rest]) ->
+    {for_update, Rest};
+worded_strength([{word, ~"NO", _}, {word, ~"KEY", _}, {word, ~"UPDATE", _} | Rest]) ->
+    {for_no_key_update, Rest};
+worded_strength([{word, ~"SHARE", _} | Rest]) ->
+    {for_share, Rest};
+worded_strength([{word, ~"KEY", _}, {word, ~"SHARE", _} | Rest]) ->
+    {for_key_share, Rest};
+worded_strength(_Words) ->
+    error.
+
+worded_tables([{word, ~"OF", _} | Words]) -> worded_table(Words, []);
+worded_tables(Words) -> {[], Words}.
+
+worded_table([{name, Name} | Rest], Acc) -> more_worded_tables(Rest, [Name | Acc]);
+worded_table([{word, _Upper, Folded} | Rest], Acc) -> more_worded_tables(Rest, [Folded | Acc]);
+worded_table(_Words, _Acc) -> error.
+
+more_worded_tables([comma | Words], Acc) -> worded_table(Words, Acc);
+more_worded_tables(Words, Acc) -> {lists:reverse(Acc), Words}.
+
+worded_wait([{word, ~"NOWAIT", _} | Rest]) -> {nowait, Rest};
+worded_wait([{word, ~"SKIP", _}, {word, ~"LOCKED", _} | Rest]) -> {skip_locked, Rest};
+worded_wait(Words) -> {undefined, Words}.
 
 -spec invalid_lock(term()) -> no_return().
 invalid_lock(Lock) ->

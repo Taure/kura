@@ -263,20 +263,39 @@ kura_query:lock(Q, {for_no_key_update, nowait}).
 ```
 
 The strengths are `for_update`, `for_no_key_update`, `for_share` and
-`for_key_share`, each alone or with `nowait` or `skip_locked`. The same
-clauses written as SQL text (`~"FOR UPDATE"`, `~"FOR SHARE NOWAIT"`) are
-still accepted and read into those terms. Any other value raises
-`{kura, {invalid_lock, Lock}}`, so a lock clause is never text the caller
-chose.
-
-For a clause outside the set, be explicit that it is raw SQL:
+`for_key_share`, each alone or with `nowait` or `skip_locked`. To lock only
+some of the tables of a join, name them, and give a list for more than one
+clause:
 
 ```erlang
-kura_query:lock(Q, {fragment, ~"FOR UPDATE OF \"users\""}).
+kura_query:lock(Q, {for_update, #{tables => [posts], wait => skip_locked}}).
+kura_query:lock(Q, [{for_update, #{tables => [posts]}}, {for_share, #{tables => [users]}}]).
 ```
 
-A lock fragment is written into the statement as it is. Never build it from
-outside input.
+A table is a schema module, or a table or alias name as an atom or a
+binary. The dialect quotes it, so a lock term never puts caller text into
+the statement.
+
+The same clauses written as SQL text are read into those terms:
+`~"FOR UPDATE"`, `~"FOR SHARE NOWAIT"`, `~"FOR UPDATE OF posts, comments"`.
+
+Text that is not a PostgreSQL locking clause is written into the statement
+as it is, as in 2.30, and logs one warning per boot. Set
+
+```erlang
+{kura, [{strict_locks, true}]}
+```
+
+to make it raise `{kura, {invalid_lock, Lock}}` instead. That is the
+default in kura 3.0. For SQL kura should not read, be explicit that it is
+raw:
+
+```erlang
+kura_query:lock(Q, {fragment, ~"FOR UPDATE OF ONLY \"users\""}).
+```
+
+A lock fragment is written into the statement as it is under either
+setting. Never build it from outside input.
 
 ## Schema Prefix
 

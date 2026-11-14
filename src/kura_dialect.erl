@@ -92,6 +92,19 @@ are kura's own and must never appear in the SQL. A dialect that delegates
 to `kura_dialect_pg` but binds binaries as text, as SQLite does, has to
 catch the node before it delegates and cast each placeholder to bytes.
 
+## Locks
+
+The `lock` of a query is whatever the caller put there: a term from
+`kura_query:lock/2`, or in a record built by hand a binary. Read it through
+`kura_query:lock_clause/1`, never as it is. That returns a strength,
+`{Strength, Wait}`, `{Strength, #{tables := Names}}` with an optional
+`wait`, a list of those for several clauses, or `{fragment, SQL}`, and
+raises for anything else. Quote each of `Names` as an identifier; only a
+fragment's `SQL` goes into the statement unquoted.
+
+A dialect may take a stronger lock than the one asked for, never a weaker
+one: a backend without `FOR NO KEY UPDATE` takes `FOR UPDATE`.
+
 ## Stored values
 
 A driver with a native type for every kura type returns each value in the

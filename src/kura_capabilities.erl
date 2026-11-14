@@ -326,15 +326,16 @@ orders_need(_) -> [].
 
 lock_needs(undefined) ->
     [];
-lock_needs({_Strength, skip_locked}) ->
-    [select_for_update_skip_locked, row_locks];
-lock_needs(Lock) when is_binary(Lock) ->
-    case kura_query:lock_clause(Lock) of
-        {_Strength, skip_locked} -> [select_for_update_skip_locked, row_locks];
-        _ -> [row_locks]
-    end;
-lock_needs(_Lock) ->
-    [row_locks].
+lock_needs(Lock) ->
+    case skips_locked(kura_query:lock_clause(Lock)) of
+        true -> [select_for_update_skip_locked, row_locks];
+        false -> [row_locks]
+    end.
+
+skips_locked([_ | _] = Clauses) -> lists:any(fun skips_locked/1, Clauses);
+skips_locked({_Strength, skip_locked}) -> true;
+skips_locked({_Strength, #{wait := skip_locked}}) -> true;
+skips_locked(_Clause) -> false.
 
 distinct_needs(Fields) when is_list(Fields) -> [distinct_on];
 distinct_needs(_Distinct) -> [].

@@ -894,13 +894,31 @@ compile_offset(N, Counter) ->
 compile_lock(undefined) -> <<>>;
 compile_lock(Lock) -> [~" ", lock_sql(kura_query:lock_clause(Lock))].
 
-lock_sql({fragment, SQL}) -> SQL;
-lock_sql({Strength, nowait}) -> [lock_sql(Strength), ~" NOWAIT"];
-lock_sql({Strength, skip_locked}) -> [lock_sql(Strength), ~" SKIP LOCKED"];
-lock_sql(for_update) -> ~"FOR UPDATE";
-lock_sql(for_no_key_update) -> ~"FOR NO KEY UPDATE";
-lock_sql(for_share) -> ~"FOR SHARE";
-lock_sql(for_key_share) -> ~"FOR KEY SHARE".
+lock_sql({fragment, SQL}) ->
+    SQL;
+lock_sql([_ | _] = Clauses) ->
+    lists:join(~" ", [lock_sql(Clause) || Clause <- Clauses]);
+lock_sql({Strength, #{tables := Tables} = Spec}) ->
+    [
+        lock_sql(Strength),
+        ~" OF ",
+        join_comma([quote_ident(Table) || Table <- Tables]),
+        lock_wait_sql(maps:get(wait, Spec, undefined))
+    ];
+lock_sql({Strength, Wait}) ->
+    [lock_sql(Strength), lock_wait_sql(Wait)];
+lock_sql(for_update) ->
+    ~"FOR UPDATE";
+lock_sql(for_no_key_update) ->
+    ~"FOR NO KEY UPDATE";
+lock_sql(for_share) ->
+    ~"FOR SHARE";
+lock_sql(for_key_share) ->
+    ~"FOR KEY SHARE".
+
+lock_wait_sql(undefined) -> <<>>;
+lock_wait_sql(nowait) -> ~" NOWAIT";
+lock_wait_sql(skip_locked) -> ~" SKIP LOCKED".
 
 compile_distinct(false, _Ctx) ->
     <<>>;
