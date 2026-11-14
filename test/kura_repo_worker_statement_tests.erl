@@ -2,7 +2,6 @@
 -moduledoc "The statements kura_repo_worker builds, read through a recording driver.".
 
 -include_lib("eunit/include/eunit.hrl").
--include("kura.hrl").
 
 -define(REPO, kura_statement_test_repo).
 

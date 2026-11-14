@@ -1034,13 +1034,17 @@ column_ident(Field, Renames) ->
 %% ORDER BY resolves a name to a select_expr output column before an input
 %% column, so an alias is left bare to keep naming the expression.
 -spec order_context(#kura_query{}, column_context()) -> column_context().
-order_context(#kura_query{select = {exprs, Exprs}} = Q, {renamed, Renames, Qualified}) ->
-    Unaliased = maps:without([Alias || {Alias, _} <- Exprs], Renames),
-    renamed_context(Unaliased, order_context(Q, Qualified));
+order_context(#kura_query{select = {exprs, Exprs}}, {renamed, Renames, Qualified}) ->
+    Aliases = [Alias || {Alias, _} <- Exprs],
+    renamed_context(maps:without(Aliases, Renames), unaliased(Aliases, Qualified));
 order_context(#kura_query{select = {exprs, Exprs}}, {Qualifier, Fields}) ->
-    {Qualifier, maps:without([Alias || {Alias, _} <- Exprs], Fields)};
+    unaliased([Alias || {Alias, _} <- Exprs], {Qualifier, Fields});
 order_context(_Q, Ctx) ->
     Ctx.
+
+-spec unaliased([term()], qualified_columns()) -> qualified_columns().
+unaliased(_Aliases, undefined) -> undefined;
+unaliased(Aliases, {Qualifier, Fields}) -> {Qualifier, maps:without(Aliases, Fields)}.
 
 -spec column(atom(), column_context()) -> iodata().
 column(Field, {renamed, Renames, Qualified}) ->

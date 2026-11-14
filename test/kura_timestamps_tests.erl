@@ -2,7 +2,6 @@
 -moduledoc "Which fields the repo stamps, read through a recording driver.".
 
 -include_lib("eunit/include/eunit.hrl").
--include("kura.hrl").
 
 -define(REPO, kura_timestamps_test_repo).
 -define(CUSTOM, kura_test_custom_timestamps_schema).

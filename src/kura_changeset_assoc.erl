@@ -45,14 +45,7 @@ put_assoc(CS, AssocName, Value) ->
 put_assoc(CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}, AssocName, Value, Opts) ->
     case kura_schema:association(SchemaMod, AssocName) of
         {ok, Assoc} ->
-            Changesets =
-                case holds_a_map(Value) of
-                    true ->
-                        Caster = assoc_caster(Opts, SchemaMod, AssocName, Assoc),
-                        coerce_assoc_value(Assoc, Value, Caster);
-                    false ->
-                        Value
-                end,
+            Changesets = assoc_value(Assoc, Value, Opts, SchemaMod, AssocName),
             CS#kura_changeset{assoc_changes = AC#{AssocName => Changesets}};
         {error, not_found} ->
             kura_changeset:add_error(CS, AssocName, ~"unknown association")
@@ -233,6 +226,15 @@ cast_has_one(CS, AssocName, _BadParams, _WithFun) ->
 
 holds_a_map(Value) when is_list(Value) -> lists:any(fun erlang:is_map/1, Value);
 holds_a_map(Value) -> is_map(Value).
+
+assoc_value(Assoc, Value, Opts, SchemaMod, AssocName) ->
+    case holds_a_map(Value) of
+        true ->
+            Caster = assoc_caster(Opts, SchemaMod, AssocName, Assoc),
+            coerce_assoc_value(Assoc, Value, Caster);
+        false ->
+            Value
+    end.
 
 coerce_assoc_value(Assoc, Value, Caster) when is_list(Value) ->
     [coerce_single(Assoc, V, Caster) || V <- Value];

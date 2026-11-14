@@ -137,7 +137,7 @@ t_escape_like() ->
     From = kura_query:from(kura_test_edge_schema),
     Pattern = fun(Text) -> <<(kura_query:escape_like(Text))/binary, "%">> end,
     ?assertEqual([~"100%"], names(kura_query:where(From, {name, like, Pattern(~"100%")}))),
-    ?assertEqual([~"a\\b"], names(kura_query:where(From, {name, like, Pattern(~"a\\")}))),
+    ?assertEqual([~"a\\b"], names(kura_query:where(From, {name, like, Pattern(~"a\\b")}))),
     ?assertEqual([~"100%", ~"1000"], names(kura_query:where(From, {name, like, ~"100%"}))).
 
 t_fragment_literal_question_mark() ->

@@ -343,6 +343,7 @@ of `renamed_columns/1`.
 -spec renamed_fields(module()) -> #{atom() => atom()}.
 renamed_fields(Mod) ->
     cache({kura_schema, renamed_fields, Mod}, fun() ->
+        %% elp:ignore W0023 - bounded by the schema's column declarations
         #{binary_to_atom(Column, utf8) => Field || Field := Column <- renamed_columns(Mod)}
     end).
 
