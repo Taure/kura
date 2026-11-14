@@ -148,8 +148,16 @@ a_body_naming_an_earlier_cte_reads_the_cte(_Config) ->
 
 without_a_tenant_both_are_refused(_Config) ->
     [
-        ?assertError(?REFUSED, kura_repo_worker:all(?REPO, Query))
-     || Query <- [own_name(), later_name(), own_name(), later_name()]
+        begin
+            Stored = kura_query_cache:entry_count(),
+            ?assertError(?REFUSED, kura_repo_worker:all(?REPO, Query)),
+            ?assertEqual(Stored, kura_query_cache:entry_count()),
+            _ = every_tenant(Query),
+            ?assertEqual(Stored + 1, kura_query_cache:entry_count()),
+            ?assertError(?REFUSED, kura_repo_worker:all(?REPO, Query)),
+            ?assertEqual(Stored + 1, kura_query_cache:entry_count())
+        end
+     || Query <- [own_name(), later_name()]
     ].
 
 under_a_tenant_both_read_only_its_rows(_Config) ->

@@ -43,6 +43,19 @@ changeset(Schema, Data, Params) ->
 statements() ->
     [SQL || {SQL, _Params} <- kura_test_recording_driver:statements()].
 
+%% A refused miss stores nothing, so the entry a hit needs comes from the
+%% same query run where it is allowed.
+refused_on_a_miss_and_on_a_hit(Q) ->
+    ?assertError(?REFUSED(?SCOPED), kura_repo_worker:all(?REPO, Q)),
+    ?assertEqual(0, kura_query_cache:entry_count()),
+    ?assertEqual([], statements()),
+    {ok, []} = kura_tenant:without_tenant(fun() -> kura_repo_worker:all(?REPO, Q) end),
+    ?assertEqual(1, kura_query_cache:entry_count()),
+    ?assertMatch([_], statements()),
+    ?assertError(?REFUSED(?SCOPED), kura_repo_worker:all(?REPO, Q)),
+    ?assertEqual(1, kura_query_cache:entry_count()),
+    ?assertEqual([], statements()).
+
 %%----------------------------------------------------------------------
 %% Required
 %%----------------------------------------------------------------------
@@ -151,20 +164,16 @@ required_test_() ->
         {"a CTE's body that names the CTE reads the table, on a miss and on a hit", fun() ->
             Q = kura_query:with_cte(kura_query:from(~"edge_items"), ~"edge_items", scoped()),
             ?assertError(?REFUSED(?SCOPED), kura_query_compiler:to_sql(?REPO, Q)),
-            ?assertError(?REFUSED(?SCOPED), kura_repo_worker:all(?REPO, Q)),
-            ?assertError(?REFUSED(?SCOPED), kura_repo_worker:all(?REPO, Q)),
-            ?assertEqual([], statements())
+            refused_on_a_miss_and_on_a_hit(Q)
         end},
-        {"a CTE's body reads the table a later CTE is named after", fun() ->
+        {"a CTE's body reads the table a later CTE is named after, miss and hit", fun() ->
             Q = kura_query:with_cte(
                 kura_query:with_cte(kura_query:from(~"rows"), ~"rows", scoped()),
                 ~"edge_items",
                 shared()
             ),
             ?assertError(?REFUSED(?SCOPED), kura_query_compiler:to_sql(?REPO, Q)),
-            ?assertError(?REFUSED(?SCOPED), kura_repo_worker:all(?REPO, Q)),
-            ?assertError(?REFUSED(?SCOPED), kura_repo_worker:all(?REPO, Q)),
-            ?assertEqual([], statements())
+            refused_on_a_miss_and_on_a_hit(Q)
         end},
         {"a CTE's body reads the CTE listed before it", fun() ->
             Q = kura_query:with_cte(
