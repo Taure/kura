@@ -596,11 +596,12 @@ Pattern = <<(kura_query:escape_like(Input))/binary, "%">>,
 Q = kura_query:where(kura_query:from(my_user), {name, like, Pattern}).
 ```
 
-The backslash is the default `LIKE` escape character on PostgreSQL. A
-backend whose `LIKE` has no default escape character, such as SQLite, reads
-the backslashes as text: there, and wherever the whole value is to be matched
-as it is, use `contains`, `starts_with` or `ends_with` in `where/2`, which
-escape the value in SQL.
+The backslash is the escape character of `like` and `ilike` on every
+backend: PostgreSQL's `LIKE` has it by default, and a dialect for a backend
+whose `LIKE` has none, as kura_sqlite's, names it in an `ESCAPE` clause (see
+`m:kura_dialect`). Where the whole value is to be matched as it is, use
+`contains`, `starts_with` or `ends_with` in `where/2`, which escape the
+value in SQL.
 """.
 -spec escape_like(binary()) -> binary().
 escape_like(Text) when is_binary(Text) ->

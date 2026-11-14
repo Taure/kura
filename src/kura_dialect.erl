@@ -65,6 +65,14 @@ escape character in an `ESCAPE` clause, as `kura_dialect_pg` does with
 `replace/3`. The `i` forms ignore case; `kura_dialect_pg` emits `ILIKE`,
 which a dialect for a backend without it has to replace.
 
+## Patterns
+
+`{Field, like, Pattern}` and `{Field, ilike, Pattern}` take a pattern whose
+escape character is the backslash, which is what `kura_query:escape_like/1`
+writes. `kura_dialect_pg` relies on PostgreSQL's default. A dialect for a
+backend whose `LIKE` has no default escape character has to name it:
+`LIKE ? ESCAPE '\'`.
+
 ## Empty lists
 
 `{Field, in, []}` matches no row and `{Field, not_in, []}` every row.

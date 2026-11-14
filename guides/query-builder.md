@@ -118,9 +118,9 @@ Pattern = <<(kura_query:escape_like(Input))/binary, "%@example.com">>,
 kura_query:where(Q, {email, like, Pattern}).
 ```
 
-`escape_like/1` escapes with a backslash, PostgreSQL's default `LIKE` escape
-character. SQLite's `LIKE` has no default escape character, so use the
-`contains` family there.
+`escape_like/1` escapes with a backslash, the escape character of `like`
+and `ilike` on both backends: PostgreSQL's default, and named in the
+statement by kura_sqlite.
 
 ### NULL Checks
 
