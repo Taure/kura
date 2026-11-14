@@ -55,7 +55,11 @@ the legacy query log, their values are replaced by `~"[redacted]"`:
 | any statement that touches no redacted field | nothing |
 
 A query is judged by every schema it reads: the one it is from, the ones
-it joins, and those of its subqueries, CTEs and combined queries.
+it joins, and those of its subqueries, CTEs and combined queries. A
+condition anywhere in the query that names a redacted field of any of
+them counts, so a plain column that shares a redacted field's name with
+another source of the same query is hidden too. A distance from a redacted
+vector field counts as a filter on it.
 
 Not covered: `{fragment, SQL, Params}` values in a query that names no
 redacted field, and the database's own statement log, which kura does not

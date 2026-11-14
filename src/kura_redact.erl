@@ -24,7 +24,11 @@ replaced by `~"[redacted]"`:
   and an upsert, every value of the statement is replaced. A statement
   that touches no redacted field is shown as it is. A query is judged by
   every schema it reads: the one it is from, the ones it joins, and those
-  of its subqueries, CTEs and combined queries;
+  of its subqueries, CTEs and combined queries. A condition anywhere in
+  it counts as filtering on a redacted field when it names one of any of
+  those schemas, so a plain column with the name of a redacted field of
+  another source in the same query has its statement's values replaced
+  too. A distance from a redacted vector field counts as a filter on it;
 - in what `record/2` and `changeset/1` return, for your own logging.
 
 The same event's `error_reason` keeps only the error's code and the names
@@ -130,11 +134,11 @@ query_params(Query, Params) ->
 -doc false.
 -spec mode(#kura_query{}) -> mode().
 mode(Query) ->
-    case reads_redacted(Query) of
-        false ->
+    case redacted_read(Query) of
+        [] ->
             plain;
-        true ->
-            case filters_redacted(Query) of
+        Redacted ->
+            case names_anywhere(Query, Redacted) of
                 true -> hidden;
                 false -> redacted
             end
@@ -227,26 +231,51 @@ error_reason(Reason) when is_atom(Reason) -> Reason;
 error_reason({Tag, Reason}) when is_atom(Tag), is_map(Reason) -> {Tag, error_reason(Reason)};
 error_reason(_Reason) -> redacted.
 
-reads_redacted(Query) ->
-    lists:any(
-        fun({Role, Source}) -> Role =/= preload andalso redacted_of(Source) =/= [] end,
-        kura_query:sources(Query)
+filters_redacted(Query) ->
+    names_anywhere(Query, redacted_read(Query)).
+
+%% The redacted fields of every source the query reads, at any depth. A
+%% condition is judged against all of them and not only those of its own
+%% level: the database resolves a name a subquery's sources lack to the
+%% outer query's column, and a CTE hands its columns to whatever reads it.
+redacted_read(Query) ->
+    lists:usort(
+        lists:append([
+            redacted_of(Source)
+         || {Role, Source} <- kura_query:sources(Query), Role =/= preload
+        ])
     ).
 
-filters_redacted(Query) ->
-    Redacted = redacted_in(Query),
-    names_field(Query#kura_query.wheres, Redacted) orelse
-        names_field(Query#kura_query.havings, Redacted) orelse
-        lists:any(fun filters_redacted/1, kura_query:nested(Query)).
+names_anywhere(_Query, []) ->
+    false;
+names_anywhere(
+    #kura_query{wheres = Wheres, havings = Havings, order_bys = Orders, select = Select} = Query,
+    Redacted
+) ->
+    names_field(Wheres, Redacted) orelse
+        names_field(Havings, Redacted) orelse
+        measures(Orders, Redacted) orelse
+        measures(selected(Select), Redacted) orelse
+        nested_name(kura_query:nested(Query), Redacted).
 
-%% The fields a condition of this query can name: those of its own sources
-%% and those its CTEs hand it.
-redacted_in(#kura_query{from = From, joins = Joins, ctes = Ctes}) ->
-    lists:append([
-        redacted_of(From),
-        lists:append([redacted_of(Joined) || {_Type, Joined, _On, _As} <- Joins]),
-        lists:append([redacted_in(Body) || {_Name, #kura_query{} = Body} <- Ctes])
-    ]).
+nested_name([], _Redacted) ->
+    false;
+nested_name([Query | Rest], Redacted) ->
+    names_anywhere(Query, Redacted) orelse nested_name(Rest, Redacted).
+
+selected({exprs, Exprs}) when is_list(Exprs) -> Exprs;
+selected(_Select) -> [].
+
+%% A distance binds the vector it measures from, which says as much about a
+%% redacted vector as a filter's value does.
+measures([{_AliasOrExpr, {distance, Field, _Metric, _Vector}} | Rest], Redacted) ->
+    lists:member(Field, Redacted) orelse measures(Rest, Redacted);
+measures([{{distance, Field, _Metric, _Vector}, _Direction} | Rest], Redacted) ->
+    lists:member(Field, Redacted) orelse measures(Rest, Redacted);
+measures([_ | Rest], Redacted) ->
+    measures(Rest, Redacted);
+measures(_, _Redacted) ->
+    false.
 
 redacted_of(From) when is_atom(From), From =/= undefined -> kura_schema:redacted_fields(From);
 redacted_of(_From) -> [].
@@ -266,6 +295,7 @@ condition_names(Condition, Redacted) when is_tuple(Condition), tuple_size(Condit
     case element(1, Condition) of
         Field when is_atom(Field) -> lists:member(Field, Redacted);
         Fields when is_list(Fields) -> any_member(Fields, Redacted);
+        {distance, Field, _Metric, _Vector} -> lists:member(Field, Redacted);
         _ -> false
     end;
 condition_names(_Condition, _Redacted) ->

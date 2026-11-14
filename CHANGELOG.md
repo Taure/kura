@@ -64,7 +64,11 @@ Behaviour that changes for existing callers:
   a schema-qualified table, and a keyword inside a longer word is not
   taken for one.
 - Telemetry params are redacted when a joined schema, a subquery, a CTE or
-  a combined query reads a redacted field, not only the `from` schema.
+  a combined query reads a redacted field, not only the `from` schema. A
+  condition is judged against the redacted fields of every source in the
+  query, so one in a subquery that names the outer query's field, or a
+  field an outer CTE hands it, is hidden; so is a plain column that shares
+  the name. A distance from a redacted vector field hides the vector.
 - `kura_tenant:with_tenant/2` and `without_tenant/1` check the tenant
   before changing anything and restore the previous one however the
   function ends. Parallel preloads run in the caller's tenant scope: under

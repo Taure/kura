@@ -90,6 +90,12 @@ telemetry_test_() ->
             {"a subquery over a redacted schema: every value", fun t_subquery_of_another_schema/0},
             {"a join with a redacted schema: every value", fun t_joined_schema/0},
             {"a CTE over a redacted schema: every value", fun t_cte/0},
+            {"a subquery filtering on what an outer CTE hands it: every value", fun t_outer_cte/0},
+            {"a subquery filtering on the outer query's redacted field: every value",
+                fun t_correlated_subquery/0},
+            {"a plain field named as a redacted one of another source: every value",
+                fun t_same_name/0},
+            {"a distance from a redacted vector: every value", fun t_distance/0},
             {"a failed statement's error keeps its code, not its text", fun t_error_reason/0},
             {"error detail is opt-in, never for a redacted schema", fun t_error_detail/0},
             {"a telemetry_error_detail that is not a boolean shows no detail",
@@ -278,6 +284,48 @@ t_cte() ->
         kura_query:with_cte(kura_query:from(~"recent"), ~"recent", Body), {token, '=', ~"t"}
     ),
     ?assertEqual({[[?R]], [[~"t"]]}, shown(fun() -> kura_repo_worker:all(?REPO, Q) end)).
+
+twice_hidden(Query, Given) ->
+    Hidden = {[[?R || _ <- Given]], [Given]},
+    ?assertEqual(hidden, kura_redact:mode(Query)),
+    ?assertEqual(Hidden, shown(fun() -> kura_repo_worker:all(?REPO, Query) end)),
+    ?assertEqual(Hidden, shown(fun() -> kura_repo_worker:all(?REPO, Query) end)).
+
+t_outer_cte() ->
+    ByToken = kura_query:select(
+        kura_query:where(kura_query:from(~"a"), {token, '=', ~"tok"}), [id]
+    ),
+    Q = kura_query:with_cte(
+        kura_query:where(kura_query:from(kura_test_shared_schema), {id, in, {subquery, ByToken}}),
+        ~"a",
+        kura_query:select(kura_query:from(?S), [id, token])
+    ),
+    twice_hidden(Q, [~"tok"]).
+
+t_correlated_subquery() ->
+    Sub = kura_query:where(kura_query:from(kura_test_shared_schema), {token, '=', ~"tok"}),
+    twice_hidden(kura_query:where(kura_query:from(?S), {exists, {subquery, Sub}}), [~"tok"]).
+
+t_same_name() ->
+    Named = kura_query:where(kura_query:from(~"audit_rows"), {token, '=', ~"plain"}),
+    Q = kura_query:where(kura_query:from(?S), {id, in, {subquery, kura_query:select(Named, [id])}}),
+    twice_hidden(Q, [~"plain"]),
+    Alone = kura_query:where(kura_query:from(~"audit_rows"), {token, '=', ~"plain"}),
+    ?assertEqual(
+        {[[~"plain"]], [[~"plain"]]}, shown(fun() -> kura_repo_worker:all(?REPO, Alone) end)
+    ).
+
+t_distance() ->
+    From = kura_query:from(kura_test_secret_vector_schema),
+    D = kura_query:distance(embedding, l2, [1, 0, 0]),
+    Vector = ~"[1.0,0.0,0.0]",
+    twice_hidden(kura_query:where(From, {D, '<', 0.5}), [Vector, 0.5]),
+    twice_hidden(kura_query:order_by(From, [{D, asc}]), [Vector]),
+    twice_hidden(kura_query:select_expr(From, [{id, id}, {dist, D}]), [Vector]),
+    ByContent = kura_query:where(From, {content, '=', ~"c"}),
+    ?assertEqual(
+        {[[~"c"]], [[~"c"]]}, shown(fun() -> kura_repo_worker:all(?REPO, ByContent) end)
+    ).
 
 duplicate_error() ->
     #{
