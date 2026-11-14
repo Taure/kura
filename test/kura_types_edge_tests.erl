@@ -116,6 +116,7 @@ load_boolean_error_test() ->
     ?assertMatch({error, _}, kura_types:load(boolean, <<"maybe">>)).
 
 load_date_error_test() ->
+    ?assertMatch({error, _}, kura_types:load(date, <<"2024-01-15">>)),
     ?assertMatch({error, _}, kura_types:load(date, <<"15 January 2024">>)),
     ?assertMatch({error, _}, kura_types:load(date, 20240115)).
 

@@ -479,12 +479,11 @@ spec_context(_Spec, Context) -> Context.
 -doc """
 Convert a driver result value back to an Erlang term.
 
-A value is accepted in the Erlang form a driver with a native type for it
-returns, and in the form a backend without one stores it in: a `boolean` as
-the integer `1` or `0`, a `date`, `time`, `utc_datetime` or `naive_datetime`
-as ISO 8601 text (a `utc_datetime` with an offset is moved to UTC, and a
-fraction of a second is dropped), and `jsonb`, an embed or an array as JSON
-text. Anything else is `{error, Reason}`.
+A value is read in the Erlang form of its type, the one a driver with a
+native type for it returns, and `jsonb` and an embed also as JSON text.
+Anything else is `{error, Reason}`. A backend that stores a type in another
+form, such as a boolean as `1` or `0`, turns it into the Erlang form in its
+dialect's `c:kura_dialect:load_stored/2`, before this function is called.
 
 A `decimal` a driver returns as numeric text is returned as that text, since
 a float would not hold all of its digits: `{ok, ~"12345678901234567.89"}`.
@@ -514,26 +513,14 @@ load(text, V) when is_binary(V) ->
     {ok, V};
 load(boolean, V) when is_boolean(V) ->
     {ok, V};
-load(boolean, 1) ->
-    {ok, true};
-load(boolean, 0) ->
-    {ok, false};
 load(date, {Y, M, D} = V) when is_integer(Y), is_integer(M), is_integer(D) ->
     {ok, V};
-load(date, V) when is_binary(V) ->
-    parse_date(V);
 load(time, {H, M, S} = V) when is_integer(H), is_integer(M), is_integer(S) ->
     {ok, V};
-load(time, V) when is_binary(V) ->
-    parse_time(V);
 load(utc_datetime, {{_, _, _}, {_, _, _}} = V) ->
     {ok, V};
-load(utc_datetime, V) when is_binary(V) ->
-    parse_datetime(V, utc);
 load(naive_datetime, {{_, _, _}, {_, _, _}} = V) ->
     {ok, V};
-load(naive_datetime, V) when is_binary(V) ->
-    parse_datetime(V, naive);
 load(uuid, V) when is_binary(V), byte_size(V) =:= 16 ->
     {ok, format_uuid(binary:encode_hex(V, lowercase))};
 load(uuid, V) when is_binary(V) ->
@@ -561,11 +548,6 @@ load({enum, Values}, V) when is_binary(V) ->
     end;
 load({array, Inner}, V) when is_list(V) ->
     load_array(Inner, V, no_context, []);
-load({array, Inner} = Type, V) when is_binary(V) ->
-    case encryption(Inner) of
-        none -> stored_array(Type, V);
-        _ -> erlang:error({kura_crypto, malformed_frame})
-    end;
 load({embed, embeds_one, Mod}, V) when is_binary(V) ->
     case json_decode(V) of
         {ok, Map} when is_map(Map) -> {ok, load_embed_map(Mod, Map)};
@@ -600,12 +582,6 @@ load(Type, _V) ->
 
 cannot_load(Type) ->
     {error, <<"cannot load ", (format_type(Type))/binary>>}.
-
-stored_array({array, Inner} = Type, Text) ->
-    case json_decode(Text) of
-        {ok, List} when is_list(List) -> load_array(Inner, List, no_context, []);
-        _NotAJsonArray -> cannot_load(Type)
-    end.
 
 %% A decimal never goes through a float: one a driver returns as text is
 %% checked and kept as that text.

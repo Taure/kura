@@ -37,15 +37,9 @@ Resolution order:
 """.
 -spec dialect(module()) -> module().
 dialect(RepoMod) ->
-    Cfg = kura_repo:settings(RepoMod),
-    case maps:get(dialect, Cfg, undefined) of
-        M when is_atom(M), M =/= undefined ->
-            M;
-        _ ->
-            case application:get_env(kura, dialect) of
-                {ok, GD} when is_atom(GD) -> GD;
-                _ -> error({no_dialect_configured, RepoMod})
-            end
+    case kura_dialect:of_repo(RepoMod) of
+        undefined -> error({no_dialect_configured, RepoMod});
+        Dialect -> Dialect
     end.
 
 -doc """

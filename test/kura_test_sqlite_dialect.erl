@@ -3,10 +3,16 @@
 The kura_sqlite dialect's strategy, for tests in kura: kura_dialect_pg's
 SQL with each `$N` placeholder rewritten to SQLite's `?N`. As there, a `$`
 inside a string literal, a quoted identifier, a comment or an identifier,
-and one not followed by a digit, is text.
+and one not followed by a digit, is text. `load_stored/2` reads the forms
+SQLite stores a boolean, a date, a time and a datetime in.
 """.
 
--export([to_sql/1, delete_all/1, insert_all/3, placeholder/1]).
+-export([to_sql/1, delete_all/1, insert_all/3, placeholder/1, load_stored/2]).
+
+-define(IS_TEMPORAL(Type),
+    (Type =:= date orelse Type =:= time orelse Type =:= utc_datetime orelse
+        Type =:= naive_datetime)
+).
 
 to_sql(Query) ->
     swapped(kura_dialect_pg:to_sql(Query)).
@@ -19,6 +25,21 @@ insert_all(Table, Fields, Rows) ->
 
 placeholder(N) ->
     [~"?", integer_to_binary(N)].
+
+%% SQLite has no boolean, date or time type: a boolean is held as 1 or 0
+%% and a date, time or datetime as ISO 8601 text, which kura_types:cast/2
+%% already parses. A decimal held as text stays text.
+load_stored(boolean, 1) ->
+    true;
+load_stored(boolean, 0) ->
+    false;
+load_stored(Type, Text) when ?IS_TEMPORAL(Type), is_binary(Text) ->
+    case kura_types:cast(Type, Text) of
+        {ok, Value} -> Value;
+        {error, _} -> Text
+    end;
+load_stored(_Type, Value) ->
+    Value.
 
 swapped({SQL, Params}) ->
     {statement_text(iolist_to_binary(SQL), $\s, <<>>), Params}.

@@ -87,7 +87,7 @@ fetch_loop(RepoMod, FetchSQL, Schema, Fun) ->
         #{rows := []} ->
             ok;
         #{rows := Rows} ->
-            Loaded = kura_db:load_rows(Schema, Rows),
+            Loaded = kura_db:load_rows(RepoMod, Schema, Rows),
             Fun(Loaded),
             fetch_loop(RepoMod, FetchSQL, Schema, Fun);
         {error, _} = Err ->

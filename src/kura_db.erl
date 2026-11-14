@@ -24,7 +24,8 @@ for pool lookup, sandbox support, telemetry, and type loading.
     resolve/1,
     get_driver_module/1,
     load_row/2,
-    load_rows/2,
+    load_row/3,
+    load_rows/3,
     build_log_event/5,
     build_telemetry_metadata/4,
     extract_source/1,
@@ -840,27 +841,53 @@ get_driver_module(RepoMod) ->
 %% Row loading
 %%----------------------------------------------------------------------
 
+-doc """
+Load `Row`, as a driver returned it, into the fields of `SchemaMod`. A
+value `kura_types:load/2` cannot read is kept as it is. No dialect is
+consulted, so a backend's stored forms are not read; kura itself loads
+through the repo.
+""".
 -spec load_row(kura_dialect:table(), map()) -> map().
 load_row(Table, Row) when is_binary(Table) ->
     Row;
 load_row(SchemaMod, Row) when is_atom(SchemaMod) ->
     case kura_schema:load_plan(SchemaMod) of
         undefined -> Row;
-        Plan -> load_planned(Plan, Row)
+        Plan -> load_planned(Plan, undefined, Row)
     end.
 
--doc "Load each of `Rows` as `load_row/2` does, looking the schema up once.".
--spec load_rows(kura_dialect:table(), [map()]) -> [map()].
-load_rows(Table, Rows) when is_binary(Table) ->
+-doc false.
+-spec load_row(module(), kura_dialect:table(), map()) -> map().
+load_row(RepoMod, Schema, Row) ->
+    case load_rows(RepoMod, Schema, [Row]) of
+        [Loaded] -> Loaded
+    end.
+
+%% The schema's plan and the dialect's load_stored/2 are looked up once for
+%% the result set.
+-doc false.
+-spec load_rows(module(), kura_dialect:table(), [map()]) -> [map()].
+load_rows(_RepoMod, Table, Rows) when is_binary(Table) ->
     Rows;
-load_rows(SchemaMod, Rows) when is_atom(SchemaMod) ->
+load_rows(RepoMod, SchemaMod, Rows) when is_atom(SchemaMod) ->
     case kura_schema:load_plan(SchemaMod) of
-        undefined -> Rows;
-        Plan -> [load_planned(Plan, Row) || Row <- Rows]
+        undefined ->
+            Rows;
+        Plan ->
+            Stored = stored_loader(RepoMod),
+            [load_planned(Plan, Stored, Row) || Row <- Rows]
     end.
 
-load_planned({Types, Specs, Renamed}, Row) ->
-    load_fields(keyed_by_field(Row, Renamed), Types, Specs).
+-spec stored_loader(module()) -> module() | undefined.
+stored_loader(RepoMod) ->
+    Dialect = kura_dialect:of_repo(RepoMod),
+    case kura_dialect:loads_stored(Dialect) of
+        true -> Dialect;
+        false -> undefined
+    end.
+
+load_planned({Types, Specs, Renamed}, Stored, Row) ->
+    load_fields(keyed_by_field(Row, Renamed), Types, Specs, Stored).
 
 keyed_by_field(Row, ByColumn) when map_size(ByColumn) =:= 0 -> Row;
 keyed_by_field(Row, ByColumn) -> #{field_key(Key, ByColumn) => V || Key := V <- Row}.
@@ -868,19 +895,23 @@ keyed_by_field(Row, ByColumn) -> #{field_key(Key, ByColumn) => V || Key := V <- 
 field_key(Key, ByColumn) when is_atom(Key) -> maps:get(atom_to_binary(Key, utf8), ByColumn, Key);
 field_key(Key, _ByColumn) -> Key.
 
-load_fields(Row, Types, Specs) ->
-    #{K => loaded(K, V, Types, Specs) || K := V <- Row}.
+load_fields(Row, Types, Specs, Stored) ->
+    #{K => loaded(K, V, Types, Specs, Stored) || K := V <- Row}.
 
-loaded(K, V, Types, Specs) ->
+loaded(K, V, Types, Specs, Stored) ->
     case Types of
         #{K := Type} ->
-            case load_field(Type, V, Specs, K) of
+            case load_field(Type, erlang_form(Stored, Type, V), Specs, K) of
                 {ok, Loaded} -> Loaded;
                 {error, _} -> V
             end;
         #{} ->
             V
     end.
+
+erlang_form(undefined, _Type, V) -> V;
+erlang_form(_Dialect, _Type, null) -> null;
+erlang_form(Dialect, Type, V) -> Dialect:load_stored(Type, V).
 
 load_field(Type, V, Specs, K) ->
     case Specs of

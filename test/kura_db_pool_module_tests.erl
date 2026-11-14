@@ -109,6 +109,10 @@ otp_app() -> kura.
 
 %% Override init/1 so kura_repo:config/1 returns the persistent_term we set.
 init(_DefaultConfig) ->
+    case persistent_term:get({?MODULE, init_calls}, undefined) of
+        undefined -> ok;
+        Calls -> counters:add(Calls, 1, 1)
+    end,
     case persistent_term:get({?MODULE, config}, undefined) of
         undefined -> #{};
         Config -> Config
@@ -135,57 +139,175 @@ multi(_) -> erlang:error(not_implemented).
 preload(_, _, _) -> erlang:error(not_implemented).
 query(_, _) -> erlang:error(not_implemented).
 
-load_row_reads_a_row_as_a_backend_without_native_types_stores_it_test() ->
-    Stored = #{
+%%----------------------------------------------------------------------
+%% Loading rows
+%%----------------------------------------------------------------------
+
+with_dialect(Dialect, Run) ->
+    persistent_term:put({?MODULE, config}, #{pool => some_pool, dialect => Dialect}),
+    try
+        Run()
+    after
+        persistent_term:erase({?MODULE, config})
+    end.
+
+stored_row() ->
+    #{
         id => 1,
         name => ~"n",
         birth_date => ~"1990-01-02",
         status => ~"active",
         score => 2,
         active => 0,
-        tags => ~"[\"a\",\"b\"]",
         metadata => ~"{\"a\":1}",
         ref_id => ~"0192e4a0-7b1a-7c3e-8f00-000000000001",
         happened_at => ~"2024-01-15 10:30:00",
         inserted_at => ~"2024-01-15T10:30:00Z",
         updated_at => null
+    }.
+
+load_row_reads_a_row_as_a_backend_without_native_types_stores_it_test() ->
+    with_dialect(kura_test_sqlite_dialect, fun() ->
+        ?assertEqual(
+            #{
+                id => 1,
+                name => ~"n",
+                birth_date => {1990, 1, 2},
+                status => active,
+                score => 2.0,
+                active => false,
+                metadata => #{~"a" => 1},
+                ref_id => ~"0192e4a0-7b1a-7c3e-8f00-000000000001",
+                happened_at => {{2024, 1, 15}, {10, 30, 0}},
+                inserted_at => {{2024, 1, 15}, {10, 30, 0}},
+                updated_at => undefined
+            },
+            kura_db:load_row(?MODULE, kura_test_type_schema, stored_row())
+        )
+    end).
+
+%% A dialect without load_stored/2 loads what 2.30 loaded: a value that is
+%% not in the Erlang form of its type stays as the driver returned it.
+load_row_keeps_a_stored_form_under_a_dialect_that_reads_none_test() ->
+    Stored = stored_row(),
+    Loaded = Stored#{
+        status := active, score := 2.0, metadata := #{~"a" => 1}, updated_at := undefined
     },
-    ?assertEqual(
-        #{
-            id => 1,
-            name => ~"n",
-            birth_date => {1990, 1, 2},
-            status => active,
-            score => 2.0,
-            active => false,
-            tags => [~"a", ~"b"],
-            metadata => #{~"a" => 1},
-            ref_id => ~"0192e4a0-7b1a-7c3e-8f00-000000000001",
-            happened_at => {{2024, 1, 15}, {10, 30, 0}},
-            inserted_at => {{2024, 1, 15}, {10, 30, 0}},
-            updated_at => undefined
-        },
-        kura_db:load_row(kura_test_type_schema, Stored)
-    ).
+    with_dialect(kura_dialect_pg, fun() ->
+        ?assertEqual(Loaded, kura_db:load_row(?MODULE, kura_test_type_schema, Stored))
+    end),
+    ?assertEqual(Loaded, kura_db:load_row(kura_test_type_schema, Stored)).
+
+load_row_keeps_what_the_dialect_cannot_read_test() ->
+    Row = #{id => 1, birth_date => ~"yesterday", active => 2, tags => ~"[\"a\"]"},
+    with_dialect(kura_test_sqlite_dialect, fun() ->
+        ?assertEqual(Row, kura_db:load_row(?MODULE, kura_test_type_schema, Row))
+    end).
+
+%% Every field type, written with dump/2 and read back: as PostgreSQL's
+%% driver returns it, and as SQLite stores it. SQLite has no array column.
+every_field_type_round_trips_on_both_dialects_test_() ->
+    Record = #{
+        id => 7,
+        name => ~"name",
+        bio => ~"text",
+        birth_date => {1990, 1, 2},
+        status => banned,
+        score => 2.5,
+        count => 3,
+        active => true,
+        tags => [~"a", ~"b"],
+        scores => [1, 2],
+        metadata => #{~"a" => [1, true]},
+        ref_id => ~"0192e4a0-7b1a-7c3e-8f00-000000000001",
+        happened_at => {{2024, 1, 15}, {10, 30, 0}},
+        inserted_at => {{2024, 1, 15}, {10, 30, 0}},
+        updated_at => undefined
+    },
+    Types = kura_schema:field_types(kura_test_type_schema),
+    Dumped = #{Field => dumped(maps:get(Field, Types), Value) || Field := Value <- Record},
+    [
+        ?_assertEqual(lists:sort(maps:keys(Types)), lists:sort(maps:keys(Record))),
+        {"PostgreSQL",
+            ?_test(
+                with_dialect(kura_dialect_pg, fun() ->
+                    ?assertEqual(Record, kura_db:load_row(?MODULE, kura_test_type_schema, Dumped))
+                end)
+            )},
+        {"SQLite",
+            ?_test(
+                with_dialect(kura_test_sqlite_dialect, fun() ->
+                    Stored =
+                        #{
+                            Field => as_sqlite_stores(Value)
+                         || Field := Value <- maps:without([tags, scores], Dumped)
+                        },
+                    ?assertEqual(
+                        maps:without([tags, scores], Record),
+                        kura_db:load_row(?MODULE, kura_test_type_schema, Stored)
+                    )
+                end)
+            )}
+    ].
+
+dumped(Type, Value) ->
+    {ok, Dumped} = kura_types:dump(Type, Value),
+    Dumped.
+
+%% What kura_driver_sqlite binds a parameter as, and so what a column holds.
+as_sqlite_stores(true) ->
+    1;
+as_sqlite_stores(false) ->
+    0;
+as_sqlite_stores({{Y, Mo, D}, {H, Mi, S}}) ->
+    iolist_to_binary(
+        io_lib:format("~4..0B-~2..0B-~2..0B ~2..0B:~2..0B:~2..0B", [Y, Mo, D, H, Mi, S])
+    );
+as_sqlite_stores({Y, Mo, D}) ->
+    iolist_to_binary(io_lib:format("~4..0B-~2..0B-~2..0B", [Y, Mo, D]));
+as_sqlite_stores(Value) ->
+    Value.
 
 load_row_leaves_a_row_read_by_table_name_untouched_test() ->
     Row = #{id => 1, title => ~"raw"},
-    ?assertEqual(Row, kura_db:load_row(~"kura_test_schema", Row)).
+    ?assertEqual(Row, kura_db:load_row(~"kura_test_schema", Row)),
+    ?assertEqual(Row, kura_db:load_row(?MODULE, ~"kura_test_schema", Row)).
 
 load_rows_loads_each_row_as_load_row_does_test() ->
     Rows = [#{id => 1, active => 1}, #{id => 2, active => 0, not_a_field => ~"kept"}],
-    ?assertEqual(
-        [kura_db:load_row(kura_test_type_schema, Row) || Row <- Rows],
-        kura_db:load_rows(kura_test_type_schema, Rows)
-    ),
-    ?assertEqual([], kura_db:load_rows(kura_test_type_schema, [])),
-    ?assertEqual(Rows, kura_db:load_rows(~"kura_test_schema", Rows)).
+    with_dialect(kura_test_sqlite_dialect, fun() ->
+        ?assertEqual(
+            [#{id => 1, active => true}, #{id => 2, active => false, not_a_field => ~"kept"}],
+            kura_db:load_rows(?MODULE, kura_test_type_schema, Rows)
+        ),
+        ?assertEqual(
+            [kura_db:load_row(?MODULE, kura_test_type_schema, Row) || Row <- Rows],
+            kura_db:load_rows(?MODULE, kura_test_type_schema, Rows)
+        ),
+        ?assertEqual([], kura_db:load_rows(?MODULE, kura_test_type_schema, [])),
+        ?assertEqual(Rows, kura_db:load_rows(?MODULE, ~"kura_test_schema", Rows))
+    end).
+
+%% The dialect is asked whether it reads stored forms once for a result
+%% set, not once for each row.
+load_rows_resolves_the_dialect_once_test() ->
+    Rows = [#{id => N, active => 1} || N <- lists:seq(1, 50)],
+    with_dialect(kura_test_sqlite_dialect, fun() ->
+        Calls = counters:new(1, []),
+        persistent_term:put({?MODULE, init_calls}, Calls),
+        try
+            _ = kura_db:load_rows(?MODULE, kura_test_type_schema, Rows),
+            ?assertEqual(1, counters:get(Calls, 1))
+        after
+            persistent_term:erase({?MODULE, init_calls})
+        end
+    end).
 
 load_row_leaves_a_row_of_a_module_that_is_no_schema_untouched_test() ->
     Row = #{id => ~"1"},
     ?assertEqual(Row, kura_db:load_row(lists, Row)),
     ?assertEqual(Row, kura_db:load_row(kura_no_such_schema_module, Row)),
-    ?assertEqual([Row], kura_db:load_rows(kura_no_such_schema_module, [Row])).
+    ?assertEqual([Row], kura_db:load_rows(?MODULE, kura_no_such_schema_module, [Row])).
 
 load_row_maps_a_renamed_column_onto_its_field_test() ->
     ?assertEqual(

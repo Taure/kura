@@ -134,11 +134,16 @@ backend), and `load` (backend → internal). Supported types include `id`,
 The backend dialect's `column_type/1` callback determines the SQL column
 type emitted in DDL.
 
-`load` reads a value in the Erlang form a driver with a native type
-returns, and in the form a backend without one stores: a boolean as `1` or
-`0`, a date, time or datetime as ISO 8601 text, a decimal as numeric text,
-and JSON, embeds and arrays as JSON text. A row therefore loads to the same
-Erlang terms on every backend.
+`load` reads a value in the Erlang form of its type, the one a driver with
+a native type returns. A backend that stores a type in another form, as
+SQLite stores a boolean as `1` or `0` and a date as ISO 8601 text,
+implements the optional `kura_dialect` callback `load_stored/2`, which
+turns each value of a row into the Erlang form before `load` reads it. A
+row therefore loads to the same Erlang terms on every backend, and a
+backend with native types is not read leniently.
+
+A `decimal` a driver returns as numeric text stays that text: it never
+passes through a float.
 
 ### `kura_migration` and `kura_migrator`
 

@@ -92,6 +92,21 @@ are kura's own and must never appear in the SQL. A dialect that delegates
 to `kura_dialect_pg` but binds binaries as text, as SQLite does, has to
 catch the node before it delegates and cast each placeholder to bytes.
 
+## Stored values
+
+A driver with a native type for every kura type returns each value in the
+Erlang form `kura_types:load/2` reads, and its dialect has nothing to do.
+A backend that stores a type in another form implements `load_stored/2`,
+which kura calls on each non-null value of a row read through a schema,
+with the field's type, before `kura_types:load/2`. It returns the Erlang
+form, or the value as it is when it has nothing to do or cannot read it;
+the row then keeps what the driver returned, as it does for any value
+`load/2` refuses.
+
+It must never make a float of a `decimal` held as text:
+`kura_types:load/2` keeps that text exact. JSON text for `jsonb` and embeds
+needs nothing either, `load/2` decodes it.
+
 ## Public API entry point
 
 Consumers go through `kura_query_compiler`, which delegates to the
@@ -101,7 +116,7 @@ callbacks directly.
 
 -include("kura.hrl").
 
--export([qualified_columns/1, placeholder/2]).
+-export([qualified_columns/1, placeholder/2, of_repo/1, loads_stored/1]).
 
 -export_type([sql/0, params/0, counter/0, table/0]).
 
@@ -196,7 +211,17 @@ Without it they are written with `$N`.
 """.
 -callback placeholder(counter()) -> iodata().
 
--optional_callbacks([column_type/1, format_default/1, convert_values/1, placeholder/1]).
+-doc """
+Optional. Turn `Value`, as the driver returned it for a field of `Type`,
+into the Erlang form `kura_types:load/2` reads. See "Stored values" in the
+moduledoc. Called once for each non-null value of a row read through a
+schema; never for raw SQL. Return `Value` unchanged for anything else.
+""".
+-callback load_stored(Type :: kura_types:kura_type(), Value :: term()) -> term().
+
+-optional_callbacks([
+    column_type/1, format_default/1, convert_values/1, placeholder/1, load_stored/2
+]).
 
 -doc """
 Which bare fields of a query name a column of its `from` table.
@@ -239,6 +264,29 @@ placeholder(Dialect, N) ->
         true -> Dialect:placeholder(N);
         false -> kura_dialect_pg:placeholder(N)
     end.
+
+-doc false.
+-spec of_repo(module()) -> module() | undefined.
+of_repo(RepoMod) ->
+    case maps:get(dialect, kura_repo:settings(RepoMod), undefined) of
+        Dialect when is_atom(Dialect), Dialect =/= undefined ->
+            Dialect;
+        _ ->
+            case application:get_env(kura, dialect) of
+                {ok, Global} when is_atom(Global) -> Global;
+                _ -> undefined
+            end
+    end.
+
+-doc false.
+-spec loads_stored(module() | undefined) -> boolean().
+loads_stored(undefined) ->
+    false;
+loads_stored(Dialect) ->
+    erlang:function_exported(Dialect, load_stored, 2) orelse
+        (not erlang:module_loaded(Dialect) andalso
+            code:ensure_loaded(Dialect) =:= {module, Dialect} andalso
+            erlang:function_exported(Dialect, load_stored, 2)).
 
 -spec unqualified_tenant(#{atom() => kura_types:kura_type()}) ->
     #{atom() => kura_types:kura_type()}.
