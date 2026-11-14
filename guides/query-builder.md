@@ -256,9 +256,27 @@ kura_query:distinct(Q, [email]).
 ## LOCK
 
 ```erlang
-kura_query:lock(Q, ~"FOR UPDATE").
-kura_query:lock(Q, ~"FOR SHARE").
+kura_query:lock(Q, for_update).
+kura_query:lock(Q, for_share).
+kura_query:lock(Q, {for_update, skip_locked}).
+kura_query:lock(Q, {for_no_key_update, nowait}).
 ```
+
+The strengths are `for_update`, `for_no_key_update`, `for_share` and
+`for_key_share`, each alone or with `nowait` or `skip_locked`. The same
+clauses written as SQL text (`~"FOR UPDATE"`, `~"FOR SHARE NOWAIT"`) are
+still accepted and read into those terms. Any other value raises
+`{kura, {invalid_lock, Lock}}`, so a lock clause is never text the caller
+chose.
+
+For a clause outside the set, be explicit that it is raw SQL:
+
+```erlang
+kura_query:lock(Q, {fragment, ~"FOR UPDATE OF \"users\""}).
+```
+
+A lock fragment is written into the statement as it is. Never build it from
+outside input.
 
 ## Schema Prefix
 

@@ -247,7 +247,7 @@ Ecto uses a query DSL macro. Kura uses tuples.
 | `offset: 20`                              | `kura_query:offset(Q, 20)`                          |
 | `distinct: true`                          | `kura_query:distinct(Q)`                            |
 | `preload: [:posts]`                       | `kura_query:preload(Q, [posts])`                    |
-| `lock: "FOR UPDATE"`                      | `kura_query:lock(Q, ~"FOR UPDATE")`                 |
+| `lock: "FOR UPDATE"`                      | `kura_query:lock(Q, for_update)`                    |
 | `with cte as ...`                         | `kura_query:with_cte(Q, ~"cte_name", SubQ)`         |
 | `union ...`                               | `kura_query:union(Q1, Q2)`                          |
 

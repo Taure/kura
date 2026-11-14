@@ -92,7 +92,7 @@
     limit :: non_neg_integer() | undefined,
     offset :: non_neg_integer() | undefined,
     distinct = false :: boolean() | [atom()],
-    lock :: binary() | undefined,
+    lock :: kura_query:lock() | binary() | undefined,
     prefix :: binary() | undefined,
     preloads = [] :: [atom() | {atom(), list()}],
     ctes = [] :: [{binary(), #kura_query{}}],

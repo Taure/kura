@@ -32,6 +32,7 @@ Q3 = kura_query:limit(Q2, 10).
     offset/2,
     distinct/1, distinct/2,
     lock/2,
+    lock_clause/1,
     prefix/2,
     preload/2,
     with_cte/3,
@@ -51,7 +52,15 @@ Q3 = kura_query:limit(Q2, 10).
     where_unrewritten/2
 ]).
 
--export_type([window_fn/0, window_spec/0, distance/0, distance_metric/0, order/0]).
+-export_type([
+    window_fn/0,
+    window_spec/0,
+    distance/0,
+    distance_metric/0,
+    order/0,
+    lock/0,
+    lock_strength/0
+]).
 
 %% Stands for every column of a CTE whose ciphertext columns cannot be named.
 -define(ANY_COLUMN, '$kura_any_column').
@@ -63,6 +72,16 @@ Q3 = kura_query:limit(Q2, 10).
 -type distance_metric() :: l2 | cosine | inner_product.
 -type distance() :: {distance, atom(), distance_metric(), binary()}.
 -type order() :: {atom() | distance(), asc | desc}.
+
+-type lock_strength() :: for_update | for_no_key_update | for_share | for_key_share.
+-type lock() ::
+    lock_strength() | {lock_strength(), nowait | skip_locked} | {fragment, binary()}.
+
+-define(IS_LOCK_STRENGTH(S),
+    (S =:= for_update orelse S =:= for_no_key_update orelse S =:= for_share orelse
+        S =:= for_key_share)
+).
+-define(IS_LOCK_WAIT(W), (W =:= nowait orelse W =:= skip_locked)).
 
 -define(IS_METRIC(M), (M =:= l2 orelse M =:= cosine orelse M =:= inner_product)).
 %% pgvector's VECTOR_MAX_DIM.
@@ -1135,9 +1154,77 @@ distinct(Q, Fields) ->
     refuse_columns(Fields, output_scope(Q, guard_scope(Q, [], [])), encrypted_field_in_distinct),
     Q#kura_query{distinct = Fields}.
 
--spec lock(#kura_query{}, binary()) -> #kura_query{}.
-lock(Q, LockExpr) ->
-    Q#kura_query{lock = LockExpr}.
+-doc """
+Lock the selected rows.
+
+`Lock` is a row-lock strength, `for_update`, `for_no_key_update`, `for_share`
+or `for_key_share`, alone or with a wait policy as `{Strength, nowait}` or
+`{Strength, skip_locked}`:
+
+```erlang
+kura_query:lock(Q, for_update).
+kura_query:lock(Q, {for_update, skip_locked}).
+```
+
+The same clauses are accepted as SQL text (`~"FOR UPDATE"`,
+`~"for share nowait"`), whatever the case and spacing, and stored as the
+term. Anything else raises `{kura, {invalid_lock, Lock}}`: the clause is
+never built from text the caller chose.
+
+For a clause outside this set, such as `FOR UPDATE OF`, pass
+`{fragment, SQL}`. Its text is written into the statement as it is, so it
+must never hold outside input.
+""".
+-spec lock(#kura_query{}, lock() | binary()) -> #kura_query{}.
+lock(Q, Lock) ->
+    Q#kura_query{lock = lock_clause(Lock)}.
+
+-doc """
+The lock clause `Lock` stands for, as `lock/2` stores it. A dialect calls
+this on the `lock` of a query, so a record built without `lock/2` cannot
+carry a clause of its own either. Raises `{kura, {invalid_lock, Lock}}`.
+""".
+-spec lock_clause(term()) -> lock().
+lock_clause({fragment, SQL} = Fragment) when is_binary(SQL) ->
+    Fragment;
+lock_clause({Strength, Wait} = Lock) when ?IS_LOCK_STRENGTH(Strength), ?IS_LOCK_WAIT(Wait) ->
+    Lock;
+lock_clause(Strength) when ?IS_LOCK_STRENGTH(Strength) ->
+    Strength;
+lock_clause(Text) when is_binary(Text) ->
+    case lock_words(Text) of
+        {ok, Words} -> worded_lock(Words, Text);
+        error -> invalid_lock(Text)
+    end;
+lock_clause(Lock) ->
+    invalid_lock(Lock).
+
+lock_words(Text) ->
+    try
+        {ok, string:lexemes(string:uppercase(Text), " \t\r\n")}
+    catch
+        error:_ -> error
+    end.
+
+worded_lock([~"FOR" | Words], Text) ->
+    case lists:splitwith(fun(Word) -> Word =/= ~"NOWAIT" andalso Word =/= ~"SKIP" end, Words) of
+        {Strength, []} -> worded_strength(Strength, Text);
+        {Strength, [~"NOWAIT"]} -> {worded_strength(Strength, Text), nowait};
+        {Strength, [~"SKIP", ~"LOCKED"]} -> {worded_strength(Strength, Text), skip_locked};
+        _ -> invalid_lock(Text)
+    end;
+worded_lock(_Words, Text) ->
+    invalid_lock(Text).
+
+worded_strength([~"UPDATE"], _Text) -> for_update;
+worded_strength([~"NO", ~"KEY", ~"UPDATE"], _Text) -> for_no_key_update;
+worded_strength([~"SHARE"], _Text) -> for_share;
+worded_strength([~"KEY", ~"SHARE"], _Text) -> for_key_share;
+worded_strength(_Words, Text) -> invalid_lock(Text).
+
+-spec invalid_lock(term()) -> no_return().
+invalid_lock(Lock) ->
+    erlang:error({kura, {invalid_lock, Lock}}).
 
 -spec prefix(#kura_query{}, binary()) -> #kura_query{}.
 prefix(Q, Schema) ->

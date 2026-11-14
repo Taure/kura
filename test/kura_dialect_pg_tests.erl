@@ -526,6 +526,72 @@ lock_test() ->
     {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assert(binary:match(SQL, <<"FOR UPDATE">>) =/= nomatch).
 
+lock_clause_test_() ->
+    Cases = [
+        {for_update, ~"FOR UPDATE"},
+        {for_no_key_update, ~"FOR NO KEY UPDATE"},
+        {for_share, ~"FOR SHARE"},
+        {for_key_share, ~"FOR KEY SHARE"},
+        {{for_update, nowait}, ~"FOR UPDATE NOWAIT"},
+        {{for_update, skip_locked}, ~"FOR UPDATE SKIP LOCKED"},
+        {{for_no_key_update, skip_locked}, ~"FOR NO KEY UPDATE SKIP LOCKED"},
+        {{for_share, nowait}, ~"FOR SHARE NOWAIT"},
+        {{for_key_share, skip_locked}, ~"FOR KEY SHARE SKIP LOCKED"},
+        {~"for update", ~"FOR UPDATE"},
+        {~"  For\tUpdate \n skip   locked ", ~"FOR UPDATE SKIP LOCKED"},
+        {~"FOR NO KEY UPDATE NOWAIT", ~"FOR NO KEY UPDATE NOWAIT"},
+        {~"FOR KEY SHARE", ~"FOR KEY SHARE"},
+        {{fragment, ~"FOR UPDATE OF \"user\""}, ~"FOR UPDATE OF \"user\""}
+    ],
+    [
+        {lists:flatten(io_lib:format("~0p", [Lock])), fun() ->
+            Q = kura_query:lock(kura_query:from(user), Lock),
+            ?assertEqual(
+                {<<"SELECT * FROM \"user\" ", Clause/binary>>, []},
+                kura_dialect_pg:to_sql(Q)
+            )
+        end}
+     || {Lock, Clause} <- Cases
+    ].
+
+lock_text_is_stored_as_its_term_test() ->
+    Q = kura_query:lock(kura_query:from(user), ~"for share skip locked"),
+    ?assertEqual({for_share, skip_locked}, Q#kura_query.lock).
+
+lock_outside_the_set_is_refused_test_() ->
+    Locks = [
+        ~"FOR UPDATE; DROP TABLE \"user\"",
+        ~"FOR UPDATE OF \"user\"",
+        ~"FOR UPDATE NOWAIT SKIP LOCKED",
+        ~"FOR UPDATE SKIP",
+        ~"UPDATE",
+        ~"FOR",
+        ~"",
+        <<"FOR UPDATE", 255>>,
+        ~"FOR UPDATE -- ",
+        for_delete,
+        {for_update, wait},
+        {for_update, skip_locked, nowait},
+        {fragment, for_update},
+        "FOR UPDATE",
+        42
+    ],
+    [
+        {lists:flatten(io_lib:format("~0p", [Lock])), fun() ->
+            ?assertError(
+                {kura, {invalid_lock, Lock}},
+                kura_query:lock(kura_query:from(user), Lock)
+            )
+        end}
+     || Lock <- Locks
+    ].
+
+lock_set_on_the_record_is_checked_at_compile_test() ->
+    Q = (kura_query:from(user))#kura_query{lock = ~"FOR UPDATE; DELETE FROM \"user\""},
+    ?assertError({kura, {invalid_lock, _}}, kura_dialect_pg:to_sql(Q)),
+    Known = (kura_query:from(user))#kura_query{lock = ~"FOR SHARE"},
+    ?assertEqual({~"SELECT * FROM \"user\" FOR SHARE", []}, kura_dialect_pg:to_sql(Known)).
+
 %%----------------------------------------------------------------------
 %% PREFIX (schema)
 %%----------------------------------------------------------------------

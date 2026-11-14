@@ -851,7 +851,15 @@ compile_offset(N, Counter) ->
 %%----------------------------------------------------------------------
 
 compile_lock(undefined) -> <<>>;
-compile_lock(Lock) -> <<" ", Lock/binary>>.
+compile_lock(Lock) -> [~" ", lock_sql(kura_query:lock_clause(Lock))].
+
+lock_sql({fragment, SQL}) -> SQL;
+lock_sql({Strength, nowait}) -> [lock_sql(Strength), ~" NOWAIT"];
+lock_sql({Strength, skip_locked}) -> [lock_sql(Strength), ~" SKIP LOCKED"];
+lock_sql(for_update) -> ~"FOR UPDATE";
+lock_sql(for_no_key_update) -> ~"FOR NO KEY UPDATE";
+lock_sql(for_share) -> ~"FOR SHARE";
+lock_sql(for_key_share) -> ~"FOR KEY SHARE".
 
 compile_distinct(false, _Ctx) ->
     <<>>;
