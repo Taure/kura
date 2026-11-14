@@ -49,6 +49,40 @@ recorded_bench_test_() ->
             ]
         end}.
 
+%% The same, on a repo whose settings are stored as kura_db:start_pool/1
+%% stores them. Above they are read from the application environment on
+%% every call, which no running application's repo does.
+started_bench_test_() ->
+    {setup,
+        fun() ->
+            {ok, _} = application:ensure_all_started(telemetry),
+            ok = kura_query_cache:init(),
+            kura_test_recording_driver:configure(?RECORDED_REPO),
+            kura_repo_settings:started(?RECORDED_REPO, kura_repo:config(?RECORDED_REPO)),
+            kura_query_cache:flush()
+        end,
+        fun(_) ->
+            kura_repo_settings:forget(?RECORDED_REPO),
+            kura_test_recording_driver:unconfigure(),
+            kura_query_cache:flush()
+        end,
+        fun(_) ->
+            [
+                {"all/2 on a cached shape, started repo",
+                    {timeout, 120, fun() ->
+                        cached_all_cost("all/2, cached shape, started repo")
+                    end}},
+                {"all/2 of a join on a cached shape, started repo",
+                    {timeout, 120, fun() ->
+                        cached_join_all_cost("all/2 of a join, cached shape, started repo")
+                    end}},
+                {"insert, update_all and all without a database, started repo",
+                    {timeout, 120, fun() ->
+                        recorded_job_queue_cost("job queue loop, no database, started repo")
+                    end}}
+            ]
+        end}.
+
 setup() ->
     application:ensure_all_started(minato),
     application:ensure_all_started(kura),
@@ -339,15 +373,21 @@ telemetry_metadata_times(N, SQL, Result) ->
     telemetry_metadata_times(N - 1, SQL, Result).
 
 t_cached_all_cost() ->
+    cached_all_cost("all/2, cached shape").
+
+cached_all_cost(Label) ->
     Q = kura_query:limit(
         kura_query:where(kura_query:from(kura_stress_schema), {email, '=', ~"bench@bench.com"}), 1
     ),
     N = 200000,
     ok = recorded_all_times(1000, Q),
     {Us, ok} = timer:tc(fun() -> recorded_all_times(N, Q) end),
-    ?debugFmt("~nall/2, cached shape: ~p ns/call (~p calls)", [Us * 1000 div N, N]).
+    ?debugFmt("~n~s: ~p ns/call (~p calls)", [Label, Us * 1000 div N, N]).
 
 t_cached_join_all_cost() ->
+    cached_join_all_cost("all/2 of a join, cached shape").
+
+cached_join_all_cost(Label) ->
     Q = kura_query:where(
         kura_query:join(
             kura_query:from(kura_stress_schema),
@@ -360,7 +400,7 @@ t_cached_join_all_cost() ->
     N = 200000,
     ok = recorded_all_times(1000, Q),
     {Us, ok} = timer:tc(fun() -> recorded_all_times(N, Q) end),
-    ?debugFmt("~nall/2 of a join, cached shape: ~p ns/call (~p calls)", [Us * 1000 div N, N]).
+    ?debugFmt("~n~s: ~p ns/call (~p calls)", [Label, Us * 1000 div N, N]).
 
 recorded_all_times(0, _Q) ->
     _ = kura_test_recording_driver:statements(),
@@ -374,12 +414,13 @@ drained(N) when N rem 500 =:= 0 -> kura_test_recording_driver:statements();
 drained(_N) -> [].
 
 t_recorded_job_queue_cost() ->
+    recorded_job_queue_cost("job queue loop, no database").
+
+recorded_job_queue_cost(Label) ->
     N = 50000,
     ok = recorded_job_times(500),
     {Us, ok} = timer:tc(fun() -> recorded_job_times(N) end),
-    ?debugFmt("~njob queue loop, no database: ~p ns/iteration (~p iterations)", [
-        Us * 1000 div N, N
-    ]).
+    ?debugFmt("~n~s: ~p ns/iteration (~p iterations)", [Label, Us * 1000 div N, N]).
 
 recorded_job_times(0) ->
     _ = kura_test_recording_driver:statements(),
