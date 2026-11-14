@@ -69,6 +69,11 @@ is built, instead of failing in the database:
 CTEs, combinations and subqueries are checked too. `kura_stream:stream/4`
 raises the same error for `cursors`.
 
+The pool module is the `pool_module` of the repo's settings
+(`kura_repo:settings/1`), which a started pool always has. A repo whose
+config names none and whose pool kura has not started, such as one a unit
+test gives only a dialect to compile SQL, is not checked.
+
 ## Capability model
 
 kura 2.30 checked nothing, so a list written for it says what a backend

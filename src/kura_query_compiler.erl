@@ -80,8 +80,6 @@ to_sql(RepoMod, Query) ->
     ok = check_capabilities(RepoMod, Query),
     compile_query(RepoMod, Query).
 
-%% A repo whose settings name no pool module, as in a unit test that sets
-%% only a dialect, is not checked.
 -spec check_capabilities(module(), #kura_query{}) -> ok.
 check_capabilities(RepoMod, Query) ->
     case kura_repo:settings(RepoMod) of
