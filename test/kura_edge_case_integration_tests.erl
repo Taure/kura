@@ -19,7 +19,9 @@ edge_case_test_() ->
                 fun t_fragment_literal_question_mark/0},
             {"insert_all of no entries inserts nothing", fun t_insert_all_empty/0},
             {"insert_all binds up to the statement limit",
-                fun t_insert_all_at_the_parameter_limit/0}
+                fun t_insert_all_at_the_parameter_limit/0},
+            {"a NOT NULL violation is an error on the field",
+                fun t_not_null_violation_names_the_field/0}
         ]
     end}.
 
@@ -185,3 +187,17 @@ t_insert_all_at_the_parameter_limit() ->
     ),
     ?assertEqual(21845, Count),
     reset().
+
+t_not_null_violation_names_the_field() ->
+    reset(),
+    {error, Inserted} = insert_item(#{note => ~"no name"}),
+    ?assertEqual([{name, ~"can't be blank"}], Inserted#kura_changeset.errors),
+    ?assertEqual(insert, Inserted#kura_changeset.action),
+    {ok, Row} = insert_item(#{name => ~"a"}),
+    {error, Updated} = kura_test_repo:update(
+        kura_changeset:put_change(
+            kura_changeset:cast(kura_test_edge_schema, Row, #{}, []), name, undefined
+        )
+    ),
+    ?assertEqual([{name, ~"can't be blank"}], Updated#kura_changeset.errors),
+    ?assertEqual({ok, Row}, kura_test_repo:get(kura_test_edge_schema, maps:get(id, Row))).
