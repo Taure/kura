@@ -69,6 +69,9 @@ Behaviour that changes for existing callers:
   query, so one in a subquery that names the outer query's field, or a
   field an outer CTE hands it, is hidden; so is a plain column that shares
   the name. A distance from a redacted vector field hides the vector.
+- An attribute tenant whose value is `undefined`, `null` or `nil` raises
+  `{invalid_tenant, Tenant}`. It used to count as a tenant, compare the
+  field with `NULL` and stamp inserts with no owner.
 - `kura_tenant:with_tenant/2` and `without_tenant/1` check the tenant
   before changing anything and restore the previous one however the
   function ends. Parallel preloads run in the caller's tenant scope: under

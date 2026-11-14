@@ -111,8 +111,12 @@ work.
 
 Raises `{invalid_tenant, Tenant}` on anything that is not a strategy, rather
 than storing something that would scope nothing. The attribute value cannot be
-`is_nil` or `is_not_nil`, which a condition reads as a test rather than a value.
-`undefined` is accepted and leaves the process without a tenant.
+`is_nil` or `is_not_nil`, which a condition reads as a test rather than a value,
+nor `undefined`, `null` or `nil`: a tenant with no value, such as one read from
+a claim that was missing, would count as a tenant, match no row and stamp
+inserts with no owner. `with_tenant/2` and `adopt/1` refuse the same.
+`undefined` in place of the strategy is accepted and leaves the process
+without a tenant.
 """.
 -spec put_tenant(undefined | strategy()) -> undefined | strategy().
 put_tenant(Tenant) ->
@@ -135,7 +139,12 @@ validate_tenant(undefined) ->
 validate_tenant({prefix, Prefix}) when is_binary(Prefix) ->
     {prefix, Prefix};
 validate_tenant({attribute, {Field, Value}}) when
-    is_atom(Field), Value =/= is_nil, Value =/= is_not_nil
+    is_atom(Field),
+    Value =/= is_nil,
+    Value =/= is_not_nil,
+    Value =/= undefined,
+    Value =/= null,
+    Value =/= nil
 ->
     {attribute, {Field, Value}};
 validate_tenant(Other) ->

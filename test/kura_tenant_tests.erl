@@ -40,6 +40,22 @@ put_tenant_refuses_what_would_scope_nothing_test() ->
     ],
     ?assertEqual(undefined, kura_tenant:get_tenant()).
 
+an_attribute_tenant_with_no_value_is_refused_everywhere_test_() ->
+    [
+        {atom_to_list(Missing), fun() ->
+            kura_tenant:clear_tenant(),
+            Bad = {attribute, {org_id, Missing}},
+            Refused = {invalid_tenant, Bad},
+            ?assertError(Refused, kura_tenant:put_tenant(Bad)),
+            ?assertError(Refused, kura_tenant:with_tenant(Bad, fun() -> ran end)),
+            ?assertError(Refused, kura_tenant:with_tenant(Bad, {erlang, self, []})),
+            ?assertError(Refused, kura_tenant:adopt({Bad, false})),
+            ?assertEqual(undefined, kura_tenant:get_tenant()),
+            ?assertEqual({undefined, false}, kura_tenant:current_scope())
+        end}
+     || Missing <- [undefined, null, nil]
+    ].
+
 put_tenant_accepts_undefined_as_no_tenant_test() ->
     kura_tenant:clear_tenant(),
     ?assertEqual(undefined, kura_tenant:put_tenant(undefined)),
