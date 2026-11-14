@@ -149,6 +149,7 @@ be introduced dialect-aware rather than added to this union.
     constraints/0,
     indexes/0,
     generate_id/0,
+    tenant_scoped/0,
     before_insert/1,
     after_insert/1,
     before_update/1,
@@ -163,6 +164,12 @@ be introduced dialect-aware rather than added to this union.
 -callback embeds() -> [#kura_embed{}].
 -callback constraints() -> [kura_migration:table_constraint()].
 -callback indexes() -> [kura_migration:index_def()].
+-doc """
+Return `false` for a schema every tenant shares, such as a table of plans
+or countries. With `require_tenant` set, its rows may then be read and
+written by a process that has no tenant. See `m:kura_tenant`.
+""".
+-callback tenant_scoped() -> boolean().
 
 -callback generate_id() -> term().
 

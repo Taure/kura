@@ -149,7 +149,7 @@ split(Query) ->
 -spec cached(module(), #kura_query{}, #kura_query{}, tuple()) -> {iodata(), [term()]}.
 cached(RepoMod, Query, Shape, Values) ->
     ok = kura_query:check_distances(Query),
-    Key = {RepoMod, kura_tenant:get_tenant(), Shape},
+    Key = {RepoMod, kura_tenant:tenant_for(Query), Shape},
     case kura_query_cache:get(Key) of
         {ok, {SQL, Template}} ->
             {SQL, kura_query_shape:bind(Template, Values)};
@@ -281,4 +281,4 @@ check_bulk_write(#kura_query{} = Q) ->
 
 -spec scope(#kura_query{}) -> #kura_query{}.
 scope(Query) ->
-    kura_tenant:scope_query(kura_tenant:get_tenant(), Query).
+    kura_tenant:scope_query(kura_tenant:tenant_for(Query), Query).

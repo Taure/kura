@@ -628,6 +628,7 @@ warning per boot when the permissive default is in effect. Set them now.
 | Setting | 2.x default | 3.0 default | Effect |
 | --- | --- | --- | --- |
 | `max_page_size` | not capped | `1000` | largest `page_size` / `limit` `kura_paginator` accepts; see the [pagination guide](guides/pagination.md) |
+| `require_tenant` | `false` | `true` | a query or changeset write in a process with no tenant raises instead of running unscoped; see [Multitenancy](guides/multitenancy.md#requiring-a-tenant). An application with no tenants sets `false` |
 | `strict_assoc_cast` | `false` | `true` | `cast_assoc`, `cast_embed` and `put_assoc` of a raw map must name the child fields params may set (`cast` or `with`); see [Nested Changesets](guides/cast_assoc.md) |
 
 ## Plugins

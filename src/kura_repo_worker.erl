@@ -501,7 +501,7 @@ insert_all(RepoMod, SchemaMod, Entries, Opts) ->
     guard_write(RepoMod, fun() -> do_insert_all(RepoMod, SchemaMod, Entries, Opts) end).
 
 do_insert_all(RepoMod, SchemaMod, Entries, Opts) ->
-    case dump_entries(SchemaMod, [maybe_apply_tenant_changes(E) || E <- Entries]) of
+    case dump_entries(SchemaMod, [maybe_apply_tenant_changes(SchemaMod, E) || E <- Entries]) of
         {error, _} = DumpErr -> DumpErr;
         {ok, Rows} -> do_insert_all_rows(RepoMod, SchemaMod, Rows, guard_upsert(SchemaMod, Opts))
     end.
@@ -640,7 +640,7 @@ insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}, Opts) ->
         {error, ErrCS} ->
             {error, ErrCS#kura_changeset{action = insert}};
         {ok, CS} ->
-            Changes = maybe_apply_tenant_changes(CS#kura_changeset.changes),
+            Changes = maybe_apply_tenant_changes(SchemaMod, CS#kura_changeset.changes),
             Changes0 = maybe_generate_pk(RepoMod, SchemaMod, Changes),
             Changes1 = maybe_add_timestamps(SchemaMod, Changes0, insert),
             case dump_changes(SchemaMod, Changes1) of
@@ -1286,6 +1286,7 @@ tenant_key_clauses(SchemaMod, KeyClauses) ->
             ok = refuse_encrypted_tenant(SchemaMod, Field),
             KeyClauses ++ [{Field, Value}];
         _ ->
+            ok = kura_tenant:require(SchemaMod),
             KeyClauses
     end.
 
@@ -1341,10 +1342,11 @@ guarded({Target, Action}, Field) ->
 guarded({Target, Action, Opts}, Field) when is_map(Opts) ->
     {Target, Action, Opts#{guard => lists:usort([Field | maps:get(guard, Opts, [])])}}.
 
-maybe_apply_tenant_changes(Changes) ->
+maybe_apply_tenant_changes(SchemaMod, Changes) ->
     case kura_tenant:get_tenant() of
         {attribute, {Field, Value}} ->
             Changes#{Field => Value};
         _ ->
+            ok = kura_tenant:require(SchemaMod),
             Changes
     end.

@@ -109,6 +109,59 @@ Under the schema prefix strategy, the dialect qualifies each table with the tena
 - Many-to-many join tables. The join rows are read, deleted and inserted without the tenant condition, and an insert does not stamp the tenant, so a join table with its own `NOT NULL` tenant column makes every `put_assoc` or `cast_assoc` on the association fail. The rows a join links are read and checked under the tenant; keep the tenant column on those tables, not on the join table.
 - Joins between two tenant tables. Both carry the tenant field, so the unqualified condition is ambiguous and the query fails. A join to a table without the field works, and that table is not scoped, which is right for global lookup tables. After a join kura qualifies the `from` schema's other columns, but the tenant field stays bare under a tenant, so selecting, filtering, ordering or grouping by it in a join of two tenant tables fails as ambiguous too.
 
+## Requiring a Tenant
+
+Without a tenant in the process, nothing is scoped: the query runs
+against every tenant's rows. That is the case in a process you spawned
+and did not hand the tenant to, in a background job, and in a request
+whose middleware did not run.
+
+Turn a missing tenant into an error:
+
+```erlang
+%% sys.config
+{kura, [{require_tenant, true}]}
+```
+
+A query, or an insert, update or delete of a changeset, in a process
+without a tenant then raises `{kura, {tenant_required, Source}}`, where
+`Source` is the schema or table. The same goes for `insert_all`,
+`update_all` and `delete_all`, and for a CTE, a union branch or a
+subquery inside a query.
+
+Two things are exempt.
+
+A schema every tenant shares, such as plans or countries, says so:
+
+```erlang
+-module(plan).
+-behaviour(kura_schema).
+-export([table/0, fields/0, tenant_scoped/0]).
+
+tenant_scoped() -> false.
+```
+
+A path that crosses tenants on purpose, such as an admin report or a
+maintenance job, says so where it runs:
+
+```erlang
+kura_tenant:without_tenant(fun() ->
+    my_repo:all(kura_query:from(invoice))
+end).
+```
+
+Inside the fun the process has no tenant, and the one it had is restored
+afterwards. Keep these calls few and easy to find: each is a place where
+tenants are not isolated.
+
+Raw SQL through `query/3` is not checked, as it is not scoped.
+
+`require_tenant` is read once, on first use; call
+`kura_tenant:reload_settings/0` after changing it at runtime. Left unset,
+kura logs one warning per boot the first time a tenant is set. Set it to
+`false` to keep unscoped queries without the warning. The default becomes
+`true` in kura 3.0; an application with no tenants sets it to `false`.
+
 ## When to Use Which
 
 **Schema prefix** is a good fit when:
@@ -134,6 +187,6 @@ pre_request(Req, State) ->
     {ok, Req, State}.
 ```
 
-Since Cowboy spawns a process per request, the tenant is naturally isolated between concurrent requests. Remember to clear the tenant if the process is reused.
+Since Cowboy spawns a process per request, the tenant is naturally isolated between concurrent requests. Remember to clear the tenant if the process is reused: a pooled worker that keeps the last request's tenant reads that tenant's rows. `with_tenant/2` restores the previous tenant for you.
 
-The tenant lives in the process dictionary, so a process you spawn does not have it. kura hands it to the processes it starts for a preload of several associations; for your own, read it with `get_tenant/0` and set it in the new process before it touches the repo.
+The tenant lives in the process dictionary, so a process you spawn does not have it. kura hands it to the processes it starts for a preload of several associations; for your own, read it with `get_tenant/0` and set it in the new process before it touches the repo. With [`require_tenant`](#requiring-a-tenant) set, forgetting to is an error instead of an unscoped query.
