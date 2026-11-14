@@ -93,7 +93,7 @@ callbacks directly.
 
 -include("kura.hrl").
 
--export([qualified_columns/1]).
+-export([qualified_columns/1, placeholder/2]).
 
 -export_type([sql/0, params/0, counter/0, table/0]).
 
@@ -180,7 +180,15 @@ not raise on a value or log one.
 """.
 -callback convert_values(#kura_query{}) -> #kura_query{}.
 
--optional_callbacks([column_type/1, format_default/1, convert_values/1]).
+-doc """
+Optional. The text of the `N`th bind parameter in a statement: `$N` for
+PostgreSQL, `?N` for SQLite. kura writes the few statements it does not
+build from a query, such as the migrator's version bookkeeping, with it.
+Without it they are written with `$N`.
+""".
+-callback placeholder(counter()) -> iodata().
+
+-optional_callbacks([column_type/1, format_default/1, convert_values/1, placeholder/1]).
 
 -doc """
 Which bare fields of a query name a column of its `from` table.
@@ -209,6 +217,20 @@ qualified_columns(#kura_query{from = From}) when is_atom(From), From =/= undefin
     end;
 qualified_columns(#kura_query{}) ->
     undefined.
+
+-doc """
+The text of the `N`th bind parameter under `Dialect`: its `placeholder/1`
+when it has one, and `$N` otherwise, or when `Dialect` is `undefined`.
+""".
+-spec placeholder(module() | undefined, counter()) -> iodata().
+placeholder(undefined, N) ->
+    kura_dialect_pg:placeholder(N);
+placeholder(Dialect, N) ->
+    _ = code:ensure_loaded(Dialect),
+    case erlang:function_exported(Dialect, placeholder, 1) of
+        true -> Dialect:placeholder(N);
+        false -> kura_dialect_pg:placeholder(N)
+    end.
 
 -spec unqualified_tenant(#{atom() => kura_types:kura_type()}) ->
     #{atom() => kura_types:kura_type()}.

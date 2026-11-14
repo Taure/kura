@@ -141,6 +141,7 @@ one.
     partition_migrations/4,
     build_rollback_pairs/2,
     narrow_migration_result/1,
+    record_sql/2,
     get_app_modules/1,
     to_module_list/1,
     parse_version/1,
@@ -1373,7 +1374,7 @@ apply_non_transactional({Version, Module} = Migration, Dir, Target) ->
             Ops = migration_ops(Module, Dir),
             case exec_each(topo_sort_ops(Ops), Target, 0) of
                 ok ->
-                    exec(record_sql(Dir), [Version], Version, Target),
+                    exec(record_sql(Dir, target_repo(Target)), [Version], Version, Target),
                     migration_applied(Version, Module, Dir, length(Ops), T0),
                     {ok, [Version]};
                 {error, Committed, Reason} ->
@@ -1411,7 +1412,7 @@ run_migrations([{Version, Module} | Rest], Dir, RepoMod, Acc) ->
     T0 = erlang:monotonic_time(),
     Ops = migration_ops(Module, Dir),
     exec_operations(Ops, Version, RepoMod),
-    exec(record_sql(Dir), [Version], Version, RepoMod),
+    exec(record_sql(Dir, RepoMod), [Version], Version, RepoMod),
     migration_applied(Version, Module, Dir, length(Ops), T0),
     run_migrations(Rest, Dir, RepoMod, [Version | Acc]).
 
@@ -1421,9 +1422,22 @@ migration_ops(Module, Dir) ->
     log_warnings(Module, check_unsafe_operations(Ops, get_safe_entries(Module))),
     Ops.
 
--spec record_sql(up | down) -> binary().
-record_sql(up) -> ~"INSERT INTO schema_migrations (version) VALUES ($1)";
-record_sql(down) -> ~"DELETE FROM schema_migrations WHERE version = $1".
+-spec record_sql(up | down, module()) -> binary().
+record_sql(up, RepoMod) ->
+    iolist_to_binary([
+        ~"INSERT INTO schema_migrations (version) VALUES (", placeholder(RepoMod, 1), ~")"
+    ]);
+record_sql(down, RepoMod) ->
+    iolist_to_binary([
+        ~"DELETE FROM schema_migrations WHERE version = ", placeholder(RepoMod, 1)
+    ]).
+
+-spec placeholder(module(), pos_integer()) -> iodata().
+placeholder(RepoMod, N) ->
+    case ddl_dialect(RepoMod) of
+        {ok, Dialect} -> kura_dialect:placeholder(Dialect, N);
+        none -> kura_dialect:placeholder(undefined, N)
+    end.
 
 -spec migration_applied(integer(), module(), up | down, non_neg_integer(), integer()) -> ok.
 migration_applied(Version, Module, Dir, OpCount, T0) ->
@@ -1446,12 +1460,7 @@ migration_applied(Version, Module, Dir, OpCount, T0) ->
 stamp_migrations([], _RepoMod, Acc) ->
     reverse_integers(Acc, []);
 stamp_migrations([{Version, Module} | Rest], RepoMod, Acc) ->
-    exec(
-        ~"INSERT INTO schema_migrations (version) VALUES ($1)",
-        [Version],
-        Version,
-        RepoMod
-    ),
+    exec(record_sql(up, RepoMod), [Version], Version, RepoMod),
     logger:info("Kura: fake migration ~p (~p)", [Version, Module]),
     telemetry_event(
         [kura, migrator, migration, apply],

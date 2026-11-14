@@ -44,7 +44,8 @@ configured for the running app.
     insert_all/3,
     insert_all/4,
     column_type/1,
-    format_default/1
+    format_default/1,
+    placeholder/1
 ]).
 
 -doc "Compile a query record into `{SQL, Params}`.".
@@ -104,6 +105,10 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
         Q#kura_query.combinations, MainSQL, MainParams, Counter7
     ),
     {FinalSQL, FinalParams, FinalCounter}.
+
+-spec placeholder(pos_integer()) -> iodata().
+placeholder(N) ->
+    [~"$", integer_to_binary(N)].
 
 %%----------------------------------------------------------------------
 %% Where values

@@ -457,6 +457,12 @@ join_schema_module_test() ->
     {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assert(binary:match(SQL, <<"INNER JOIN \"posts\"">>) =/= nomatch).
 
+placeholder_test_() ->
+    [
+        ?_assertEqual(~"$1", iolist_to_binary(kura_dialect_pg:placeholder(1))),
+        ?_assertEqual(~"$65535", iolist_to_binary(kura_dialect_pg:placeholder(65535)))
+    ].
+
 join_selects_only_the_from_table_test() ->
     Joined = kura_query:join(kura_query:from(user), inner, post, {id, user_id}),
     ?assertMatch(

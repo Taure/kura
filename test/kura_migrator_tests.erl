@@ -1053,6 +1053,44 @@ cleanup_pool_repos({ok, Previous}) ->
 cleanup_pool_repos(undefined) ->
     application:unset_env(kura, repos).
 
+version_statements_use_the_dialect_placeholder_test_() ->
+    Other = kura_migrator_tests_other_dialect_repo,
+    {setup,
+        fun() ->
+            Previous = setup_pool_repos(),
+            {ok, Repos} = application:get_env(kura, repos),
+            application:set_env(kura, repos, Repos#{
+                Other => #{pool_module => ?MODULE, dialect => kura_test_sqlite_dialect}
+            }),
+            Previous
+        end,
+        fun cleanup_pool_repos/1, [
+            ?_assertEqual(
+                ~"INSERT INTO schema_migrations (version) VALUES ($1)",
+                iolist_to_binary(kura_migrator:record_sql(up, ?PG_POOL_REPO))
+            ),
+            ?_assertEqual(
+                ~"DELETE FROM schema_migrations WHERE version = $1",
+                iolist_to_binary(kura_migrator:record_sql(down, ?PG_POOL_REPO))
+            ),
+            ?_assertEqual(
+                ~"INSERT INTO schema_migrations (version) VALUES ($1)",
+                iolist_to_binary(kura_migrator:record_sql(up, ?NO_DIALECT_POOL_REPO))
+            ),
+            ?_assertEqual(
+                ~"INSERT INTO schema_migrations (version) VALUES ($1)",
+                iolist_to_binary(kura_migrator:record_sql(up, ?LITE_POOL_REPO))
+            ),
+            ?_assertEqual(
+                ~"INSERT INTO schema_migrations (version) VALUES (?1)",
+                iolist_to_binary(kura_migrator:record_sql(up, Other))
+            ),
+            ?_assertEqual(
+                ~"DELETE FROM schema_migrations WHERE version = ?1",
+                iolist_to_binary(kura_migrator:record_sql(down, Other))
+            )
+        ]}.
+
 concurrently_map_form_on_a_capable_pool() ->
     ?assertEqual(
         ~"CREATE UNIQUE INDEX CONCURRENTLY \"users_email_index\" ON \"users\" (\"email\") WHERE email IS NOT NULL",
