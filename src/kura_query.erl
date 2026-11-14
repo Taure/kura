@@ -1505,7 +1505,9 @@ check_encrypted(Q) ->
 A schema or table a query reads, and how: as its `from`, through a `join`,
 or in a `preload`. `cte` marks a `from` or a join that names one of the
 query's CTEs, which is a name and not a table: what the CTE reads is listed
-from its body.
+from its body. A source names a CTE by its table name, a schema's being
+that of its `table/0`, and only in a query with no `prefix/2`, since a
+prefix qualifies the name and a qualified name is a table's.
 """.
 -type source() :: {from | join | cte | preload, module() | atom() | binary()}.
 
@@ -1535,10 +1537,17 @@ nested(#kura_query{ctes = Ctes, combinations = Combinations, wheres = Wheres, ha
     bodies(Ctes) ++ bodies(Combinations) ++ subqueries(Wheres) ++ subqueries(Havings).
 
 %% A nested query reads its own CTEs before those of the queries around it.
+%% A prefix qualifies every table of the query it is set on, and a qualified
+%% name is a table's, never a CTE's.
 -spec read_sources(#kura_query{}, [term()]) -> [source()].
 read_sources(#kura_query{from = From, joins = Joins, ctes = Ctes} = Query, OuterNames) ->
     Names = cte_names(Ctes) ++ OuterNames,
-    read_source(from, From, Names) ++ joined_sources(Joins, Names) ++
+    Readable =
+        case Query#kura_query.prefix of
+            undefined -> Names;
+            _Prefix -> []
+        end,
+    read_source(from, From, Readable) ++ joined_sources(Joins, Readable) ++
         nested_sources(nested(Query), Names).
 
 -spec nested_sources([#kura_query{}], [term()]) -> [source()].
@@ -1566,9 +1575,16 @@ read_source(Role, Source, Names) when is_atom(Source); is_binary(Source) ->
 read_source(_Role, _Source, _Names) ->
     [].
 
+%% The database resolves the name it is given, which for a schema is its
+%% table's and not the module's.
 -spec names_cte(atom() | binary(), [term()]) -> boolean().
-names_cte(Source, Names) when is_binary(Source) -> lists:member(Source, Names);
-names_cte(Source, Names) when is_atom(Source) -> lists:member(atom_to_binary(Source), Names).
+names_cte(Source, Names) when is_binary(Source) ->
+    lists:member(Source, Names);
+names_cte(Source, Names) when is_atom(Source) ->
+    case kura_schema:is_schema(Source) of
+        true -> lists:member(Source:table(), Names);
+        false -> lists:member(atom_to_binary(Source), Names)
+    end.
 
 -spec cte_names(term()) -> [term()].
 cte_names([{Name, _Body} | Rest]) -> [Name | cte_names(Rest)];

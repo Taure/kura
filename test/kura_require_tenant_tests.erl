@@ -142,8 +142,125 @@ required_test_() ->
             ?assertMatch({_, []}, kura_query_compiler:to_sql(?REPO, Q)),
             Scoped = kura_query:with_cte(kura_query:from(scoped_rows), ~"scoped_rows", scoped()),
             ?assertError(?REFUSED(?SCOPED), kura_query_compiler:to_sql(?REPO, Scoped))
+        end},
+        {"a schema whose table a CTE is named after reads the CTE", fun() ->
+            Q = kura_query:with_cte(scoped(), ~"edge_items", shared()),
+            ?assertMatch({_, []}, kura_query_compiler:to_sql(?REPO, Q))
+        end},
+        {"a CTE named after a schema's module does not stand in for its table", fun() ->
+            Q = kura_query:with_cte(scoped(), atom_to_binary(?SCOPED), shared()),
+            ?assertError(?REFUSED(?SCOPED), kura_query_compiler:to_sql(?REPO, Q))
+        end},
+        {"a prefix reads the table, whatever a CTE is named", fun() ->
+            Q = kura_query:with_cte(scoped(), ~"edge_items", shared()),
+            ?assertError(
+                ?REFUSED(?SCOPED), kura_query_compiler:to_sql(?REPO, kura_query:prefix(Q, ~"p"))
+            ),
+            Joined = kura_query:join(
+                kura_query:with_cte(shared(), ~"edge_items", shared()),
+                inner,
+                ~"edge_items",
+                {id, id}
+            ),
+            ?assertMatch({_, []}, kura_query_compiler:to_sql(?REPO, Joined)),
+            ?assertError(
+                ?REFUSED(~"edge_items"),
+                kura_query_compiler:to_sql(?REPO, kura_query:prefix(Joined, ~"p"))
+            )
         end}
     ]).
+
+%%----------------------------------------------------------------------
+%% Joins
+%%----------------------------------------------------------------------
+
+joined(From, Joined) ->
+    kura_query:select(kura_query:join(From, inner, Joined, {id, id}), [id]).
+
+joined_test_() ->
+    Join = joined(shared(), ?SCOPED),
+    with_setting(true, [
+        {"a shared schema joined to a scoped one is refused, however it is run", fun() ->
+            Runs = [
+                fun() -> kura_repo_worker:all(?REPO, Join) end,
+                fun() -> kura_repo_worker:one(?REPO, Join) end,
+                fun() -> kura_repo_worker:exists(?REPO, Join) end,
+                fun() -> kura_query_compiler:to_sql(?REPO, Join) end,
+                fun() -> kura_query_compiler:to_sql_cached(?REPO, Join) end,
+                fun() -> kura_query_compiler:to_sql_from(?REPO, Join, 1) end
+            ],
+            [?assertError(?REFUSED(?SCOPED), Run()) || Run <- Runs],
+            ?assertEqual([], statements())
+        end},
+        {"every join is read, not only the first", fun() ->
+            Q = kura_query:join(joined(shared(), ?SHARED), left, ?SCOPED, {id, id}),
+            ?assertError(?REFUSED(?SCOPED), kura_query_compiler:to_sql(?REPO, Q))
+        end},
+        {"a joined table that is not a schema is refused", fun() ->
+            ?assertError(
+                ?REFUSED(~"audit_rows"),
+                kura_query_compiler:to_sql(?REPO, joined(shared(), ~"audit_rows"))
+            )
+        end},
+        {"a join inside a nested query is refused", fun() ->
+            Queries = [
+                kura_query:where(shared(), {id, in, {subquery, Join}}),
+                kura_query:where(shared(), {'not', {exists, {subquery, Join}}}),
+                (shared())#kura_query{havings = [{not_exists, {subquery, Join}}]},
+                kura_query:union_all(shared(), Join),
+                kura_query:with_cte(shared(), ~"joined_rows", Join),
+                kura_query:where(
+                    shared(),
+                    {id, in, {subquery, kura_query:with_cte(shared(), ~"joined_rows", Join)}}
+                )
+            ],
+            [
+                ?assertError(?REFUSED(?SCOPED), kura_query_compiler:to_sql(?REPO, Q))
+             || Q <- Queries
+            ],
+            ?assertEqual([], statements())
+        end},
+        {"a cached join is not served to a process without a tenant", fun() ->
+            {SQL, []} = kura_tenant:without_tenant(fun() ->
+                kura_query_compiler:to_sql_cached(?REPO, Join)
+            end),
+            ?assertEqual(
+                {SQL, []},
+                kura_tenant:without_tenant(fun() ->
+                    kura_query_compiler:to_sql_cached(?REPO, Join)
+                end)
+            ),
+            ?assertError(?REFUSED(?SCOPED), kura_query_compiler:to_sql_cached(?REPO, Join))
+        end},
+        {"shared schemas joined to each other need no tenant", fun() ->
+            {ok, []} = kura_repo_worker:all(?REPO, joined(shared(), ?SHARED)),
+            ?assertMatch([_], statements())
+        end},
+        {"a join that names a CTE is judged by the CTE's body", fun() ->
+            Shared = kura_query:with_cte(joined(shared(), ~"rows"), ~"rows", shared()),
+            ?assertMatch({_, []}, kura_query_compiler:to_sql(?REPO, Shared)),
+            Scoped = kura_query:with_cte(joined(shared(), ~"rows"), ~"rows", scoped()),
+            ?assertError(?REFUSED(?SCOPED), kura_query_compiler:to_sql(?REPO, Scoped))
+        end},
+        {"a join runs with a tenant, and inside without_tenant", fun() ->
+            _ = kura_tenant:with_tenant(?TENANT, fun() -> kura_repo_worker:all(?REPO, Join) end),
+            _ = kura_tenant:without_tenant(fun() -> kura_repo_worker:all(?REPO, Join) end),
+            [Scoped, Unscoped] = statements(),
+            ?assertMatch({_, _}, binary:match(Scoped, ~"\"qty\"")),
+            ?assertEqual(nomatch, binary:match(Unscoped, ~"\"qty\""))
+        end}
+    ]).
+
+joined_not_required_test_() ->
+    [
+        with_setting(Setting, [
+            {"a join runs unscoped", fun() ->
+                {ok, []} = kura_repo_worker:all(?REPO, joined(shared(), ?SCOPED)),
+                ?assertMatch([_], statements())
+            end}
+        ])
+     || Setting <- [unset, false]
+    ].
 
 %%----------------------------------------------------------------------
 %% without_tenant/1

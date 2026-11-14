@@ -89,6 +89,32 @@ sources_test_() ->
                     )
                 )
             )},
+        {"a schema names a CTE by its table, not by its module",
+            ?_assertEqual(
+                [{cte, ?POST}, {from, ?USER}, {from, ?POST}, {from, ?USER}],
+                kura_query:sources(kura_query:with_cte(posts(), ~"posts", users())) ++
+                    kura_query:sources(
+                        kura_query:with_cte(posts(), atom_to_binary(?POST), users())
+                    )
+            )},
+        {"a prefixed query reads tables, and the queries inside it still read its CTEs",
+            ?_assertEqual(
+                [{from, recent}, {join, ~"recent"}, {from, ?USER}, {cte, recent}],
+                kura_query:sources(
+                    kura_query:prefix(
+                        kura_query:where(
+                            kura_query:join(
+                                kura_query:with_cte(kura_query:from(recent), ~"recent", users()),
+                                inner,
+                                ~"recent",
+                                {id, id}
+                            ),
+                            {id, in, {subquery, kura_query:from(recent)}}
+                        ),
+                        ~"tenant_1"
+                    )
+                )
+            )},
         {"three levels down",
             ?_assertEqual(
                 [{from, ?POST}, {from, ?USER}, {join, ?POST}, {from, ?COMMENT}],

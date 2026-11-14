@@ -34,8 +34,10 @@ query run there is not scoped at all. Set
 
 and a query or a changeset write with no tenant in the process raises
 `{kura, {tenant_required, Source}}` instead of running unscoped, `Source`
-being the schema or table it reads or writes. Two things lift the
-requirement:
+being the schema or table it reads or writes. A query is judged by
+everything it reads (see `kura_query:sources/1`): what it is from and what
+it joins, in the query itself and in every CTE, combination and subquery
+inside it. Two things lift the requirement:
 
 - a schema shared by every tenant exports `tenant_scoped() -> false`;
 - a deliberate cross-tenant path, such as an admin report or a
@@ -242,9 +244,9 @@ setting() ->
 The tenant to compile `Query` under: the process's tenant, or `undefined`
 when it has none and none is required. Raises
 `{kura, {tenant_required, Source}}` when `require_tenant` is set, the
-process has no tenant and is not inside `without_tenant/1`, and the query,
-one of its CTEs or combinations, or a subquery in its conditions reads a
-tenant-scoped `Source`.
+process has no tenant and is not inside `without_tenant/1`, and the query
+reads a tenant-scoped `Source`: as its `from` or through a join, in itself,
+in one of its CTEs or combinations, or in a subquery in its conditions.
 """.
 -spec tenant_for(#kura_query{}) -> undefined | strategy().
 tenant_for(Query) ->
@@ -274,9 +276,13 @@ unless_required(QueryOrSource) ->
     end.
 
 %% A source that names one of the query's CTEs is not a table: the CTE's
-%% own body is checked instead.
+%% own body is checked instead. A preload runs as a query of its own and is
+%% checked there.
 check_scoped(#kura_query{} = Query) ->
-    check_sources([Source || {from, Source} <- kura_query:sources(Query)]);
+    check_sources([
+        Source
+     || {Role, Source} <- kura_query:sources(Query), Role =:= from orelse Role =:= join
+    ]);
 check_scoped(undefined) ->
     ok;
 check_scoped(Source) ->
