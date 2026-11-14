@@ -127,7 +127,7 @@ CS1 = kura_changeset:cast_embed(CS, tags),
 
 ## Custom Validation with `with`
 
-By default, `cast_embed` casts all non-virtual fields of the embedded schema. To apply custom validation or restrict fields, pass a `with` option - a function that takes existing data and params, and returns a changeset:
+By default, `cast_embed` casts all non-virtual fields of the embedded schema. Embedded params usually arrive in a request, so say which fields they may set. `#{cast => [street, city]}` lists them. To validate as well, pass a `with` option - `{Module, Function}` or a function that takes existing data and params, and returns a changeset:
 
 ```erlang
 WithFun = fun(_Data, EmbedParams) ->
@@ -137,6 +137,8 @@ end,
 
 CS1 = kura_changeset:cast_embed(CS, address, #{with => WithFun})
 ```
+
+`{kura, [{strict_assoc_cast, true}]}` makes one of the two options mandatory; see [Nested Changesets](cast_assoc.md#without-an-allow-list).
 
 This is useful when you want to:
 

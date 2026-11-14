@@ -20,6 +20,7 @@ CS3 = kura_changeset:unique_constraint(CS2, email).
     cast_assoc/2,
     cast_assoc/3,
     put_assoc/3,
+    put_assoc/4,
     validate_required/2,
     validate_format/3,
     validate_length/3,
@@ -454,31 +455,84 @@ traverse_errors(#kura_changeset{errors = Errors}, Fun) ->
 %% Association casting (delegated to kura_changeset_assoc)
 %%----------------------------------------------------------------------
 
--doc "Cast nested association parameters into child changesets.".
+-doc """
+Cast nested association parameters into child changesets, taking every
+castable field of the child from the params. Prefer `cast_assoc/3` with
+an allow-list; see it for why.
+""".
 -spec cast_assoc(#kura_changeset{}, atom()) -> #kura_changeset{}.
 cast_assoc(CS, AssocName) ->
     kura_changeset_assoc:cast_assoc(CS, AssocName).
 
--doc "Cast nested association parameters with options. Opts: `with` - custom changeset function.".
+-doc """
+Cast nested association parameters into child changesets.
+
+`Opts` says which of the child's fields the params may set:
+
+- `cast => [Field]` - only these fields, as `cast/4` would.
+- `with => {Module, Function}` or `with => fun((Data, Params) -> Changeset)` -
+  the child's own changeset function, called as
+  `Module:Function(Data, Params)`. Use it to validate the child as well.
+  It wins over `cast`.
+
+```erlang
+kura_changeset:cast_assoc(CS, comments, #{cast => [body]}).
+kura_changeset:cast_assoc(CS, comments, #{with => {comment, changeset}}).
+```
+
+With neither, the params may set every non-virtual field of the child
+except a single-column primary key and the foreign key. Nested params
+usually arrive in a request, so that lets a request set fields such as
+`approved` or `deleted_at`. Set `{kura, [{strict_assoc_cast, true}]}` to
+make the allow-list mandatory: a nested cast without one then raises
+`{kura, {nested_cast_needs_allow_list, Schema, Name}}`. Left unset, the
+permissive default stays and kura logs one warning per boot; `false`
+keeps it without the warning. The default becomes `true` in kura 3.0.
+
+A `cast` list naming a field that cannot be cast (unknown, virtual, the
+primary key or the foreign key) raises
+`{kura, {invalid_nested_cast, Schema, Name, {cast, Fields}}}`.
+""".
 -spec cast_assoc(#kura_changeset{}, atom(), map()) -> #kura_changeset{}.
 cast_assoc(CS, AssocName, Opts) ->
     kura_changeset_assoc:cast_assoc(CS, AssocName, Opts).
 
--doc "Put pre-built changesets or raw maps directly as association changes.".
+-doc """
+Put pre-built changesets or raw maps directly as association changes. A
+raw map is cast like nested params with no allow-list; see `put_assoc/4`.
+""".
 -spec put_assoc(#kura_changeset{}, atom(), term()) -> #kura_changeset{}.
 put_assoc(CS, AssocName, Value) ->
     kura_changeset_assoc:put_assoc(CS, AssocName, Value).
+
+-doc """
+Put pre-built changesets or raw maps as association changes. `Opts` takes
+the `cast` and `with` options of `cast_assoc/3` and applies them to the
+raw maps; changesets are used as they are. With `strict_assoc_cast` set,
+a raw map needs one of the two.
+""".
+-spec put_assoc(#kura_changeset{}, atom(), term(), map()) -> #kura_changeset{}.
+put_assoc(CS, AssocName, Value, Opts) ->
+    kura_changeset_assoc:put_assoc(CS, AssocName, Value, Opts).
 
 %%----------------------------------------------------------------------
 %% Embed casting (delegated to kura_changeset_assoc)
 %%----------------------------------------------------------------------
 
--doc "Cast nested embedded schema parameters into parent changes.".
+-doc """
+Cast nested embedded schema parameters into parent changes, taking every
+non-virtual field of the embedded schema from the params. Prefer
+`cast_embed/3` with an allow-list.
+""".
 -spec cast_embed(#kura_changeset{}, atom()) -> #kura_changeset{}.
 cast_embed(CS, EmbedName) ->
     kura_changeset_assoc:cast_embed(CS, EmbedName).
 
--doc "Cast nested embedded schema parameters with options. Opts: `with` - custom changeset function.".
+-doc """
+Cast nested embedded schema parameters into parent changes. `Opts` takes
+the `cast` and `with` options of `cast_assoc/3`, and `strict_assoc_cast`
+applies in the same way.
+""".
 -spec cast_embed(#kura_changeset{}, atom(), map()) -> #kura_changeset{}.
 cast_embed(CS, EmbedName, Opts) ->
     kura_changeset_assoc:cast_embed(CS, EmbedName, Opts).

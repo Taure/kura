@@ -24,31 +24,61 @@ CS1 = kura_changeset:cast_assoc(CS, comments).
 1. Looks up the association via `kura_schema:association/2`
 2. Gets nested params from the changeset params under the association name key
 3. If the key is missing, returns the changeset unchanged
-4. Builds child changesets using a default cast function (or a custom `with` function)
+4. Builds child changesets from the `cast` list or the `with` function you pass, or from every castable field when you pass neither
 5. For `has_many`: iterates the param list, setting `action = insert` (no PK) or `action = update` (PK matches an existing record)
 6. For `has_one`: single param map produces a single changeset
 7. Stores results in `assoc_changes` and sets `valid = false` if any child is invalid
 
-The default cast function includes all non-virtual, non-primary-key, non-foreign-key fields as allowed:
+### Say Which Fields the Params May Set
+
+Nested params usually arrive in a request, so name the child fields a
+request is allowed to set. Either list them:
 
 ```erlang
-%% Roughly equivalent to:
-fun(Data, ChildParams) ->
-    kura_changeset:cast(comment, Data, ChildParams, [body, ...])
-end
+CS1 = kura_changeset:cast_assoc(CS, comments, #{cast => [body]}).
 ```
 
-### Custom `with` Function
-
-Override the default casting with a custom function that receives the existing data and child params:
+or hand the child to its own changeset function, which can validate it
+too. `with` takes `{Module, Function}`, called as
+`Module:Function(Data, ChildParams)`, or a fun of the same two arguments:
 
 ```erlang
-WithFun = fun(Data, ChildParams) ->
-    CS = kura_changeset:cast(comment, Data, ChildParams, [body]),
-    kura_changeset:validate_required(CS, [body])
-end,
-CS1 = kura_changeset:cast_assoc(CS, comments, #{with => WithFun}).
+%% in comment.erl
+changeset(Data, Params) ->
+    CS = kura_changeset:cast(comment, Data, Params, [body]),
+    kura_changeset:validate_required(CS, [body]).
+
+CS1 = kura_changeset:cast_assoc(CS, comments, #{with => {comment, changeset}}).
 ```
+
+`with` wins when both are given. A `cast` list may not name the child's
+single-column primary key or its foreign key: the first identifies the
+row and the second is set from the parent. Naming one, or a field the
+child does not have, raises
+`{kura, {invalid_nested_cast, Schema, Name, {cast, Fields}}}`.
+
+For a `many_to_many` association the child is a row other parents may
+share. `#{cast => []}` links and unlinks without letting the params edit
+the linked row.
+
+### Without an Allow-List
+
+With neither option, the params may set every non-virtual field of the
+child except those two keys. A request can then set fields the form never
+showed, such as `approved`, `inserted_at` or `deleted_at`.
+
+Make the allow-list mandatory:
+
+```erlang
+{kura, [{strict_assoc_cast, true}]}
+```
+
+`cast_assoc`, `cast_embed` and `put_assoc` of a raw map then raise
+`{kura, {nested_cast_needs_allow_list, Schema, Name}}` unless they are
+given `cast` or `with`. Left unset, the permissive default stays and kura
+logs one warning per boot the first time a nested cast has no allow-list.
+`false` keeps the permissive default without the warning. The default
+becomes `true` in kura 3.0.
 
 ### Update Detection (has_many)
 
@@ -85,7 +115,13 @@ CS1 = kura_changeset:put_assoc(CS, comments, [
 ]).
 ```
 
-Maps are automatically coerced into changesets. You can also pass pre-built changesets directly:
+Maps are cast into changesets. `put_assoc/4` takes the same `cast` and `with` options as `cast_assoc/3` for them, and `strict_assoc_cast` requires one:
+
+```erlang
+CS1 = kura_changeset:put_assoc(CS, comments, [#{body => ~"Great!"}], #{cast => [body]}).
+```
+
+You can also pass pre-built changesets directly, which are used as they are:
 
 ```erlang
 ChildCS = kura_changeset:cast(comment, #{}, #{body => ~"Nice"}, [body]),
@@ -138,5 +174,5 @@ If `assoc_changes` is empty, the insert/update runs without transaction overhead
 | | cast_assoc | put_assoc |
 |---|---|---|
 | Source | Params from changeset | Maps or changesets you provide |
-| Casting | Automatic (or custom `with`) | Maps auto-cast, changesets used as-is |
+| Casting | `cast` list or `with` function | Maps cast the same way, changesets used as-is |
 | Use case | Form/API input processing | Programmatic association building |
