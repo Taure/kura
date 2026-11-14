@@ -6,6 +6,7 @@
 
 -define(REPO, kura_capabilities_query_test_repo).
 -define(LIMITED, kura_test_limited_pool).
+-define(CURRENT, kura_test_current_pool).
 
 with_pool(PoolSettings, Tests) ->
     {setup,
@@ -92,6 +93,81 @@ unchecked_pools_test_() ->
         ])
      || PoolSettings <- [#{pool_module => kura_pool_minato}, #{pool_module => lists}, #{}]
     ].
+
+needing_since_model_2() ->
+    [
+        {row_locks, kura_query:lock(from(), for_update)},
+        {row_locks, kura_query:lock(from(), {for_share, nowait})},
+        {row_locks, kura_query:lock(from(), ~"FOR KEY SHARE")},
+        {row_locks, kura_query:lock(from(), {fragment, ~"FOR UPDATE OF kura_vector_items"})},
+        {row_locks, kura_query:with_cte(from(), ~"held", kura_query:lock(from(), for_update))},
+        {distinct_on, kura_query:distinct(from(), [content])},
+        {distinct_on,
+            kura_query:where(
+                from(), {id, in, {subquery, kura_query:distinct(from(), [content])}}
+            )}
+    ].
+
+model_2_capability_is_refused_test_() ->
+    with_pool(#{pool_module => ?CURRENT}, [
+        {label(Capability, Query), fun() ->
+            Error = {kura, {unsupported_capability, Capability, ?CURRENT}},
+            ?assertError(Error, kura_query_compiler:to_sql(?REPO, Query)),
+            ?assertError(Error, kura_query_compiler:to_sql_cached(?REPO, Query)),
+            ?assertError(Error, kura_query_compiler:to_sql_cached(?REPO, Query))
+        end}
+     || {Capability, Query} <- needing() ++ needing_since_model_2()
+    ]).
+
+skip_locked_is_named_before_row_locks_test_() ->
+    Query = kura_query:lock(from(), {for_update, skip_locked}),
+    [
+        ?_assertError(
+            {kura, {unsupported_capability, select_for_update_skip_locked, ?CURRENT}},
+            kura_capabilities:check_query(?CURRENT, Query)
+        )
+    ].
+
+plain_distinct_needs_nothing_test_() ->
+    with_pool(#{pool_module => ?CURRENT}, [
+        ?_assertMatch({_, []}, kura_query_compiler:to_sql(?REPO, kura_query:distinct(from())))
+    ]).
+
+a_backend_older_than_a_capability_is_not_checked_for_it_test_() ->
+    [
+        with_pool(PoolSettings, [
+            {label(Capability, Query), fun() ->
+                ?assertMatch({_, _}, kura_query_compiler:to_sql(?REPO, Query)),
+                ?assertMatch({_, _}, kura_query_compiler:to_sql_cached(?REPO, Query))
+            end}
+         || {Capability, Query} <- needing_since_model_2()
+        ])
+     || PoolSettings <- [#{pool_module => ?LIMITED}, #{pool_module => kura_pool_ets}]
+    ].
+
+check_test_() ->
+    [
+        ?_assertEqual(ok, kura_capabilities:check(?LIMITED, cursors)),
+        ?_assertEqual(ok, kura_capabilities:check(lists, cursors)),
+        ?_assertEqual(ok, kura_capabilities:check(?CURRENT, returning)),
+        ?_assertError(
+            {kura, {unsupported_capability, cursors, ?CURRENT}},
+            kura_capabilities:check(?CURRENT, cursors)
+        ),
+        ?_assertError(
+            {kura, {unsupported_capability, vector, ?LIMITED}},
+            kura_capabilities:check(?LIMITED, vector)
+        ),
+        ?_assertEqual(ok, kura_capabilities:check(?LIMITED, some_custom_flag))
+    ].
+
+stream_needs_cursors_test_() ->
+    with_pool(#{pool_module => ?CURRENT}, [
+        ?_assertError(
+            {kura, {unsupported_capability, cursors, ?CURRENT}},
+            kura_stream:stream(?REPO, from(), fun(_Batch) -> ok end)
+        )
+    ]).
 
 check_query_test_() ->
     Query = kura_query:lock(from(), {for_update, skip_locked}),

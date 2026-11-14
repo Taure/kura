@@ -221,7 +221,9 @@ argument.
   query the same way: a full-text match, a window function, a vector
   distance or a `skip_locked` lock on a backend that does not declare it
   raises `{kura, {unsupported_capability, Capability, PoolModule}}`
-  before any SQL is built.
+  before any SQL is built. A backend that declares `capability_model() -> 2`
+  is checked for `row_locks`, `distinct_on` and, in `kura_stream`,
+  `cursors` as well.
 
 ## Data Flow
 

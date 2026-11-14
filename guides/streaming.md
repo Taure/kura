@@ -14,6 +14,11 @@ Under the hood, streaming runs inside a PostgreSQL transaction and uses server-s
 
 This means rows are fetched on demand from PostgreSQL rather than buffered in the BEAM VM.
 
+A backend without server-side cursors, such as SQLite, cannot stream:
+`kura_stream:stream/3,4` raises
+`{kura, {unsupported_capability, cursors, PoolModule}}` before it runs
+anything. Page through the rows with `kura_paginator` there.
+
 ## Basic Usage
 
 Pass a query and a callback function. The callback receives a list of loaded schema maps for each batch:

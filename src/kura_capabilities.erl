@@ -27,6 +27,11 @@ cares about:
 - `advisory_locks` — `pg_advisory_lock` family
 - `listen_notify` — `LISTEN/NOTIFY` pubsub
 - `select_for_update_skip_locked` — `SELECT ... FOR UPDATE SKIP LOCKED`
+- `row_locks` — `SELECT ... FOR UPDATE`, `FOR SHARE` and the other row
+  locks of `kura_query:lock/2`
+- `distinct_on` — `SELECT DISTINCT ON (...)`, from `kura_query:distinct/2`
+- `cursors` — `DECLARE ... CURSOR` and `FETCH`, which `kura_stream` reads
+  through
 - `partial_indexes` — `CREATE INDEX ... WHERE`
 - `concurrent_indexes` — `CREATE INDEX CONCURRENTLY`; without it the
   migrator compiles `concurrently => true` to a plain `CREATE INDEX` for
@@ -54,9 +59,27 @@ is built, instead of failing in the database:
 | a `{over, Fn, Spec}` select expression | `window_functions` |
 | a `{distance, Field, Metric, Vector}` | `vector` |
 | `kura_query:lock(Q, {Strength, skip_locked})` | `select_for_update_skip_locked` |
+| `kura_query:lock(Q, Lock)`, any lock | `row_locks` |
+| `kura_query:distinct(Q, Fields)` | `distinct_on` |
 
-CTEs, combinations and subqueries are checked too. A pool module without
+CTEs, combinations and subqueries are checked too. `kura_stream:stream/4`
+raises the same error for `cursors`. A pool module without
 `capabilities/0` is not checked: it has made no statement either way.
+
+## Capability model
+
+A list written before kura started checking a capability cannot have
+declared it, so a backend also says which revision of the checks its list
+was written against, with the optional `capability_model/0` callback:
+
+| Model | Checked |
+| --- | --- |
+| 1 (the default) | `full_text_search`, `window_functions`, `vector`, `select_for_update_skip_locked` |
+| 2 | those, and `row_locks`, `distinct_on`, `cursors` |
+
+A backend on model 1 is not checked for a model 2 capability: the query
+goes to the database as it did before. kura 3.0 checks every backend
+against the latest model.
 
 ## Example
 
@@ -79,18 +102,20 @@ A backend declares its set:
 
 capabilities() ->
     [returning, jsonb, arrays, advisory_locks, listen_notify,
-     select_for_update_skip_locked, partial_indexes, window_functions,
-     full_text_search, transactions, savepoints, prepared_statements].
+     select_for_update_skip_locked, row_locks, distinct_on, cursors,
+     partial_indexes, window_functions, full_text_search, transactions,
+     savepoints, prepared_statements].
+
+capability_model() -> 2.
 ```
 """.
 
 -include("kura.hrl").
 
--export([supported/1, has/2, require/2, check_query/2]).
+-export([supported/1, has/2, require/2, check/2, check_query/2]).
 
--define(QUERY_CAPABILITIES, [
-    full_text_search, window_functions, vector, select_for_update_skip_locked
-]).
+-define(MODEL_1, [full_text_search, window_functions, vector, select_for_update_skip_locked]).
+-define(MODEL_2, [row_locks, distinct_on, cursors]).
 
 -export_type([capability/0, capability_set/0]).
 
@@ -108,7 +133,14 @@ nothing.
 """.
 -callback capabilities() -> capability_set().
 
--optional_callbacks([capabilities/0]).
+-doc """
+Optional callback. Return the revision of the capability checks the list
+from `capabilities/0` was written against. See the moduledoc. A module
+without it is on model 1.
+""".
+-callback capability_model() -> pos_integer().
+
+-optional_callbacks([capabilities/0, capability_model/0]).
 
 -doc """
 Return the capability set declared by `Module`.
@@ -151,12 +183,12 @@ moduledoc for what needs which. Raises
 `{kura, {unsupported_capability, Capability, PoolMod}}` for the first one
 missing. A module without `capabilities/0` passes.
 
-The query is only read when the module lacks one of the capabilities a
-query can need.
+The query is only read when the module lacks one of the capabilities its
+model checks.
 """.
 -spec check_query(module(), #kura_query{}) -> ok.
 check_query(PoolMod, Query) ->
-    case undeclared_query_capabilities(PoolMod) of
+    case undeclared(PoolMod) of
         [] ->
             ok;
         Undeclared ->
@@ -166,11 +198,36 @@ check_query(PoolMod, Query) ->
             end
     end.
 
-undeclared_query_capabilities(PoolMod) ->
+-doc """
+Check one capability as `check_query/2` checks those a query needs: raises
+`{kura, {unsupported_capability, Capability, PoolMod}}` when `PoolMod`
+declares capabilities, its model checks `Capability`, and its list leaves
+it out. `has/2` and `require/2` answer for any capability, checked or not.
+""".
+-spec check(module(), capability()) -> ok.
+check(PoolMod, Capability) ->
+    case lists:member(Capability, undeclared(PoolMod)) of
+        true -> erlang:error({kura, {unsupported_capability, Capability, PoolMod}});
+        false -> ok
+    end.
+
+-spec undeclared(module()) -> capability_set().
+undeclared(PoolMod) ->
     case declares_capabilities(PoolMod) of
-        true -> ?QUERY_CAPABILITIES -- PoolMod:capabilities();
+        true -> checked(model(PoolMod)) -- PoolMod:capabilities();
         false -> []
     end.
+
+-spec model(module()) -> pos_integer().
+model(PoolMod) ->
+    case erlang:function_exported(PoolMod, capability_model, 0) of
+        true -> PoolMod:capability_model();
+        false -> 1
+    end.
+
+-spec checked(pos_integer()) -> capability_set().
+checked(1) -> ?MODEL_1;
+checked(Model) when is_integer(Model), Model >= 2 -> ?MODEL_1 ++ ?MODEL_2.
 
 %% function_exported/3 is false for a module not yet loaded.
 declares_capabilities(PoolMod) ->
@@ -187,6 +244,7 @@ query_needs(#kura_query{} = Q) ->
         select_needs(Q#kura_query.select),
         orders_need(Q#kura_query.order_bys),
         lock_needs(Q#kura_query.lock),
+        distinct_needs(Q#kura_query.distinct),
         bodies_need(Q#kura_query.ctes),
         bodies_need(Q#kura_query.combinations)
     ]).
@@ -223,15 +281,20 @@ orders_need([{{distance, _, _, _}, _Dir} | Rest]) -> [vector | orders_need(Rest)
 orders_need([_ | Rest]) -> orders_need(Rest);
 orders_need(_) -> [].
 
+lock_needs(undefined) ->
+    [];
 lock_needs({_Strength, skip_locked}) ->
-    [select_for_update_skip_locked];
+    [select_for_update_skip_locked, row_locks];
 lock_needs(Lock) when is_binary(Lock) ->
     case kura_query:lock_clause(Lock) of
-        {_Strength, skip_locked} -> [select_for_update_skip_locked];
-        _ -> []
+        {_Strength, skip_locked} -> [select_for_update_skip_locked, row_locks];
+        _ -> [row_locks]
     end;
 lock_needs(_Lock) ->
-    [].
+    [row_locks].
+
+distinct_needs(Fields) when is_list(Fields) -> [distinct_on];
+distinct_needs(_Distinct) -> [].
 
 bodies_need([{_NameOrType, #kura_query{} = Q} | Rest]) -> query_needs(Q) ++ bodies_need(Rest);
 bodies_need([_ | Rest]) -> bodies_need(Rest);
