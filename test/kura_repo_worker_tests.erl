@@ -341,6 +341,36 @@ join_error_maps_a_constraint_onto_the_parent_test() ->
         (kura_repo_worker:join_error(CS, tags, Err))#kura_changeset.errors
     ).
 
+join_error_names_the_association_whatever_the_constraint_is_called_test_() ->
+    CS = kura_changeset:cast(kura_test_post_schema, #{}, #{}, []),
+    Errors = fun(Error) ->
+        (kura_repo_worker:join_error(CS, tags, {pgsql_error, Error}))#kura_changeset.errors
+    end,
+    [
+        ?_assertEqual(
+            [{tags, ~"does not exist"}],
+            Errors(#{code => ~"23503", table => ~"labelling", constraint => ~"label_ref"})
+        ),
+        ?_assertEqual(
+            [{tags, ~"has already been taken"}],
+            Errors(#{code => ~"23505", table => ~"posts_tags", constraint => ~"posts_tags_pkey"})
+        ),
+        ?_assertEqual(
+            [{tags, ~"can't be blank"}],
+            Errors(#{code => ~"23502", table => ~"posts_tags", column => ~"title"})
+        ),
+        ?_assertEqual(
+            [{title, ~"is linked twice"}],
+            (kura_repo_worker:join_error(
+                kura_changeset:unique_constraint(CS, title, #{
+                    name => ~"posts_tags_pkey", message => ~"is linked twice"
+                }),
+                tags,
+                {pgsql_error, #{code => ~"23505", constraint => ~"posts_tags_pkey"}}
+            ))#kura_changeset.errors
+        )
+    ].
+
 join_error_hides_any_other_server_error_test() ->
     CS = kura_changeset:cast(kura_test_post_schema, #{}, #{}, []),
     Err = {pgsql_error, #{code => ~"22001", message => ~"value too long: secret row value"}},

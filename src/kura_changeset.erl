@@ -275,13 +275,12 @@ unique_constraint(CS = #kura_changeset{schema = undefined, constraints = Constra
     C = #kura_constraint{type = unique, constraint = Name, field = Field, message = Msg},
     CS#kura_changeset{constraints = Constraints ++ [C]};
 unique_constraint(CS = #kura_changeset{schema = SchemaMod, constraints = Constraints}, Field, Opts) ->
-    Table = SchemaMod:table(),
-    Name = maps:get(
-        name, Opts, <<Table/binary, "_", (atom_to_binary(Field, utf8))/binary, "_key">>
-    ),
     Msg = maps:get(message, Opts, ~"has already been taken"),
-    C = #kura_constraint{type = unique, constraint = Name, field = Field, message = Msg},
-    CS#kura_changeset{constraints = Constraints ++ [C]}.
+    Declared = [
+        #kura_constraint{type = unique, constraint = Name, field = Field, message = Msg}
+     || Name <- constraint_names(SchemaMod, Field, ~"_key", Opts)
+    ],
+    CS#kura_changeset{constraints = Constraints ++ Declared}.
 
 -doc "Declare a foreign key constraint on `Field`.".
 -spec foreign_key_constraint(#kura_changeset{}, atom()) -> #kura_changeset{}.
@@ -306,13 +305,12 @@ foreign_key_constraint(
 foreign_key_constraint(
     CS = #kura_changeset{schema = SchemaMod, constraints = Constraints}, Field, Opts
 ) ->
-    Table = SchemaMod:table(),
-    Name = maps:get(
-        name, Opts, <<Table/binary, "_", (atom_to_binary(Field, utf8))/binary, "_fkey">>
-    ),
     Msg = maps:get(message, Opts, ~"does not exist"),
-    C = #kura_constraint{type = foreign_key, constraint = Name, field = Field, message = Msg},
-    CS#kura_changeset{constraints = Constraints ++ [C]}.
+    Declared = [
+        #kura_constraint{type = foreign_key, constraint = Name, field = Field, message = Msg}
+     || Name <- constraint_names(SchemaMod, Field, ~"_fkey", Opts)
+    ],
+    CS#kura_changeset{constraints = Constraints ++ Declared}.
 
 -doc "Declare a check constraint with the given `Constraint` name mapped to `Field`.".
 -spec check_constraint(#kura_changeset{}, binary(), atom()) -> #kura_changeset{}.
@@ -348,13 +346,23 @@ exclusion_constraint(
 exclusion_constraint(
     CS = #kura_changeset{schema = SchemaMod, constraints = Constraints}, Field, Opts
 ) ->
-    Table = SchemaMod:table(),
-    Name = maps:get(
-        name, Opts, <<Table/binary, "_", (atom_to_binary(Field, utf8))/binary, "_excl">>
-    ),
     Msg = maps:get(message, Opts, ~"violates an exclusion constraint"),
-    C = #kura_constraint{type = exclusion, constraint = Name, field = Field, message = Msg},
-    CS#kura_changeset{constraints = Constraints ++ [C]}.
+    Declared = [
+        #kura_constraint{type = exclusion, constraint = Name, field = Field, message = Msg}
+     || Name <- constraint_names(SchemaMod, Field, ~"_excl", Opts)
+    ],
+    CS#kura_changeset{constraints = Constraints ++ Declared}.
+
+-spec constraint_names(module(), atom(), binary(), map()) -> [binary()].
+constraint_names(_SchemaMod, _Field, _Suffix, #{name := Name}) ->
+    [Name];
+constraint_names(SchemaMod, Field, Suffix, #{}) ->
+    Table = SchemaMod:table(),
+    ByField = <<Table/binary, "_", (atom_to_binary(Field, utf8))/binary, Suffix/binary>>,
+    case kura_schema:renamed_columns(SchemaMod) of
+        #{Field := Column} -> [<<Table/binary, "_", Column/binary, Suffix/binary>>, ByField];
+        #{} -> [ByField]
+    end.
 
 -doc "Add an error to the changeset for `Field`.".
 -spec add_error(#kura_changeset{}, atom(), binary()) -> #kura_changeset{}.

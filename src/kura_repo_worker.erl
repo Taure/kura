@@ -826,15 +826,20 @@ persist_assocs(RepoMod, CS, Row, [{AssocName, ChildCSs} | Rest]) ->
             {error, kura_changeset:add_error(CS, base, child_error(Reason))}
     end.
 
-%% Only a constraint violation says something about the parent's own fields.
-join_error(CS, _AssocName, {pgsql_error, #{code := Code}} = PgError) when
-    Code =:= ~"23505";
-    Code =:= ~"23503";
-    Code =:= ~"23514";
-    Code =:= ~"23P01";
-    Code =:= ~"23502"
+%% The violated constraint is the join table's, so it is the association
+%% that is at fault unless the changeset declares the constraint.
+join_error(CS, AssocName, {pgsql_error, #{code := ~"23502"}}) ->
+    kura_changeset:add_error(CS, AssocName, ~"can't be blank");
+join_error(CS, AssocName, {pgsql_error, #{code := Code} = Error}) when
+    Code =:= ~"23505"; Code =:= ~"23503"; Code =:= ~"23514"; Code =:= ~"23P01"
 ->
-    handle_pg_error(CS, PgError);
+    {_Type, DefaultMsg} = violation(Code),
+    case find_constraint(CS#kura_changeset.constraints, maps:get(constraint, Error, undefined)) of
+        {ok, #kura_constraint{field = Field, message = Msg}} ->
+            kura_changeset:add_error(CS, Field, Msg);
+        error ->
+            kura_changeset:add_error(CS, AssocName, DefaultMsg)
+    end;
 join_error(CS, AssocName, _PgError) ->
     kura_changeset:add_error(CS, AssocName, ~"could not be saved").
 
@@ -1184,43 +1189,31 @@ handle_pg_error(CS, {pgsql_error, Fields}) when is_map(Fields) ->
     handle_pg_error(CS, Fields);
 handle_pg_error(CS, {pgsql_error, Fields}) when is_list(Fields) ->
     handle_pg_error(CS, maps:from_list(Fields));
-handle_pg_error(CS, #{code := Code, constraint := Constraint}) when
+handle_pg_error(CS, #{code := Code, constraint := Constraint} = Error) when
     Code =:= ~"23505"; Code =:= ~"23503"; Code =:= ~"23514"; Code =:= ~"23P01"
 ->
-    DefaultType =
-        case Code of
-            ~"23505" -> unique;
-            ~"23503" -> foreign_key;
-            ~"23514" -> check;
-            ~"23P01" -> exclusion
-        end,
-    DefaultMsg =
-        case DefaultType of
-            unique -> ~"has already been taken";
-            foreign_key -> ~"does not exist";
-            check -> ~"is invalid";
-            exclusion -> ~"violates an exclusion constraint"
-        end,
+    {Type, DefaultMsg} = violation(Code),
     case find_constraint(CS#kura_changeset.constraints, Constraint) of
         {ok, #kura_constraint{field = Field, message = Msg}} ->
             kura_changeset:add_error(CS, Field, Msg);
         error ->
-            Field = constraint_to_field(Constraint),
+            Field = constraint_field(CS#kura_changeset.schema, Type, Error),
             kura_changeset:add_error(CS, Field, DefaultMsg)
     end;
-handle_pg_error(CS, #{code := ~"23502", column := Column}) ->
-    Field = column_field(CS#kura_changeset.schema, Column),
+handle_pg_error(CS, #{code := ~"23502", column := Column} = Error) ->
+    Field =
+        case on_table(CS#kura_changeset.schema, Error) of
+            {true, _Table} -> column_field(CS#kura_changeset.schema, Column);
+            false -> base
+        end,
     kura_changeset:add_error(CS, Field, ~"can't be blank");
 handle_pg_error(CS, Reason) ->
     kura_changeset:add_error(CS, base, format_error(Reason)).
 
-column_field(Schema, Column) ->
-    Renamed = kura_schema:renamed_fields(Schema),
-    try binary_to_existing_atom(Column, utf8) of
-        Name -> maps:get(Name, Renamed, Name)
-    catch
-        error:badarg -> base
-    end.
+violation(~"23505") -> {unique, ~"has already been taken"};
+violation(~"23503") -> {foreign_key, ~"does not exist"};
+violation(~"23514") -> {check, ~"is invalid"};
+violation(~"23P01") -> {exclusion, ~"violates an exclusion constraint"}.
 
 find_constraint([], _Name) ->
     error;
@@ -1229,19 +1222,75 @@ find_constraint([C = #kura_constraint{constraint = Name} | _], Name) ->
 find_constraint([_ | Rest], Name) ->
     find_constraint(Rest, Name).
 
-constraint_to_field(Constraint) when is_binary(Constraint) ->
-    case binary:split(Constraint, ~"_", [global]) of
-        [_Table, Field | _Rest] ->
-            try
-                binary_to_existing_atom(Field, utf8)
-            catch
-                error:badarg -> base
+-doc """
+The field an undeclared constraint is reported on. Only a name the database
+generates for one column of the changeset's own table is resolved:
+`<table>_<column>_key` and the like, and `<table>_pkey`. Any other name is
+reported on `base`, never guessed from its parts.
+""".
+-spec constraint_field(module() | undefined, unique | foreign_key | check | exclusion, map()) ->
+    atom().
+constraint_field(Schema, Type, #{constraint := Constraint} = Error) when is_binary(Constraint) ->
+    case on_table(Schema, Error) of
+        {true, Table} -> generated_name_field(Schema, Type, Table, Constraint);
+        false -> base
+    end;
+constraint_field(_Schema, _Type, _Error) ->
+    base.
+
+on_table(undefined, _Error) ->
+    false;
+on_table(Schema, Error) ->
+    case kura_schema:is_schema(Schema) of
+        true ->
+            Table = Schema:table(),
+            case Error of
+                #{table := Table} -> {true, Table};
+                #{} -> false
             end;
+        false ->
+            false
+    end.
+
+generated_name_field(Schema, Type, Table, Constraint) ->
+    case Constraint of
+        <<Table:(byte_size(Table))/binary, "_pkey">> when Type =:= unique ->
+            try kura_schema:key(Schema) of
+                [Key] -> Key;
+                _Composite -> base
+            catch
+                error:{no_primary_key, Schema} -> base
+            end;
+        <<Table:(byte_size(Table))/binary, "_", Named/binary>> ->
+            suffixed_column_field(Schema, Named, generated_suffixes(Type));
         _ ->
             base
-    end;
-constraint_to_field(_) ->
-    base.
+    end.
+
+generated_suffixes(unique) -> [~"_key", ~"_index", ~"_idx"];
+generated_suffixes(foreign_key) -> [~"_fkey"];
+generated_suffixes(check) -> [~"_check"];
+generated_suffixes(exclusion) -> [~"_excl"].
+
+suffixed_column_field(_Schema, _Named, []) ->
+    base;
+suffixed_column_field(Schema, Named, [Suffix | Suffixes]) ->
+    ColumnSize = byte_size(Named) - byte_size(Suffix),
+    case Named of
+        <<Column:ColumnSize/binary, Suffix/binary>> when ColumnSize > 0 ->
+            case column_field(Schema, Column) of
+                base -> suffixed_column_field(Schema, Named, Suffixes);
+                Field -> Field
+            end;
+        _ ->
+            suffixed_column_field(Schema, Named, Suffixes)
+    end.
+
+column_field(Schema, Column) ->
+    case [Field || Field := Stored <- kura_schema:column_map(Schema), Stored =:= Column] of
+        [Field] -> Field;
+        _ -> base
+    end.
 
 format_error(#{message := Msg}) when is_binary(Msg) -> Msg;
 format_error(Reason) -> iolist_to_binary(io_lib:format("~p", [Reason])).
