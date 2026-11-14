@@ -493,6 +493,12 @@ reject_distance_values(_Clause, _Improper) ->
 Add a WHERE condition. Conditions: `{field, value}`, `{field, op, value}`,
 `{'and', [...]}`, etc.
 
+`{Field, is_nil}` and `{Field, is_not_nil}` are the `NULL` tests, so in the
+two-element form those two atoms are operators, never values. A condition
+whose value is an atom that comes from outside, such as an enum filter read
+from a request, must use the three-element form: `{Field, '=', Value}` always
+binds `Value`.
+
 `{Distance, Op, Threshold}` keeps the rows whose vector distance from
 `distance/3` compares to the number `Threshold` by `'<'`, `'<='`, `'>'`
 or `'>='`. The distance is checked against the schema as in

@@ -150,7 +150,14 @@ fetch_key_field(F, Spec, SchemaMod) ->
         #{} -> error({incomplete_key, SchemaMod, F})
     end.
 
--doc "Fetch a single record matching all key-value clauses.".
+-doc """
+Fetch a single record matching all key-value clauses.
+
+Each clause is an equality and its value is always bound, so an atom taken
+from a request cannot turn into an operator: `{status, is_not_nil}` compares
+`status` with the atom rather than testing for `NULL`. For a `NULL` test use
+`one/2` with `kura_query:where/2` and `{Field, is_nil}`.
+""".
 -spec get_by(module(), module(), [{atom(), term()}]) ->
     {ok, map()} | {error, not_found} | {error, term()}.
 get_by(RepoMod, SchemaMod, Clauses) ->
@@ -726,11 +733,13 @@ apply_prepare_funs(CS, [Fun | Rest]) ->
 key_pairs(SchemaMod, Data) ->
     [{K, maps:get(K, Data)} || K <- kura_schema:key(SchemaMod)].
 
+%% An explicit `=`, so a value is always bound: `{Field, is_nil}` would read
+%% the atoms `is_nil` and `is_not_nil` as the NULL tests.
 -spec apply_clauses(#kura_query{}, [{atom(), term()}]) -> #kura_query{}.
 apply_clauses(Q, []) ->
     Q;
 apply_clauses(Q, [{Field, Value} | Rest]) ->
-    apply_clauses(kura_query:where(Q, {Field, Value}), Rest).
+    apply_clauses(kura_query:where(Q, {Field, '=', Value}), Rest).
 
 persist_assoc_changes(RepoMod, CS = #kura_changeset{assoc_changes = AC}, ParentRow) ->
     persist_assocs(RepoMod, CS, ParentRow, maps:to_list(AC)).

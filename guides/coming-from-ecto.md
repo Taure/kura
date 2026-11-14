@@ -169,7 +169,7 @@ Ecto's repo dispatches CRUD; Kura's `kura_repo_worker` takes the repo module as 
 | `MyRepo.update(cs)`             | `kura_repo_worker:update(MyRepo, CS)`             |
 | `MyRepo.delete(struct)`         | `kura_repo_worker:delete(MyRepo, CS)`             |
 | `MyRepo.get(User, id)`          | `kura_repo_worker:get(MyRepo, my_user, Id)`       |
-| `MyRepo.get_by(User, email: e)` | `kura_repo_worker:get_by(MyRepo, my_user, #{email => E})` |
+| `MyRepo.get_by(User, email: e)` | `kura_repo_worker:get_by(MyRepo, my_user, [{email, E}])` |
 | `MyRepo.one(query)`             | `kura_repo_worker:one(MyRepo, Q)`                 |
 | `MyRepo.all(query)`             | `kura_repo_worker:all(MyRepo, Q)`                 |
 | `MyRepo.exists?(query)`         | `kura_repo_worker:exists(MyRepo, Q)`              |

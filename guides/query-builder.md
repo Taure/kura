@@ -98,6 +98,13 @@ kura_query:where(Q, {deleted_at, is_nil}).
 kura_query:where(Q, {email, is_not_nil}).
 ```
 
+In the two-element form `is_nil` and `is_not_nil` are operators, never
+values. When the value is an atom that comes from outside, such as an enum
+filter read from a request, write `{status, '=', Status}`: the
+three-element form always binds its value, so `is_not_nil` cannot turn the
+filter into `IS NOT NULL`. `kura_repo_worker:get/3`, `get_by/3` and
+`reload/3` bind every value this way.
+
 ### Boolean Combinators
 
 ```erlang

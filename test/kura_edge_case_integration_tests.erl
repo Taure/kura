@@ -8,7 +8,9 @@ edge_case_test_() ->
         [
             {"empty in matches no row", fun t_empty_in/0},
             {"empty not_in matches every row, null included", fun t_empty_not_in/0},
-            {"empty in deletes nothing", fun t_empty_in_delete_all/0}
+            {"empty in deletes nothing", fun t_empty_in_delete_all/0},
+            {"get_by compares with a value that spells an operator",
+                fun t_get_by_binds_unary_atoms/0}
         ]
     end}.
 
@@ -72,3 +74,17 @@ t_empty_in_delete_all() ->
     Q = kura_query:where(kura_query:from(kura_test_edge_schema), {qty, in, []}),
     ?assertEqual({ok, 0}, kura_test_repo:delete_all(Q)),
     ?assertEqual([~"a"], names(kura_query:from(kura_test_edge_schema))).
+
+t_get_by_binds_unary_atoms() ->
+    ok = reset(),
+    {ok, _} = insert_item(#{name => ~"a", note => ~"set"}),
+    From = kura_query:from(kura_test_edge_schema),
+    ?assertEqual([~"a"], names(kura_query:where(From, {note, is_not_nil}))),
+    ?assertEqual(
+        {error, not_found}, kura_test_repo:get_by(kura_test_edge_schema, [{note, ~"is_not_nil"}])
+    ),
+    {ok, _} = insert_item(#{name => ~"b", note => ~"is_not_nil"}),
+    ?assertMatch(
+        {ok, #{name := ~"b"}},
+        kura_test_repo:get_by(kura_test_edge_schema, [{note, ~"is_not_nil"}])
+    ).
