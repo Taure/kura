@@ -16,36 +16,36 @@ refuse to start, and there will be no runtime surprises.
 
 ## Standard capabilities
 
-The capability atom set is open — backends may declare custom flags
+The capability atom set is open: backends may declare custom flags
 and consumers may match against them. The standard atoms kura itself
 cares about:
 
-- `returning` — `INSERT/UPDATE/DELETE ... RETURNING`
-- `jsonb` — `JSONB` column type with operators (the SQLite backend
+- `returning`: `INSERT/UPDATE/DELETE ... RETURNING`
+- `jsonb`: `JSONB` column type with operators (the SQLite backend
   declares `json` instead, for its text-based JSON1 support)
-- `arrays` — array column types
-- `advisory_locks` — `pg_advisory_lock` family
-- `listen_notify` — `LISTEN/NOTIFY` pubsub
-- `select_for_update_skip_locked` — `SELECT ... FOR UPDATE SKIP LOCKED`
-- `row_locks` — the row locks of `kura_query:lock/2`: `FOR UPDATE`,
+- `arrays`: array column types
+- `advisory_locks`: `pg_advisory_lock` family
+- `listen_notify`: `LISTEN/NOTIFY` pubsub
+- `select_for_update_skip_locked`: `SELECT ... FOR UPDATE SKIP LOCKED`
+- `row_locks`: the row locks of `kura_query:lock/2`: `FOR UPDATE`,
   `FOR NO KEY UPDATE`, `FOR SHARE` and `FOR KEY SHARE`. A dialect may take
   a stronger lock than the one asked for, never a weaker one, so a backend
   with only `FOR UPDATE` and `FOR SHARE` declares it and takes `FOR UPDATE`
   for `for_no_key_update` and `FOR SHARE` for `for_key_share`
-- `distinct_on` — `SELECT DISTINCT ON (...)`, from `kura_query:distinct/2`
-- `cursors` — SQL cursors, `DECLARE ... CURSOR` and `FETCH`, which
+- `distinct_on`: `SELECT DISTINCT ON (...)`, from `kura_query:distinct/2`
+- `cursors`: SQL cursors, `DECLARE ... CURSOR` and `FETCH`, which
   `kura_stream` writes. A backend that reads a result in steps some other
   way does not declare it
-- `partial_indexes` — `CREATE INDEX ... WHERE`
-- `concurrent_indexes` — `CREATE INDEX CONCURRENTLY`; without it the
+- `partial_indexes`: `CREATE INDEX ... WHERE`
+- `concurrent_indexes`: `CREATE INDEX CONCURRENTLY`; without it the
   migrator compiles `concurrently => true` to a plain `CREATE INDEX` for
   a non-Postgres dialect and refuses it for Postgres
-- `window_functions` — `OVER (PARTITION BY ... ORDER BY ...)`
-- `full_text_search` — the `{Field, matches, Query}` where-condition
-- `vector` — pgvector `VECTOR(N)` columns (`{vector, N}` type)
-- `transactions` — `BEGIN/COMMIT/ROLLBACK`
-- `savepoints` — `SAVEPOINT`/`RELEASE`/`ROLLBACK TO`
-- `prepared_statements` — server-side prepared statements
+- `window_functions`: `OVER (PARTITION BY ... ORDER BY ...)`
+- `full_text_search`: the `{Field, matches, Query}` where-condition
+- `vector`: pgvector `VECTOR(N)` columns (`{vector, N}` type)
+- `transactions`: `BEGIN/COMMIT/ROLLBACK`
+- `savepoints`: `SAVEPOINT`/`RELEASE`/`ROLLBACK TO`
+- `prepared_statements`: server-side prepared statements
 
 A module that does not implement `capabilities/0` is treated as having
 the empty capability set. Anything it does support is opaque to kura.
