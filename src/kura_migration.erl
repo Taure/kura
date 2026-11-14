@@ -69,19 +69,27 @@ transactional.
 -callback transactional() -> boolean().
 -optional_callbacks([safe/0, transactional/0]).
 
+-doc """
+A column in an operation: an atom, or the column's name as a binary. Both
+are quoted the same way, so `email` and `~"email"` name one column. A
+binary carries a name that is not an atom anywhere, such as a schema
+field's `column`.
+""".
+-type column_name() :: atom() | binary().
+
 -type safe_entry() ::
-    {drop_column, atom()}
-    | {rename_column, atom()}
-    | {modify_column, atom()}
-    | {add_column, atom()}
+    {drop_column, column_name()}
+    | {rename_column, column_name()}
+    | {modify_column, column_name()}
+    | {add_column, column_name()}
     | drop_table.
 
 -type column_def() :: #kura_column{}.
 -type alter_op() ::
     {add_column, column_def()}
-    | {drop_column, atom()}
-    | {rename_column, atom(), atom()}
-    | {modify_column, atom(), kura_types:kura_type()}.
+    | {drop_column, column_name()}
+    | {rename_column, column_name(), column_name()}
+    | {modify_column, column_name(), kura_types:kura_type()}.
 
 -type index_opts() :: [unique | concurrently | {where, binary()}].
 -type index_opts_map() :: #{
@@ -100,17 +108,23 @@ transactional.
     | {unique, [atom()]}
     | {check, binary()}.
 
+-doc "A table constraint as an operation carries it.".
+-type ddl_constraint() ::
+    {primary_key, [column_name()]}
+    | {unique, [column_name()]}
+    | {check, binary()}.
+
 -type operation() ::
     {create_table, binary(), [column_def()]}
-    | {create_table, binary(), [column_def()], [table_constraint()]}
+    | {create_table, binary(), [column_def()], [ddl_constraint()]}
     | {drop_table, binary()}
     | {alter_table, binary(), [alter_op()]}
-    | {create_index, binary(), [atom()], index_opts_map()}
-    | {create_index, binary(), binary(), [atom()], index_opts()}
+    | {create_index, binary(), [column_name()], index_opts_map()}
+    | {create_index, binary(), binary(), [column_name()], index_opts()}
     | {drop_index, binary()}
     | {execute, binary()}.
 
--export([index_name/2, index_name/3]).
+-export([index_name/2, index_name/3, column_text/1]).
 
 -export_type([
     operation/0,
@@ -120,13 +134,15 @@ transactional.
     index_opts_map/0,
     index_def/0,
     table_constraint/0,
+    ddl_constraint/0,
+    column_name/0,
     safe_entry/0
 ]).
 
 -doc "Generate an Ecto-style index name: `{table}_{cols}_index`.".
--spec index_name(binary(), [atom()]) -> binary().
+-spec index_name(binary(), [column_name()]) -> binary().
 index_name(Table, Cols) ->
-    ColsBin = join_with_sep([atom_to_binary(C, utf8) || C <- Cols], ~"_"),
+    ColsBin = join_with_sep([column_text(C) || C <- Cols], ~"_"),
     iolist_to_binary([Table, ~"_", ColsBin, ~"_index"]).
 
 -doc """
@@ -135,7 +151,7 @@ when given, otherwise `index_name/2`. A `name` that is not a binary of 1
 to 63 bytes (PostgreSQL's identifier limit) raises
 `{invalid_index_option, name, Name}`.
 """.
--spec index_name(binary(), [atom()], index_opts_map()) -> binary().
+-spec index_name(binary(), [column_name()], index_opts_map()) -> binary().
 index_name(_Table, _Cols, #{name := Name}) when
     is_binary(Name), byte_size(Name) > 0, byte_size(Name) =< 63
 ->
@@ -144,6 +160,11 @@ index_name(_Table, _Cols, #{name := Name}) ->
     error({invalid_index_option, name, Name});
 index_name(Table, Cols, #{}) ->
     index_name(Table, Cols).
+
+-doc "The name of `Column` as text.".
+-spec column_text(column_name()) -> binary().
+column_text(Column) when is_binary(Column) -> Column;
+column_text(Column) when is_atom(Column) -> atom_to_binary(Column, utf8).
 
 -spec join_with_sep([binary()], binary()) -> [binary()].
 join_with_sep([], _Sep) -> [];

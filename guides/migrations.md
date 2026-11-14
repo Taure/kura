@@ -46,6 +46,11 @@ Since migrations are regular `.erl` files in `src/`, they are compiled normally 
 ]}.
 ```
 
+A column is named by an atom or by a binary (`name = ~"item_title"`), in a
+`#kura_column{}` and everywhere else an operation names one: `references`,
+table constraints, `alter_table` operations, index columns and `safe/0`
+entries. The two forms name the same column.
+
 Column options:
 - `primary_key` - `true | false` (default: `false`)
 - `nullable` - `true | false` (default: `true`)

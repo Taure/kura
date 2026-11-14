@@ -1555,7 +1555,7 @@ compile_operation(RepoMod, {create_index, IdxName, Table, Columns, Opts}) ->
             true -> ~"UNIQUE ";
             false -> <<>>
         end,
-    Cols = iolist_to_binary(lists:join(~", ", [quote(atom_to_binary(C, utf8)) || C <- Columns])),
+    Cols = iolist_to_binary(lists:join(~", ", [quote(C) || C <- Columns])),
     Where =
         case proplists:get_value(where, Opts) of
             undefined -> <<>>;
@@ -1582,7 +1582,9 @@ compile_operation(_RepoMod, {execute, SQL}) ->
 %% Raises {invalid_index_option, Option, Value} for the first option that
 %% cannot compile: the planner checks every migration with it before any
 %% statement runs, and compile_operation/2 again for a direct caller.
--spec check_index_options(module(), binary(), [atom()], kura_migration:index_opts_map()) -> ok.
+-spec check_index_options(
+    module(), binary(), [kura_migration:column_name()], kura_migration:index_opts_map()
+) -> ok.
 check_index_options(RepoMod, Table, Columns, Opts) ->
     _ = kura_migration:index_name(Table, Columns, Opts),
     ok = check_index_dialect(RepoMod, Opts),
@@ -1618,13 +1620,13 @@ index_method(#{using := Method}) ->
 index_method(#{}) ->
     [].
 
--spec index_columns([atom()], kura_migration:index_opts_map()) -> iodata().
+-spec index_columns([kura_migration:column_name()], kura_migration:index_opts_map()) -> iodata().
 index_columns([Column], #{opclass := OpClass}) ->
-    [quote(atom_to_binary(Column, utf8)), ~" ", index_identifier(opclass, OpClass)];
+    [quote(Column), ~" ", index_identifier(opclass, OpClass)];
 index_columns(Columns, #{opclass := _}) ->
     error({invalid_index_option, opclass, {columns, Columns}});
 index_columns(Columns, #{}) ->
-    lists:join(~", ", [quote(atom_to_binary(C, utf8)) || C <- Columns]).
+    lists:join(~", ", [quote(C) || C <- Columns]).
 
 -spec index_storage(kura_migration:index_opts_map()) -> iodata().
 index_storage(#{with := With}) when is_map(With), map_size(With) > 0 ->
@@ -1703,7 +1705,6 @@ compile_column_def(RepoMod, #kura_column{
     on_delete = OnDelete,
     on_update = OnUpdate
 }) ->
-    NameBin = atom_to_binary(Name, utf8),
     TypeBin = column_type(RepoMod, Type),
     PKPart =
         case PK of
@@ -1725,13 +1726,12 @@ compile_column_def(RepoMod, #kura_column{
             undefined ->
                 <<>>;
             {Table, Col} ->
-                <<" REFERENCES ", (quote(Table))/binary, "(",
-                    (quote(atom_to_binary(Col, utf8)))/binary, ")">>
+                <<" REFERENCES ", (quote(Table))/binary, "(", (quote(Col))/binary, ")">>
         end,
     OnDeletePart = compile_fk_action(~"ON DELETE", OnDelete),
     OnUpdatePart = compile_fk_action(~"ON UPDATE", OnUpdate),
     iolist_to_binary([
-        quote(NameBin),
+        quote(Name),
         ~" ",
         TypeBin,
         PKPart,
@@ -1742,15 +1742,15 @@ compile_column_def(RepoMod, #kura_column{
         OnUpdatePart
     ]).
 
--spec compile_table_constraint(kura_migration:table_constraint()) -> binary().
+-spec compile_table_constraint(kura_migration:ddl_constraint()) -> binary().
 compile_table_constraint({primary_key, Cols}) ->
     ColList = iolist_to_binary(
-        join_comma_iodata([quote(atom_to_binary(C, utf8)) || C <- Cols])
+        join_comma_iodata([quote(C) || C <- Cols])
     ),
     <<"PRIMARY KEY (", ColList/binary, ")">>;
 compile_table_constraint({unique, Cols}) ->
     ColList = iolist_to_binary(
-        join_comma_iodata([quote(atom_to_binary(C, utf8)) || C <- Cols])
+        join_comma_iodata([quote(C) || C <- Cols])
     ),
     <<"UNIQUE (", ColList/binary, ")">>;
 compile_table_constraint({check, Expr}) ->
@@ -1777,18 +1777,18 @@ compile_fk_action(Prefix, no_action) ->
 compile_alter_op(RepoMod, {add_column, ColDef}) ->
     [~"ADD COLUMN ", compile_column_def(RepoMod, ColDef)];
 compile_alter_op(_RepoMod, {drop_column, Name}) ->
-    [~"DROP COLUMN ", quote(atom_to_binary(Name, utf8))];
+    [~"DROP COLUMN ", quote(Name)];
 compile_alter_op(_RepoMod, {rename_column, From, To}) ->
     [
         ~"RENAME COLUMN ",
-        quote(atom_to_binary(From, utf8)),
+        quote(From),
         ~" TO ",
-        quote(atom_to_binary(To, utf8))
+        quote(To)
     ];
 compile_alter_op(RepoMod, {modify_column, Name, Type}) ->
     [
         ~"ALTER COLUMN ",
-        quote(atom_to_binary(Name, utf8)),
+        quote(Name),
         ~" TYPE ",
         column_type(RepoMod, Type)
     ].
@@ -1828,7 +1828,7 @@ check_op(_Op, _SafeEntries) ->
 
 -spec check_alter_op(kura_migration:alter_op(), binary(), [kura_migration:safe_entry()]) -> [map()].
 check_alter_op({drop_column, Col}, Table, SafeEntries) ->
-    case lists:member({drop_column, Col}, SafeEntries) of
+    case marked_safe(drop_column, Col, SafeEntries) of
         true ->
             [];
         false ->
@@ -1844,7 +1844,7 @@ check_alter_op({drop_column, Col}, Table, SafeEntries) ->
             ]
     end;
 check_alter_op({rename_column, Old, _New}, Table, SafeEntries) ->
-    case lists:member({rename_column, Old}, SafeEntries) of
+    case marked_safe(rename_column, Old, SafeEntries) of
         true ->
             [];
         false ->
@@ -1860,7 +1860,7 @@ check_alter_op({rename_column, Old, _New}, Table, SafeEntries) ->
             ]
     end;
 check_alter_op({modify_column, Col, _Type}, Table, SafeEntries) ->
-    case lists:member({modify_column, Col}, SafeEntries) of
+    case marked_safe(modify_column, Col, SafeEntries) of
         true ->
             [];
         false ->
@@ -1880,7 +1880,7 @@ check_alter_op(
     Table,
     SafeEntries
 ) ->
-    case lists:member({add_column, Col}, SafeEntries) of
+    case marked_safe(add_column, Col, SafeEntries) of
         true ->
             [];
         false ->
@@ -1898,6 +1898,25 @@ check_alter_op(
     end;
 check_alter_op(_Op, _Table, _SafeEntries) ->
     [].
+
+%% A safe entry and an operation name one column whether either writes it
+%% as an atom or as a binary.
+-spec marked_safe(
+    drop_column | rename_column | modify_column | add_column,
+    kura_migration:column_name(),
+    [kura_migration:safe_entry()]
+) -> boolean().
+marked_safe(Kind, Column, SafeEntries) ->
+    Name = kura_migration:column_text(Column),
+    lists:any(
+        fun
+            ({EntryKind, EntryColumn}) ->
+                EntryKind =:= Kind andalso kura_migration:column_text(EntryColumn) =:= Name;
+            (drop_table) ->
+                false
+        end,
+        SafeEntries
+    ).
 
 -spec get_safe_entries(module()) -> [kura_migration:safe_entry()].
 get_safe_entries(Module) ->

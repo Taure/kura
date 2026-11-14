@@ -101,12 +101,12 @@
 }).
 
 -record(kura_column, {
-    name :: atom(),
+    name :: atom() | binary(),
     type :: kura_types:kura_type(),
     nullable = true :: boolean(),
     default :: term(),
     primary_key = false :: boolean(),
-    references :: {binary(), atom()} | undefined,
+    references :: {binary(), atom() | binary()} | undefined,
     on_delete :: kura_schema:on_delete() | undefined,
     on_update :: kura_schema:on_delete() | undefined
 }).

@@ -344,3 +344,51 @@ t_cursor_paginate() ->
         limit => 2, cursor_field => qty, 'after' => maps:get(end_cursor, Page)
     }),
     ?assertEqual([~"a"], [T || #{title := T} <- maps:get(entries, Next)]).
+
+%%----------------------------------------------------------------------
+%% A table built from operations that name its columns by binary
+%%----------------------------------------------------------------------
+
+binary_named_ddl_test_() ->
+    {setup, fun binary_named_setup/0, fun teardown/1, fun(_) ->
+        [{"the schema reads and writes the table", fun t_binary_named_table/0}]
+    end}.
+
+binary_named_setup() ->
+    {ok, _} = application:ensure_all_started(minato),
+    {ok, _} = application:ensure_all_started(kura),
+    kura_test_repo:start(),
+    ok = drop_tables(),
+    Operations = [
+        {create_table, ~"renamed_items", [
+            #kura_column{name = ~"item_id", type = id, primary_key = true},
+            #kura_column{name = ~"item_title", type = string, nullable = false},
+            #kura_column{name = ~"quantity", type = integer},
+            #kura_column{name = ~"note", type = string}
+        ]},
+        {create_index, ~"renamed_items", [~"item_title"], #{unique => true}},
+        {alter_table, ~"renamed_items", [
+            {add_column, #kura_column{name = ~"Spare Note", type = string}}
+        ]},
+        {alter_table, ~"renamed_items", [{rename_column, ~"Spare Note", ~"spare"}]},
+        {alter_table, ~"renamed_items", [{modify_column, ~"spare", text}]},
+        {alter_table, ~"renamed_items", [{drop_column, ~"spare"}]}
+    ],
+    lists:foreach(
+        fun(Operation) ->
+            SQL = kura_migrator:compile_operation(kura_test_repo, Operation),
+            {ok, _} = kura_test_repo:query(SQL, [])
+        end,
+        Operations
+    ).
+
+t_binary_named_table() ->
+    Insert = fun(Title) ->
+        kura_test_repo:insert(
+            kura_changeset:cast(?S, #{}, #{title => Title, qty => 3}, [title, qty])
+        )
+    end,
+    {ok, #{id := Id}} = Insert(~"first"),
+    ?assertMatch({ok, #{title := ~"first", qty := 3}}, kura_test_repo:get(?S, Id)),
+    {error, #kura_changeset{errors = Errors}} = Insert(~"first"),
+    ?assertEqual([{title, ~"has already been taken"}], Errors).
