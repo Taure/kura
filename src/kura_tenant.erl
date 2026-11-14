@@ -75,7 +75,7 @@ Raw SQL through a repo's `query/2` is never scoped and never checked.
     clear_tenant/0,
     with_tenant/2,
     without_tenant/1,
-    scope/0,
+    current_scope/0,
     adopt/1,
     scope_query/2,
     tenant_for/2,
@@ -88,7 +88,10 @@ Raw SQL through a repo's `query/2` is never scoped and never checked.
 
 -type strategy() :: {prefix, binary()} | {attribute, {atom(), term()}}.
 
--doc "What a scope runs: a fun, or a module, function and arguments.".
+-doc """
+What `with_tenant/2` and `without_tenant/1` run: a fun of no arguments, or
+`{Module, Function, Args}`, applied as `Module:Function(Args...)`.
+""".
 -type scoped(Result) :: fun(() -> Result) | {module(), atom(), [term()]}.
 
 -doc "A process's tenant and whether it is inside `without_tenant/1`.".
@@ -143,8 +146,14 @@ Run `Scoped` under `Tenant` and put the process back as it was, whether
 `Scoped` returns, raises, throws or exits: the tenant it had before, or
 none. A tenant set inside `Scoped` with `put_tenant/1` ends with it too.
 
-`Scoped` is a fun or `{Module, Function, Args}`. An invalid `Tenant`
-raises before anything changes.
+`Scoped` is a fun of no arguments or `{Module, Function, Args}`, which is
+applied as it stands and so needs no fun handed across modules. An invalid
+`Tenant` raises before anything changes.
+
+```erlang
+kura_tenant:with_tenant({prefix, ~"tenant_abc"}, fun() -> my_repo:all(Q) end),
+kura_tenant:with_tenant({prefix, ~"tenant_abc"}, {my_repo, all, [Q]}).
+```
 """.
 -spec with_tenant(undefined | strategy(), scoped(Result)) -> Result.
 with_tenant(Tenant, Scoped) ->
@@ -164,6 +173,14 @@ inside `Scoped` scopes as usual.
 
 Use it for the few paths that must cross tenants. It is the only way to
 run unscoped once `require_tenant` is set.
+
+`Scoped` is a fun of no arguments or `{Module, Function, Args}`, as for
+`with_tenant/2`:
+
+```erlang
+kura_tenant:without_tenant(fun() -> my_repo:all(Q) end),
+kura_tenant:without_tenant({my_reports, totals, [Month]}).
+```
 """.
 -spec without_tenant(scoped(Result)) -> Result.
 without_tenant(Scoped) ->
@@ -191,17 +208,26 @@ restore(Key, Previous) ->
     ok.
 
 -doc """
-The calling process's scope, for `adopt/1` in a process that does part of
-its work, as kura's parallel preloads do. A process that is not handed the
-scope has no tenant.
+The calling process's scope: its tenant and whether it is inside
+`without_tenant/1`. Hand it to `adopt/1` in a process that does part of
+this one's work, as kura's parallel preloads do. A process that is not
+handed the scope has no tenant.
+
+```erlang
+Scope = kura_tenant:current_scope(),
+spawn_link(fun() ->
+    ok = kura_tenant:adopt(Scope),
+    my_repo:all(kura_query:from(invoice))
+end).
+```
 """.
--spec scope() -> scope().
-scope() ->
+-spec current_scope() -> scope().
+current_scope() ->
     {get_tenant(), erlang:get(?UNSCOPED) =:= true}.
 
 -doc """
-Take on a scope read with `scope/0` in another process, for the rest of
-this process's life.
+Take on a scope read with `current_scope/0` in another process, for the
+rest of this process's life.
 """.
 -spec adopt(scope()) -> ok.
 adopt({Tenant, Unscoped}) ->
@@ -212,14 +238,10 @@ adopt({Tenant, Unscoped}) ->
 flag(true) -> true;
 flag(false) -> undefined.
 
--doc """
-The tenant to compile `Query` under on `RepoMod`: the process's tenant, or
-`undefined` when it has none and none is required. Raises
-`{kura, {tenant_required, Source}}` when the repo requires a tenant, the
-process has no tenant and is not inside `without_tenant/1`, and the query
-reads a tenant-scoped `Source`: as its `from` or through a join, in itself,
-in one of its CTEs or combinations, or in a subquery in its conditions.
-""".
+%% The tenant to compile `Query` under on `RepoMod`: the process's tenant, or
+%% `undefined` when it has none and none is required. Raises
+%% {kura, {tenant_required, Source}} as the moduledoc describes.
+-doc false.
 -spec tenant_for(module(), #kura_query{}) -> undefined | strategy().
 tenant_for(RepoMod, Query) ->
     case get_tenant() of
@@ -231,10 +253,9 @@ tenant_for(RepoMod, Query) ->
             Tenant
     end.
 
--doc """
-Check that a write to `Source` on `RepoMod` may run under the process's
-tenant. Raises as `tenant_for/2` does.
-""".
+%% Checks that a write to `Source` on `RepoMod` may run under the process's
+%% tenant. Raises as tenant_for/2 does.
+-doc false.
 -spec require(module(), atom() | binary()) -> ok.
 require(RepoMod, Source) ->
     case get_tenant() of

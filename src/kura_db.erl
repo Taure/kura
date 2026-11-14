@@ -78,20 +78,19 @@ for pool lookup, sandbox support, telemetry, and type loading.
 query(RepoMod, SQL, Params) ->
     query(RepoMod, SQL, Params, Params).
 
--doc """
-Run `SQL` with `Params`, and report the statement to telemetry and the
-query log as `Shown` says (see `t:kura_redact:shown/0`). With
-`{redacted, ShownParams}` those are reported in place of `Params`, and the
-error of a failed statement is cut down with `kura_redact:error_reason/1`
-whatever `telemetry_error_detail` says. The caller gets the result as it is
-either way.
-""".
--spec query(module(), iodata(), [term()], kura_redact:shown()) -> map() | {error, term()}.
+%% Runs `SQL` with `Params`, and reports the statement to telemetry and the
+%% query log as `Shown` says. With {redacted, ShownParams} those are reported
+%% in place of `Params`, and the error of a failed statement is cut down with
+%% kura_redact:error_reason/1 whatever telemetry_error_detail says. The
+%% caller gets the result as it is either way. kura_repo_worker:query/4 is
+%% the public face of this.
+-doc false.
+-spec query(module(), iodata(), [term()], shown()) -> map() | {error, term()}.
 query(RepoMod, SQL, Params, Shown) ->
     query(RepoMod, SQL, Params, Shown, from_sql).
 
 -doc false.
--spec query(module(), iodata(), [term()], kura_redact:shown(), source()) ->
+-spec query(module(), iodata(), [term()], shown(), source()) ->
     map() | {error, term()}.
 query(RepoMod, SQL, Params, Shown, Source) ->
     Pool = get_pool(RepoMod),
@@ -154,6 +153,9 @@ observed(RepoMod, SQL, Params, T0, Result, Source) ->
     DurationUs = erlang:convert_time_unit(DurationNative, native, microsecond),
     emit_telemetry(RepoMod, SQL, Params, Result, DurationNative, DurationUs, Source),
     Result.
+
+%% As kura_redact shows a statement's parameters.
+-type shown() :: [term()] | {redacted, [term()]}.
 
 %% What a statement reads or writes, as telemetry names it: the table kura
 %% compiled the statement for, or `from_sql` for SQL kura did not build,

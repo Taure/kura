@@ -364,35 +364,19 @@ renamed([#kura_field{name = Name, column = Column, virtual = false} | Rest], Acc
 renamed([_ | Rest], Acc) ->
     renamed(Rest, Acc).
 
--doc """
-Return the columns of `Mod` that load into a field of another name, as
-column name to field name. The inverse of `renamed_columns/1`.
-""".
+%% The columns of `Mod` that load into a field of another name, as column
+%% name to field name: the inverse of renamed_columns/1.
+-doc false.
 -spec fields_by_column(module()) -> #{binary() => atom()}.
 fields_by_column(Mod) ->
     cache({kura_schema, fields_by_column, Mod}, fun() ->
         #{Column => Field || Field := Column <- renamed_columns(Mod)}
     end).
 
--doc """
-Return the fields the repo stamps with the current UTC time, as
-`{Inserted, Updated}`: `Inserted` is set on insert, `Updated` on insert and
-on update, each only when the write does not set it itself. `undefined`
-stands for no such field.
-
-Without a `timestamps/0` callback these are the fields named `inserted_at`
-and `updated_at`, where the schema has them. With it they are the fields
-the callback lists, by position: `[{Inserted, Type}, {Updated, Type}]` or
-`[{Inserted, Type}]`. Each must also be one of the schema's `fields/0`,
-which is where its type and column come from.
-
-kura 2.30 ignored the callback, so a declaration kura cannot use is not an
-error in 2.x: one that is not such a list, or names a field the schema does
-not have, is logged as a warning, once per boot and schema, and the fields
-are found by name as if there were no callback. So is `[]` on a schema
-with a field named `inserted_at` or `updated_at`, which 2.30 stamped. In
-kura 3.0 the first two raise and `[]` stamps nothing.
-""".
+%% The fields the repo stamps with the current UTC time, as
+%% {Inserted, Updated}; `undefined` stands for no such field. The moduledoc
+%% says which they are and what an unusable timestamps/0 does.
+-doc false.
 -spec timestamp_fields(module()) -> {atom() | undefined, atom() | undefined}.
 timestamp_fields(Mod) ->
     cache({kura_schema, timestamp_fields, Mod}, fun() ->

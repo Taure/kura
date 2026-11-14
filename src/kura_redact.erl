@@ -54,20 +54,15 @@ with `kura_repo_worker:query/4` and `#{sensitive => true}`.
     error_reason/1
 ]).
 
--export_type([shown/0, mode/0]).
-
--doc """
-A statement's parameters as telemetry may show them: the parameters
-themselves for a statement on a schema with no redacted field, else
-`{redacted, Shown}`.
-""".
+%% A statement's parameters as telemetry may show them: the parameters
+%% themselves for a statement on a schema with no redacted field, else
+%% {redacted, Shown}. Neither type is exported: they are between kura's own
+%% modules.
 -type shown() :: [term()] | {redacted, [term()]}.
 
--doc """
-How the parameters of a query are shown: as they are (`plain`), as they
-are but marked as a redacted schema's (`redacted`), or each replaced
-(`hidden`).
-""".
+%% How the parameters of a query are shown: as they are (plain), as they
+%% are but marked as a redacted schema's (redacted), or each replaced
+%% (hidden).
 -type mode() :: plain | redacted | hidden.
 
 -define(REDACTED, ~"[redacted]").
@@ -119,13 +114,12 @@ names_redacted(Key, Redacted) when is_binary(Key) ->
 names_redacted(_Key, _Redacted) ->
     false.
 
--doc """
-What telemetry may show of the parameters of a compiled `Query`: `Params`
-itself when no schema it reads has a redacted field, else
-`{redacted, Shown}`. `Shown` holds one `~"[redacted]"` per parameter when
-the query, or a query nested in it, filters on a redacted field, and is
-`Params` otherwise.
-""".
+%% What telemetry may show of the parameters of a compiled `Query`: `Params`
+%% itself when no schema it reads has a redacted field, else
+%% {redacted, Shown}. `Shown` holds one ~"[redacted]" per parameter when the
+%% query, or a query nested in it, filters on a redacted field, and is
+%% `Params` otherwise.
+-doc false.
 -spec query_params(#kura_query{}, [term()]) -> shown().
 query_params(Query, Params) ->
     shown(mode(Query), Params).
@@ -152,10 +146,9 @@ shown(plain, Params) -> Params;
 shown(redacted, Params) -> {redacted, Params};
 shown(hidden, Params) -> {redacted, all_redacted(Params)}.
 
--doc """
-What telemetry may show of parameters the caller says are sensitive: one
-`~"[redacted]"` for each.
-""".
+%% What telemetry may show of parameters the caller says are sensitive: one
+%% ~"[redacted]" for each.
+-doc false.
 -spec sensitive_params([term()]) -> shown().
 sensitive_params(Params) ->
     {redacted, all_redacted(Params)}.
@@ -166,11 +159,10 @@ filtered_params(Query, Params) ->
         false -> Params
     end.
 
--doc """
-What telemetry may show of the parameters of an `update_all` of `Query`
-that sets `SetFields`. As `query_params/2`, and every parameter is
-replaced when a set field is redacted too.
-""".
+%% What telemetry may show of the parameters of an update_all of `Query`
+%% that sets `SetFields`. As query_params/2, and every parameter is replaced
+%% when a set field is redacted too.
+-doc false.
 -spec update_all_params(#kura_query{}, [atom()], [term()]) -> shown().
 update_all_params(#kura_query{from = From} = Query, SetFields, Params) ->
     case redacted_of(From) of
@@ -183,14 +175,13 @@ update_all_params(#kura_query{from = From} = Query, SetFields, Params) ->
             end
     end.
 
--doc """
-What telemetry may show of the parameters of a write to `Schema`:
-`Params` itself when the schema has no redacted field, else
-`{redacted, Shown}`. `Fields` says what `Params` hold: a list of fields
-when the parameters are those fields' values in that order, once or once
-per row, or `{touches, Fields}` when the statement binds values for those
-fields somewhere among its parameters.
-""".
+%% What telemetry may show of the parameters of a write to `Schema`:
+%% `Params` itself when the schema has no redacted field, else
+%% {redacted, Shown}. `Fields` says what `Params` hold: a list of fields
+%% when the parameters are those fields' values in that order, once or once
+%% per row, or {touches, Fields} when the statement binds values for those
+%% fields somewhere among its parameters.
+-doc false.
 -spec write_params(kura_dialect:table(), [atom()] | {touches, [atom()]}, [term()]) -> shown().
 write_params(Schema, Fields, Params) when is_atom(Schema) ->
     case kura_schema:redacted_fields(Schema) of
@@ -226,11 +217,10 @@ by_position([Value | Params], [Field | Fields], AllFields, Redacted) ->
 all_redacted(Params) ->
     [?REDACTED || _ <- Params].
 
--doc """
-What telemetry may show of the error of a failed statement: the error's
-code and the names in it, never its message or detail, which can quote a
-value.
-""".
+%% What telemetry may show of the error of a failed statement: the error's
+%% code and the names in it, never its message or detail, which can quote a
+%% value.
+-doc false.
 -spec error_reason(term()) -> term().
 error_reason(Reason) when is_map(Reason) -> maps:with(?ERROR_KEYS, Reason);
 error_reason(Reason) when is_atom(Reason) -> Reason;

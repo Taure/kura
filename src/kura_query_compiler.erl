@@ -37,7 +37,7 @@ walked again: how its parameters are shown to telemetry, the table telemetry
 names as its source, and what it reads that needs a tenant.
 """.
 -type facts() :: #{
-    shown := kura_redact:mode(),
+    shown := plain | redacted | hidden,
     source := binary() | undefined,
     tenant_scoped := [atom() | binary()]
 }.

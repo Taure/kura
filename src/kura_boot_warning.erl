@@ -1,15 +1,11 @@
 -module(kura_boot_warning).
--moduledoc """
-Logs a warning the first time it is asked to and stays quiet after that,
-until the node restarts. Kura uses it where a default is kept for
-compatibility although a safer setting exists.
-""".
+-moduledoc false.
 
 -include_lib("kernel/include/logger.hrl").
 
 -export([once/2, forget/1]).
 
--doc "Log `Report` as a warning unless a warning for `Key` was logged since boot.".
+%% Logs `Report` as a warning unless a warning for `Key` was logged since boot.
 -spec once(atom(), logger:report()) -> ok.
 once(Key, Report) ->
     case persistent_term:get({?MODULE, Key}, pending) of

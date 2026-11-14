@@ -141,20 +141,21 @@ a_scope_is_handed_to_another_process_test() ->
         Caller = self(),
         Pid = spawn(fun() ->
             ok = kura_tenant:adopt(Scope),
-            Caller ! {self(), kura_tenant:get_tenant(), kura_tenant:scope()}
+            Caller ! {self(), kura_tenant:get_tenant(), kura_tenant:current_scope()}
         end),
         receive
             {Pid, Tenant, Seen} -> {Tenant, Seen}
         end
     end,
     Tenant = {attribute, {org_id, 1}},
-    ?assertEqual({undefined, kura_tenant:scope()}, Adopted(kura_tenant:scope())),
+    ?assertEqual({undefined, kura_tenant:current_scope()}, Adopted(kura_tenant:current_scope())),
     ?assertMatch(
-        {Tenant, _}, kura_tenant:with_tenant(Tenant, fun() -> Adopted(kura_tenant:scope()) end)
+        {Tenant, _},
+        kura_tenant:with_tenant(Tenant, fun() -> Adopted(kura_tenant:current_scope()) end)
     ),
-    Unscoped = kura_tenant:without_tenant(fun kura_tenant:scope/0),
+    Unscoped = kura_tenant:without_tenant(fun kura_tenant:current_scope/0),
     ?assertEqual({undefined, Unscoped}, Adopted(Unscoped)),
-    ?assertNotEqual(Unscoped, kura_tenant:scope()).
+    ?assertNotEqual(Unscoped, kura_tenant:current_scope()).
 
 attribute_tenant_test() ->
     kura_tenant:clear_tenant(),
