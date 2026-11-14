@@ -160,7 +160,7 @@ t_hit_requires_a_tenant() ->
     ?assertEqual(3, length(kura_test_recording_driver:statements())).
 
 t_malformed() ->
-    Q = (kura_query:from(?SECRET))#kura_query{wheres = ill_typed(not_a_list)},
+    Q = (kura_query:from(?SECRET))#kura_query{wheres = kura_test_typing:ill_typed(not_a_list)},
     ?assertEqual(
         #{shown => redacted, source => ~"accounts", tenant_scoped => [?SECRET]},
         kura_query_compiler:facts(Q)
@@ -252,7 +252,3 @@ events() ->
 forward(_Event, _Measurements, Metadata, #{pid := Pid}) ->
     Pid ! {telemetry, Metadata},
     ok.
-
--spec ill_typed(term()) -> dynamic().
-ill_typed(Term) ->
-    Term.

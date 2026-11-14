@@ -111,7 +111,7 @@ escape_like_test() ->
     ?assertEqual(~"plain", kura_query:escape_like(~"plain")),
     ?assertEqual(<<>>, kura_query:escape_like(<<>>)),
     ?assertEqual(~"日本\\%", kura_query:escape_like(~"日本%")),
-    ?assertError(function_clause, kura_query:escape_like(ill_typed("list"))).
+    ?assertError(function_clause, kura_query:escape_like(kura_test_typing:ill_typed("list"))).
 
 fragment_sql(SQL, Params) ->
     Q = kura_query:where(
@@ -681,7 +681,7 @@ lock_that_is_no_lock_is_refused_test_() ->
         {lists:flatten(io_lib:format("~0p", [Lock])), fun() ->
             ?assertError(
                 {kura, {invalid_lock, Lock}},
-                kura_query:lock(kura_query:from(user), ill_typed(Lock))
+                kura_query:lock(kura_query:from(user), kura_test_typing:ill_typed(Lock))
             )
         end}
      || Lock <- Locks
@@ -2061,7 +2061,3 @@ insert_all_parameter_limit_test_() ->
             )
         end}
     ].
-
--spec ill_typed(term()) -> dynamic().
-ill_typed(Term) ->
-    Term.

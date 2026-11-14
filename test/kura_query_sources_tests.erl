@@ -187,7 +187,9 @@ preload_sources_test_() ->
             ?_assertEqual(
                 [{from, ?POST}, {preload, ?COMMENT}, {preload, ?POST}, {preload, ?USER}],
                 kura_query:sources(
-                    kura_query:preload(posts(), ill_typed([{comments, [post]}, {author, #{}}]))
+                    kura_query:preload(
+                        posts(), kura_test_typing:ill_typed([{comments, [post]}, {author, #{}}])
+                    )
                 )
             )},
         {"each step of a through association",
@@ -245,10 +247,9 @@ nested_test_() ->
             )},
         {"an improper condition list ends the walk",
             ?_assertEqual(
-                [], kura_query:nested((posts())#kura_query{wheres = ill_typed(not_a_list)})
+                [],
+                kura_query:nested((posts())#kura_query{
+                    wheres = kura_test_typing:ill_typed(not_a_list)
+                })
             )}
     ].
-
--spec ill_typed(term()) -> dynamic().
-ill_typed(Term) ->
-    Term.
