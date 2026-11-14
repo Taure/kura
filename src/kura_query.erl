@@ -1191,8 +1191,10 @@ kura_query:lock(Q, [{for_update, #{tables => [posts]}}, {for_share, #{tables => 
 ```
 
 `tables` names what `OF` lists: a schema module, or a table or alias name as
-an atom or a binary. The dialect quotes each name, so none is ever written
-into the statement as SQL. A list holds several clauses.
+an atom or a binary. An atom that is a schema module is always read as that
+schema's table, so an alias a schema module shares its name with is given as
+a binary. The dialect quotes each name, so none is ever written into the
+statement as SQL. A list holds several clauses.
 
 The same clauses are read from SQL text, whatever the case and spacing, and
 stored as the term: `~"FOR UPDATE"`, `~"for share nowait"`,

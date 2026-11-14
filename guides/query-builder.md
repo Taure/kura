@@ -273,8 +273,9 @@ kura_query:lock(Q, [{for_update, #{tables => [posts]}}, {for_share, #{tables => 
 ```
 
 A table is a schema module, or a table or alias name as an atom or a
-binary. The dialect quotes it, so a lock term never puts caller text into
-the statement.
+binary. An atom that is a schema module always means that schema's table;
+give an alias of the same name as a binary. The dialect quotes it, so a
+lock term never puts caller text into the statement.
 
 The same clauses written as SQL text are read into those terms:
 `~"FOR UPDATE"`, `~"FOR SHARE NOWAIT"`, `~"FOR UPDATE OF posts, comments"`.
