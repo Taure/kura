@@ -27,13 +27,20 @@ timestamps() -> [{created_at, utc_datetime}, {modified_at, utc_datetime}].
 `[{created_at, utc_datetime}]` stamps on insert only. The fields are still
 declared in `fields/0`.
 
-kura 2.30 ignored `timestamps/0`. A declaration kura cannot use (not such a
-list, or naming a field the schema does not have) is therefore logged as a
-warning, once per boot, and the fields named `inserted_at` and `updated_at`
-are stamped instead; kura 3.0 raises on it. `[]` is for a table whose
-timestamps the database maintains: it stamps nothing in kura 3.0, and until
-then a schema that has `inserted_at` or `updated_at` keeps them stamped,
-with the same warning.
+kura 2.30 ignored `timestamps/0` and stamped the fields named `inserted_at`
+and `updated_at`. Until kura 3.0 those two are therefore stamped whatever
+`timestamps/0` says, and where that differs from the declaration kura logs
+a warning, once for each schema each time the schema is loaded:
+
+- A declaration that leaves out an `inserted_at` or `updated_at` field of
+  the schema stamps the listed fields and that field. kura 3.0 stamps only
+  the listed fields.
+- A declaration kura cannot use (not such a list, or naming a field the
+  schema does not have) stamps the fields named `inserted_at` and
+  `updated_at`. kura 3.0 raises on it.
+- `[]` is for a table whose timestamps the database maintains. It stamps
+  nothing in kura 3.0, and until then a schema that has `inserted_at` or
+  `updated_at` keeps them stamped.
 
 ```erlang
 -module(my_user).
@@ -399,61 +406,84 @@ fields_by_column(Mod) ->
     end).
 
 %% The fields the repo stamps with the current UTC time, as
-%% {Inserted, Updated}; `undefined` stands for no such field. The moduledoc
-%% says which they are and what an unusable timestamps/0 does.
+%% {OnInsert, OnUpdate}. The moduledoc says which they are and what an
+%% unusable timestamps/0 does.
 -doc false.
--spec timestamp_fields(module()) -> {atom() | undefined, atom() | undefined}.
+-spec timestamp_fields(module()) -> {[atom()], [atom()]}.
 timestamp_fields(Mod) ->
     cache({kura_schema, timestamp_fields, Mod}, fun() ->
         Types = field_types(Mod),
-        Named = {named_timestamp(inserted_at, Types), named_timestamp(updated_at, Types)},
+        Named = named_timestamps(Types),
         case erlang:function_exported(Mod, timestamps, 0) of
             true -> declared_timestamps(Mod, Mod:timestamps(), Types, Named);
             false -> Named
         end
     end).
 
-named_timestamp(Field, Types) when is_map_key(Field, Types) -> Field;
-named_timestamp(_Field, _Types) -> undefined.
+named_timestamps(Types) ->
+    OnUpdate = [updated_at || is_map_key(updated_at, Types)],
+    {[inserted_at || is_map_key(inserted_at, Types)] ++ OnUpdate, OnUpdate}.
 
-declared_timestamps(Mod, Declared, Types, Named) ->
+declared_timestamps(Mod, Declared, Types, {NamedOnInsert, NamedOnUpdate} = Named) ->
     case listed_timestamps(Declared, Types) of
-        {ok, Fields} ->
-            Fields;
-        nothing when Named =:= {undefined, undefined} ->
+        {ok, {OnInsert, OnUpdate}} ->
+            ok = unlisted_timestamps(
+                Mod,
+                Declared,
+                lists:usort((NamedOnInsert -- OnInsert) ++ (NamedOnUpdate -- OnUpdate))
+            ),
+            {lists:usort(OnInsert ++ NamedOnInsert), lists:usort(OnUpdate ++ NamedOnUpdate)};
+        nothing when Named =:= {[], []} ->
             Named;
         nothing ->
-            ok = timestamps_not_used(
-                Mod,
-                Declared,
-                ~"kura: timestamps/0 lists no field, and the schema's inserted_at and updated_at are stamped as kura 2.30 stamped them",
-                ~"nothing to do to keep the stamps; kura 3.0 reads [] as stamp nothing"
-            ),
+            ok = timestamps_warning(#{
+                msg =>
+                    ~"kura: timestamps/0 lists no field, and the schema's inserted_at and updated_at are stamped as kura 2.30 stamped them",
+                schema => Mod,
+                timestamps => Declared,
+                fix => ~"nothing to do to keep the stamps; kura 3.0 reads [] as stamp nothing"
+            }),
             Named;
         unusable ->
-            ok = timestamps_not_used(
-                Mod,
-                Declared,
-                ~"kura: timestamps/0 is not a list of one or two of the schema's fields, so the fields named inserted_at and updated_at are stamped, as kura 2.30 stamped them",
-                ~"return [{InsertedField, Type}, {UpdatedField, Type}] or [{InsertedField, Type}], each a field of fields/0; kura 3.0 raises on anything else"
-            ),
+            ok = timestamps_warning(#{
+                msg =>
+                    ~"kura: timestamps/0 is not a list of one or two of the schema's fields, so the fields named inserted_at and updated_at are stamped, as kura 2.30 stamped them",
+                schema => Mod,
+                timestamps => Declared,
+                fix =>
+                    ~"return [{InsertedField, Type}, {UpdatedField, Type}] or [{InsertedField, Type}], each a field of fields/0; kura 3.0 raises on anything else"
+            }),
             Named
     end.
 
 listed_timestamps([], _Types) ->
     nothing;
 listed_timestamps([{Inserted, _Type}], Types) when is_map_key(Inserted, Types) ->
-    {ok, {Inserted, undefined}};
+    {ok, {[Inserted], []}};
 listed_timestamps([{Inserted, _InsertedType}, {Updated, _UpdatedType}], Types) when
     is_map_key(Inserted, Types), is_map_key(Updated, Types)
 ->
-    {ok, {Inserted, Updated}};
+    {ok, {lists:usort([Inserted, Updated]), [Updated]}};
 listed_timestamps(_Declared, _Types) ->
     unusable.
 
-%% The result is cached per schema, so this is logged once for each.
-timestamps_not_used(Mod, Declared, Message, Fix) ->
-    ?LOG_WARNING(#{msg => Message, schema => Mod, timestamps => Declared, fix => Fix}),
+unlisted_timestamps(_Mod, _Declared, []) ->
+    ok;
+unlisted_timestamps(Mod, Declared, StillStamped) ->
+    timestamps_warning(#{
+        msg =>
+            ~"kura: timestamps/0 leaves out a field named inserted_at or updated_at, which is still stamped as kura 2.30 stamped it",
+        schema => Mod,
+        timestamps => Declared,
+        still_stamped => StillStamped,
+        fix =>
+            ~"nothing to do to keep the stamp; kura 3.0 stamps only the fields timestamps/0 lists"
+    }).
+
+%% The result is cached per schema, so this is logged once for each load of
+%% the schema.
+timestamps_warning(Report) ->
+    ?LOG_WARNING(Report),
     ok.
 
 -doc """

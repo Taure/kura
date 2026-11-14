@@ -1146,17 +1146,17 @@ dump_error_changeset(CS, Action, {Field, Msg}) ->
     {error, kura_changeset:add_error(CS#kura_changeset{action = Action}, Field, Msg)}.
 
 maybe_add_timestamps(SchemaMod, Changes, Action) ->
-    {Inserted, Updated} = kura_schema:timestamp_fields(SchemaMod),
+    {OnInsert, OnUpdate} = kura_schema:timestamp_fields(SchemaMod),
     Now = calendar:universal_time(),
-    Changes1 =
-        case Action of
-            insert -> stamp(Inserted, Changes, Now);
-            update -> Changes
-        end,
-    stamp(Updated, Changes1, Now).
+    case Action of
+        insert -> stamp(OnInsert, Changes, Now);
+        update -> stamp(OnUpdate, Changes, Now)
+    end.
 
-stamp(undefined, Changes, _Now) -> Changes;
-stamp(Field, Changes, Now) -> Changes#{Field => maps:get(Field, Changes, Now)}.
+stamp([], Changes, _Now) ->
+    Changes;
+stamp([Field | Rest], Changes, Now) ->
+    stamp(Rest, Changes#{Field => maps:get(Field, Changes, Now)}, Now).
 
 -spec maybe_generate_pk(module(), module(), map()) -> map().
 maybe_generate_pk(RepoMod, SchemaMod, Changes) ->
