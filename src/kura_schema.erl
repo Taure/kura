@@ -248,15 +248,41 @@ field_types(Mod) ->
 Return `true` if `Mod` is a loaded module exporting `table/0`, i.e. a schema
 rather than a bare table name. Memoised, because the negative answer costs a
 `code_server` round trip on every call.
+
+A name that could not be loaded when it was first asked about is not
+written off: once a module of that name is loaded, it is looked at again,
+and what kura remembered of the name while it was not a schema is dropped
+as `forget/1` drops it.
 """.
 -spec is_schema(atom()) -> boolean().
 is_schema(Mod) when is_atom(Mod) ->
-    cache({kura_schema, is_schema, Mod}, fun() ->
-        case code:ensure_loaded(Mod) of
-            {module, Mod} -> erlang:function_exported(Mod, table, 0);
-            _ -> false
-        end
-    end).
+    Key = {kura_schema, is_schema, Mod},
+    case persistent_term:get(Key, unknown) of
+        Known when is_boolean(Known) ->
+            Known;
+        unloaded ->
+            erlang:module_loaded(Mod) andalso loaded_since(Key, Mod);
+        _Unknown ->
+            case code:ensure_loaded(Mod) of
+                {module, Mod} ->
+                    exports_table(Key, Mod);
+                _NotLoaded ->
+                    persistent_term:put(Key, unloaded),
+                    false
+            end
+    end.
+
+%% Every answer cached for the name was worked out without the module.
+-spec loaded_since(term(), module()) -> boolean().
+loaded_since(Key, Mod) ->
+    ok = forget(Mod),
+    exports_table(Key, Mod).
+
+-spec exports_table(term(), module()) -> boolean().
+exports_table(Key, Mod) ->
+    Schema = erlang:function_exported(Mod, table, 0),
+    persistent_term:put(Key, Schema),
+    Schema.
 
 -doc """
 Return the names of `Mod`'s encrypted fields (see `kura_types:encryption/1`),
@@ -305,16 +331,15 @@ field_specs(Mod) ->
     | undefined.
 load_plan(Mod) ->
     cache_defined({kura_schema, load_plan, Mod}, fun() ->
-        case code:ensure_loaded(Mod) of
-            {module, Mod} ->
-                case erlang:function_exported(Mod, fields, 0) of
-                    true ->
-                        {Types, Specs} = field_specs(Mod),
-                        {Types, Specs, fields_by_column(Mod)};
-                    false ->
-                        undefined
-                end;
-            _ ->
+        %% is_schema/1 loads the module the first time the name is asked
+        %% about, so a table named by a bare atom costs no code server call
+        %% for each result set.
+        _ = is_schema(Mod),
+        case erlang:module_loaded(Mod) andalso erlang:function_exported(Mod, fields, 0) of
+            true ->
+                {Types, Specs} = field_specs(Mod),
+                {Types, Specs, fields_by_column(Mod)};
+            false ->
                 undefined
         end
     end).

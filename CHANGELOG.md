@@ -69,6 +69,10 @@ Behaviour that changes for existing callers:
   query, so one in a subquery that names the outer query's field, or a
   field an outer CTE hands it, is hidden; so is a plain column that shares
   the name. A distance from a redacted vector field hides the vector.
+- A schema module loaded after kura was first asked about its name is a
+  schema from then on. `kura_schema:is_schema/1` used to remember `false`
+  for the life of the VM, which left the name a bare table: no redaction
+  and no encrypted-field guard.
 - A changeset of a schema with redacted fields no longer carries the
   database's message on `base`, which can quote a value (`invalid input
   syntax for type uuid: "..."`): the error is `database error 22P02`, its
