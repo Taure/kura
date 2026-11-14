@@ -58,6 +58,7 @@ with `kura_repo_worker:query/4` and `#{sensitive => true}`.
     changeset/1,
     query_params/2,
     mode/1,
+    mode/2,
     shown/2,
     sensitive_params/1,
     update_all_params/3,
@@ -175,7 +176,13 @@ query_params(Query, Params) ->
 -doc false.
 -spec mode(#kura_query{}) -> mode().
 mode(Query) ->
-    case redacted_read(Query) of
+    mode(Query, kura_query:sources(Query)).
+
+%% mode/1 for a caller that has the query's sources already.
+-doc false.
+-spec mode(#kura_query{}, [kura_query:source()]) -> mode().
+mode(Query, Sources) ->
+    case redacted_read(Sources) of
         [] ->
             plain;
         Redacted ->
@@ -273,18 +280,15 @@ error_reason({Tag, Reason}) when is_atom(Tag), is_map(Reason) -> {Tag, error_rea
 error_reason(_Reason) -> redacted.
 
 filters_redacted(Query) ->
-    names_anywhere(Query, redacted_read(Query)).
+    names_anywhere(Query, redacted_read(kura_query:sources(Query))).
 
 %% The redacted fields of every source the query reads, at any depth. A
 %% condition is judged against all of them and not only those of its own
 %% level: the database resolves a name a subquery's sources lack to the
 %% outer query's column, and a CTE hands its columns to whatever reads it.
-redacted_read(Query) ->
+redacted_read(Sources) ->
     lists:usort(
-        lists:append([
-            redacted_of(Source)
-         || {Role, Source} <- kura_query:sources(Query), Role =/= preload
-        ])
+        lists:append([redacted_of(Source) || {Role, Source} <- Sources, Role =/= preload])
     ).
 
 names_anywhere(_Query, []) ->

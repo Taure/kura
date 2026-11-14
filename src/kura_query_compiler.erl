@@ -166,10 +166,11 @@ compiled(RepoMod, Query) ->
 -doc false.
 -spec facts(#kura_query{}) -> facts().
 facts(Query) ->
+    Sources = kura_query:sources(Query),
     #{
-        shown => kura_redact:mode(Query),
+        shown => kura_redact:mode(Query, Sources),
         source => kura_db:source_name(Query#kura_query.from),
-        tenant_scoped => kura_tenant:scoped_sources(Query)
+        tenant_scoped => kura_tenant:scoped_in(Sources)
     }.
 
 %% A split crash would carry the query's values in its stacktrace.

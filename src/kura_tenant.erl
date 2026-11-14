@@ -81,6 +81,7 @@ Raw SQL through a repo's `query/2` is never scoped and never checked.
     tenant_for/2,
     require/2,
     scoped_sources/1,
+    scoped_in/1,
     permit/3
 ]).
 
@@ -351,9 +352,15 @@ refuse([Source | _]) -> error({kura, {tenant_required, Source}}).
 -doc false.
 -spec scoped_sources(#kura_query{}) -> [atom() | binary()].
 scoped_sources(Query) ->
+    scoped_in(kura_query:sources(Query)).
+
+%% scoped_sources/1 for a caller that has the query's sources already.
+-doc false.
+-spec scoped_in([kura_query:source()]) -> [atom() | binary()].
+scoped_in(Sources) ->
     [
         Source
-     || {Role, Source} <- kura_query:sources(Query),
+     || {Role, Source} <- Sources,
         Role =:= from orelse Role =:= join,
         tenant_scoped(Source)
     ].

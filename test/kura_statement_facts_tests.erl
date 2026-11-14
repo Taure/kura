@@ -18,8 +18,8 @@ does not walk the query to get there.
 -define(WALKS, [
     {kura_query, sources, 1},
     {kura_query, nested, 1},
-    {kura_redact, mode, 1},
-    {kura_tenant, scoped_sources, 1},
+    {kura_redact, mode, 2},
+    {kura_tenant, scoped_in, 1},
     {kura_db, extract_source, 1}
 ]).
 
@@ -39,6 +39,7 @@ facts_test_() ->
         end,
         [
             {"the facts of a shape", fun t_facts/0},
+            {"the facts take one walk of the sources", fun t_facts_walk_once/0},
             {"a hit hands back the facts the miss stored", fun t_hit_has_the_facts/0},
             {"a hit walks nothing", fun t_hit_walks_nothing/0},
             {"a hit is redacted as the miss was", fun t_hit_is_redacted/0},
@@ -75,6 +76,19 @@ t_facts() ->
         #{shown => plain, source => undefined, tenant_scoped => []},
         kura_query_compiler:facts(#kura_query{})
     ).
+
+t_facts_walk_once() ->
+    Q = kura_query:where(
+        kura_query:join(kura_query:from(?SECRET), inner, ?SCOPED, {id, id}), {token, '=', ~"t"}
+    ),
+    MFA = {kura_query, sources, 1},
+    1 = erlang:trace_pattern(MFA, true, [call_count]),
+    try
+        #{shown := hidden, tenant_scoped := [?SECRET, ?SCOPED]} = kura_query_compiler:facts(Q),
+        ?assertEqual({call_count, 1}, erlang:trace_info(MFA, call_count))
+    after
+        erlang:trace_pattern(MFA, false, [call_count])
+    end.
 
 t_hit_has_the_facts() ->
     Q = fun(Token) -> kura_query:where(kura_query:from(?SECRET), {token, '=', Token}) end,
