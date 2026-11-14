@@ -108,8 +108,8 @@ t_hit_walks_nothing() ->
         {ok, []} = kura_tenant:with_tenant(Tenant, fun() -> kura_repo_worker:all(?REPO, Q(4)) end),
         ?assertEqual([0, 0, 0, 0, 0], Calls()),
         {ok, []} = kura_repo_worker:all(?REPO, kura_query:limit(Q(5), 1)),
-        [Sources, Nested | Others] = Calls(),
-        ?assert(Sources > 0 andalso Nested > 0),
+        [Sources, _Nested | Others] = Calls(),
+        ?assert(Sources > 0),
         ?assertEqual([1, 2, 0], Others)
     after
         [erlang:trace_pattern(MFA, false, [call_count]) || MFA <- ?WALKS]

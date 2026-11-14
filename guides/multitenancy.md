@@ -151,6 +151,9 @@ without a tenant then raises `{kura, {tenant_required, Source}}`, where
 `update_all` and `delete_all`. A query is judged by everything it reads:
 what it is from and what it joins, in the query itself and in every CTE,
 union branch and subquery inside it. `kura_query:sources/1` lists them.
+A source that names a CTE is judged by the CTE's body, but only where the
+database sees the CTE: inside a CTE's body its own name, and the name of a
+CTE listed after it, are tables.
 
 Two things are exempt.
 

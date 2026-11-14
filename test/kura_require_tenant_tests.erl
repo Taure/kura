@@ -148,6 +148,32 @@ required_test_() ->
             Q = kura_query:with_cte(scoped(), ~"edge_items", shared()),
             ?assertMatch({_, []}, kura_query_compiler:to_sql(?REPO, Q))
         end},
+        {"a CTE's body that names the CTE reads the table, on a miss and on a hit", fun() ->
+            Q = kura_query:with_cte(kura_query:from(~"edge_items"), ~"edge_items", scoped()),
+            ?assertError(?REFUSED(?SCOPED), kura_query_compiler:to_sql(?REPO, Q)),
+            ?assertError(?REFUSED(?SCOPED), kura_repo_worker:all(?REPO, Q)),
+            ?assertError(?REFUSED(?SCOPED), kura_repo_worker:all(?REPO, Q)),
+            ?assertEqual([], statements())
+        end},
+        {"a CTE's body reads the table a later CTE is named after", fun() ->
+            Q = kura_query:with_cte(
+                kura_query:with_cte(kura_query:from(~"rows"), ~"rows", scoped()),
+                ~"edge_items",
+                shared()
+            ),
+            ?assertError(?REFUSED(?SCOPED), kura_query_compiler:to_sql(?REPO, Q)),
+            ?assertError(?REFUSED(?SCOPED), kura_repo_worker:all(?REPO, Q)),
+            ?assertError(?REFUSED(?SCOPED), kura_repo_worker:all(?REPO, Q)),
+            ?assertEqual([], statements())
+        end},
+        {"a CTE's body reads the CTE listed before it", fun() ->
+            Q = kura_query:with_cte(
+                kura_query:with_cte(kura_query:from(~"rows"), ~"edge_items", shared()),
+                ~"rows",
+                scoped()
+            ),
+            ?assertMatch({_, []}, kura_query_compiler:to_sql(?REPO, Q))
+        end},
         {"a CTE named after a schema's module does not stand in for its table", fun() ->
             Q = kura_query:with_cte(scoped(), atom_to_binary(?SCOPED), shared()),
             ?assertError(?REFUSED(?SCOPED), kura_query_compiler:to_sql(?REPO, Q))

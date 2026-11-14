@@ -132,7 +132,9 @@ on a repo that declares a tenancy strategy. kura does not start with a
 value it cannot read for any of the six: the error names the setting.
 
 `require_tenant` judges a query by everything it reads, joins included: a
-shared schema joined to a tenant-scoped one no longer passes.
+shared schema joined to a tenant-scoped one no longer passes. A CTE's body
+sees the CTEs listed before it, as PostgreSQL resolves them: its own name
+and a later CTE's name are tables there.
 
 CI runs the suites on PostgreSQL 14, 15, 16, 17 and 18, and a release needs
 every one of them to pass. Only the release job has write permissions.

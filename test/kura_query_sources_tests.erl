@@ -89,6 +89,45 @@ sources_test_() ->
                     )
                 )
             )},
+        {"a CTE's body that names the CTE reads the table",
+            ?_assertEqual(
+                [{cte, ~"posts"}, {from, ?POST}],
+                kura_query:sources(
+                    kura_query:with_cte(kura_query:from(~"posts"), ~"posts", posts())
+                )
+            )},
+        {"a CTE's body reads the CTEs before it, and a table where a later one is named",
+            ?_assertEqual(
+                [{cte, ~"second"}, {from, ~"second"}, {cte, ~"first"}],
+                kura_query:sources(
+                    kura_query:with_cte(
+                        kura_query:with_cte(
+                            kura_query:from(~"second"), ~"first", kura_query:from(~"second")
+                        ),
+                        ~"second",
+                        kura_query:from(~"first")
+                    )
+                )
+            )},
+        {"a subquery in a CTE's body sees what the body sees",
+            ?_assertEqual(
+                [{from, ?POST}, {from, ?USER}, {from, ~"recent"}, {from, ?USER}, {cte, ~"recent"}],
+                kura_query:sources(
+                    kura_query:with_cte(
+                        kura_query:with_cte(
+                            posts(),
+                            ~"recent",
+                            kura_query:where(
+                                users(), {id, in, {subquery, kura_query:from(~"recent")}}
+                            )
+                        ),
+                        ~"later",
+                        kura_query:where(
+                            users(), {id, in, {subquery, kura_query:from(~"recent")}}
+                        )
+                    )
+                )
+            )},
         {"a schema names a CTE by its table, not by its module",
             ?_assertEqual(
                 [{cte, ?POST}, {from, ?USER}, {from, ?POST}, {from, ?USER}],

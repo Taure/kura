@@ -1510,6 +1510,10 @@ query's CTEs, which is a name and not a table: what the CTE reads is listed
 from its body. A source names a CTE by its table name, a schema's being
 that of its `table/0`, and only in a query with no `prefix/2`, since a
 prefix qualifies the name and a qualified name is a table's.
+
+A CTE's body sees the CTEs listed before it, as the `WITH` kura writes has
+no `RECURSIVE`: in the body, the CTE's own name and the name of a CTE listed
+after it are tables.
 """.
 -type source() :: {from | join | cte | preload, module() | atom() | binary()}.
 
@@ -1542,7 +1546,17 @@ nested(#kura_query{ctes = Ctes, combinations = Combinations, wheres = Wheres, ha
 %% A prefix qualifies every table of the query it is set on, and a qualified
 %% name is a table's, never a CTE's.
 -spec read_sources(#kura_query{}, [term()]) -> [source()].
-read_sources(#kura_query{from = From, joins = Joins, ctes = Ctes} = Query, OuterNames) ->
+read_sources(
+    #kura_query{
+        from = From,
+        joins = Joins,
+        ctes = Ctes,
+        combinations = Combinations,
+        wheres = Wheres,
+        havings = Havings
+    } = Query,
+    OuterNames
+) ->
     Names = cte_names(Ctes) ++ OuterNames,
     Readable =
         case Query#kura_query.prefix of
@@ -1550,7 +1564,19 @@ read_sources(#kura_query{from = From, joins = Joins, ctes = Ctes} = Query, Outer
             _Prefix -> []
         end,
     read_source(from, From, Readable) ++ joined_sources(Joins, Readable) ++
-        nested_sources(nested(Query), Names).
+        cte_sources(Ctes, OuterNames) ++
+        nested_sources(bodies(Combinations) ++ subqueries(Wheres) ++ subqueries(Havings), Names).
+
+%% The statement says WITH, never WITH RECURSIVE, so a CTE's body sees the
+%% CTEs listed before it and not itself or a later one: there, that name is
+%% a table's.
+-spec cte_sources(term(), [term()]) -> [source()].
+cte_sources([{Name, #kura_query{} = Body} | Rest], Visible) ->
+    read_sources(Body, Visible) ++ cte_sources(Rest, [Name | Visible]);
+cte_sources([_ | Rest], Visible) ->
+    cte_sources(Rest, Visible);
+cte_sources(_, _Visible) ->
+    [].
 
 -spec nested_sources([#kura_query{}], [term()]) -> [source()].
 nested_sources([], _Names) ->
