@@ -304,7 +304,7 @@ field_specs(Mod) ->
     {#{atom() => kura_types:kura_type()}, #{atom() => field_encryption()}, #{binary() => atom()}}
     | undefined.
 load_plan(Mod) ->
-    cache({kura_schema, load_plan, Mod}, fun() ->
+    cache_defined({kura_schema, load_plan, Mod}, fun() ->
         case code:ensure_loaded(Mod) of
             {module, Mod} ->
                 case erlang:function_exported(Mod, fields, 0) of
@@ -930,6 +930,22 @@ forget(Mod) ->
 %%----------------------------------------------------------------------
 %% Internal: persistent_term cache
 %%----------------------------------------------------------------------
+
+%% A module that is not a schema now may be loaded as one later, so
+%% `undefined` is worked out again each time.
+cache_defined(Key, Fun) ->
+    try
+        persistent_term:get(Key)
+    catch
+        error:badarg ->
+            case Fun() of
+                undefined ->
+                    undefined;
+                Value ->
+                    persistent_term:put(Key, Value),
+                    Value
+            end
+    end.
 
 %% Keys are {kura_schema, Tag, Mod}; forget/1 relies on that shape.
 cache(Key, Fun) ->
