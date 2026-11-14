@@ -457,6 +457,29 @@ join_schema_module_test() ->
     {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assert(binary:match(SQL, <<"INNER JOIN \"posts\"">>) =/= nomatch).
 
+join_selects_only_the_from_table_test() ->
+    Joined = kura_query:join(kura_query:from(user), inner, post, {id, user_id}),
+    ?assertMatch(
+        {<<"SELECT \"user\".* FROM \"user\" ", _/binary>>, []}, kura_dialect_pg:to_sql(Joined)
+    ),
+    Distinct = kura_query:distinct(Joined),
+    ?assertMatch(
+        {<<"SELECT DISTINCT \"user\".* FROM \"user\" ", _/binary>>, []},
+        kura_dialect_pg:to_sql(Distinct)
+    ),
+    Prefixed = kura_query:prefix(Joined, ~"acme"),
+    ?assertMatch(
+        {
+            <<"SELECT \"user\".* FROM \"acme\".\"user\" INNER JOIN \"acme\".\"post\" ", _/binary>>,
+            []
+        },
+        kura_dialect_pg:to_sql(Prefixed)
+    ),
+    Selected = kura_query:select(Joined, [id, title]),
+    ?assertMatch(
+        {<<"SELECT \"id\", \"title\" FROM ", _/binary>>, []}, kura_dialect_pg:to_sql(Selected)
+    ).
+
 %%----------------------------------------------------------------------
 %% ORDER BY
 %%----------------------------------------------------------------------
@@ -1516,7 +1539,8 @@ join_from_bare_table_leaves_columns_bare_test() ->
     {SQL, _} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
         <<
-            "SELECT * FROM \"user\" INNER JOIN \"post\" ON \"user\".\"id\" = \"post\".\"user_id\" "
+            "SELECT \"user\".* FROM \"user\" "
+            "INNER JOIN \"post\" ON \"user\".\"id\" = \"post\".\"user_id\" "
             "WHERE \"id\" = $1"
         >>,
         SQL
@@ -1532,7 +1556,7 @@ join_leaves_the_attribute_tenant_field_bare_test() ->
     end),
     ?assertEqual(
         <<
-            "SELECT * FROM \"posts\" "
+            "SELECT \"posts\".* FROM \"posts\" "
             "INNER JOIN \"users\" ON \"posts\".\"author_id\" = \"users\".\"id\" "
             "WHERE \"author_id\" = $1"
         >>,
@@ -1685,7 +1709,7 @@ distance_threshold_under_a_join_qualifies_the_vector_column_test() ->
     {SQL, Params} = kura_dialect_pg:to_sql(Q1),
     ?assertEqual(
         <<
-            "SELECT * FROM \"kura_vector_items\" "
+            "SELECT \"kura_vector_items\".* FROM \"kura_vector_items\" "
             "INNER JOIN \"users\" ON \"kura_vector_items\".\"id\" = \"users\".\"id\" "
             "WHERE \"kura_vector_items\".\"embedding\" <-> $1 < $2 "
             "ORDER BY \"kura_vector_items\".\"embedding\" <-> $3 ASC"

@@ -68,7 +68,7 @@ join_test() ->
     ?assertEqual(
         {
             <<
-                "SELECT * FROM \"renamed_items\" INNER JOIN \"edge_items\" "
+                "SELECT \"renamed_items\".* FROM \"renamed_items\" INNER JOIN \"edge_items\" "
                 "ON \"renamed_items\".\"item_id\" = \"edge_items\".\"qty\" "
                 "WHERE \"renamed_items\".\"item_title\" = $1"
             >>,
@@ -80,12 +80,60 @@ join_test() ->
     ?assertEqual(
         {
             <<
-                "SELECT * FROM \"edge_items\" LEFT JOIN \"renamed_items\" "
+                "SELECT \"edge_items\".* FROM \"edge_items\" LEFT JOIN \"renamed_items\" "
                 "ON \"edge_items\".\"qty\" = \"renamed_items\".\"item_id\""
             >>,
             []
         },
         kura_dialect_pg:to_sql(Q2)
+    ).
+
+joined_schema_renames_test() ->
+    Q0 = kura_query:join(kura_query:from(kura_test_edge_schema), left, ?S, {qty, id}),
+    Q1 = kura_query:where(Q0, {'or', [{title, ~"a"}, {name, ~"b"}]}),
+    Q2 = kura_query:order_by(Q1, [{title, desc}]),
+    Q3 = kura_query:select(Q2, [name, title, {count, title}]),
+    ?assertEqual(
+        {
+            <<
+                "SELECT \"edge_items\".\"name\", \"item_title\" AS \"title\", "
+                "count(\"item_title\") AS \"count\" "
+                "FROM \"edge_items\" LEFT JOIN \"renamed_items\" "
+                "ON \"edge_items\".\"qty\" = \"renamed_items\".\"item_id\" "
+                "WHERE (\"item_title\" = $1 OR \"edge_items\".\"name\" = $2) "
+                "ORDER BY \"item_title\" DESC"
+            >>,
+            [~"a", ~"b"]
+        },
+        kura_dialect_pg:to_sql(Q3)
+    ).
+
+a_from_field_is_never_read_as_a_joined_rename_test() ->
+    Q0 = kura_query:join(kura_query:from(kura_test_edge_schema), left, ?S, {qty, id}),
+    ?assertEqual(
+        {
+            <<
+                "SELECT \"edge_items\".* FROM \"edge_items\" LEFT JOIN \"renamed_items\" "
+                "ON \"edge_items\".\"qty\" = \"renamed_items\".\"item_id\" "
+                "WHERE \"edge_items\".\"qty\" = $1 AND \"edge_items\".\"id\" = $2"
+            >>,
+            [1, 2]
+        },
+        kura_dialect_pg:to_sql(kura_query:where(kura_query:where(Q0, {qty, 1}), {id, 2}))
+    ).
+
+joined_renames_that_disagree_test() ->
+    Q0 = kura_query:join(
+        kura_query:from(kura_test_join_author_schema),
+        inner,
+        kura_test_join_book_schema,
+        {id, author_id}
+    ),
+    Q1 = kura_query:join(Q0, inner, kura_test_join_review_schema, {id, book_id}),
+    ?assertMatch({_, []}, kura_dialect_pg:to_sql(Q1)),
+    ?assertError(
+        {kura, {ambiguous_field, rating, [~"book_rating", ~"stars"]}},
+        kura_dialect_pg:to_sql(kura_query:order_by(Q1, [{rating, asc}]))
     ).
 
 order_by_an_alias_that_shadows_a_field_test() ->

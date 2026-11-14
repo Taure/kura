@@ -12,7 +12,7 @@ configured for the running app.
 
 -include("kura.hrl").
 
--type renames() :: #{atom() => binary()}.
+-type renames() :: #{atom() => binary() | {ambiguous, [binary()]}}.
 -type qualified_columns() :: undefined | {binary(), #{atom() => kura_types:kura_type()}}.
 -type column_context() :: qualified_columns() | {renamed, renames(), qualified_columns()}.
 
@@ -60,8 +60,9 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
     {CteSQL, CteParams, Counter00} = compile_ctes(Q#kura_query.ctes, StartCounter),
 
     Table = resolve_table(From),
-    Ctx = column_context(Q),
-    {SelectSQL, Params0, Counter0} = compile_select(Q, Ctx, Counter00),
+    Joined = joined_renames(Q),
+    Ctx = column_context(Q, Joined),
+    {SelectSQL, Params0, Counter0} = compile_select(Q, {Table, Joined}, Ctx, Counter00),
     {WhereSQL, Params1, Counter1} = compile_wheres(Q#kura_query.wheres, Ctx, Counter0),
     Prefix = resolve_prefix(Q#kura_query.prefix),
     {JoinSQL, Params2, Counter2} = compile_joins(
@@ -566,18 +567,23 @@ bulk_returning(#{}, _Renames) ->
 %% Internal: SELECT clause
 %%----------------------------------------------------------------------
 
-compile_select(#kura_query{select = []}, _Ctx, Counter) ->
+%% A bare `*` after a join would also return the joined tables' columns,
+%% and a row holds one value per name: the joined table's `id` would
+%% replace the from table's.
+compile_select(#kura_query{select = [], joins = []}, _From, _Ctx, Counter) ->
     {~"*", [], Counter};
-compile_select(#kura_query{select = {exprs, Exprs}}, Ctx, Counter) ->
+compile_select(#kura_query{select = []}, {Table, _Joined}, _Ctx, Counter) ->
+    {[quote_ident(Table), ~".*"], [], Counter};
+compile_select(#kura_query{select = {exprs, Exprs}}, _From, Ctx, Counter) ->
     {Parts, AllParams, NewCounter} = compile_select_exprs(Exprs, Ctx, Counter),
     {join_comma(Parts), AllParams, NewCounter};
-compile_select(#kura_query{select = Fields}, Ctx, Counter) ->
-    Parts = [compile_select_field(F, Ctx) || F <- Fields],
+compile_select(#kura_query{select = Fields}, {_Table, Joined}, Ctx, Counter) ->
+    Parts = [compile_select_field(F, Joined, Ctx) || F <- Fields],
     {join_comma(Parts), [], Counter}.
 
-compile_select_field({Agg, '*'}, _Ctx) when Agg =:= count ->
+compile_select_field({Agg, '*'}, _Joined, _Ctx) when Agg =:= count ->
     [atom_to_binary(Agg, utf8), ~"(*)", ~" AS ", quote_ident(atom_to_binary(Agg, utf8))];
-compile_select_field({Agg, Field}, Ctx) when
+compile_select_field({Agg, Field}, _Joined, Ctx) when
     Agg =:= count; Agg =:= sum; Agg =:= avg; Agg =:= min; Agg =:= max
 ->
     [
@@ -588,7 +594,9 @@ compile_select_field({Agg, Field}, Ctx) when
         ~" AS ",
         quote_ident(atom_to_binary(Agg, utf8))
     ];
-compile_select_field(Field, Ctx) when is_atom(Field) ->
+compile_select_field(Field, Joined, Ctx) when is_map_key(Field, Joined) ->
+    [column(Field, Ctx), ~" AS ", quote_ident(atom_to_binary(Field, utf8))];
+compile_select_field(Field, _Joined, Ctx) when is_atom(Field) ->
     column(Field, Ctx).
 
 %%----------------------------------------------------------------------
@@ -1005,14 +1013,42 @@ resolve_table(Mod) when is_atom(Mod) ->
 
 %% Which columns to qualify is decided by
 %% `kura_dialect:qualified_columns/1`; the dialect only renders it.
--spec column_context(#kura_query{}) -> column_context().
-column_context(#kura_query{from = From} = Q) ->
+-spec column_context(#kura_query{}, renames()) -> column_context().
+column_context(#kura_query{from = From} = Q, Joined) ->
     Qualified =
         case kura_dialect:qualified_columns(Q) of
             undefined -> undefined;
             {Table, Fields} -> {quote_ident(Table), Fields}
         end,
-    renamed_context(renames(From), Qualified).
+    renamed_context(maps:merge(Joined, renames(From)), Qualified).
+
+%% A bare field that the `from` schema does not have is a column of a joined
+%% table. Where a joined schema stores it under another name, that name is
+%% the column. Two joined schemas that store it under different names leave
+%% no way to tell which is meant.
+-spec joined_renames(#kura_query{}) -> renames().
+joined_renames(#kura_query{joins = []}) ->
+    #{};
+joined_renames(#kura_query{from = From, joins = Joins}) ->
+    Schemas = lists:usort([S || {_Type, S, _On, _As} <- Joins, is_atom(S)]),
+    case [F || S <- Schemas, F <- maps:keys(renames(S))] of
+        [] ->
+            #{};
+        Renamed ->
+            FromTypes = from_types(From),
+            #{F => joined_column(F, Schemas) || F <- Renamed, not is_map_key(F, FromTypes)}
+    end.
+
+-spec joined_column(atom(), [module()]) -> binary() | {ambiguous, [binary()]}.
+joined_column(Field, Schemas) ->
+    Declared = [
+        Column
+     || S <- Schemas, kura_schema:is_schema(S), #{Field := Column} <- [kura_schema:column_map(S)]
+    ],
+    case lists:usort(Declared) of
+        [Column] -> Column;
+        Columns -> {ambiguous, Columns}
+    end.
 
 %% Only a schema that names a column differently from its field pays for
 %% the lookup in column/2.
@@ -1027,8 +1063,12 @@ renames(_Table) -> #{}.
 -spec column_ident(atom(), renames()) -> iodata().
 column_ident(Field, Renames) ->
     case Renames of
-        #{Field := Column} -> quote_ident(Column);
-        #{} -> quote_ident(atom_to_binary(Field, utf8))
+        #{Field := {ambiguous, Columns}} ->
+            erlang:error({kura, {ambiguous_field, Field, Columns}});
+        #{Field := Column} ->
+            quote_ident(Column);
+        #{} ->
+            quote_ident(atom_to_binary(Field, utf8))
     end.
 
 %% ORDER BY resolves a name to a select_expr output column before an input

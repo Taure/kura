@@ -312,12 +312,20 @@ Q2 = kura_query:join(Q1, inner, my_comment, {id, post_id}).
 
 Join types: `inner`, `left`, `right`, `full`.
 
+A join without a `select` returns the `from` table's columns only
+(`SELECT "my_user".*`), so each row is a row of the `from` schema. Name a
+joined table's columns with `select/2` or `select_expr/2` to read them.
+
 Once a query has a join, a bare field of the `from` schema is qualified
 with the `from` table in `select`, `where`, `having`, `order_by`,
 `group_by` and `distinct`, so a column both tables have (`id`,
 `inserted_at`) names the `from` table's column. A name the `from` schema
 does not declare is left bare, for the database to find in the joined
-tables; it must be unique among them. Under attribute tenancy the tenant
+tables; it must be unique among them. Where a joined schema stores that
+field under another `column`, the column is what the statement names, and a
+selected one comes back under the field's name. Two joined schemas that
+store the field under different columns raise
+`{kura, {ambiguous_field, Field, Columns}}`. Under attribute tenancy the tenant
 field stays bare too, so a join of two tables that both carry it is still
 refused (see the [Multitenancy](multitenancy.md) guide). An `order_by`
 name that is a `select_expr/2` alias stays bare, so it keeps naming the

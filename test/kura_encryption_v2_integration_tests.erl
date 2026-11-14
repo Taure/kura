@@ -20,8 +20,9 @@ integration_test_() ->
             {"a v2 frame copied to another table raises", fun t_table_transplant/0},
             {"a v1 frame copied to another column still decrypts", fun t_v1_transplant/0},
             {"a v2 frame swapped between rows of a column decrypts", fun t_row_swap/0},
-            {"a v2 value of a colliding joined column raises", fun t_join_colliding_column/0},
-            {"a v1 value of a colliding joined column is returned as the from field",
+            {"a join returns the from row's v2 value, not the joined column of that name",
+                fun t_join_colliding_column/0},
+            {"a join returns the from row's v1 value, not the joined column of that name",
                 fun t_join_colliding_column_v1/0}
         ]
     end}.
@@ -207,7 +208,8 @@ t_join_colliding_column() ->
     insert(?SCHEMA, #{name => Name, ssn => ~"from-enc-bound"}),
     insert(?OTHER, #{name => Name, ssn => ~"from-enc-bound-other"}),
     Q = kura_query:join(kura_query:from(?SCHEMA), inner, ?OTHER, {name, name}, o),
-    ?assertError({kura_crypto, {bad_tag, 1}}, kura_test_repo:all(Q)).
+    {ok, [Row]} = kura_test_repo:all(Q),
+    ?assertEqual(~"from-enc-bound", maps:get(ssn, Row)).
 
 t_join_colliding_column_v1() ->
     write(v1),
@@ -217,4 +219,4 @@ t_join_colliding_column_v1() ->
     insert(?OTHER, #{name => Name, ssn => ~"from-enc-bound-other"}),
     Q = kura_query:join(kura_query:from(?SCHEMA), inner, ?OTHER, {name, name}, o),
     {ok, [Row]} = kura_test_repo:all(Q),
-    ?assertEqual(~"from-enc-bound-other", maps:get(ssn, Row)).
+    ?assertEqual(~"from-enc-bound", maps:get(ssn, Row)).
