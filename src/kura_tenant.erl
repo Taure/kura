@@ -59,12 +59,13 @@ not a boolean keeps the pool from starting, with
 
 Left unset in both places, a missing tenant is not an error, and the first
 query or write under a tenant logs one warning per boot, naming the repo.
-`false` says the same without the warning. In kura 3.0 a tenant is
-required by default only on a repo that declares a tenancy strategy; a
-repo that declares none, as in a single-tenant application, is not
-affected and has nothing to set.
+`false` says the same without the warning. An application that never sets
+a tenant sees no warning and has nothing to set. The plan for kura 3.0 is
+to require a tenant by default only on a repo that declares a tenancy
+strategy; kura 2.x has no such declaration.
 
-Raw SQL through a repo's `query/2` is never scoped and never checked.
+Raw SQL through `kura_repo_worker:query/3` is never scoped and never
+checked.
 """.
 
 -include("kura.hrl").

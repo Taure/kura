@@ -196,9 +196,9 @@ places, kura logs one warning per boot at the first query or write under a
 tenant, naming the repo. Set it to `false` to keep unscoped queries
 without the warning.
 
-In kura 3.0 a tenant is required by default only on a repo that declares a
-tenancy strategy. A repo that declares none, as in an application with no
-tenants, is not affected and has nothing to set.
+An application that never sets a tenant sees no warning and has nothing to
+set. The plan for kura 3.0 is to require a tenant by default only on a repo
+that declares a tenancy strategy; kura 2.x has no such declaration.
 
 ## When to Use Which
 
