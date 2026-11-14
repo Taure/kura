@@ -171,3 +171,27 @@ load_row_reads_a_row_as_a_backend_without_native_types_stores_it_test() ->
 load_row_leaves_a_row_read_by_table_name_untouched_test() ->
     Row = #{id => 1, title => ~"raw"},
     ?assertEqual(Row, kura_db:load_row(~"kura_test_schema", Row)).
+
+load_rows_loads_each_row_as_load_row_does_test() ->
+    Rows = [#{id => 1, active => 1}, #{id => 2, active => 0, not_a_field => ~"kept"}],
+    ?assertEqual(
+        [kura_db:load_row(kura_test_type_schema, Row) || Row <- Rows],
+        kura_db:load_rows(kura_test_type_schema, Rows)
+    ),
+    ?assertEqual([], kura_db:load_rows(kura_test_type_schema, [])),
+    ?assertEqual(Rows, kura_db:load_rows(~"kura_test_schema", Rows)).
+
+load_row_leaves_a_row_of_a_module_that_is_no_schema_untouched_test() ->
+    Row = #{id => ~"1"},
+    ?assertEqual(Row, kura_db:load_row(lists, Row)),
+    ?assertEqual(Row, kura_db:load_row(kura_no_such_schema_module, Row)),
+    ?assertEqual([Row], kura_db:load_rows(kura_no_such_schema_module, [Row])).
+
+load_row_maps_a_renamed_column_onto_its_field_test() ->
+    ?assertEqual(
+        #{id => 1, title => ~"t", qty => 2, note => ~"n"},
+        kura_db:load_row(
+            kura_test_renamed_schema,
+            #{item_id => 1, item_title => ~"t", quantity => 2, note => ~"n"}
+        )
+    ).

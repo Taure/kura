@@ -84,6 +84,7 @@ ignored.
     encrypted_fields/1,
     encryption_specs/1,
     field_specs/1,
+    load_plan/1,
     column_map/1,
     renamed_columns/1,
     renamed_fields/1,
@@ -289,6 +290,26 @@ encryption_specs(Mod) when is_atom(Mod) ->
     {#{atom() => kura_types:kura_type()}, #{atom() => field_encryption()}}.
 field_specs(Mod) ->
     cache({kura_schema, field_specs, Mod}, fun() -> {field_types(Mod), encryption_specs(Mod)} end).
+
+-doc false.
+-spec load_plan(module()) ->
+    {#{atom() => kura_types:kura_type()}, #{atom() => field_encryption()}, #{atom() => atom()}}
+    | undefined.
+load_plan(Mod) ->
+    cache({kura_schema, load_plan, Mod}, fun() ->
+        case code:ensure_loaded(Mod) of
+            {module, Mod} ->
+                case erlang:function_exported(Mod, fields, 0) of
+                    true ->
+                        {Types, Specs} = field_specs(Mod),
+                        {Types, Specs, renamed_fields(Mod)};
+                    false ->
+                        undefined
+                end;
+            _ ->
+                undefined
+        end
+    end).
 
 encryption_specs(Table, Fields, Columns, Types) ->
     #{

@@ -24,6 +24,7 @@ for pool lookup, sandbox support, telemetry, and type loading.
     resolve/1,
     get_driver_module/1,
     load_row/2,
+    load_rows/2,
     build_log_event/5,
     build_telemetry_metadata/4,
     extract_source/1,
@@ -843,39 +844,40 @@ get_driver_module(RepoMod) ->
 load_row(Table, Row) when is_binary(Table) ->
     Row;
 load_row(SchemaMod, Row) when is_atom(SchemaMod) ->
-    case code:ensure_loaded(SchemaMod) of
-        {module, SchemaMod} ->
-            case erlang:function_exported(SchemaMod, fields, 0) of
-                true ->
-                    {Types, Specs} = kura_schema:field_specs(SchemaMod),
-                    Renamed = kura_schema:renamed_fields(SchemaMod),
-                    load_fields(keyed_by_field(Row, Renamed), Types, Specs);
-                false ->
-                    Row
-            end;
-        _ ->
-            Row
+    case kura_schema:load_plan(SchemaMod) of
+        undefined -> Row;
+        Plan -> load_planned(Plan, Row)
     end.
+
+-doc "Load each of `Rows` as `load_row/2` does, looking the schema up once.".
+-spec load_rows(kura_dialect:table(), [map()]) -> [map()].
+load_rows(Table, Rows) when is_binary(Table) ->
+    Rows;
+load_rows(SchemaMod, Rows) when is_atom(SchemaMod) ->
+    case kura_schema:load_plan(SchemaMod) of
+        undefined -> Rows;
+        Plan -> [load_planned(Plan, Row) || Row <- Rows]
+    end.
+
+load_planned({Types, Specs, Renamed}, Row) ->
+    load_fields(keyed_by_field(Row, Renamed), Types, Specs).
 
 keyed_by_field(Row, Renamed) when map_size(Renamed) =:= 0 -> Row;
 keyed_by_field(Row, Renamed) -> #{maps:get(Column, Renamed, Column) => V || Column := V <- Row}.
 
 load_fields(Row, Types, Specs) ->
-    maps:fold(
-        fun(K, V, Acc) ->
-            case Types of
-                #{K := Type} ->
-                    case load_field(Type, V, Specs, K) of
-                        {ok, Loaded} -> Acc#{K => Loaded};
-                        {error, _} -> Acc#{K => V}
-                    end;
-                #{} ->
-                    Acc#{K => V}
-            end
-        end,
-        #{},
-        Row
-    ).
+    #{K => loaded(K, V, Types, Specs) || K := V <- Row}.
+
+loaded(K, V, Types, Specs) ->
+    case Types of
+        #{K := Type} ->
+            case load_field(Type, V, Specs, K) of
+                {ok, Loaded} -> Loaded;
+                {error, _} -> V
+            end;
+        #{} ->
+            V
+    end.
 
 load_field(Type, V, Specs, K) ->
     case Specs of
@@ -942,15 +944,98 @@ shown_error(Reason) ->
         _ -> kura_redact:error_reason(Reason)
     end.
 
-extract_source(SQL) ->
-    case
-        re:run(SQL, ~"(?:FROM|INTO|UPDATE|TABLE)\\s+\"?(\\w+)\"?", [
-            {capture, [1], binary}, caseless
-        ])
-    of
-        {match, [Table]} -> Table;
-        nomatch -> undefined
+-define(IS_LETTER(C, Upper), (C =:= Upper orelse C =:= Upper + 32)).
+-define(IS_SPACE(C), (C =:= $\s orelse (C >= $\t andalso C =< $\r))).
+-define(IS_WORD(C),
+    ((C >= $a andalso C =< $z) orelse (C >= $A andalso C =< $Z) orelse
+        (C >= $0 andalso C =< $9) orelse C =:= $_)
+).
+
+-doc """
+The table a statement names first: the name after its first `FROM`, `INTO`,
+`UPDATE` or `TABLE`, without quotes and without a schema qualifier.
+`undefined` when there is none.
+""".
+-spec extract_source(iodata()) -> binary() | undefined.
+extract_source(SQL) when is_binary(SQL) -> source(SQL);
+extract_source(SQL) -> source(iolist_to_binary(SQL)).
+
+source(<<C, Rest/binary>>) when
+    ?IS_LETTER(C, $F); ?IS_LETTER(C, $I); ?IS_LETTER(C, $U); ?IS_LETTER(C, $T)
+->
+    case named_after(C, Rest) of
+        undefined -> source(after_word(Rest));
+        Table -> Table
+    end;
+source(<<C, Rest/binary>>) when ?IS_WORD(C) ->
+    source(after_word(Rest));
+source(<<_, Rest/binary>>) ->
+    source(Rest);
+source(<<>>) ->
+    undefined.
+
+after_word(<<C, Rest/binary>>) when ?IS_WORD(C) -> after_word(Rest);
+after_word(Rest) -> Rest.
+
+named_after(F, <<R, O, M, Space, Rest/binary>>) when
+    ?IS_LETTER(F, $F), ?IS_LETTER(R, $R), ?IS_LETTER(O, $O), ?IS_LETTER(M, $M), ?IS_SPACE(Space)
+->
+    table_name(Rest);
+named_after(I, <<N, T, O, Space, Rest/binary>>) when
+    ?IS_LETTER(I, $I), ?IS_LETTER(N, $N), ?IS_LETTER(T, $T), ?IS_LETTER(O, $O), ?IS_SPACE(Space)
+->
+    table_name(Rest);
+named_after(U, <<P, D, A, T, E, Space, Rest/binary>>) when
+    ?IS_LETTER(U, $U),
+    ?IS_LETTER(P, $P),
+    ?IS_LETTER(D, $D),
+    ?IS_LETTER(A, $A),
+    ?IS_LETTER(T, $T),
+    ?IS_LETTER(E, $E),
+    ?IS_SPACE(Space)
+->
+    table_name(Rest);
+named_after(T, <<A, B, L, E, Space, Rest/binary>>) when
+    ?IS_LETTER(T, $T),
+    ?IS_LETTER(A, $A),
+    ?IS_LETTER(B, $B),
+    ?IS_LETTER(L, $L),
+    ?IS_LETTER(E, $E),
+    ?IS_SPACE(Space)
+->
+    table_name(Rest);
+named_after(_Letter, _Rest) ->
+    undefined.
+
+table_name(<<Space, Rest/binary>>) when ?IS_SPACE(Space) ->
+    table_name(Rest);
+table_name(Rest) ->
+    case word(Rest) of
+        {Word, <<$., After/binary>>} when Word =/= <<>> ->
+            case word(After) of
+                {<<>>, _} -> Word;
+                {Table, _} -> Table
+            end;
+        {<<>>, _} ->
+            undefined;
+        {Word, _} ->
+            Word
     end.
+
+%% A word and what follows it, the quotes around the word dropped.
+word(<<$", Rest/binary>>) ->
+    Size = word_size(Rest, 0),
+    case Rest of
+        <<Word:Size/binary, $", After/binary>> -> {Word, After};
+        <<Word:Size/binary, After/binary>> -> {Word, After}
+    end;
+word(Rest) ->
+    Size = word_size(Rest, 0),
+    <<Word:Size/binary, After/binary>> = Rest,
+    {Word, After}.
+
+word_size(<<C, Rest/binary>>, Size) when ?IS_WORD(C) -> word_size(Rest, Size + 1);
+word_size(_Rest, Size) -> Size.
 
 build_log_event(Repo, SQL, Params, Result, DurationUs) ->
     ResultStatus = extract_result_status(Result),

@@ -94,3 +94,28 @@ extract_source_test() ->
     ?assertEqual(<<"users">>, kura_repo_worker:extract_source(<<"UPDATE \"users\" SET">>)),
     ?assertEqual(<<"t">>, kura_repo_worker:extract_source(<<"CREATE TABLE \"t\"">>)),
     ?assertEqual(undefined, kura_repo_worker:extract_source(<<"SELECT 1">>)).
+
+extract_source_without_a_regex_test_() ->
+    Source = fun kura_db:extract_source/1,
+    [
+        ?_assertEqual(~"users", Source(~"select * from users where id = 1")),
+        ?_assertEqual(~"users", Source(~"DELETE FrOm\n\t \"users\" WHERE id = $1")),
+        ?_assertEqual(~"users", Source([~"UPDATE ", [~"\"users\""], ~" SET x = 1"])),
+        ?_assertEqual(~"t_1", Source(~"ALTER TABLE t_1 ADD COLUMN c int")),
+        {"the first keyword followed by a name wins",
+            ?_assertEqual(~"b", Source(~"SELECT x FROM (SELECT 1) s JOIN a ON TRUE, INTO b"))},
+        {"a keyword inside a longer word is not one", [
+            ?_assertEqual(~"t", Source(~"SELECT valid_from AS f FROM t")),
+            ?_assertEqual(~"t", Source(~"SELECT wherefrom x, from_date y FROM t")),
+            ?_assertEqual(undefined, Source(~"SELECT wherefrom x, updates y"))
+        ]},
+        ?_assertEqual(undefined, Source(~"SELECT \"from\", \"table\"")),
+        ?_assertEqual(undefined, Source(~"SELECT 1 FROM")),
+        ?_assertEqual(undefined, Source(~"SELECT 1 FROM \"\"")),
+        ?_assertEqual(undefined, Source(~"")),
+        {"a schema-qualified table is named by its table", [
+            ?_assertEqual(~"users", Source(~"SELECT * FROM \"tenant_a\".\"users\"")),
+            ?_assertEqual(~"users", Source(~"INSERT INTO tenant_a.users (id) VALUES ($1)")),
+            ?_assertEqual(~"tenant_a", Source(~"SELECT * FROM tenant_a.(x)"))
+        ]}
+    ].

@@ -109,7 +109,7 @@ all(RepoMod, Query) ->
     case kura_db:query(RepoMod, SQL, Params, kura_redact:query_params(Query, Params)) of
         #{command := select, rows := Rows} ->
             Schema = Query#kura_query.from,
-            Loaded = [kura_db:load_row(Schema, Row) || Row <- Rows],
+            Loaded = kura_db:load_rows(Schema, Rows),
             case Query#kura_query.preloads of
                 [] -> {ok, Loaded};
                 Preloads -> {ok, kura_preloader:do_preload(RepoMod, Loaded, Schema, Preloads)}
@@ -537,7 +537,7 @@ insert_rows(RepoMod, SchemaMod, Fields, Rows, Opts) ->
         #{returning := RetOpt} when RetOpt =:= true; is_list(RetOpt) ->
             case kura_db:query(RepoMod, SQL, Params, Shown) of
                 #{command := insert, num_rows := Count, rows := RetRows} ->
-                    Loaded = [kura_db:load_row(SchemaMod, R) || R <- RetRows],
+                    Loaded = kura_db:load_rows(SchemaMod, RetRows),
                     {ok, Count, Loaded};
                 {error, _} = Err ->
                     Err

@@ -16,7 +16,10 @@ bench_test_() ->
                 {timeout, 60, fun t_read_latency_distribution/0}},
             {"bulk insert_all at 1k/5k/10k rows", {timeout, 120, fun t_insert_all_bulk/0}},
             {"preload batching avoids N+1", {timeout, 60, fun t_preload_batching/0}},
-            {"stream large dataset in batches", {timeout, 120, fun t_stream_large_dataset/0}}
+            {"stream large dataset in batches", {timeout, 120, fun t_stream_large_dataset/0}},
+            {"cost of loading one row", {timeout, 60, fun t_load_row_cost/0}},
+            {"cost of one statement's telemetry metadata",
+                {timeout, 60, fun t_telemetry_metadata_cost/0}}
         ]
     end}.
 
@@ -251,6 +254,7 @@ t_stream_large_dataset() ->
     RowCount = atomics:new(1, [{signed, false}]),
     BatchCount = atomics:new(1, [{signed, false}]),
     Q = kura_query:from(kura_stress_schema),
+    T0 = erlang:monotonic_time(millisecond),
     ok = kura_stream:stream(
         kura_stress_repo,
         Q,
@@ -263,6 +267,47 @@ t_stream_large_dataset() ->
     ),
     TotalRows = atomics:get(RowCount, 1),
     TotalBatches = atomics:get(BatchCount, 1),
-    ?debugFmt("~nStream: ~p rows in ~p batches", [TotalRows, TotalBatches]),
+    ?debugFmt("~nStream: ~p rows in ~p batches (~p ms)", [
+        TotalRows, TotalBatches, erlang:monotonic_time(millisecond) - T0
+    ]),
     ?assertEqual(5000, TotalRows),
     ?assertEqual(50, TotalBatches).
+
+t_load_row_cost() ->
+    Row = #{
+        id => 1,
+        name => ~"bench",
+        email => ~"bench@bench.com",
+        counter => 0,
+        lock_version => 0,
+        inserted_at => {{2026, 1, 1}, {0, 0, 0}},
+        updated_at => {{2026, 1, 1}, {0, 0, 0}}
+    },
+    N = 300000,
+    _ = kura_db:load_row(kura_stress_schema, Row),
+    {Us, ok} = timer:tc(fun() -> load_row_times(N, Row) end),
+    ?debugFmt("~nload_row: ~p ns/row (~p rows)", [Us * 1000 div N, N]).
+
+load_row_times(0, _Row) ->
+    ok;
+load_row_times(N, Row) ->
+    _ = kura_db:load_row(kura_stress_schema, Row),
+    load_row_times(N - 1, Row).
+
+t_telemetry_metadata_cost() ->
+    SQL = [
+        ~"SELECT \"id\", \"name\", \"email\", \"counter\" FROM \"stress_users\"",
+        ~" WHERE \"email\" = $1 ORDER BY \"id\" LIMIT $2"
+    ],
+    Result = #{command => select, rows => [#{id => 1}], num_rows => 1},
+    N = 300000,
+    {Us, ok} = timer:tc(fun() -> telemetry_metadata_times(N, SQL, Result) end),
+    ?debugFmt("~nbuild_telemetry_metadata: ~p ns/statement (~p statements)", [
+        Us * 1000 div N, N
+    ]).
+
+telemetry_metadata_times(0, _SQL, _Result) ->
+    ok;
+telemetry_metadata_times(N, SQL, Result) ->
+    _ = kura_db:build_telemetry_metadata(kura_stress_repo, SQL, [~"bench@bench.com", 1], Result),
+    telemetry_metadata_times(N - 1, SQL, Result).
