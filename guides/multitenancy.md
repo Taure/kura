@@ -183,6 +183,11 @@ each is a place where tenants are not isolated.
 
 Raw SQL through `query/3` is not checked, as it is not scoped.
 
+`require_tenant` checks that a tenant is set, not which schema a query
+reads. Under the prefix strategy a query with its own `kura_query:prefix/2`
+reads that schema whatever the tenant, so never build a prefix from a
+request.
+
 `require_tenant` is one of a repo's settings (`kura_repo:settings/1`): it
 is fixed when the repo's pool starts, the application environment's value
 included, and starting the pool again re-reads it. A value that is not a
