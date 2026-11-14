@@ -479,6 +479,22 @@ validate_confirmation_custom_message_test() ->
     ?assertNot(CS2#kura_changeset.valid),
     ?assertMatch([{password_confirmation, <<"passwords don't match">>}], CS2#kura_changeset.errors).
 
+validate_confirmation_creates_no_atom_test() ->
+    Name = ~"kura_unseen_secret_confirmation",
+    Types = #{kura_unseen_secret => string},
+    Cast = fun(Params) ->
+        kura_changeset:validate_confirmation(
+            kura_changeset:cast(Types, #{}, Params, [kura_unseen_secret]), kura_unseen_secret
+        )
+    end,
+    Same = Cast(#{kura_unseen_secret => ~"s", Name => ~"s"}),
+    ?assert(Same#kura_changeset.valid),
+    Other = Cast(#{kura_unseen_secret => ~"s", Name => ~"other"}),
+    ?assertEqual([{kura_unseen_secret, ~"does not match"}], Other#kura_changeset.errors),
+    Missing = Cast(#{kura_unseen_secret => ~"s"}),
+    ?assertEqual([{kura_unseen_secret, ~"does not match"}], Missing#kura_changeset.errors),
+    ?assertError(badarg, binary_to_existing_atom(Name, utf8)).
+
 validate_confirmation_schemaless_test() ->
     Types = #{email => string},
     CS = kura_changeset:cast(

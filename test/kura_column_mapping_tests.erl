@@ -16,8 +16,8 @@ renamed_columns_test() ->
         kura_schema:renamed_columns(?S)
     ),
     ?assertEqual(
-        #{item_id => id, item_title => title, quantity => qty},
-        kura_schema:renamed_fields(?S)
+        #{~"item_id" => id, ~"item_title" => title, ~"quantity" => qty},
+        kura_schema:fields_by_column(?S)
     ).
 
 no_renamed_columns_test_() ->

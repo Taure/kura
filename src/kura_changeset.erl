@@ -218,7 +218,11 @@ validate_subset(CS, Field, AllowedValues) ->
             add_error(CS, Field, ~"is invalid")
     end.
 
--doc "Validate that `Field` has a matching confirmation field in params.".
+-doc """
+Validate that the params repeat the change to `Field` under
+`<Field>_confirmation`. A mismatch is reported on that name, or on `Field`
+itself when no such atom exists in the system: kura does not create one.
+""".
 -spec validate_confirmation(#kura_changeset{}, atom()) -> #kura_changeset{}.
 validate_confirmation(CS, Field) ->
     validate_confirmation(CS, Field, #{}).
@@ -230,17 +234,22 @@ validate_confirmation(CS, Field, Opts) ->
         undefined ->
             CS;
         Val ->
-            ConfField = confirmation_field(Field),
             Msg = maps:get(message, Opts, ~"does not match"),
-            case CS#kura_changeset.params of
-                #{ConfField := Val} -> CS;
-                #{} -> add_error(CS, ConfField, Msg)
+            case confirmation(Field, CS#kura_changeset.params) of
+                {_ErrorField, {ok, Val}} -> CS;
+                {ErrorField, _Given} -> add_error(CS, ErrorField, Msg)
             end
     end.
 
-confirmation_field(Field) ->
-    %% elp:ignore W0023 - bounded by schema field names
-    list_to_atom(atom_to_list(Field) ++ "_confirmation").
+-spec confirmation(atom(), map()) -> {atom(), {ok, term()} | error}.
+confirmation(Field, Params) ->
+    Name = <<(atom_to_binary(Field, utf8))/binary, "_confirmation">>,
+    try binary_to_existing_atom(Name, utf8) of
+        Key when is_map_key(Key, Params) -> {Key, maps:find(Key, Params)};
+        Key -> {Key, maps:find(Name, Params)}
+    catch
+        error:badarg -> {Field, maps:find(Name, Params)}
+    end.
 
 -doc "Validate `Field` with a custom function returning `ok` or `{error, Message}`.".
 -spec validate_change(#kura_changeset{}, atom(), fun((term()) -> ok | {error, binary()})) ->

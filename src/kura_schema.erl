@@ -87,7 +87,7 @@ ignored.
     load_plan/1,
     column_map/1,
     renamed_columns/1,
-    renamed_fields/1,
+    fields_by_column/1,
     timestamp_fields/1,
     redacted_fields/1,
     key/1,
@@ -293,7 +293,7 @@ field_specs(Mod) ->
 
 -doc false.
 -spec load_plan(module()) ->
-    {#{atom() => kura_types:kura_type()}, #{atom() => field_encryption()}, #{atom() => atom()}}
+    {#{atom() => kura_types:kura_type()}, #{atom() => field_encryption()}, #{binary() => atom()}}
     | undefined.
 load_plan(Mod) ->
     cache({kura_schema, load_plan, Mod}, fun() ->
@@ -302,7 +302,7 @@ load_plan(Mod) ->
                 case erlang:function_exported(Mod, fields, 0) of
                     true ->
                         {Types, Specs} = field_specs(Mod),
-                        {Types, Specs, renamed_fields(Mod)};
+                        {Types, Specs, fields_by_column(Mod)};
                     false ->
                         undefined
                 end;
@@ -358,14 +358,12 @@ renamed([_ | Rest], Acc) ->
 
 -doc """
 Return the columns of `Mod` that load into a field of another name, as
-column name (the atom a driver keys a row by) to field name. The inverse
-of `renamed_columns/1`.
+column name to field name. The inverse of `renamed_columns/1`.
 """.
--spec renamed_fields(module()) -> #{atom() => atom()}.
-renamed_fields(Mod) ->
-    cache({kura_schema, renamed_fields, Mod}, fun() ->
-        %% elp:ignore W0023 - bounded by the schema's column declarations
-        #{binary_to_atom(Column, utf8) => Field || Field := Column <- renamed_columns(Mod)}
+-spec fields_by_column(module()) -> #{binary() => atom()}.
+fields_by_column(Mod) ->
+    cache({kura_schema, fields_by_column, Mod}, fun() ->
+        #{Column => Field || Field := Column <- renamed_columns(Mod)}
     end).
 
 -doc """

@@ -862,8 +862,11 @@ load_rows(SchemaMod, Rows) when is_atom(SchemaMod) ->
 load_planned({Types, Specs, Renamed}, Row) ->
     load_fields(keyed_by_field(Row, Renamed), Types, Specs).
 
-keyed_by_field(Row, Renamed) when map_size(Renamed) =:= 0 -> Row;
-keyed_by_field(Row, Renamed) -> #{maps:get(Column, Renamed, Column) => V || Column := V <- Row}.
+keyed_by_field(Row, ByColumn) when map_size(ByColumn) =:= 0 -> Row;
+keyed_by_field(Row, ByColumn) -> #{field_key(Key, ByColumn) => V || Key := V <- Row}.
+
+field_key(Key, ByColumn) when is_atom(Key) -> maps:get(atom_to_binary(Key, utf8), ByColumn, Key);
+field_key(Key, _ByColumn) -> Key.
 
 load_fields(Row, Types, Specs) ->
     #{K => loaded(K, V, Types, Specs) || K := V <- Row}.
