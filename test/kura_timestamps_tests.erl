@@ -7,17 +7,84 @@
 -define(CUSTOM, kura_test_custom_timestamps_schema).
 -define(NONE, kura_test_no_timestamps_schema).
 
+-define(BAD, kura_test_bad_timestamps_schema).
+-define(MALFORMED, kura_test_malformed_timestamps_schema).
+-define(UNSTAMPED, kura_test_unstamped_schema).
+
+-export([log/2]).
+
 timestamp_fields_test_() ->
     [
         ?_assertEqual({inserted_at, updated_at}, kura_schema:timestamp_fields(kura_test_schema)),
         ?_assertEqual({undefined, undefined}, kura_schema:timestamp_fields(kura_test_edge_schema)),
         ?_assertEqual({created_at, modified_at}, kura_schema:timestamp_fields(?CUSTOM)),
-        ?_assertEqual({undefined, undefined}, kura_schema:timestamp_fields(?NONE)),
-        ?_assertError(
-            {kura, {unknown_timestamp_field, kura_test_bad_timestamps_schema, created_at}},
-            kura_schema:timestamp_fields(kura_test_bad_timestamps_schema)
-        )
+        ?_assertEqual({undefined, undefined}, kura_schema:timestamp_fields(?UNSTAMPED))
     ].
+
+%% 2.30 ignored timestamps/0, so a declaration kura cannot use stamps what
+%% 2.30 stamped and says so once.
+unusable_declaration_test_() ->
+    [
+        {"a field the schema lacks: nothing is named inserted_at, so nothing is stamped", fun() ->
+            {Fields, Warnings} = fields_and_warnings(?BAD),
+            ?assertEqual({undefined, undefined}, Fields),
+            ?assertMatch(
+                [#{schema := ?BAD, timestamps := [{created_at, utc_datetime}], fix := _}],
+                Warnings
+            )
+        end},
+        {"not a list of fields: the fields are found by name", fun() ->
+            {Fields, Warnings} = fields_and_warnings(?MALFORMED),
+            ?assertEqual({inserted_at, updated_at}, Fields),
+            ?assertMatch(
+                [#{schema := ?MALFORMED, timestamps := [inserted_at, updated_at]}], Warnings
+            )
+        end},
+        {"an empty list on a schema 2.30 stamped: still stamped", fun() ->
+            {Fields, Warnings} = fields_and_warnings(?NONE),
+            ?assertEqual({inserted_at, updated_at}, Fields),
+            ?assertMatch([#{schema := ?NONE, timestamps := []}], Warnings)
+        end},
+        {"an empty list on a schema with nothing to stamp says nothing", fun() ->
+            ?assertEqual({{undefined, undefined}, []}, fields_and_warnings(?UNSTAMPED))
+        end},
+        {"a declaration kura can use says nothing", fun() ->
+            ?assertEqual({{created_at, modified_at}, []}, fields_and_warnings(?CUSTOM))
+        end},
+        {"the warning is logged once for a schema", fun() ->
+            {_, [_]} = fields_and_warnings(?MALFORMED),
+            ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
+            try
+                _ = kura_schema:timestamp_fields(?MALFORMED),
+                ?assertEqual([], warnings())
+            after
+                logger:remove_handler(?MODULE)
+            end
+        end}
+    ].
+
+fields_and_warnings(Schema) ->
+    kura_schema:forget(Schema),
+    ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
+    try
+        Fields = kura_schema:timestamp_fields(Schema),
+        {Fields, warnings()}
+    after
+        logger:remove_handler(?MODULE)
+    end.
+
+warnings() ->
+    receive
+        {logged, #{timestamps := _} = Report} -> [Report | warnings()];
+        {logged, _} -> warnings()
+    after 100 -> []
+    end.
+
+log(#{msg := {report, Report}}, #{config := Pid}) ->
+    Pid ! {logged, Report},
+    ok;
+log(_Event, _Config) ->
+    ok.
 
 statement_test_() ->
     {foreach, fun() -> kura_test_recording_driver:configure(?REPO) end,
@@ -26,8 +93,10 @@ statement_test_() ->
             {"update stamps the second listed field", fun t_update_stamps_second/0},
             {"a value the write sets is kept", fun t_given_value_is_kept/0},
             {"insert_all stamps the listed fields", fun t_insert_all_stamps_listed/0},
-            {"an empty list stamps nothing", fun t_empty_list_stamps_nothing/0},
-            {"a field the schema lacks is refused", fun t_unknown_field_is_refused/0}
+            {"an empty list keeps the stamps 2.30 wrote", fun t_empty_list_keeps_the_stamps/0},
+            {"an empty list with nothing to stamp stamps nothing", fun t_nothing_to_stamp/0},
+            {"a field the schema lacks does not stop a write", fun t_unknown_field_still_writes/0},
+            {"a malformed declaration is stamped by name", fun t_malformed_is_stamped_by_name/0}
         ]}.
 
 statement(Run) ->
@@ -81,30 +150,50 @@ insert_columns(SQL) ->
      || C <- binary:split(Columns, ~", ", [global])
     ]).
 
-t_empty_list_stamps_nothing() ->
+t_empty_list_keeps_the_stamps() ->
+    {Insert, InsertParams} = statement(fun() ->
+        kura_repo_worker:insert(?REPO, kura_changeset:cast(?NONE, #{}, #{name => ~"a"}, [name]))
+    end),
+    ?assertEqual([~"inserted_at", ~"name", ~"updated_at"], insert_columns(Insert)),
+    ?assertMatch([{{_, _, _}, {_, _, _}}, {{_, _, _}, {_, _, _}}], InsertParams -- [~"a"]),
+    {Update, UpdateParams} = statement(fun() ->
+        kura_repo_worker:update(
+            ?REPO, kura_changeset:cast(?NONE, #{id => 1, name => ~"a"}, #{name => ~"b"}, [name])
+        )
+    end),
+    ?assertMatch({_, _}, binary:match(Update, ~"\"updated_at\" = $")),
+    ?assertMatch([{{_, _, _}, {_, _, _}}], UpdateParams -- [~"b", 1]).
+
+t_nothing_to_stamp() ->
     ?assertEqual(
-        {~"INSERT INTO \"unstamped_items\" (\"name\") VALUES ($1) RETURNING *", [~"a"]},
+        {~"INSERT INTO \"plain_items\" (\"name\") VALUES ($1) RETURNING *", [~"a"]},
         statement(fun() ->
             kura_repo_worker:insert(
-                ?REPO, kura_changeset:cast(?NONE, #{}, #{name => ~"a"}, [name])
+                ?REPO, kura_changeset:cast(?UNSTAMPED, #{}, #{name => ~"a"}, [name])
             )
         end)
     ),
     ?assertEqual(
-        {~"UPDATE \"unstamped_items\" SET \"name\" = $1 WHERE \"id\" = $2 RETURNING *", [~"b", 1]},
+        {~"UPDATE \"plain_items\" SET \"name\" = $1 WHERE \"id\" = $2 RETURNING *", [~"b", 1]},
         statement(fun() ->
             kura_repo_worker:update(
-                ?REPO, kura_changeset:cast(?NONE, #{id => 1, name => ~"a"}, #{name => ~"b"}, [name])
+                ?REPO,
+                kura_changeset:cast(?UNSTAMPED, #{id => 1, name => ~"a"}, #{name => ~"b"}, [name])
             )
         end)
     ).
 
-t_unknown_field_is_refused() ->
-    ?assertError(
-        {kura, {unknown_timestamp_field, kura_test_bad_timestamps_schema, created_at}},
+t_unknown_field_still_writes() ->
+    {SQL, Params} = statement(fun() ->
+        kura_repo_worker:insert(?REPO, kura_changeset:cast(?BAD, #{}, #{name => ~"a"}, [name]))
+    end),
+    ?assertEqual([~"name"], insert_columns(SQL)),
+    ?assertEqual([~"a"], Params).
+
+t_malformed_is_stamped_by_name() ->
+    {SQL, _Params} = statement(fun() ->
         kura_repo_worker:insert(
-            ?REPO,
-            kura_changeset:cast(kura_test_bad_timestamps_schema, #{}, #{name => ~"a"}, [name])
+            ?REPO, kura_changeset:cast(?MALFORMED, #{}, #{name => ~"a"}, [name])
         )
-    ),
-    ?assertEqual([], kura_test_recording_driver:statements()).
+    end),
+    ?assertEqual([~"inserted_at", ~"name", ~"updated_at"], insert_columns(SQL)).
