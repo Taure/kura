@@ -38,8 +38,8 @@ errors(Schema, Params, Error) ->
 
 errors(CS, Error) ->
     kura_test_recording_driver:reply_with([{error, {pgsql_error, Error}}]),
-    {error, Failed} = kura_repo_worker:insert(?REPO, CS),
-    Failed#kura_changeset.errors.
+    {error, #kura_changeset{errors = Errors}} = kura_repo_worker:insert(?REPO, CS),
+    Errors.
 
 item_errors(Error) ->
     errors(?S, #{title => ~"t", qty => 1}, Error).

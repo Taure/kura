@@ -2,7 +2,6 @@
 -moduledoc "Integration tests for kura_repo_worker aggregate functions.".
 
 -include_lib("eunit/include/eunit.hrl").
--include("kura.hrl").
 
 %%----------------------------------------------------------------------
 %% Test fixture

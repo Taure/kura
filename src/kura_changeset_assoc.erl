@@ -326,9 +326,11 @@ classify_child(_Key, undefined, _Lookup, WithFun, NormParams) ->
 classify_child([_Single], Tuple, Lookup, WithFun, NormParams) ->
     (WithFun(maps:get(Tuple, Lookup, #{}), NormParams))#kura_changeset{action = update};
 classify_child(_Composite, Tuple, Lookup, WithFun, NormParams) ->
-    case maps:find(Tuple, Lookup) of
-        {ok, ExistingData} -> (WithFun(ExistingData, NormParams))#kura_changeset{action = update};
-        error -> (WithFun(#{}, NormParams))#kura_changeset{action = insert}
+    case Lookup of
+        #{Tuple := ExistingData} ->
+            (WithFun(ExistingData, NormParams))#kura_changeset{action = update};
+        #{} ->
+            (WithFun(#{}, NormParams))#kura_changeset{action = insert}
     end.
 
 %% The key value-tuple for an existing record, else undefined (a new insert).

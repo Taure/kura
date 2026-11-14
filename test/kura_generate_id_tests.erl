@@ -1,7 +1,6 @@
 -module(kura_generate_id_tests).
 
 -include_lib("eunit/include/eunit.hrl").
--include("kura.hrl").
 
 %%----------------------------------------------------------------------
 %% Test fixture

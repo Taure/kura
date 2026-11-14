@@ -2,7 +2,6 @@
 -moduledoc "Integration tests for conditional preloading.".
 
 -include_lib("eunit/include/eunit.hrl").
--include("kura.hrl").
 
 %%----------------------------------------------------------------------
 %% Test fixture - reuses kura_test_schema (users) + kura_test_post_simple_schema

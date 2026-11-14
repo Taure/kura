@@ -462,7 +462,7 @@ key_names(Mod) ->
 -spec key_fields(module()) -> [#kura_field{}].
 key_fields(Mod) ->
     cache({kura_schema, key_fields, Mod}, fun() ->
-        FieldMap = maps:from_list([{F#kura_field.name, F} || F <- Mod:fields()]),
+        FieldMap = #{F#kura_field.name => F || F <- Mod:fields()},
         [
             case FieldMap of
                 #{N := F} -> F;

@@ -2,7 +2,6 @@
 -moduledoc "Integration tests for has_many :through associations.".
 
 -include_lib("eunit/include/eunit.hrl").
--include("kura.hrl").
 
 %%----------------------------------------------------------------------
 %% Test fixture

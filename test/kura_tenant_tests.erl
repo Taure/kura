@@ -55,9 +55,7 @@ get_tenant_refuses_a_malformed_stored_tenant_test() ->
 
 with_tenant_test() ->
     kura_tenant:clear_tenant(),
-    Result = kura_tenant:with_tenant({prefix, <<"tmp">>}, fun() ->
-        kura_tenant:get_tenant()
-    end),
+    Result = kura_tenant:with_tenant({prefix, <<"tmp">>}, fun kura_tenant:get_tenant/0),
     ?assertEqual({prefix, <<"tmp">>}, Result),
     ?assertEqual(undefined, kura_tenant:get_tenant()).
 
@@ -89,7 +87,7 @@ with_tenant_that_is_refused_leaves_the_process_as_it_was_test() ->
     try
         ?assertError(
             {invalid_tenant, {prefix, "list"}},
-            kura_tenant:with_tenant({prefix, "list"}, fun() -> ok end)
+            kura_tenant:with_tenant(ill_typed({prefix, "list"}), fun() -> ok end)
         ),
         ?assertEqual({prefix, ~"original"}, kura_tenant:get_tenant())
     after
@@ -352,3 +350,6 @@ subqueries_in({'not', C}) -> subqueries_in(C);
 subqueries_in({_, in, {subquery, Q}}) -> [Q];
 subqueries_in({E, {subquery, Q}}) when E =:= exists; E =:= not_exists -> [Q];
 subqueries_in(_) -> [].
+
+-spec ill_typed(term()) -> dynamic().
+ill_typed(Term) -> Term.

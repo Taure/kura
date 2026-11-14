@@ -517,11 +517,15 @@ with_flat_env(Flat, Run) ->
         erase({?MODULE, pool_config})
     end.
 
+%% Called as a caller that has not moved to kura_repo:config/1 calls it.
+deprecated_pool_config(Args) ->
+    apply(kura_app, pool_config, Args).
+
 deprecated_pool_config_returns_the_resolved_config_test() ->
     with_pool_answer({ok, self()}, kura_db_init_repo, #{database => ~"db"}, fun() ->
         ?assertEqual(
             #{database => ~"from_init", pool => kura_db_init_pool, pool_module => ?MODULE},
-            kura_app:pool_config(kura_db_init_repo)
+            deprecated_pool_config([kura_db_init_repo])
         )
     end).
 
@@ -529,7 +533,7 @@ deprecated_pool_config_raises_a_raising_init_redacted_test() ->
     Config = #{password => ~"s3cret"},
     {Raised, _Events} = with_captured_logs_and_result(fun() ->
         with_pool_answer({ok, self()}, kura_db_raising_init_repo, Config, fun() ->
-            try kura_app:pool_config(kura_db_raising_init_repo) of
+            try deprecated_pool_config([kura_db_raising_init_repo]) of
                 Returned -> {returned, Returned}
             catch
                 error:Reason -> Reason
@@ -543,7 +547,7 @@ deprecated_pool_config_logs_nothing_on_a_raising_init_test() ->
         with_pool_answer(
             {ok, self()}, kura_db_raising_init_repo, #{password => ~"s3cret"}, fun() ->
                 try
-                    kura_app:pool_config(kura_db_raising_init_repo)
+                    deprecated_pool_config([kura_db_raising_init_repo])
                 catch
                     error:Reason -> Reason
                 end
@@ -554,18 +558,18 @@ deprecated_pool_config_logs_nothing_on_a_raising_init_test() ->
 
 deprecated_pool_config_without_a_repo_is_empty_test() ->
     with_flat_env([{pool_module, ?MODULE}], fun() ->
-        ?assertEqual(#{}, kura_app:pool_config())
+        ?assertEqual(#{}, deprecated_pool_config([]))
     end).
 
 deprecated_pool_config_of_an_unknown_repo_is_empty_test() ->
     with_flat_env([{repo, kura_db_failing_repo}, {database, ~"flat_db"}], fun() ->
-        ?assertEqual(#{}, kura_app:pool_config(kura_db_no_such_repo))
+        ?assertEqual(#{}, deprecated_pool_config([kura_db_no_such_repo]))
     end).
 
 deprecated_pool_config_reads_the_legacy_flat_repo_test() ->
     Flat = [{repo, kura_db_failing_repo}, {pool_module, ?MODULE}, {database, ~"flat_db"}],
     with_flat_env(Flat, fun() ->
-        ?assertEqual(#{database => ~"flat_db", pool_module => ?MODULE}, kura_app:pool_config())
+        ?assertEqual(#{database => ~"flat_db", pool_module => ?MODULE}, deprecated_pool_config([]))
     end).
 
 boot_logs_a_raising_init_and_carries_on_test() ->

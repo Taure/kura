@@ -303,7 +303,7 @@ t_error_reason() ->
         maps:get(error_reason, NoSecret)
     ),
     kura_test_recording_driver:reply_with([{error, Error}]),
-    {_, [Plain], _} = observed(fun() -> insert_plain() end),
+    {_, [Plain], _} = observed(fun insert_plain/0),
     ?assertEqual(
         #{code => ~"23505", constraint => ~"accounts_token_key"}, maps:get(error_reason, Plain)
     ).
@@ -313,7 +313,7 @@ t_error_detail() ->
     application:set_env(kura, telemetry_error_detail, true),
     try
         kura_test_recording_driver:reply_with([{error, Error}, {error, Error}]),
-        {_, [Plain], _} = observed(fun() -> insert_plain() end),
+        {_, [Plain], _} = observed(fun insert_plain/0),
         ?assertEqual(Error, maps:get(error_reason, Plain)),
         {_, [Secret], _} = observed(fun() ->
             kura_repo_worker:insert(?REPO, changeset(#{}, #{email => ~"a@b.c"}))

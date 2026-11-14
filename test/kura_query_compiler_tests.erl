@@ -178,13 +178,13 @@ scan_candidates([], _Accept, Seen) ->
     {ok, Seen};
 scan_candidates([Q | Rest], Accept, Seen) ->
     Hash = shape_hash(Q),
-    case maps:find(Hash, Seen) of
-        {ok, Other} ->
+    case Seen of
+        #{Hash := Other} ->
             case Accept(Other, Q) of
                 true -> {collision, {Other, Q}};
                 false -> scan_candidates(Rest, Accept, Seen)
             end;
-        error ->
+        #{} ->
             scan_candidates(Rest, Accept, Seen#{Hash => Q})
     end.
 
@@ -265,7 +265,7 @@ oversized_entries_are_never_interned_test() ->
 facade_delegates_all_callbacks_to_dialect_test_() ->
     set_repo_dialect(?MODULE),
     Q = #kura_query{from = my_schema},
-    Cleanup = fun() -> unset_repo() end,
+    Cleanup = fun unset_repo/0,
     {setup, fun() -> ok end, fun(_) -> Cleanup() end, [
         ?_assertEqual(
             {~"FAKE_SQL", [fake_param], 2},

@@ -902,10 +902,7 @@ app_migrations(App, Groups) ->
     [{integer(), [{atom(), module()}]}].
 duplicate_versions(Groups) ->
     Owners = version_owners(Groups, #{}),
-    lists:keysort(1, [
-        {V, reverse_owners(Os, [])}
-     || {V, Os = [_, _ | _]} <- maps:to_list(Owners)
-    ]).
+    lists:keysort(1, [{V, reverse_owners(Os, [])} || V := Os = [_, _ | _] <- Owners]).
 
 -spec version_owners(
     [{atom(), [{integer(), module()}]}],

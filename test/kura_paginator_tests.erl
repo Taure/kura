@@ -1,7 +1,6 @@
 -module(kura_paginator_tests).
 
 -include_lib("eunit/include/eunit.hrl").
--include("kura.hrl").
 
 -export([log/2]).
 

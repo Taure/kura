@@ -4,9 +4,64 @@
 -include_lib("stdlib/include/assert.hrl").
 -include("kura.hrl").
 
--compile(export_all).
-
 -define(REPO, kura_test_repo).
+
+-export([
+    all/0,
+    groups/0,
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_group/2,
+    end_per_group/2,
+    init_per_testcase/2,
+    end_per_testcase/2
+]).
+
+-export([
+    insert_with_opts_empty_rows/1,
+    insert_with_opts_pg_error/1,
+    update_record_not_found/1,
+    delete_record_fk_error/1,
+    insert_with_assoc_fk_error/1,
+    update_with_assoc_not_found/1,
+    persist_owned_assoc_has_one/1,
+    check_constraint_violation/1,
+    query_error_returns_error/1,
+    all_error_bad_table/1,
+    get_error_bad_table/1,
+    get_by_error_bad_table/1,
+    one_error_bad_table/1,
+    exists_error_bad_table/1,
+    update_all_error_bad_table/1,
+    delete_all_error_bad_table/1,
+    insert_all_error_bad_table/1,
+    insert_all_opts_error_bad_table/1,
+    insert_all_opts_returning_error_bad_table/1,
+    delete_not_found/1,
+    build_log_event_rows_key/1,
+    right_full_join_queries/1,
+    preload_belongs_to_all_nil_fks/1,
+    preload_nested_nil_stays_nil/1,
+    stream_with_batch_size_1/1,
+    migrator_quote_atom/1,
+    migrator_compile_index_5_arity/1,
+    migrator_compile_index_where_proplist/1,
+    on_conflict_constraint_replace_all/1,
+    on_conflict_constraint_replace/1,
+    schema_no_primary_key/1,
+    schema_primary_key_field_undefined/1,
+    schema_column_map_explicit_column/1,
+    sandbox_checkin_no_conn/1,
+    sandbox_allowed_lookup_miss/1,
+    is_blank_null/1,
+    build_schema_constraints_check/1,
+    cast_assoc_existing_child_no_pk/1,
+    cast_enum_int_error/1,
+    cast_array_non_list_error/1,
+    dump_embed_one_nested/1,
+    load_embed_one_nested/1,
+    format_uuid_passthrough/1
+]).
 
 %%----------------------------------------------------------------------
 %% CT callbacks
