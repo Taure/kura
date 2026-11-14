@@ -359,7 +359,11 @@ before the pool module is called, so the answer does not depend on how the
 pool module reports a name that is already running. The refusal is logged as a
 pool that did not start, and the refused repo's queries raise
 `{pool_owned_by, Owner}` instead of running on that pool. The owner starting
-its pool again gets `ok`. A pool already running that kura did not start goes
+its pool again gets `ok`. A pool module whose `capability_model/0` returns
+something this kura has no model for (see `m:kura_capabilities`) is not asked
+to start a pool either: the start returns
+`{error, {invalid_capability_model, PoolModule, Value}}` and is logged as a
+pool that did not start. A pool already running that kura did not start goes
 to the first repo that starts it, with a warning that names the repo, the pool
 and the pool module: that pool keeps the connection settings it was started
 with. A pool stopped outside kura stays owned;
@@ -453,10 +457,16 @@ legacy_defaults_filled(Repo, Filled) ->
 -spec start_pool(module(), atom(), map()) -> ok | {error, term()}.
 start_pool(Repo, Pool, Config) ->
     PoolMod = pool_module(Repo, Config),
-    case locked(Pool, fun() -> claimed(Repo, Pool, PoolMod, Config) end) of
-        ok -> ok;
-        {error, Reason} -> {error, Reason};
-        {moved_from, Previous, PreviousMod} -> retire(Repo, Previous, PreviousMod)
+    case kura_capabilities:validate(PoolMod) of
+        ok ->
+            case locked(Pool, fun() -> claimed(Repo, Pool, PoolMod, Config) end) of
+                ok -> ok;
+                {error, Reason} -> {error, Reason};
+                {moved_from, Previous, PreviousMod} -> retire(Repo, Previous, PreviousMod)
+            end;
+        {error, Invalid} ->
+            ok = not_started(Repo, PoolMod, #{reason => Invalid, pool => Pool}),
+            {error, Invalid}
     end.
 
 -type claim() :: ok | {error, term()} | {moved_from, atom(), module()}.

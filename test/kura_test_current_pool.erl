@@ -9,4 +9,4 @@ of the capabilities a query or a stream can need.
 
 capabilities() -> [returning, transactions].
 
-capability_model() -> 2.
+capability_model() -> 1.

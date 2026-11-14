@@ -1,5 +1,8 @@
 -module(kura_test_limited_pool).
--moduledoc "Declares a backend with none of the capabilities a query can need.".
+-moduledoc """
+Declares a list of capabilities and no capability model, as a backend
+released before kura checked a query does. Nothing is checked against it.
+""".
 -behaviour(kura_capabilities).
 
 -export([capabilities/0]).

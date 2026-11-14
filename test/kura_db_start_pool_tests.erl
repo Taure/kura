@@ -112,6 +112,32 @@ adopting_a_running_pool_kura_did_not_start_is_logged_test() ->
     ?assertEqual([action, msg, pool, pool_module, repo], lists:sort(maps:keys(Report))),
     ?assertEqual(nomatch, string:find(io_lib:format("~p", [Report]), "s3cret")).
 
+%% Before the pool module is asked to start anything, and so before the
+%% first query is compiled against it.
+a_pool_module_with_an_unknown_capability_model_does_not_start_test() ->
+    kura_db:forget_pools(),
+    application:set_env(kura, repos, #{
+        kura_db_failing_repo => #{pool_module => kura_test_misdated_pool}
+    }),
+    Invalid = {invalid_capability_model, kura_test_misdated_pool, 2},
+    try
+        Events = with_captured_logs(fun() ->
+            ?assertEqual({error, Invalid}, kura_repo_worker:start(kura_db_failing_repo))
+        end),
+        ?assertMatch(
+            [
+                #{
+                    level := error,
+                    msg := {report, #{msg := ~"kura: pool did not start", reason := Invalid}}
+                }
+            ],
+            Events
+        )
+    after
+        application:unset_env(kura, repos),
+        kura_db:forget_pools()
+    end.
+
 %%----------------------------------------------------------------------
 %% kura_repo_worker:start/1 reports a pool that did not start
 %%----------------------------------------------------------------------

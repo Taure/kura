@@ -34,8 +34,8 @@ are left out unless the query asks for them with `kura_query:with_deleted/1`,
 and a prefix tenant applies.
 
 Raises `{kura, {unsupported_capability, cursors, PoolModule}}` on a backend
-that declares no `cursors` (see `m:kura_capabilities`), before any
-statement runs.
+that declares a capability model and no `cursors` (see
+`m:kura_capabilities`), before any statement runs.
 """.
 -spec stream(module(), #kura_query{}, fun(([map()]) -> ok), map()) -> ok | {error, term()}.
 stream(RepoMod, Query, Fun, Opts) ->

@@ -222,13 +222,14 @@ argument.
   `select_for_update_skip_locked`, ...). Consumers call
   `kura_capabilities:require/2` from supervisor init so the
   application refuses to start on a backend that lacks a required
-  feature instead of failing at runtime. The query compiler checks each
-  query the same way: a full-text match, a window function, a vector
-  distance or a `skip_locked` lock on a backend that does not declare it
-  raises `{kura, {unsupported_capability, Capability, PoolModule}}`
-  before any SQL is built. A backend that declares `capability_model() -> 2`
-  is checked for `row_locks`, `distinct_on` and, in `kura_stream`,
-  `cursors` as well.
+  feature instead of failing at runtime. A backend that also declares
+  `capability_model() -> 1` has each query checked the same way: a
+  full-text match, a window function, a vector distance, a row lock, a
+  `skip_locked` lock or a `DISTINCT ON` it does not declare raises
+  `{kura, {unsupported_capability, Capability, PoolModule}}` before any SQL
+  is built, and `kura_stream` raises it for `cursors`. A backend without
+  `capability_model/0` is not checked, as in 2.30; kura 3.0 checks every
+  backend.
 
 ## Data Flow
 
