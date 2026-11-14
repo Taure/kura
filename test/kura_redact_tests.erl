@@ -56,6 +56,37 @@ changeset_test() ->
     ),
     ?assertEqual(nomatch, binary:match(iolist_to_binary(io_lib:format("~p", [Shown])), ~"new")).
 
+changeset_errors_that_quote_a_redacted_value_test() ->
+    Quoting = ~"invalid input syntax for type uuid: \"tok-SECRET\"",
+    CS0 = kura_changeset:cast(
+        ?S, #{id => 1, password_hash => ~"old-HASH"}, #{token => ~"tok-SECRET"}, [token]
+    ),
+    CS = CS0#kura_changeset{
+        errors = [
+            {base, Quoting},
+            {email, ~"has invalid format"},
+            {token, ~"is too short"},
+            {base, ~"was old-HASH before"}
+        ]
+    },
+    Shown = kura_redact:changeset(CS),
+    ?assertEqual(
+        [{base, ?R}, {email, ~"has invalid format"}, {token, ~"is too short"}, {base, ?R}],
+        Shown#kura_changeset.errors
+    ),
+    Printed = iolist_to_binary(io_lib:format("~p", [Shown])),
+    ?assertEqual(nomatch, binary:match(Printed, [~"tok-SECRET", ~"old-HASH"])).
+
+changeset_errors_quoting_a_redacted_number_test() ->
+    CS0 = kura_changeset:cast(?S, #{}, #{token => ~"t"}, [token]),
+    CS = CS0#kura_changeset{
+        changes = #{token => 4821973},
+        errors = [{base, ~"value \"4821973\" is out of range"}, {base, ~"is 4 long"}]
+    },
+    ?assertEqual(
+        [{base, ?R}, {base, ~"is 4 long"}], (kura_redact:changeset(CS))#kura_changeset.errors
+    ).
+
 schemaless_changeset_is_left_alone_test() ->
     CS = kura_changeset:cast(#{token => string}, #{}, #{token => ~"t"}, [token]),
     ?assertEqual(CS, kura_redact:changeset(CS)).
@@ -100,6 +131,8 @@ telemetry_test_() ->
             {"error detail is opt-in, never for a redacted schema", fun t_error_detail/0},
             {"a telemetry_error_detail that is not a boolean shows no detail",
                 fun t_error_detail_not_a_boolean/0},
+            {"a database message is not put on a changeset of a redacting schema",
+                fun t_base_error/0},
             {"raw SQL is shown as it is unless marked sensitive", fun t_raw_sql/0}
         ]}.
 
@@ -326,6 +359,28 @@ t_distance() ->
     ?assertEqual(
         {[[~"c"]], [[~"c"]]}, shown(fun() -> kura_repo_worker:all(?REPO, ByContent) end)
     ).
+
+t_base_error() ->
+    Quoting = #{
+        code => ~"22P02", message => ~"invalid input syntax for type uuid: \"tok-SECRET\""
+    },
+    kura_test_recording_driver:reply_with([
+        {error, Quoting}, {error, Quoting}, {error, {closed, ~"tok-SECRET"}}, {error, Quoting}
+    ]),
+    {error, Inserted} = kura_repo_worker:insert(
+        ?REPO, changeset(#{}, #{email => ~"a@b.c", token => ~"tok-SECRET"})
+    ),
+    ?assertEqual([{base, ~"database error 22P02"}], Inserted#kura_changeset.errors),
+    {error, Updated} = kura_repo_worker:update(
+        ?REPO, changeset(#{id => 1}, #{token => ~"tok-SECRET"})
+    ),
+    ?assertEqual([{base, ~"database error 22P02"}], Updated#kura_changeset.errors),
+    {error, Closed} = kura_repo_worker:insert(
+        ?REPO, changeset(#{}, #{email => ~"a@b.c", token => ~"tok-SECRET"})
+    ),
+    ?assertEqual([{base, ~"database error"}], Closed#kura_changeset.errors),
+    {error, Plain} = insert_plain(),
+    ?assertEqual([{base, maps:get(message, Quoting)}], Plain#kura_changeset.errors).
 
 duplicate_error() ->
     #{

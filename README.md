@@ -643,7 +643,10 @@ Raw SQL is reported as written. Pass `#{sensitive => true}` to
 `kura_repo_worker:query/4` to redact its parameters. A failed statement's
 error is reported to telemetry without its message and detail, which can
 quote row values; `{telemetry_error_detail, true}` reports the whole error
-for statements on schemas without redacted fields.
+for statements on schemas without redacted fields. A changeset of a schema
+with redacted fields gets `database error <code>` on `base` in place of
+the database's message. An `{error, Reason}` returned by a query or a bulk
+write is the driver's error, message included: log its `code`.
 
 ### Defaults that change in 3.0
 

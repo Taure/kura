@@ -69,6 +69,11 @@ Behaviour that changes for existing callers:
   query, so one in a subquery that names the outer query's field, or a
   field an outer CTE hands it, is hidden; so is a plain column that shares
   the name. A distance from a redacted vector field hides the vector.
+- A changeset of a schema with redacted fields no longer carries the
+  database's message on `base`, which can quote a value (`invalid input
+  syntax for type uuid: "..."`): the error is `database error 22P02`, its
+  code. `kura_redact:changeset/1` replaces any error message that holds a
+  redacted field's value.
 - An attribute tenant whose value is `undefined`, `null` or `nil` raises
   `{invalid_tenant, Tenant}`. It used to count as a tenant, compare the
   field with `NULL` and stamp inserts with no owner.

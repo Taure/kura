@@ -38,6 +38,13 @@ database error message can quote a value, or the whole failing row. With
 whole error is reported for a statement that reads or writes no schema
 with redacted fields.
 
+An insert or update of a changeset that fails with an error kura maps to
+no field reports it on `base`: as `~"database error 22P02"`, the error's
+code, for a schema with redacted fields, and with the database's message
+for any other. What a query, `insert_all`, `update_all` or `delete_all`
+returns as `{error, Reason}` is the driver's error as it is, message and
+detail included: log its `code`, not the term.
+
 Raw SQL through `kura_repo_worker:query/3` and `{fragment, SQL, Params}`
 values inside a query that names no redacted field are not redacted: kura
 cannot tell what they hold. Run raw SQL whose parameters are sensitive
@@ -85,7 +92,15 @@ record(Schema, Record) when is_map(Record) ->
 
 -doc """
 Return `Changeset` with the redacted fields' values replaced in its
-`data`, `changes` and `params`. Safe to log; not for writing.
+`data`, `changes` and `params`, and with every error message that holds
+one of those values replaced whole: a message that quotes a redacted
+field's text or integer, as a database's `invalid input syntax` does. Safe
+to log; not for writing.
+
+```erlang
+[{base, ~"invalid input syntax for type uuid: \"tok-SECRET\""}] = CS#kura_changeset.errors,
+[{base, ~"[redacted]"}] = (kura_redact:changeset(CS))#kura_changeset.errors.
+```
 """.
 -spec changeset(#kura_changeset{}) -> #kura_changeset{}.
 changeset(#kura_changeset{schema = undefined} = CS) ->
@@ -98,8 +113,34 @@ changeset(#kura_changeset{schema = Schema} = CS) ->
             CS#kura_changeset{
                 data = redacted_map(CS#kura_changeset.data, Redacted),
                 changes = redacted_map(CS#kura_changeset.changes, Redacted),
-                params = redacted_map(CS#kura_changeset.params, Redacted)
+                params = redacted_map(CS#kura_changeset.params, Redacted),
+                errors = redacted_errors(CS#kura_changeset.errors, quotable(CS, Redacted))
             }
+    end.
+
+%% The redacted fields' values as an error message would quote them.
+quotable(#kura_changeset{data = Data, changes = Changes, params = Params}, Redacted) ->
+    lists:usort([
+        Text
+     || Map <- [Data, Changes, Params],
+        Key := Value <- Map,
+        names_redacted(Key, Redacted),
+        Text <- quoted_as(Value)
+    ]).
+
+quoted_as(Value) when is_binary(Value), Value =/= <<>> -> [Value];
+quoted_as(Value) when is_integer(Value) -> [integer_to_binary(Value)];
+quoted_as(_Value) -> [].
+
+redacted_errors(Errors, []) ->
+    Errors;
+redacted_errors(Errors, Quotable) ->
+    [redacted_error(Error, Quotable) || Error <- Errors].
+
+redacted_error({Field, Message}, Quotable) ->
+    case binary:match(Message, Quotable) of
+        nomatch -> {Field, Message};
+        _Found -> {Field, ?REDACTED}
     end.
 
 redacted_map(Map, Redacted) ->

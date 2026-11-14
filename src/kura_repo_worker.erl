@@ -1234,7 +1234,18 @@ handle_pg_error(CS, #{code := ~"23502", column := Column} = Error) ->
         end,
     kura_changeset:add_error(CS, Field, ~"can't be blank");
 handle_pg_error(CS, Reason) ->
-    kura_changeset:add_error(CS, base, format_error(Reason)).
+    kura_changeset:add_error(CS, base, base_message(CS#kura_changeset.schema, Reason)).
+
+%% The server's text can quote a value, so a schema with redacted fields is
+%% given the error's code and not its message.
+base_message(Schema, Reason) ->
+    case Schema =/= undefined andalso kura_schema:redacted_fields(Schema) =/= [] of
+        true -> coded_error(Reason);
+        false -> format_error(Reason)
+    end.
+
+coded_error(#{code := Code}) when is_binary(Code) -> <<"database error ", Code/binary>>;
+coded_error(_Reason) -> ~"database error".
 
 violation(~"23505") -> {unique, ~"has already been taken"};
 violation(~"23503") -> {foreign_key, ~"does not exist"};
