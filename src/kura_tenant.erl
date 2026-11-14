@@ -26,28 +26,43 @@ the statement and never changes the connection's `search_path`.
 
 The tenant lives in the process dictionary, so a process that never set
 one has none: a spawned process does not inherit its parent's, and a
-query run there is not scoped at all. Set
+query run there is not scoped at all. Set `require_tenant` for a repo, in
+its config:
 
 ```erlang
-{kura, [{require_tenant, true}]}
+{kura, [{repos, #{my_repo => #{require_tenant => true, ...}}}]}
 ```
 
-and a query or a changeset write with no tenant in the process raises
-`{kura, {tenant_required, Source}}` instead of running unscoped, `Source`
-being the schema or table it reads or writes. A query is judged by
-everything it reads (see `kura_query:sources/1`): what it is from and what
-it joins, in the query itself and in every CTE, combination and subquery
-inside it. Two things lift the requirement:
+and a query or a changeset write on that repo with no tenant in the
+process raises `{kura, {tenant_required, Source}}` instead of running
+unscoped, `Source` being the schema or table it reads or writes. A query is
+judged by everything it reads (see `kura_query:sources/1`): what it is from
+and what it joins, in the query itself and in every CTE, combination and
+subquery inside it. Two things lift the requirement:
 
 - a schema shared by every tenant exports `tenant_scoped() -> false`;
 - a deliberate cross-tenant path, such as an admin report or a
   maintenance job, runs inside `without_tenant/1`.
 
-The setting is read once, on first use. Call `reload_settings/0` after
-changing it at runtime. Left unset, a missing tenant is not an error, and
-the first `put_tenant/1` of a real tenant logs one warning per boot.
-`false` says the same without the warning. The default becomes `true` in
-kura 3.0, where a single-tenant application sets it to `false`.
+A repo that does not set it takes the one in the application environment,
+so one line covers every repo, and a repo that holds no tenant data, such
+as a control plane's, sets `require_tenant => false` for itself:
+
+```erlang
+{kura, [{require_tenant, true}]}
+```
+
+It is one of the repo's settings (`kura_repo:settings/1`), fixed when the
+repo's pool starts; starting the pool again re-reads it. A value that is
+not a boolean keeps the pool from starting, with
+`{error, {invalid_setting, require_tenant, Value}}`.
+
+Left unset in both places, a missing tenant is not an error, and the first
+query or write under a tenant logs one warning per boot, naming the repo.
+`false` says the same without the warning. In kura 3.0 a tenant is
+required by default only on a repo that declares a tenancy strategy; a
+repo that declares none, as in a single-tenant application, is not
+affected and has nothing to set.
 
 Raw SQL through a repo's `query/2` is never scoped and never checked.
 """.
@@ -63,12 +78,10 @@ Raw SQL through a repo's `query/2` is never scoped and never checked.
     scope/0,
     adopt/1,
     scope_query/2,
-    tenant_for/1,
-    require/1,
-    reload_settings/0
+    tenant_for/2,
+    require/2
 ]).
 
--define(REQUIRE, {?MODULE, require_tenant}).
 -define(UNSCOPED, kura_tenant_unscoped).
 
 -type strategy() :: {prefix, binary()} | {attribute, {atom(), term()}}.
@@ -98,23 +111,8 @@ than storing something that would scope nothing. The attribute value cannot be
 """.
 -spec put_tenant(undefined | strategy()) -> undefined | strategy().
 put_tenant(Tenant) ->
-    ok = warn_unless_decided(validate_tenant(Tenant)),
-    validate_tenant(erlang:put(kura_tenant, Tenant)).
-
-warn_unless_decided(undefined) ->
-    ok;
-warn_unless_decided(_Tenant) ->
-    case required() of
-        unset ->
-            kura_boot_warning:once(require_tenant, #{
-                msg =>
-                    ~"kura: tenants are in use but require_tenant is not set, so a query in a process without a tenant runs unscoped",
-                fix =>
-                    ~"set {kura, [{require_tenant, true}]}; that is the default in 3.0"
-            });
-        _ ->
-            ok
-    end.
+    Valid = validate_tenant(Tenant),
+    validate_tenant(erlang:put(kura_tenant, Valid)).
 
 -doc "Get the current tenant strategy from the process dictionary.".
 -spec get_tenant() -> undefined | strategy().
@@ -149,7 +147,6 @@ raises before anything changes.
 -spec with_tenant(undefined | strategy(), scoped(Result)) -> Result.
 with_tenant(Tenant, Scoped) ->
     Valid = validate_tenant(Tenant),
-    ok = warn_unless_decided(Valid),
     Previous = erlang:put(kura_tenant, Valid),
     try
         run(Scoped)
@@ -214,61 +211,72 @@ flag(true) -> true;
 flag(false) -> undefined.
 
 -doc """
-Re-read `require_tenant` from the application environment. The setting is
-otherwise read once, on first use.
-""".
--spec reload_settings() -> ok.
-reload_settings() ->
-    _ = persistent_term:erase(?REQUIRE),
-    ok.
-
--spec required() -> boolean() | unset.
-required() ->
-    case persistent_term:get(?REQUIRE, unread) of
-        unread ->
-            Setting = setting(),
-            persistent_term:put(?REQUIRE, Setting),
-            Setting;
-        Setting ->
-            Setting
-    end.
-
-setting() ->
-    kura_settings:flag(require_tenant).
-
--doc """
-The tenant to compile `Query` under: the process's tenant, or `undefined`
-when it has none and none is required. Raises
-`{kura, {tenant_required, Source}}` when `require_tenant` is set, the
+The tenant to compile `Query` under on `RepoMod`: the process's tenant, or
+`undefined` when it has none and none is required. Raises
+`{kura, {tenant_required, Source}}` when the repo requires a tenant, the
 process has no tenant and is not inside `without_tenant/1`, and the query
 reads a tenant-scoped `Source`: as its `from` or through a join, in itself,
 in one of its CTEs or combinations, or in a subquery in its conditions.
 """.
--spec tenant_for(#kura_query{}) -> undefined | strategy().
-tenant_for(Query) ->
+-spec tenant_for(module(), #kura_query{}) -> undefined | strategy().
+tenant_for(RepoMod, Query) ->
     case get_tenant() of
         undefined ->
-            ok = unless_required(Query),
+            ok = unless_required(RepoMod, Query),
             undefined;
         Tenant ->
+            ok = warn_unless_decided(RepoMod),
             Tenant
     end.
 
 -doc """
-Check that a write to `Source` may run under the process's tenant. Raises
-as `tenant_for/1` does.
+Check that a write to `Source` on `RepoMod` may run under the process's
+tenant. Raises as `tenant_for/2` does.
 """.
--spec require(atom() | binary()) -> ok.
-require(Source) ->
+-spec require(module(), atom() | binary()) -> ok.
+require(RepoMod, Source) ->
     case get_tenant() of
-        undefined -> unless_required(Source);
-        _Tenant -> ok
+        undefined -> unless_required(RepoMod, Source);
+        _Tenant -> warn_unless_decided(RepoMod)
     end.
 
-unless_required(QueryOrSource) ->
-    case required() =:= true andalso erlang:get(?UNSCOPED) =/= true of
+unless_required(RepoMod, QueryOrSource) ->
+    case required(RepoMod) =:= true andalso erlang:get(?UNSCOPED) =/= true of
         true -> check_scoped(QueryOrSource);
         false -> ok
+    end.
+
+%% A started repo's settings hold what the application environment said
+%% when its pool started, so only a repo kura has not started reads it here.
+-spec required(module()) -> boolean() | unset.
+required(RepoMod) ->
+    case kura_repo_settings:lookup(RepoMod) of
+        #{require_tenant := Required} ->
+            Required;
+        #{} ->
+            unset;
+        _NotStarted ->
+            case kura_repo:settings(RepoMod) of
+                #{require_tenant := Required} ->
+                    kura_settings:checked_flag(require_tenant, Required);
+                _ ->
+                    kura_settings:flag(require_tenant)
+            end
+    end.
+
+-spec warn_unless_decided(module()) -> ok.
+warn_unless_decided(RepoMod) ->
+    case required(RepoMod) of
+        unset ->
+            kura_boot_warning:once(require_tenant, #{
+                msg =>
+                    ~"kura: tenants are in use on a repo whose require_tenant is not set, so a query in a process without a tenant runs unscoped",
+                repo => RepoMod,
+                fix =>
+                    ~"set require_tenant => true in the repo's config, or {kura, [{require_tenant, true}]} for every repo"
+            });
+        _Decided ->
+            ok
     end.
 
 %% A source that names one of the query's CTEs is not a table: the CTE's

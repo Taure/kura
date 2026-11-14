@@ -114,7 +114,8 @@ dependency's migrations run first. See `kura_migrator:migration_apps/1`.
     driver_module => module(),
     read_only => boolean(),
     replicas => [module()],
-    uuid_version => v4 | v7
+    uuid_version => v4 | v7,
+    require_tenant => boolean()
 }.
 
 -callback otp_app() -> atom().
@@ -156,12 +157,15 @@ config(RepoMod) ->
 
 -doc """
 Kura's own settings for the repo: `dialect`, `pool`, `pool_module`,
-`driver_module`, `read_only`, `replicas` and `uuid_version`, those it has.
-Connection settings and secrets are not among them.
+`driver_module`, `read_only`, `replicas`, `uuid_version` and
+`require_tenant`, those it has. Connection settings and secrets are not
+among them.
 
 Once `kura_db:start_pool/1` has started the repo's pool, these are the
 settings it was started with, read without calling `init/1`; starting the
-pool again re-reads them. For a repo whose pool kura has not started, they
+pool again re-reads them. A repo that sets no `require_tenant` is started
+with the one in the `kura` application environment, if there is one (see
+`kura_tenant`). For a repo whose pool kura has not started, they
 come from `config/1` on each call. A repo refused a pool that another repo
 owns raises `{pool_owned_by, Owner}` until its own pool starts. A repo whose
 config moved it to a pool that then failed to start raises

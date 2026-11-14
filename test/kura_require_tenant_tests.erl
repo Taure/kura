@@ -16,8 +16,7 @@ setting(Setting) ->
     case Setting of
         unset -> application:unset_env(kura, require_tenant);
         _ -> application:set_env(kura, require_tenant, Setting)
-    end,
-    kura_tenant:reload_settings().
+    end.
 
 with_setting(Setting, Tests) ->
     {foreach,
@@ -343,36 +342,180 @@ invalid_setting_test_() ->
     ]).
 
 %%----------------------------------------------------------------------
+%% Per repo
+%%----------------------------------------------------------------------
+
+with_repo_setting(Env, Repo, Tests) ->
+    {foreach,
+        fun() ->
+            setting(Env),
+            kura_test_recording_driver:configure(?REPO, Repo),
+            kura_query_cache:flush()
+        end,
+        fun(_) ->
+            kura_tenant:clear_tenant(),
+            kura_test_recording_driver:unconfigure(),
+            kura_query_cache:flush(),
+            setting(unset)
+        end,
+        Tests}.
+
+refused() ->
+    [
+        ?_assertError(?REFUSED(?SCOPED), kura_repo_worker:all(?REPO, scoped())),
+        ?_assertError(
+            ?REFUSED(?SCOPED),
+            kura_repo_worker:insert(?REPO, changeset(?SCOPED, #{}, #{name => ~"a"}))
+        ),
+        ?_assertError(
+            ?REFUSED(?SCOPED), kura_repo_worker:insert_all(?REPO, ?SCOPED, [#{name => ~"a"}])
+        ),
+        ?_assertError(
+            ?REFUSED(?SCOPED),
+            kura_repo_worker:delete(?REPO, changeset(?SCOPED, #{id => 1}, #{}))
+        )
+    ].
+
+runs() ->
+    [
+        ?_assertEqual({ok, []}, kura_repo_worker:all(?REPO, scoped())),
+        ?_assertMatch(
+            {ok, _}, kura_repo_worker:insert(?REPO, changeset(?SCOPED, #{}, #{name => ~"a"}))
+        )
+    ].
+
+per_repo_test_() ->
+    [
+        {"a repo requires a tenant on its own",
+            with_repo_setting(unset, #{require_tenant => true}, refused())},
+        {"a repo's own setting wins over the application environment's", [
+            with_repo_setting(true, #{require_tenant => false}, runs()),
+            with_repo_setting(false, #{require_tenant => true}, refused())
+        ]},
+        {"the application environment stands for a repo that sets none", [
+            with_repo_setting(true, #{}, refused()),
+            with_repo_setting(false, #{}, runs())
+        ]},
+        {"a repo's setting that is not a boolean is named",
+            with_repo_setting(true, #{require_tenant => ~"yes"}, [
+                ?_assertError(
+                    {kura, {invalid_setting, require_tenant, ~"yes"}},
+                    kura_repo_worker:all(?REPO, scoped())
+                )
+            ])},
+        {"an empty insert_all writes nothing and needs no tenant",
+            with_repo_setting(unset, #{require_tenant => true}, [
+                ?_assertEqual({ok, 0}, kura_repo_worker:insert_all(?REPO, ?SCOPED, []))
+            ])}
+    ].
+
+%% A repo whose pool kura started keeps the setting it was started with,
+%% the application environment's included.
+started_repo_test_() ->
+    Config = #{dialect => kura_dialect_pg, pool_module => kura_pool_minato},
+    Started = fun(Env, Repo) ->
+        setting(Env),
+        kura_repo_settings:started(?REPO, maps:merge(Config, Repo))
+    end,
+    {foreach, fun() -> ok end,
+        fun(_) ->
+            kura_repo_settings:forget(?REPO),
+            kura_query_cache:flush(),
+            setting(unset)
+        end,
+        [
+            {"its own setting", fun() ->
+                Started(unset, #{require_tenant => true}),
+                ?assertMatch(#{require_tenant := true}, kura_repo:settings(?REPO)),
+                ?assertError(?REFUSED(?SCOPED), kura_query_compiler:to_sql(?REPO, scoped()))
+            end},
+            {"the application environment's, as it was at the start", fun() ->
+                Started(true, #{}),
+                setting(false),
+                ?assertMatch(#{require_tenant := true}, kura_repo:settings(?REPO)),
+                ?assertError(?REFUSED(?SCOPED), kura_query_compiler:to_sql(?REPO, scoped())),
+                Started(false, #{}),
+                ?assertMatch({_, []}, kura_query_compiler:to_sql(?REPO, scoped()))
+            end},
+            {"neither: nothing is required, whatever is set afterwards", fun() ->
+                Started(unset, #{}),
+                setting(true),
+                ?assertNot(is_map_key(require_tenant, kura_repo:settings(?REPO))),
+                ?assertMatch({_, []}, kura_query_compiler:to_sql(?REPO, scoped()))
+            end},
+            {"its own setting wins", fun() ->
+                Started(true, #{require_tenant => false}),
+                ?assertMatch({_, []}, kura_query_compiler:to_sql(?REPO, scoped()))
+            end}
+        ]}.
+
+%%----------------------------------------------------------------------
 %% Warning
 %%----------------------------------------------------------------------
 
 warning_test_() ->
+    Query = fun() -> kura_repo_worker:all(?REPO, shared()) end,
+    Write = fun() ->
+        kura_repo_worker:insert(?REPO, changeset(?SHARED, #{}, #{name => ~"a"}))
+    end,
     [
-        {"unset: the first real tenant warns once", fun() ->
+        {"unset: the first query under a tenant warns once, naming the repo", fun() ->
             ?assertMatch(
-                [_],
-                warnings_from(unset, fun() ->
-                    kura_tenant:put_tenant(undefined),
+                [#{repo := ?REPO}],
+                warnings_from(unset, #{}, fun() ->
                     kura_tenant:put_tenant(?TENANT),
-                    kura_tenant:with_tenant({prefix, ~"t1"}, fun() -> ok end)
+                    Query(),
+                    Query(),
+                    kura_tenant:with_tenant({prefix, ~"t1"}, Query)
+                end)
+            )
+        end},
+        {"unset: so does the first write", fun() ->
+            ?assertMatch(
+                [#{repo := ?REPO}],
+                warnings_from(unset, #{}, fun() ->
+                    kura_tenant:with_tenant({prefix, ~"t1"}, Write),
+                    kura_tenant:with_tenant({prefix, ~"t1"}, Write)
                 end)
             )
         end},
         {"unset and no tenant ever set: no warning", fun() ->
-            ?assertEqual([], warnings_from(unset, fun() -> kura_tenant:put_tenant(undefined) end))
+            ?assertEqual(
+                [],
+                warnings_from(unset, #{}, fun() ->
+                    kura_tenant:put_tenant(undefined),
+                    Query(),
+                    Write()
+                end)
+            )
+        end},
+        {"setting a tenant runs nothing, so warns of nothing", fun() ->
+            ?assertEqual(
+                [], warnings_from(unset, #{}, fun() -> kura_tenant:put_tenant(?TENANT) end)
+            )
         end}
     ] ++
         [
-            {lists:flatten(io_lib:format("~p: no warning", [Setting])), fun() ->
+            {lists:flatten(io_lib:format("~p in ~p: no warning", [Setting, Where])), fun() ->
+                {Env, Repo} =
+                    case Where of
+                        env -> {Setting, #{}};
+                        repo -> {unset, #{require_tenant => Setting}}
+                    end,
                 ?assertEqual(
-                    [], warnings_from(Setting, fun() -> kura_tenant:put_tenant(?TENANT) end)
+                    [],
+                    warnings_from(Env, Repo, fun() ->
+                        kura_tenant:with_tenant(?TENANT, Query),
+                        kura_tenant:with_tenant(?TENANT, Write)
+                    end)
                 )
             end}
-         || Setting <- [true, false]
+         || Setting <- [true, false], Where <- [env, repo]
         ].
 
-warnings_from(Setting, Run) ->
+warnings_from(Setting, Repo, Run) ->
     setting(Setting),
+    kura_test_recording_driver:configure(?REPO, Repo),
     kura_boot_warning:forget(require_tenant),
     ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
     try
@@ -381,13 +524,15 @@ warnings_from(Setting, Run) ->
     after
         logger:remove_handler(?MODULE),
         kura_tenant:clear_tenant(),
+        kura_test_recording_driver:unconfigure(),
+        kura_query_cache:flush(),
         setting(unset),
         kura_boot_warning:forget(require_tenant)
     end.
 
 warnings() ->
     receive
-        {logged, #{fix := <<"set {kura, [{require_tenant", _/binary>>} = Report} ->
+        {logged, #{fix := <<"set require_tenant", _/binary>>} = Report} ->
             [Report | warnings()];
         {logged, _} ->
             warnings()

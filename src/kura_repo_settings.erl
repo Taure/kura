@@ -9,7 +9,16 @@
 
 -export_type([stored/0]).
 
--define(SETTINGS, [dialect, pool, pool_module, driver_module, read_only, replicas, uuid_version]).
+-define(SETTINGS, [
+    dialect,
+    pool,
+    pool_module,
+    driver_module,
+    read_only,
+    replicas,
+    uuid_version,
+    require_tenant
+]).
 
 -type stored() ::
     kura_repo:settings() | {pool_owned_by, module()} | {pool_not_started, atom()} | none.
@@ -30,7 +39,19 @@ from_config(Config) ->
 
 -spec started(module(), map()) -> ok.
 started(Repo, Config) ->
-    persistent_term:put({?MODULE, Repo}, from_config(Config)).
+    persistent_term:put({?MODULE, Repo}, with_default(from_config(Config))).
+
+%% The application environment's require_tenant stands for a repo that sets
+%% none, as it is when the pool starts.
+-spec with_default(kura_repo:settings()) -> kura_repo:settings().
+with_default(#{require_tenant := _} = Settings) ->
+    Settings;
+with_default(Settings) ->
+    case kura_settings:read(require_tenant) of
+        {ok, true} -> Settings#{require_tenant => true};
+        {ok, false} -> Settings#{require_tenant => false};
+        _UnsetOrInvalid -> Settings
+    end.
 
 -spec refused(module(), module()) -> ok.
 refused(Repo, Owner) ->

@@ -81,7 +81,7 @@ check_capabilities(RepoMod, Query) ->
 -spec compile_query(module(), #kura_query{}) -> {iodata(), [term()]}.
 compile_query(RepoMod, Query) ->
     Dialect = dialect(RepoMod),
-    Dialect:to_sql(convert(Dialect, scope(Query))).
+    Dialect:to_sql(convert(Dialect, scope(RepoMod, Query))).
 
 -doc """
 Cached `to_sql/2`. The cache key includes `RepoMod` so two repos with
@@ -143,7 +143,7 @@ split(Query) ->
 -spec cached(module(), #kura_query{}, #kura_query{}, tuple()) -> {iodata(), [term()]}.
 cached(RepoMod, Query, Shape, Values) ->
     ok = kura_query:check_distances(Query),
-    Key = {RepoMod, kura_tenant:tenant_for(Query), Shape},
+    Key = {RepoMod, kura_tenant:tenant_for(RepoMod, Query), Shape},
     case kura_query_cache:get(Key) of
         {ok, {SQL, Template}} ->
             {SQL, kura_query_shape:bind(Template, Values)};
@@ -187,7 +187,7 @@ to_sql_from(RepoMod, Query, StartCounter) ->
     ok = kura_query:check_encrypted(Query),
     ok = check_capabilities(RepoMod, Query),
     Dialect = dialect(RepoMod),
-    Dialect:to_sql_from(convert(Dialect, scope(Query)), StartCounter).
+    Dialect:to_sql_from(convert(Dialect, scope(RepoMod, Query)), StartCounter).
 
 -spec insert(module(), atom() | module(), [atom()], map()) -> {iodata(), [term()]}.
 insert(RepoMod, SchemaOrTable, Fields, Data) ->
@@ -213,7 +213,7 @@ update_all(RepoMod, Query, SetMap) ->
     ok = check_bulk_write(Query),
     ok = check_capabilities(RepoMod, Query),
     Dialect = dialect(RepoMod),
-    Dialect:update_all(convert(Dialect, scope(Query)), SetMap).
+    Dialect:update_all(convert(Dialect, scope(RepoMod, Query)), SetMap).
 
 -spec delete_all(module(), #kura_query{}) -> {iodata(), [term()]}.
 delete_all(RepoMod, Query) ->
@@ -222,7 +222,7 @@ delete_all(RepoMod, Query) ->
     ok = check_bulk_write(Query),
     ok = check_capabilities(RepoMod, Query),
     Dialect = dialect(RepoMod),
-    Dialect:delete_all(convert(Dialect, scope(Query))).
+    Dialect:delete_all(convert(Dialect, scope(RepoMod, Query))).
 
 -spec insert_all(module(), atom() | module(), [atom()], [map()]) -> {iodata(), [term()]}.
 insert_all(RepoMod, SchemaOrTable, Fields, Rows) ->
@@ -273,6 +273,6 @@ check_bulk_write(#kura_query{} = Q) ->
         [Clause | _] -> erlang:error({kura, {unsupported_in_bulk_write, Clause}})
     end.
 
--spec scope(#kura_query{}) -> #kura_query{}.
-scope(Query) ->
-    kura_tenant:scope_query(kura_tenant:tenant_for(Query), Query).
+-spec scope(module(), #kura_query{}) -> #kura_query{}.
+scope(RepoMod, Query) ->
+    kura_tenant:scope_query(kura_tenant:tenant_for(RepoMod, Query), Query).

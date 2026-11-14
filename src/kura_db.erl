@@ -62,6 +62,7 @@ for pool lookup, sandbox support, telemetry, and type loading.
     read_only,
     replicas,
     uuid_version,
+    require_tenant,
     encryption,
     keyring
 ]).
@@ -457,7 +458,7 @@ legacy_defaults_filled(Repo, Filled) ->
 -spec start_pool(module(), atom(), map()) -> ok | {error, term()}.
 start_pool(Repo, Pool, Config) ->
     PoolMod = pool_module(Repo, Config),
-    case kura_capabilities:validate(PoolMod) of
+    case valid_start(PoolMod, Config) of
         ok ->
             case locked(Pool, fun() -> claimed(Repo, Pool, PoolMod, Config) end) of
                 ok -> ok;
@@ -467,6 +468,13 @@ start_pool(Repo, Pool, Config) ->
         {error, Invalid} ->
             ok = not_started(Repo, PoolMod, #{reason => Invalid, pool => Pool}),
             {error, Invalid}
+    end.
+
+-spec valid_start(module(), map()) -> ok | {error, term()}.
+valid_start(PoolMod, Config) ->
+    case kura_capabilities:validate(PoolMod) of
+        ok -> kura_settings:validate_repo(Config);
+        {error, _} = Invalid -> Invalid
     end.
 
 -type claim() :: ok | {error, term()} | {moved_from, atom(), module()}.

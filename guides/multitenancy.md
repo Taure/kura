@@ -124,18 +124,33 @@ against every tenant's rows. That is the case in a process you spawned
 and did not hand the tenant to, in a background job, and in a request
 whose middleware did not run.
 
-Turn a missing tenant into an error:
+Turn a missing tenant into an error, for a repo:
 
 ```erlang
 %% sys.config
+{kura, [
+    {repos, #{
+        my_repo => #{backend => kura_backend_postgres, require_tenant => true}
+    }}
+]}
+```
+
+or for every repo that does not say otherwise:
+
+```erlang
 {kura, [{require_tenant, true}]}
 ```
+
+A repo's own `require_tenant` wins, so a repo that holds no tenant data,
+such as a control plane's beside the tenants' repos, sets
+`require_tenant => false` and is left alone.
 
 A query, or an insert, update or delete of a changeset, in a process
 without a tenant then raises `{kura, {tenant_required, Source}}`, where
 `Source` is the schema or table. The same goes for `insert_all`,
-`update_all` and `delete_all`, and for a CTE, a union branch or a
-subquery inside a query.
+`update_all` and `delete_all`. A query is judged by everything it reads:
+what it is from and what it joins, in the query itself and in every CTE,
+union branch and subquery inside it. `kura_query:sources/1` lists them.
 
 Two things are exempt.
 
@@ -165,11 +180,17 @@ each is a place where tenants are not isolated.
 
 Raw SQL through `query/3` is not checked, as it is not scoped.
 
-`require_tenant` is read once, on first use; call
-`kura_tenant:reload_settings/0` after changing it at runtime. Left unset,
-kura logs one warning per boot the first time a tenant is set. Set it to
-`false` to keep unscoped queries without the warning. The default becomes
-`true` in kura 3.0; an application with no tenants sets it to `false`.
+`require_tenant` is one of a repo's settings (`kura_repo:settings/1`): it
+is fixed when the repo's pool starts, the application environment's value
+included, and starting the pool again re-reads it. A value that is not a
+boolean keeps kura, or the repo's pool, from starting. Left unset in both
+places, kura logs one warning per boot at the first query or write under a
+tenant, naming the repo. Set it to `false` to keep unscoped queries
+without the warning.
+
+In kura 3.0 a tenant is required by default only on a repo that declares a
+tenancy strategy. A repo that declares none, as in an application with no
+tenants, is not affected and has nothing to set.
 
 ## When to Use Which
 

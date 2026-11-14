@@ -503,7 +503,7 @@ insert_all(RepoMod, SchemaMod, Entries, Opts) ->
     guard_write(RepoMod, fun() -> do_insert_all(RepoMod, SchemaMod, Entries, Opts) end).
 
 do_insert_all(RepoMod, SchemaMod, Entries, Opts) ->
-    case dump_entries(SchemaMod, [maybe_apply_tenant_changes(SchemaMod, E) || E <- Entries]) of
+    case dump_entries(SchemaMod, tenant_entries(RepoMod, SchemaMod, Entries)) of
         {error, _} = DumpErr -> DumpErr;
         {ok, Rows} -> do_insert_all_rows(RepoMod, SchemaMod, Rows, guard_upsert(SchemaMod, Opts))
     end.
@@ -662,7 +662,7 @@ insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}, Opts) ->
         {error, ErrCS} ->
             {error, ErrCS#kura_changeset{action = insert}};
         {ok, CS} ->
-            Changes = maybe_apply_tenant_changes(SchemaMod, CS#kura_changeset.changes),
+            Changes = maybe_apply_tenant_changes(RepoMod, SchemaMod, CS#kura_changeset.changes),
             Changes0 = maybe_generate_pk(RepoMod, SchemaMod, Changes),
             Changes1 = maybe_add_timestamps(SchemaMod, Changes0, insert),
             case dump_changes(SchemaMod, Changes1) of
@@ -708,7 +708,7 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
                 0 ->
                     {ok, Data};
                 _ ->
-                    KeyClauses = tenant_key_clauses(SchemaMod, key_pairs(SchemaMod, Data)),
+                    KeyClauses = tenant_key_clauses(RepoMod, SchemaMod, key_pairs(SchemaMod, Data)),
                     Changes1 = maybe_add_timestamps(SchemaMod, pin_tenant(Changes), update),
                     case dump_changes(SchemaMod, Changes1) of
                         {error, DumpErr} ->
@@ -1014,7 +1014,7 @@ delete_record(RepoMod, SchemaMod, Data) ->
         {error, _} = Err ->
             Err;
         ok ->
-            KeyClauses = tenant_key_clauses(SchemaMod, key_pairs(SchemaMod, Data)),
+            KeyClauses = tenant_key_clauses(RepoMod, SchemaMod, key_pairs(SchemaMod, Data)),
             {SQL, Params} = kura_query_compiler:delete(RepoMod, SchemaMod, KeyClauses),
             Shown = kura_redact:write_params(SchemaMod, clause_fields(KeyClauses), Params),
             case kura_db:query(RepoMod, SQL, Params, Shown) of
@@ -1370,13 +1370,13 @@ maybe_apply_tenant_prefix(Query) ->
             Query
     end.
 
-tenant_key_clauses(SchemaMod, KeyClauses) ->
+tenant_key_clauses(RepoMod, SchemaMod, KeyClauses) ->
+    ok = kura_tenant:require(RepoMod, SchemaMod),
     case kura_tenant:get_tenant() of
         {attribute, {Field, Value}} ->
             ok = refuse_encrypted_tenant(SchemaMod, Field),
             KeyClauses ++ [{Field, Value}];
         _ ->
-            ok = kura_tenant:require(SchemaMod),
             KeyClauses
     end.
 
@@ -1432,11 +1432,20 @@ guarded({Target, Action}, Field) ->
 guarded({Target, Action, Opts}, Field) when is_map(Opts) ->
     {Target, Action, Opts#{guard => lists:usort([Field | maps:get(guard, Opts, [])])}}.
 
-maybe_apply_tenant_changes(SchemaMod, Changes) ->
+tenant_entries(_RepoMod, _SchemaMod, []) ->
+    [];
+tenant_entries(RepoMod, SchemaMod, Entries) ->
+    ok = kura_tenant:require(RepoMod, SchemaMod),
+    case kura_tenant:get_tenant() of
+        {attribute, {Field, Value}} -> [Entry#{Field => Value} || Entry <- Entries];
+        _ -> Entries
+    end.
+
+maybe_apply_tenant_changes(RepoMod, SchemaMod, Changes) ->
+    ok = kura_tenant:require(RepoMod, SchemaMod),
     case kura_tenant:get_tenant() of
         {attribute, {Field, Value}} ->
             Changes#{Field => Value};
         _ ->
-            ok = kura_tenant:require(SchemaMod),
             Changes
     end.

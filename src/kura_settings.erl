@@ -3,7 +3,7 @@
 
 -include_lib("kernel/include/logger.hrl").
 
--export([flag/1, checked_flag/2, max_page_size/0, read/1, validate/0]).
+-export([flag/1, checked_flag/2, max_page_size/0, read/1, validate/0, validate_repo/1]).
 
 -export_type([key/0, flag/0]).
 
@@ -70,6 +70,19 @@ validate([Key | Rest]) ->
             {error, {invalid_setting, Key, Value}};
         _ValidOrUnset ->
             validate(Rest)
+    end.
+
+%% A repo's own require_tenant, and the application environment's that
+%% stands for it when the repo sets none.
+-spec validate_repo(map()) -> ok | {error, {invalid_setting, key(), term()}}.
+validate_repo(#{require_tenant := Required}) when is_boolean(Required) ->
+    ok;
+validate_repo(#{require_tenant := Value}) ->
+    {error, {invalid_setting, require_tenant, Value}};
+validate_repo(_Config) ->
+    case read(require_tenant) of
+        {invalid, Value} -> {error, {invalid_setting, require_tenant, Value}};
+        _ValidOrUnset -> ok
     end.
 
 -spec valid(key(), term()) -> boolean().

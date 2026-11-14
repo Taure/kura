@@ -138,6 +138,45 @@ a_pool_module_with_an_unknown_capability_model_does_not_start_test() ->
         kura_db:forget_pools()
     end.
 
+a_repo_with_a_require_tenant_that_is_not_a_boolean_does_not_start_test() ->
+    Invalid = {invalid_setting, require_tenant, yes},
+    {Result, Events} = with_captured_logs_and_result(fun() ->
+        with_pool_answer({ok, self()}, #{require_tenant => yes}, fun() ->
+            {kura_repo_worker:start(kura_db_failing_repo), get({?MODULE, pool_config})}
+        end)
+    end),
+    ?assertEqual({{error, Invalid}, undefined}, Result),
+    ?assertMatch(
+        [#{msg := {report, #{msg := ~"kura: pool did not start", reason := Invalid}}}],
+        Events
+    ).
+
+a_started_repo_takes_require_tenant_from_the_application_environment_test() ->
+    Settings = fun() ->
+        maps:get(require_tenant, kura_repo:settings(kura_db_failing_repo), unset)
+    end,
+    try
+        Seen = with_pool_answer({ok, self()}, #{}, fun() ->
+            ok = kura_repo_worker:start(kura_db_failing_repo),
+            Unset = Settings(),
+            application:set_env(kura, require_tenant, true),
+            Before = Settings(),
+            ok = kura_db:start_pool(kura_db_failing_repo),
+            Restarted = Settings(),
+            application:set_env(kura, require_tenant, sometimes),
+            Refused = with_captured_logs_result(fun() ->
+                kura_db:start_pool(kura_db_failing_repo)
+            end),
+            {Unset, Before, Restarted, Refused, Settings()}
+        end),
+        ?assertEqual(
+            {unset, unset, true, {error, {invalid_setting, require_tenant, sometimes}}, true},
+            Seen
+        )
+    after
+        application:unset_env(kura, require_tenant)
+    end.
+
 %%----------------------------------------------------------------------
 %% kura_repo_worker:start/1 reports a pool that did not start
 %%----------------------------------------------------------------------
@@ -349,6 +388,7 @@ repo_worker_start_keeps_the_repo_settings_from_the_pool_module_test() ->
         read_only => true,
         replicas => [other_repo],
         uuid_version => 7,
+        require_tenant => true,
         encryption => #{keys => [{1, ~"S0VZ"}]},
         keyring => kura_keyring_env
     },
