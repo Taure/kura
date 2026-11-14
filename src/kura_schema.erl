@@ -35,6 +35,22 @@ fields() ->
      #kura_field{name = user_id, type = uuid, nullable = false},
      #kura_field{name = role, type = string}].
 ```
+
+## Column names
+
+A field is stored in the column of its own name unless `column` says
+otherwise:
+
+```erlang
+#kura_field{name = email, type = string, column = ~"email_address"}
+```
+
+Everywhere else the field is `email`: in changesets, in `where`,
+`order_by`, `select` and the other query clauses, in `on_conflict`
+targets, and in the maps the repo returns. Statements name the column,
+and a row read back is keyed by the field. A `{fragment, SQL, Params}` is
+SQL text, so it names the column itself. `column` on a virtual field is
+ignored.
 """.
 
 -include("kura.hrl").
@@ -47,6 +63,8 @@ fields() ->
     encryption_specs/1,
     field_specs/1,
     column_map/1,
+    renamed_columns/1,
+    renamed_fields/1,
     key/1,
     key_fields/1,
     primary_key/1,
@@ -251,6 +269,43 @@ column_map(Mod) ->
     cache({kura_schema, column_map, Mod}, fun() ->
         FieldMap = field_column_map(Mod:fields(), #{}),
         embed_column_map(embeds(Mod), FieldMap)
+    end).
+
+-doc """
+Return the fields of `Mod` stored under a column whose name differs from
+the field's, as field name to column name. Empty for a schema that sets no
+`column`, and for a module that is not a schema.
+""".
+-spec renamed_columns(module()) -> #{atom() => binary()}.
+renamed_columns(Mod) ->
+    cache({kura_schema, renamed_columns, Mod}, fun() ->
+        case is_schema(Mod) andalso erlang:function_exported(Mod, fields, 0) of
+            true -> renamed(Mod:fields(), #{});
+            false -> #{}
+        end
+    end).
+
+renamed([], Acc) ->
+    Acc;
+renamed([#kura_field{name = Name, column = Column, virtual = false} | Rest], Acc) when
+    is_binary(Column)
+->
+    case atom_to_binary(Name, utf8) of
+        Column -> renamed(Rest, Acc);
+        _ -> renamed(Rest, Acc#{Name => Column})
+    end;
+renamed([_ | Rest], Acc) ->
+    renamed(Rest, Acc).
+
+-doc """
+Return the columns of `Mod` that load into a field of another name, as
+column name (the atom a driver keys a row by) to field name. The inverse
+of `renamed_columns/1`.
+""".
+-spec renamed_fields(module()) -> #{atom() => atom()}.
+renamed_fields(Mod) ->
+    cache({kura_schema, renamed_fields, Mod}, fun() ->
+        #{binary_to_atom(Column, utf8) => Field || Field := Column <- renamed_columns(Mod)}
     end).
 
 -doc "Return list of non-virtual field names.".

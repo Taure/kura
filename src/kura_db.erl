@@ -826,13 +826,17 @@ load_row(SchemaMod, Row) when is_atom(SchemaMod) ->
             case erlang:function_exported(SchemaMod, fields, 0) of
                 true ->
                     {Types, Specs} = kura_schema:field_specs(SchemaMod),
-                    load_fields(Row, Types, Specs);
+                    Renamed = kura_schema:renamed_fields(SchemaMod),
+                    load_fields(keyed_by_field(Row, Renamed), Types, Specs);
                 false ->
                     Row
             end;
         _ ->
             Row
     end.
+
+keyed_by_field(Row, Renamed) when map_size(Renamed) =:= 0 -> Row;
+keyed_by_field(Row, Renamed) -> #{maps:get(Column, Renamed, Column) => V || Column := V <- Row}.
 
 load_fields(Row, Types, Specs) ->
     maps:fold(

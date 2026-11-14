@@ -12,7 +12,9 @@ configured for the running app.
 
 -include("kura.hrl").
 
--type column_context() :: undefined | {binary(), #{atom() => kura_types:kura_type()}}.
+-type renames() :: #{atom() => binary()}.
+-type qualified_columns() :: undefined | {binary(), #{atom() => kura_types:kura_type()}}.
+-type column_context() :: qualified_columns() | {renamed, renames(), qualified_columns()}.
 
 %% `x IN ()` is not SQL. An empty list matches no row, NULL included, and
 %% its negation every row, so each compiles to a constant predicate.
@@ -62,7 +64,9 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
     {SelectSQL, Params0, Counter0} = compile_select(Q, Ctx, Counter00),
     {WhereSQL, Params1, Counter1} = compile_wheres(Q#kura_query.wheres, Ctx, Counter0),
     Prefix = resolve_prefix(Q#kura_query.prefix),
-    {JoinSQL, Params2, Counter2} = compile_joins(Q#kura_query.joins, Table, Prefix, Counter1),
+    {JoinSQL, Params2, Counter2} = compile_joins(
+        Q#kura_query.joins, Table, renames(From), Prefix, Counter1
+    ),
     {GroupSQL, _, Counter3} = compile_group_by(Q#kura_query.group_bys, Ctx, Counter2),
     {HavingSQL, Params3, Counter4} = compile_havings(Q#kura_query.havings, Ctx, Counter3),
     {OrderSQL, OrderParams, Counter5} = compile_order_by(
@@ -316,7 +320,9 @@ cast_or_keep(Type, Value) ->
 -spec insert(kura_dialect:table(), [atom()], map()) -> {iodata(), [term()]}.
 insert(SchemaOrTable, Fields, Data) ->
     Table = resolve_table(SchemaOrTable),
-    {Cols, Placeholders, Params, _} = build_insert_parts(Fields, Data, 1),
+    {Cols, Placeholders, Params, _} = build_insert_parts(
+        Fields, Data, renames(SchemaOrTable), 1
+    ),
     SQL = iolist_to_binary([
         ~"INSERT INTO ",
         qualified_table(Table, resolve_prefix(undefined)),
@@ -331,10 +337,13 @@ insert(SchemaOrTable, Fields, Data) ->
 -spec insert(kura_dialect:table(), [atom()], map(), map()) -> {iodata(), [term()]}.
 insert(SchemaOrTable, Fields, Data, #{on_conflict := OnConflict0}) ->
     Table = resolve_table(SchemaOrTable),
+    Renames = renames(SchemaOrTable),
     {OnConflict, Guard} = conflict_guard(OnConflict0),
-    {Cols, Placeholders, Params, Counter} = build_insert_parts(Fields, Data, 1),
-    {ConflictSQL0, ConflictParams} = compile_on_conflict(OnConflict, Fields, Data, Counter),
-    ConflictSQL = [ConflictSQL0, guard_sql(Table, OnConflict, Guard)],
+    {Cols, Placeholders, Params, Counter} = build_insert_parts(Fields, Data, Renames, 1),
+    {ConflictSQL0, ConflictParams} = compile_on_conflict(
+        OnConflict, Fields, Data, Renames, Counter
+    ),
+    ConflictSQL = [ConflictSQL0, guard_sql(Table, OnConflict, Guard, Renames)],
     SQL = iolist_to_binary([
         ~"INSERT INTO ",
         qualified_table(Table, resolve_prefix(undefined)),
@@ -357,8 +366,9 @@ insert(SchemaOrTable, Fields, Data, _Opts) ->
 -spec update(kura_dialect:table(), [atom()], map(), [{atom(), term()}]) -> {iodata(), [term()]}.
 update(SchemaOrTable, Fields, Changes, KeyClauses) ->
     Table = resolve_table(SchemaOrTable),
-    {Sets, Params, Counter} = build_set_parts(Fields, Changes, 1),
-    {KeyConds, KeyParams, _} = key_where(KeyClauses, Counter),
+    Renames = renames(SchemaOrTable),
+    {Sets, Params, Counter} = build_set_parts(Fields, Changes, Renames, 1),
+    {KeyConds, KeyParams, _} = key_where(KeyClauses, Renames, Counter),
     SQL = iolist_to_binary([
         ~"UPDATE ",
         qualified_table(Table, resolve_prefix(undefined)),
@@ -371,14 +381,14 @@ update(SchemaOrTable, Fields, Changes, KeyClauses) ->
     {SQL, Params ++ KeyParams}.
 
 %% One `col = $n` condition per key column, params in key order.
-key_where(KeyClauses, Start) ->
-    key_where(KeyClauses, Start, [], []).
+key_where(KeyClauses, Renames, Start) ->
+    key_where(KeyClauses, Renames, Start, [], []).
 
-key_where([], Counter, Conds, Params) ->
+key_where([], _Renames, Counter, Conds, Params) ->
     {lists:reverse(Conds), lists:reverse(Params), Counter};
-key_where([{Field, Value} | Rest], Counter, Conds, Params) ->
-    Cond = [quote_ident(atom_to_binary(Field, utf8)), ~" = $", integer_to_binary(Counter)],
-    key_where(Rest, Counter + 1, [Cond | Conds], [Value | Params]).
+key_where([{Field, Value} | Rest], Renames, Counter, Conds, Params) ->
+    Cond = [column_ident(Field, Renames), ~" = $", integer_to_binary(Counter)],
+    key_where(Rest, Renames, Counter + 1, [Cond | Conds], [Value | Params]).
 
 %% Render one `($n, ...)` group per value-tuple for a row-value IN, params
 %% flattened in row-then-column order.
@@ -425,7 +435,7 @@ row_placeholders(N, Counter, Acc) ->
 -spec delete(kura_dialect:table(), [{atom(), term()}]) -> {iodata(), [term()]}.
 delete(SchemaOrTable, KeyClauses) ->
     Table = resolve_table(SchemaOrTable),
-    {KeyConds, Params, _} = key_where(KeyClauses, 1),
+    {KeyConds, Params, _} = key_where(KeyClauses, renames(SchemaOrTable), 1),
     SQL = iolist_to_binary([
         ~"DELETE FROM ",
         qualified_table(Table, resolve_prefix(undefined)),
@@ -444,8 +454,11 @@ update_all(#kura_query{from = From, wheres = Wheres, prefix = QPrefix}, SetMap) 
     Table = resolve_table(From),
     Prefix = resolve_prefix(QPrefix),
     Fields = maps:keys(SetMap),
-    {Sets, Params, Counter} = build_set_parts(Fields, SetMap, 1),
-    {WhereSQL, WhereParams, _} = compile_wheres(Wheres, undefined, Counter),
+    Renames = renames(From),
+    {Sets, Params, Counter} = build_set_parts(Fields, SetMap, Renames, 1),
+    {WhereSQL, WhereParams, _} = compile_wheres(
+        Wheres, renamed_context(Renames, undefined), Counter
+    ),
     SQL = iolist_to_binary([
         ~"UPDATE ",
         qualified_table(Table, Prefix),
@@ -463,7 +476,9 @@ update_all(#kura_query{from = From, wheres = Wheres, prefix = QPrefix}, SetMap) 
 delete_all(#kura_query{from = From, wheres = Wheres, prefix = QPrefix}) ->
     Table = resolve_table(From),
     Prefix = resolve_prefix(QPrefix),
-    {WhereSQL, WhereParams, _} = compile_wheres(Wheres, undefined, 1),
+    {WhereSQL, WhereParams, _} = compile_wheres(
+        Wheres, renamed_context(renames(From), undefined), 1
+    ),
     SQL = iolist_to_binary([
         ~"DELETE FROM ",
         qualified_table(Table, Prefix),
@@ -479,7 +494,8 @@ delete_all(#kura_query{from = From, wheres = Wheres, prefix = QPrefix}) ->
 insert_all(SchemaOrTable, Fields, Rows) ->
     ok = check_parameter_count(length(Rows) * length(Fields)),
     Table = resolve_table(SchemaOrTable),
-    Cols = [quote_ident(atom_to_binary(F, utf8)) || F <- Fields],
+    Renames = renames(SchemaOrTable),
+    Cols = [column_ident(F, Renames) || F <- Fields],
     {ValueGroups, AllParams, _} = build_value_groups(Rows, Fields, 1),
     SQL = iolist_to_binary([
         ~"INSERT INTO ",
@@ -499,48 +515,51 @@ check_parameter_count(Count) ->
 -spec insert_all(kura_dialect:table(), [atom()], [map()], map()) -> {iodata(), [term()]}.
 insert_all(SchemaOrTable, Fields, Rows, Opts) ->
     {BaseSQL, Params} = insert_all(SchemaOrTable, Fields, Rows),
+    Renames = renames(SchemaOrTable),
     SQL = [
         BaseSQL,
-        guarded_bulk_on_conflict(resolve_table(SchemaOrTable), Opts, Fields),
-        bulk_returning(Opts)
+        guarded_bulk_on_conflict(resolve_table(SchemaOrTable), Opts, Fields, Renames),
+        bulk_returning(Opts, Renames)
     ],
     {iolist_to_binary(SQL), Params}.
 
-guarded_bulk_on_conflict(Table, #{on_conflict := OnConflict0} = Opts, Fields) ->
+guarded_bulk_on_conflict(Table, #{on_conflict := OnConflict0} = Opts, Fields, Renames) ->
     {OnConflict, Guard} = conflict_guard(OnConflict0),
     [
-        bulk_on_conflict(Opts#{on_conflict => OnConflict}, Fields),
-        guard_sql(Table, OnConflict, Guard)
+        bulk_on_conflict(Opts#{on_conflict => OnConflict}, Fields, Renames),
+        guard_sql(Table, OnConflict, Guard, Renames)
     ];
-guarded_bulk_on_conflict(_Table, Opts, Fields) ->
-    bulk_on_conflict(Opts, Fields).
+guarded_bulk_on_conflict(_Table, Opts, Fields, Renames) ->
+    bulk_on_conflict(Opts, Fields, Renames).
 
 %% A bulk upsert applies one DO UPDATE clause to every row, so the SET values
 %% cannot come from any single row's parameters the way the single-row form
 %% builds them. EXCLUDED names the row that failed to insert, which is what
 %% makes one clause correct for all of them - and it binds no parameters.
-bulk_on_conflict(#{on_conflict := {Target, nothing}}, _Fields) ->
-    [conflict_target(Target), ~" DO NOTHING"];
-bulk_on_conflict(#{on_conflict := {Target, replace_all}}, Fields) ->
-    bulk_on_conflict(#{on_conflict => {Target, {replace, replaceable(Target, Fields)}}}, Fields);
-bulk_on_conflict(#{on_conflict := {Target, {replace, UpdateFields}}}, _Fields) ->
+bulk_on_conflict(#{on_conflict := {Target, nothing}}, _Fields, Renames) ->
+    [conflict_target(Target, Renames), ~" DO NOTHING"];
+bulk_on_conflict(#{on_conflict := {Target, replace_all}}, Fields, Renames) ->
+    bulk_on_conflict(
+        #{on_conflict => {Target, {replace, replaceable(Target, Fields)}}}, Fields, Renames
+    );
+bulk_on_conflict(#{on_conflict := {Target, {replace, UpdateFields}}}, _Fields, Renames) ->
     [
-        conflict_target(Target),
+        conflict_target(Target, Renames),
         ~" DO UPDATE SET ",
-        join_comma([excluded_set(F) || F <- UpdateFields])
+        join_comma([excluded_set(F, Renames) || F <- UpdateFields])
     ];
-bulk_on_conflict(#{}, _Fields) ->
+bulk_on_conflict(#{}, _Fields, _Renames) ->
     [].
 
-excluded_set(Field) ->
-    Col = quote_ident(atom_to_binary(Field, utf8)),
+excluded_set(Field, Renames) ->
+    Col = column_ident(Field, Renames),
     [Col, ~" = EXCLUDED.", Col].
 
-bulk_returning(#{returning := true}) ->
+bulk_returning(#{returning := true}, _Renames) ->
     ~" RETURNING *";
-bulk_returning(#{returning := RetFields}) when is_list(RetFields) ->
-    [~" RETURNING ", join_comma([quote_ident(atom_to_binary(F, utf8)) || F <- RetFields])];
-bulk_returning(#{}) ->
+bulk_returning(#{returning := RetFields}, Renames) when is_list(RetFields) ->
+    [~" RETURNING ", join_comma([column_ident(F, Renames) || F <- RetFields])];
+bulk_returning(#{}, _Renames) ->
     [].
 
 %%----------------------------------------------------------------------
@@ -765,10 +784,10 @@ compile_condition({Field, Value}, Ctx, Counter) when is_atom(Field) ->
 %% Internal: JOIN clause
 %%----------------------------------------------------------------------
 
-compile_joins([], _Table, _Prefix, Counter) ->
+compile_joins([], _Table, _Renames, _Prefix, Counter) ->
     {<<>>, [], Counter};
-compile_joins(Joins, FromTable, Prefix, Counter) ->
-    Parts = compile_joins_loop(Joins, FromTable, Prefix),
+compile_joins(Joins, FromTable, Renames, Prefix, Counter) ->
+    Parts = compile_joins_loop(Joins, FromTable, Renames, Prefix),
     {iolist_to_binary(Parts), [], Counter}.
 
 join_type(inner) -> ~"INNER JOIN";
@@ -911,12 +930,15 @@ combination_type(except) -> ~"EXCEPT".
 %% Internal: ON CONFLICT
 %%----------------------------------------------------------------------
 
-compile_on_conflict({Target, nothing}, _Fields, _Data, _Counter) ->
-    {[conflict_target(Target), ~" DO NOTHING"], []};
-compile_on_conflict({Target, replace_all}, Fields, Data, Counter) ->
-    compile_on_conflict({Target, {replace, replaceable(Target, Fields)}}, Fields, Data, Counter);
-compile_on_conflict({Target, {replace, UpdateFields}}, _Fields, Data, Counter) ->
-    compile_on_conflict_update(conflict_target(Target), UpdateFields, Data, Counter).
+compile_on_conflict({Target, nothing}, _Fields, _Data, Renames, _Counter) ->
+    {[conflict_target(Target, Renames), ~" DO NOTHING"], []};
+compile_on_conflict({Target, replace_all}, Fields, Data, Renames, Counter) ->
+    compile_on_conflict(
+        {Target, {replace, replaceable(Target, Fields)}}, Fields, Data, Renames, Counter
+    );
+compile_on_conflict({Target, {replace, UpdateFields}}, _Fields, Data, Renames, Counter) ->
+    {Sets, Params, _} = build_set_parts(UpdateFields, Data, Renames, Counter),
+    {[conflict_target(Target, Renames), ~" DO UPDATE SET ", join_comma(Sets)], Params}.
 
 %% A row the guard refuses is left as it is and not returned, as with DO NOTHING.
 conflict_guard({Target, Action, #{guard := Fields} = Opts}) when
@@ -928,24 +950,24 @@ conflict_guard({_Target, _Action, Opts}) ->
 conflict_guard(OnConflict) ->
     {OnConflict, []}.
 
-guard_sql(_Table, {_Target, nothing}, _Fields) ->
+guard_sql(_Table, {_Target, nothing}, _Fields, _Renames) ->
     [];
-guard_sql(_Table, _OnConflict, []) ->
+guard_sql(_Table, _OnConflict, [], _Renames) ->
     [];
-guard_sql(Table, _OnConflict, Fields) ->
-    [~" WHERE ", lists:join(~" AND ", [guard_condition(Table, F) || F <- Fields])].
+guard_sql(Table, _OnConflict, Fields, Renames) ->
+    [~" WHERE ", lists:join(~" AND ", [guard_condition(Table, F, Renames) || F <- Fields])].
 
-guard_condition(Table, Field) ->
-    Column = quote_ident(atom_to_binary(Field, utf8)),
+guard_condition(Table, Field, Renames) ->
+    Column = column_ident(Field, Renames),
     [quote_ident(Table), ~".", Column, ~" = EXCLUDED.", Column].
 
-conflict_target(Field) when is_atom(Field) ->
-    [~" ON CONFLICT (", quote_ident(atom_to_binary(Field, utf8)), ~")"];
-conflict_target({columns, Columns}) when is_list(Columns) ->
-    [~" ON CONFLICT (", columns_target(Columns), ~")"];
-conflict_target({columns, Columns, Opts}) when is_list(Columns), is_map(Opts) ->
-    [~" ON CONFLICT (", columns_target(Columns), ~")", index_predicate(Opts)];
-conflict_target({constraint, Name}) when is_binary(Name) ->
+conflict_target(Field, Renames) when is_atom(Field) ->
+    [~" ON CONFLICT (", column_ident(Field, Renames), ~")"];
+conflict_target({columns, Columns}, Renames) when is_list(Columns) ->
+    [~" ON CONFLICT (", columns_target(Columns, Renames), ~")"];
+conflict_target({columns, Columns, Opts}, Renames) when is_list(Columns), is_map(Opts) ->
+    [~" ON CONFLICT (", columns_target(Columns, Renames), ~")", index_predicate(Opts)];
+conflict_target({constraint, Name}, _Renames) when is_binary(Name) ->
     [~" ON CONFLICT ON CONSTRAINT ", quote_ident(Name)].
 
 %% The columns the conflict target already pins cannot be in the SET list.
@@ -958,8 +980,8 @@ replaceable({columns, Columns, _Opts}, Fields) when is_list(Columns) ->
 replaceable({constraint, _Name}, Fields) ->
     Fields.
 
-columns_target(Columns) ->
-    join_comma([quote_ident(atom_to_binary(C, utf8)) || C <- Columns]).
+columns_target(Columns, Renames) ->
+    join_comma([column_ident(C, Renames) || C <- Columns]).
 
 index_predicate(#{where := Expr}) when is_binary(Expr) ->
     [~" WHERE ", Expr];
@@ -967,11 +989,6 @@ index_predicate(Opts) when map_size(Opts) =:= 0 ->
     [];
 index_predicate(Opts) ->
     erlang:error({kura, {invalid_on_conflict_opts, Opts}}).
-
-compile_on_conflict_update(ConflictTarget, UpdateFields, Data, Counter) ->
-    {Sets, Params, _} = build_set_parts(UpdateFields, Data, Counter),
-    SQL = [ConflictTarget, ~" DO UPDATE SET ", join_comma(Sets)],
-    {SQL, Params}.
 
 resolve_table(Table) when is_binary(Table) ->
     Table;
@@ -989,25 +1006,52 @@ resolve_table(Mod) when is_atom(Mod) ->
 %% Which columns to qualify is decided by
 %% `kura_dialect:qualified_columns/1`; the dialect only renders it.
 -spec column_context(#kura_query{}) -> column_context().
-column_context(Q) ->
-    case kura_dialect:qualified_columns(Q) of
-        undefined -> undefined;
-        {Table, Fields} -> {quote_ident(Table), Fields}
+column_context(#kura_query{from = From} = Q) ->
+    Qualified =
+        case kura_dialect:qualified_columns(Q) of
+            undefined -> undefined;
+            {Table, Fields} -> {quote_ident(Table), Fields}
+        end,
+    renamed_context(renames(From), Qualified).
+
+%% Only a schema that names a column differently from its field pays for
+%% the lookup in column/2.
+-spec renamed_context(renames(), qualified_columns()) -> column_context().
+renamed_context(Renames, Qualified) when map_size(Renames) =:= 0 -> Qualified;
+renamed_context(Renames, Qualified) -> {renamed, Renames, Qualified}.
+
+-spec renames(term()) -> renames().
+renames(Mod) when is_atom(Mod) -> kura_schema:renamed_columns(Mod);
+renames(_Table) -> #{}.
+
+-spec column_ident(atom(), renames()) -> iodata().
+column_ident(Field, Renames) ->
+    case Renames of
+        #{Field := Column} -> quote_ident(Column);
+        #{} -> quote_ident(atom_to_binary(Field, utf8))
     end.
 
 %% ORDER BY resolves a name to a select_expr output column before an input
 %% column, so an alias is left bare to keep naming the expression.
 -spec order_context(#kura_query{}, column_context()) -> column_context().
+order_context(#kura_query{select = {exprs, Exprs}} = Q, {renamed, Renames, Qualified}) ->
+    Unaliased = maps:without([Alias || {Alias, _} <- Exprs], Renames),
+    renamed_context(Unaliased, order_context(Q, Qualified));
 order_context(#kura_query{select = {exprs, Exprs}}, {Qualifier, Fields}) ->
     {Qualifier, maps:without([Alias || {Alias, _} <- Exprs], Fields)};
 order_context(_Q, Ctx) ->
     Ctx.
 
 -spec column(atom(), column_context()) -> iodata().
-column(Field, {Qualifier, Fields}) when is_map_key(Field, Fields) ->
-    [Qualifier, ~".", quote_ident(atom_to_binary(Field, utf8))];
-column(Field, _Ctx) ->
-    quote_ident(atom_to_binary(Field, utf8)).
+column(Field, {renamed, Renames, Qualified}) ->
+    qualified(Field, column_ident(Field, Renames), Qualified);
+column(Field, Qualified) ->
+    qualified(Field, quote_ident(atom_to_binary(Field, utf8)), Qualified).
+
+qualified(Field, Ident, {Qualifier, Fields}) when is_map_key(Field, Fields) ->
+    [Qualifier, ~".", Ident];
+qualified(_Field, Ident, _Qualified) ->
+    Ident.
 
 quote_ident(Name) when is_binary(Name) ->
     Escaped = binary:replace(Name, ~"\"", ~"\"\"", [global]),
@@ -1152,25 +1196,25 @@ resolve_prefix(Prefix) ->
 %% accumulator types for eqWAlizer)
 %%----------------------------------------------------------------------
 
--spec build_insert_parts([atom()], map(), pos_integer()) ->
+-spec build_insert_parts([atom()], map(), renames(), pos_integer()) ->
     {[iodata()], [iodata()], [term()], pos_integer()}.
-build_insert_parts([], _Data, N) ->
+build_insert_parts([], _Data, _Renames, N) ->
     {[], [], [], N};
-build_insert_parts([Field | Rest], Data, N) ->
+build_insert_parts([Field | Rest], Data, Renames, N) ->
     Value = maps:get(Field, Data),
-    Col = quote_ident(atom_to_binary(Field, utf8)),
+    Col = column_ident(Field, Renames),
     Placeholder = [~"$", integer_to_binary(N)],
-    {Cols, Placeholders, Params, N2} = build_insert_parts(Rest, Data, N + 1),
+    {Cols, Placeholders, Params, N2} = build_insert_parts(Rest, Data, Renames, N + 1),
     {[Col | Cols], [Placeholder | Placeholders], [Value | Params], N2}.
 
--spec build_set_parts([atom()], map(), pos_integer()) ->
+-spec build_set_parts([atom()], map(), renames(), pos_integer()) ->
     {[iodata()], [term()], pos_integer()}.
-build_set_parts([], _Data, N) ->
+build_set_parts([], _Data, _Renames, N) ->
     {[], [], N};
-build_set_parts([Field | Rest], Data, N) ->
+build_set_parts([Field | Rest], Data, Renames, N) ->
     Value = maps:get(Field, Data),
-    Set = [quote_ident(atom_to_binary(Field, utf8)), ~" = $", integer_to_binary(N)],
-    {Sets, Params, N2} = build_set_parts(Rest, Data, N + 1),
+    Set = [column_ident(Field, Renames), ~" = $", integer_to_binary(N)],
+    {Sets, Params, N2} = build_set_parts(Rest, Data, Renames, N + 1),
     {[Set | Sets], [Value | Params], N2}.
 
 -spec build_value_groups([map()], [atom()], pos_integer()) ->
@@ -1282,12 +1326,16 @@ compile_over_clause(Spec, Ctx) ->
 -spec compile_joins_loop(
     [{atom(), module() | binary(), {atom(), atom()}, atom() | undefined}],
     binary(),
+    renames(),
     binary() | undefined
 ) -> [iodata()].
-compile_joins_loop([], _PrevTable, _Prefix) ->
+compile_joins_loop([], _PrevTable, _PrevRenames, _Prefix) ->
     [];
-compile_joins_loop([{Type, JoinTable, {LeftCol, RightCol}, As} | Rest], PrevTable, Prefix) ->
+compile_joins_loop(
+    [{Type, JoinTable, {LeftCol, RightCol}, As} | Rest], PrevTable, PrevRenames, Prefix
+) ->
     JoinTableBin = resolve_table(JoinTable),
+    JoinRenames = renames(JoinTable),
     TableRef =
         case As of
             undefined ->
@@ -1313,13 +1361,13 @@ compile_joins_loop([{Type, JoinTable, {LeftCol, RightCol}, As} | Rest], PrevTabl
         ~" ON ",
         quote_ident(PrevTable),
         ~".",
-        quote_ident(atom_to_binary(LeftCol, utf8)),
+        column_ident(LeftCol, PrevRenames),
         ~" = ",
         quote_ident(JoinRef),
         ~".",
-        quote_ident(atom_to_binary(RightCol, utf8))
+        column_ident(RightCol, JoinRenames)
     ],
-    [Part | compile_joins_loop(Rest, JoinRef, Prefix)].
+    [Part | compile_joins_loop(Rest, JoinRef, JoinRenames, Prefix)].
 
 -spec compile_ctes_loop([{binary(), #kura_query{}}], pos_integer()) ->
     {[iodata()], [term()], pos_integer()}.

@@ -1193,15 +1193,18 @@ handle_pg_error(CS, #{code := Code, constraint := Constraint}) when
             kura_changeset:add_error(CS, Field, DefaultMsg)
     end;
 handle_pg_error(CS, #{code := ~"23502", column := Column}) ->
-    Field =
-        try
-            binary_to_existing_atom(Column, utf8)
-        catch
-            error:badarg -> base
-        end,
+    Field = column_field(CS#kura_changeset.schema, Column),
     kura_changeset:add_error(CS, Field, ~"can't be blank");
 handle_pg_error(CS, Reason) ->
     kura_changeset:add_error(CS, base, format_error(Reason)).
+
+column_field(Schema, Column) ->
+    Renamed = kura_schema:renamed_fields(Schema),
+    try binary_to_existing_atom(Column, utf8) of
+        Name -> maps:get(Name, Renamed, Name)
+    catch
+        error:badarg -> base
+    end.
 
 find_constraint([], _Name) ->
     error;
