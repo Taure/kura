@@ -105,7 +105,7 @@ start(RepoMod) ->
 all(RepoMod, Query) ->
     {SQL, Params} = kura_query_compiler:to_sql_cached(RepoMod, scope_read(Query)),
 
-    case kura_db:query(RepoMod, SQL, Params) of
+    case kura_db:query(RepoMod, SQL, Params, kura_redact:query_params(Query, Params)) of
         #{command := select, rows := Rows} ->
             Schema = Query#kura_query.from,
             Loaded = [kura_db:load_row(Schema, Row) || Row <- Rows],
@@ -224,7 +224,7 @@ aggregate(RepoMod, Query, {Agg, Field}) ->
         distinct = false
     },
     {SQL, Params} = kura_query_compiler:to_sql(RepoMod, scope_read(AggQ)),
-    case kura_db:query(RepoMod, SQL, Params) of
+    case kura_db:query(RepoMod, SQL, Params, kura_redact:query_params(AggQ, Params)) of
         #{rows := [Row]} -> {ok, maps:get(Agg, Row)};
         #{rows := []} -> {ok, nil};
         {error, _} = Err -> Err
@@ -439,8 +439,9 @@ do_update_all(RepoMod, Query, Updates) ->
             DumpErr;
         {ok, Dumped} ->
             {SQL, Params} = kura_query_compiler:update_all(RepoMod, Q1, Dumped),
+            Shown = kura_redact:update_all_params(Q1, maps:keys(Dumped), Params),
 
-            case kura_db:query(RepoMod, SQL, Params) of
+            case kura_db:query(RepoMod, SQL, Params, Shown) of
                 #{command := update, num_rows := Count} -> {ok, Count};
                 {error, _} = Err -> Err
             end
@@ -462,7 +463,7 @@ do_delete_all(RepoMod, Query) ->
     Q1 = scope_read(Query),
     {SQL, Params} = kura_query_compiler:delete_all(RepoMod, Q1),
 
-    case kura_db:query(RepoMod, SQL, Params) of
+    case kura_db:query(RepoMod, SQL, Params, kura_redact:query_params(Q1, Params)) of
         #{command := delete, num_rows := Count} -> {ok, Count};
         {error, _} = Err -> Err
     end.
@@ -529,10 +530,11 @@ entry_with_other_fields([Row | Rest], Fields, Count) ->
 
 insert_rows(RepoMod, SchemaMod, Fields, Rows, Opts) ->
     {SQL, Params} = kura_query_compiler:insert_all(RepoMod, SchemaMod, Fields, Rows, Opts),
+    Shown = kura_redact:write_params(SchemaMod, Fields, Params),
 
     case Opts of
         #{returning := RetOpt} when RetOpt =:= true; is_list(RetOpt) ->
-            case kura_db:query(RepoMod, SQL, Params) of
+            case kura_db:query(RepoMod, SQL, Params, Shown) of
                 #{command := insert, num_rows := Count, rows := RetRows} ->
                     Loaded = [kura_db:load_row(SchemaMod, R) || R <- RetRows],
                     {ok, Count, Loaded};
@@ -540,7 +542,7 @@ insert_rows(RepoMod, SchemaMod, Fields, Rows, Opts) ->
                     Err
             end;
         #{} ->
-            case kura_db:query(RepoMod, SQL, Params) of
+            case kura_db:query(RepoMod, SQL, Params, Shown) of
                 #{command := insert, num_rows := Count} -> {ok, Count};
                 {error, _} = Err -> Err
             end
@@ -648,7 +650,10 @@ insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}, Opts) ->
                     dump_error_changeset(CS, insert, DumpErr);
                 {ok, DumpedChanges} ->
                     {SQL, Params} = insert_sql(RepoMod, SchemaMod, DumpedChanges, Opts),
-                    case kura_db:query(RepoMod, SQL, Params) of
+                    Shown = kura_redact:write_params(
+                        SchemaMod, inserted_fields(DumpedChanges, Opts), Params
+                    ),
+                    case kura_db:query(RepoMod, SQL, Params, Shown) of
                         #{command := insert, rows := [Row]} ->
                             Row1 = kura_db:load_row(SchemaMod, Row),
                             kura_schema:run_after_insert(SchemaMod, Row1);
@@ -659,6 +664,11 @@ insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}, Opts) ->
                     end
             end
     end.
+
+%% An upsert binds its replacement values after the row's, so only a plain
+%% insert has one parameter per field, in field order.
+inserted_fields(DumpedChanges, Opts) when map_size(Opts) =:= 0 -> maps:keys(DumpedChanges);
+inserted_fields(DumpedChanges, _Opts) -> {touches, maps:keys(DumpedChanges)}.
 
 insert_sql(RepoMod, SchemaMod, DumpedChanges, Opts) when map_size(Opts) =:= 0 ->
     kura_query_compiler:insert(RepoMod, SchemaMod, maps:keys(DumpedChanges), DumpedChanges);
@@ -726,7 +736,10 @@ do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, KeyClauses) ->
             {SQL, Params} = kura_query_compiler:update(
                 RepoMod, SchemaMod, Fields, DumpedChanges, KeyClauses
             ),
-            case kura_db:query(RepoMod, SQL, Params) of
+            Shown = kura_redact:write_params(
+                SchemaMod, Fields ++ clause_fields(KeyClauses), Params
+            ),
+            case kura_db:query(RepoMod, SQL, Params, Shown) of
                 #{command := update, rows := [Row]} ->
                     {ok, kura_db:load_row(SchemaMod, Row)};
                 #{command := update, rows := []} ->
@@ -742,10 +755,14 @@ do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, KeyClauses) ->
         LockField ->
             Data = CS#kura_changeset.data,
             LockValue = maps:get(LockField, Data, 0),
+            LockClauses = KeyClauses ++ [{LockField, LockValue}],
             {SQL, Params} = kura_query_compiler:update(
-                RepoMod, SchemaMod, Fields, DumpedChanges, KeyClauses ++ [{LockField, LockValue}]
+                RepoMod, SchemaMod, Fields, DumpedChanges, LockClauses
             ),
-            case kura_db:query(RepoMod, SQL, Params) of
+            Shown = kura_redact:write_params(
+                SchemaMod, Fields ++ clause_fields(LockClauses), Params
+            ),
+            case kura_db:query(RepoMod, SQL, Params, Shown) of
                 #{command := update, rows := [Row]} ->
                     {ok, kura_db:load_row(SchemaMod, Row)};
                 #{command := update, rows := []} ->
@@ -754,6 +771,9 @@ do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, KeyClauses) ->
                     {error, handle_pg_error(CS#kura_changeset{action = update}, PgError)}
             end
     end.
+
+clause_fields(KeyClauses) ->
+    [Field || {Field, _Value} <- KeyClauses].
 
 run_prepare(CS = #kura_changeset{prepare = []}) ->
     CS;
@@ -971,7 +991,8 @@ delete_record(RepoMod, SchemaMod, Data) ->
         ok ->
             KeyClauses = tenant_key_clauses(SchemaMod, key_pairs(SchemaMod, Data)),
             {SQL, Params} = kura_query_compiler:delete(RepoMod, SchemaMod, KeyClauses),
-            case kura_db:query(RepoMod, SQL, Params) of
+            Shown = kura_redact:write_params(SchemaMod, clause_fields(KeyClauses), Params),
+            case kura_db:query(RepoMod, SQL, Params, Shown) of
                 #{command := delete, rows := [Row]} ->
                     Row1 = kura_db:load_row(SchemaMod, Row),
                     case kura_schema:run_after_delete(SchemaMod, Row1) of

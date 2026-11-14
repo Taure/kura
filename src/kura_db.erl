@@ -10,6 +10,7 @@ for pool lookup, sandbox support, telemetry, and type loading.
 
 -export([
     query/3,
+    query/4,
     query_on/4,
     query_on/5,
     transaction/2,
@@ -69,6 +70,17 @@ for pool lookup, sandbox support, telemetry, and type loading.
 
 -spec query(module(), iodata(), [term()]) -> map() | {error, term()}.
 query(RepoMod, SQL, Params) ->
+    query(RepoMod, SQL, Params, Params).
+
+-doc """
+Run `SQL` with `Params`, and report the statement to telemetry and the
+query log as `Shown` says (see `t:kura_redact:shown/0`). With
+`{redacted, ShownParams}` those are reported in place of `Params`, and the
+error of a failed statement is cut down with `kura_redact:error_reason/1`.
+The caller gets the result as it is either way.
+""".
+-spec query(module(), iodata(), [term()], kura_redact:shown()) -> map() | {error, term()}.
+query(RepoMod, SQL, Params, Shown) ->
     Pool = get_pool(RepoMod),
     DriverMod = get_driver_module(RepoMod),
     T0 = erlang:monotonic_time(),
@@ -80,7 +92,16 @@ query(RepoMod, SQL, Params) ->
                 PoolMod = get_pool_module(RepoMod),
                 DriverMod:query(PoolMod, Pool, SQL, Params, #{decode_opts => ?DECODE_OPTS})
         end,
-    observed(RepoMod, SQL, Params, T0, Result).
+    case Shown of
+        {redacted, ShownParams} ->
+            _ = observed(RepoMod, SQL, ShownParams, T0, shown_result(Result)),
+            Result;
+        _ ->
+            observed(RepoMod, SQL, Params, T0, Result)
+    end.
+
+shown_result({error, Reason}) -> {error, kura_redact:error_reason(Reason)};
+shown_result(Result) -> Result.
 
 -doc """
 Run `SQL` on `Conn`, a connection the caller checked out of `RepoMod`'s

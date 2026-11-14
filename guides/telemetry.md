@@ -22,13 +22,54 @@ Emitted after every query execution.
 | Key | Type | Description |
 |---|---|---|
 | `query` | `binary()` | The compiled SQL string |
-| `params` | `[term()]` | Bind parameters |
+| `params` | `[term()]` | Bind parameters, with [redacted fields](#redacted-fields) replaced |
 | `result` | `ok \| error` | Whether the query succeeded |
 | `num_rows` | `integer()` | Number of rows returned or affected |
 | `repo` | `module()` | The repo module that ran the query |
 | `source` | `binary() \| undefined` | The table name extracted from the query |
 | `tenant` | `undefined \| {prefix, binary()} \| {attribute, {atom(), term()}}` | Current tenant (if any) at query time |
-| `error_reason` | `term() \| undefined` | The error term when `result =:= error` |
+| `error_reason` | `term() \| undefined` | The error term when `result =:= error`, cut down for a schema with redacted fields |
+
+### Redacted Fields
+
+Bind parameters carry the values your application wrote, so a handler that
+logs or exports `params` copies them. A schema names the fields that must
+not leave the process this way:
+
+```erlang
+-module(account).
+-behaviour(kura_schema).
+-export([table/0, fields/0, redact/0]).
+
+redact() -> [password_hash, reset_token].
+```
+
+Encrypted fields are redacted without being listed. In `params`, and in
+the legacy query log, their values are replaced by `~"[redacted]"`:
+
+| Statement | What is replaced |
+|---|---|
+| `insert`, `update` and `delete` of a changeset, `insert_all` | the redacted fields' values |
+| an upsert (`insert` with `on_conflict`) that writes a redacted field | every parameter |
+| a query, `update_all` or `delete_all` that filters on or sets a redacted field | every parameter |
+| any statement that touches no redacted field | nothing |
+
+A query is judged by the schema it reads from. A subquery over another
+schema is looked at when the outer schema has redacted fields of its own,
+or the query has a CTE or a combination.
+
+When a statement on a schema with redacted fields fails, `error_reason`
+keeps the error's code and the constraint, table and column it names, and
+drops its message and detail: a database quotes the offending value there,
+or the whole failing row. The caller of the repo function still gets the
+full error.
+
+Not covered: raw SQL through `query/3`, and the database's own statement
+log, which kura does not write.
+
+For your own log lines, `kura_redact:record(Schema, Map)` and
+`kura_redact:changeset(Changeset)` return copies with the same fields
+replaced.
 
 ## Attaching Handlers
 

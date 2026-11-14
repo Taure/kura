@@ -431,7 +431,7 @@ What deterministic mode gives away, compared with randomized:
 |---|---|---|
 | Which rows hold equal values | hidden | **revealed** (frequency analysis) |
 | Equal values across tenants | hidden | **revealed** in both tenancy modes: the context is the unprefixed table |
-| A looked-up value in telemetry and logged query parameters | never bound | its ciphertext, a stable pseudonym |
+| A looked-up value in telemetry and logged query parameters | never bound | `[redacted]` in kura's telemetry and query log; its ciphertext, a stable pseudonym, in the database's own statement log |
 | Length of a value, and whether it is `NULL` | revealed | revealed |
 | Personal data under the GDPR | yes | yes (pseudonymised, not anonymised) |
 | Unique index | never violated | works within one key generation |
@@ -624,6 +624,21 @@ Optional telemetry/logging config:
     {log, true}  %% true | {M, F} | false (default)
 ]}].
 ```
+
+### Redacting sensitive fields
+
+A schema lists the fields whose values must stay out of telemetry, the
+query log and the audit log with the optional `redact/0` callback.
+Encrypted fields are redacted without being listed.
+
+```erlang
+redact() -> [password_hash, reset_token].
+```
+
+`kura_redact:record/2` and `kura_redact:changeset/1` give you a copy that
+is safe to log. See `kura_redact` and the
+[telemetry guide](guides/telemetry.md#redacted-fields) for what is
+replaced where.
 
 ### Defaults that change in 3.0
 

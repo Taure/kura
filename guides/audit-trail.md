@@ -175,6 +175,11 @@ If `stash/1` was not called (i.e., `before_update/1` is missing), the update is 
 
 Virtual fields are automatically excluded from audit data.
 
+An encrypted field is written to the audit log as `"[encrypted]"`, and a
+field the schema's `redact/0` callback lists as `"[redacted]"`, in
+`old_data`, `new_data` and `changes` alike. A change to one is still
+recorded as a change; its values are not.
+
 ## JSON-Safe Serialization
 
 Since audit data is stored as JSONB, all values are sanitized before insertion:

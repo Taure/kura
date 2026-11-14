@@ -88,6 +88,7 @@ ignored.
     renamed_columns/1,
     renamed_fields/1,
     timestamp_fields/1,
+    redacted_fields/1,
     key/1,
     key_fields/1,
     primary_key/1,
@@ -150,6 +151,7 @@ be introduced dialect-aware rather than added to this union.
     indexes/0,
     generate_id/0,
     tenant_scoped/0,
+    redact/0,
     before_insert/1,
     after_insert/1,
     before_update/1,
@@ -170,6 +172,12 @@ or countries. With `require_tenant` set, its rows may then be read and
 written by a process that has no tenant. See `m:kura_tenant`.
 """.
 -callback tenant_scoped() -> boolean().
+-doc """
+Return the fields whose values must stay out of logs and telemetry, such
+as a password hash or a token. Encrypted fields need not be listed. See
+`m:kura_redact`.
+""".
+-callback redact() -> [atom()].
 
 -callback generate_id() -> term().
 
@@ -380,6 +388,20 @@ listed_timestamps(Mod, Value, _Types) ->
 
 listed_timestamp(_Mod, Field, Types) when is_map_key(Field, Types) -> Field;
 listed_timestamp(Mod, Field, _Types) -> erlang:error({kura, {unknown_timestamp_field, Mod, Field}}).
+
+-doc """
+Return the fields of `Mod` whose values `m:kura_redact` replaces: its
+encrypted fields and those its `redact/0` callback lists. `[]` for a
+module that is not a schema.
+""".
+-spec redacted_fields(module()) -> [atom()].
+redacted_fields(Mod) ->
+    cache({kura_schema, redacted_fields, Mod}, fun() ->
+        case is_schema(Mod) andalso erlang:function_exported(Mod, redact, 0) of
+            true -> lists:usort(encrypted_fields(Mod) ++ Mod:redact());
+            false -> encrypted_fields(Mod)
+        end
+    end).
 
 -doc "Return list of non-virtual field names.".
 -spec non_virtual_fields(module()) -> [atom()].

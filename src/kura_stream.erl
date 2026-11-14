@@ -51,7 +51,9 @@ stream(RepoMod, Query, Fun, Opts) ->
     ]),
     CloseSQL = iolist_to_binary([~"CLOSE ", CursorName]),
     Result = kura_db:transaction(RepoMod, fun() ->
-        _ = kura_db:query(RepoMod, DeclareSQL, Params),
+        _ = kura_db:query(
+            RepoMod, DeclareSQL, Params, kura_redact:query_params(Query, Params)
+        ),
         try
             fetch_loop(RepoMod, FetchSQL, Schema, Fun)
         after

@@ -210,15 +210,15 @@ migration_down() ->
 %%----------------------------------------------------------------------
 
 build_audit_data(SchemaMod, insert, Record) ->
-    Enc = kura_schema:encrypted_fields(SchemaMod),
+    Enc = sentinels(SchemaMod),
     Filtered = redact(sanitize(filter_virtual(SchemaMod, Record)), Enc),
     {undefined, Filtered, undefined};
 build_audit_data(SchemaMod, delete, Record) ->
-    Enc = kura_schema:encrypted_fields(SchemaMod),
+    Enc = sentinels(SchemaMod),
     Filtered = redact(sanitize(filter_virtual(SchemaMod, Record)), Enc),
     {Filtered, undefined, undefined};
 build_audit_data(SchemaMod, update, NewRecord) ->
-    Enc = kura_schema:encrypted_fields(SchemaMod),
+    Enc = sentinels(SchemaMod),
     case erlang:erase({kura_audit_stash, SchemaMod}) of
         undefined ->
             Filtered = redact(sanitize(filter_virtual(SchemaMod, NewRecord)), Enc),
@@ -231,29 +231,28 @@ build_audit_data(SchemaMod, update, NewRecord) ->
             {redact(OldFiltered, Enc), redact(NewFiltered, Enc), redact_changes(Changes, Enc)}
     end.
 
-%% Encrypted fields must never reach the audit_log in plaintext - the load
-%% step already decrypted the record, so redact them to a sentinel while
-%% keeping the "field changed" signal.
-redact(Map, EncFields) ->
-    maps:map(
-        fun(K, V) ->
-            case lists:member(K, EncFields) of
-                true -> ~"[encrypted]";
-                false -> V
-            end
-        end,
-        Map
-    ).
+%% Encrypted fields, and the fields a schema's redact/0 lists, must never
+%% reach the audit_log in plaintext - the load step already decrypted the
+%% record, so redact them to a sentinel while keeping the "field changed"
+%% signal.
+redact(Map, Sentinels) ->
+    #{K => maps:get(K, Sentinels, V) || K := V <- Map}.
 
-redact_changes(Changes, EncFields) ->
-    maps:map(
-        fun(K, Change) ->
-            case lists:member(K, EncFields) of
-                true -> #{old => ~"[encrypted]", new => ~"[encrypted]"};
-                false -> Change
-            end
-        end,
-        Changes
+redact_changes(Changes, Sentinels) ->
+    #{K => redacted_change(K, Change, Sentinels) || K := Change <- Changes}.
+
+redacted_change(Field, Change, Sentinels) ->
+    case Sentinels of
+        #{Field := Sentinel} -> #{old => Sentinel, new => Sentinel};
+        #{} -> Change
+    end.
+
+-spec sentinels(module()) -> #{atom() => binary()}.
+sentinels(SchemaMod) ->
+    Encrypted = kura_schema:encrypted_fields(SchemaMod),
+    maps:merge(
+        maps:from_keys(kura_schema:redacted_fields(SchemaMod), ~"[redacted]"),
+        maps:from_keys(Encrypted, ~"[encrypted]")
     ).
 
 compute_diff(Old, New) ->
