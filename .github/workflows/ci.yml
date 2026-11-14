@@ -70,31 +70,33 @@ jobs:
             image: pgvector/pgvector:0.8.3-pg17@sha256:be400b50812ab2cc908ed78593fda2e51e3b45fe774fa637f1c7b16e68531d95
           - postgres: '18'
             image: pgvector/pgvector:0.8.3-pg18@sha256:c8a919765f2ef63681329fa21021b830cd4d79d1165bdca730dd016014e4da84
-    uses: Taure/erlang-ci/.github/workflows/ci.yml@v2.2.5
-    # The reusable workflow's dependency-submission and summary jobs declare
-    # these, and GitHub checks a called workflow's permissions even for jobs
-    # that are switched off, as both are here.
+    runs-on: ubuntu-24.04
+    # Steps of its own, not the reusable workflow: that one has jobs that
+    # declare write permissions, and GitHub makes the caller grant them even
+    # when those jobs are switched off. These legs only read.
     permissions:
-      contents: write
-      pull-requests: write
-    with:
-      version-file: '.tool-versions'
-      enable-fmt: false
-      enable-xref: false
-      enable-dialyzer: false
-      enable-eunit: true
-      enable-ct: true
-      enable-summary: false
-      enable-suppression-guard: false
-      pre-test-command: >-
-        KURA_POSTGRES_IMAGE=${{ matrix.image }}
-        docker compose -f docker-compose.ci.yml up -d --wait
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: Taure/erlang-ci@v2.2.5
+        with:
+          version-file: '.tool-versions'
+      - name: Start PostgreSQL
+        env:
+          KURA_POSTGRES_IMAGE: ${{ matrix.image }}
+        run: docker compose -f docker-compose.ci.yml up -d --wait
+      - name: EUnit
+        run: rebar3 eunit
+      - name: Common Test
+        run: rebar3 ct
 
   # Tags and releases a push to main once it passed on every PostgreSQL
   # major: a failure in `ci` or in any `postgres` leg skips it.
   release:
     needs: [ci, postgres]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    uses: Taure/erlang-ci/.github/workflows/release.yml@v1
+    uses: Taure/erlang-ci/.github/workflows/release.yml@v2.2.5
     permissions:
       contents: write
