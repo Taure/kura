@@ -299,11 +299,8 @@ filtered on.
 """.
 -spec encrypted_fields(atom()) -> [atom()].
 encrypted_fields(Mod) when is_atom(Mod) ->
-    cache({kura_schema, encrypted_fields, Mod}, fun() ->
-        case is_schema(Mod) of
-            false -> [];
-            true -> [N || N := T <- field_types(Mod), kura_types:encryption(T) =/= none]
-        end
+    schema_cache({kura_schema, encrypted_fields, Mod}, [], fun() ->
+        [N || N := T <- field_types(Mod), kura_types:encryption(T) =/= none]
     end).
 
 -doc """
@@ -319,7 +316,7 @@ left out. `#{}` if `Mod` has no encrypted fields or is not a schema.
 """.
 -spec encryption_specs(atom()) -> #{atom() => field_encryption()}.
 encryption_specs(Mod) when is_atom(Mod) ->
-    cache({kura_schema, encryption_specs, Mod}, fun() ->
+    schema_cache({kura_schema, encryption_specs, Mod}, #{}, fun() ->
         case encrypted_fields(Mod) of
             [] -> #{};
             Fields -> encryption_specs(Mod:table(), Fields, column_map(Mod), field_types(Mod))
@@ -377,8 +374,8 @@ the field's, as field name to column name. Empty for a schema that sets no
 """.
 -spec renamed_columns(module()) -> #{atom() => binary()}.
 renamed_columns(Mod) ->
-    cache({kura_schema, renamed_columns, Mod}, fun() ->
-        case is_schema(Mod) andalso erlang:function_exported(Mod, fields, 0) of
+    schema_cache({kura_schema, renamed_columns, Mod}, #{}, fun() ->
+        case erlang:function_exported(Mod, fields, 0) of
             true -> renamed(Mod:fields(), #{});
             false -> #{}
         end
@@ -401,7 +398,7 @@ renamed([_ | Rest], Acc) ->
 -doc false.
 -spec fields_by_column(module()) -> #{binary() => atom()}.
 fields_by_column(Mod) ->
-    cache({kura_schema, fields_by_column, Mod}, fun() ->
+    schema_cache({kura_schema, fields_by_column, Mod}, #{}, fun() ->
         #{Column => Field || Field := Column <- renamed_columns(Mod)}
     end).
 
@@ -493,8 +490,8 @@ module that is not a schema.
 """.
 -spec redacted_fields(module()) -> [atom()].
 redacted_fields(Mod) ->
-    cache({kura_schema, redacted_fields, Mod}, fun() ->
-        case is_schema(Mod) andalso erlang:function_exported(Mod, redact, 0) of
+    schema_cache({kura_schema, redacted_fields, Mod}, [], fun() ->
+        case erlang:function_exported(Mod, redact, 0) of
             true -> lists:usort(encrypted_fields(Mod) ++ Mod:redact());
             false -> encrypted_fields(Mod)
         end
@@ -984,6 +981,14 @@ cache_defined(Key, Fun) ->
                     persistent_term:put(Key, Value),
                     Value
             end
+    end.
+
+%% The answer for a name that is not a schema is not kept: a module of
+%% that name may be loaded later, and is_schema/1 is what notices.
+schema_cache({kura_schema, _Tag, Mod} = Key, NotASchema, Fun) ->
+    case is_schema(Mod) of
+        true -> cache(Key, Fun);
+        false -> NotASchema
     end.
 
 %% Keys are {kura_schema, Tag, Mod}; forget/1 relies on that shape.

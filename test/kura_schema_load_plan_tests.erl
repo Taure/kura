@@ -27,15 +27,51 @@ a_module_loaded_later_is_a_schema_with_its_redacted_fields_test() ->
         ?assertNot(kura_schema:is_schema(?LATE_SECRET)),
         ?assertEqual([], kura_schema:redacted_fields(?LATE_SECRET)),
         ?assertEqual(plain, kura_redact:mode(Query)),
-        ok = load_schema(?LATE_SECRET, ["redact() -> [state]."]),
+        ok = load_schema(?LATE_SECRET, [{"redact/0", "redact() -> [state]."}]),
         ?assert(kura_schema:is_schema(?LATE_SECRET)),
-        ?assertEqual([state], kura_schema:redacted_fields(?LATE_SECRET)),
+        ?assertEqual([secret, state], kura_schema:redacted_fields(?LATE_SECRET)),
         ?assertEqual(hidden, kura_redact:mode(Query))
     after
         kura_schema:forget(?LATE_SECRET),
         code:purge(?LATE_SECRET),
         code:delete(?LATE_SECRET)
     end.
+
+%% Whatever is asked of the name first once the module is loaded, the
+%% answer is the module's.
+a_module_loaded_later_is_read_whatever_is_asked_first_test_() ->
+    Asked = [
+        {"redacted_fields", fun() -> kura_schema:redacted_fields(?LATE_SECRET) end, [], [
+            secret, state
+        ]},
+        {"kura_redact:record", fun() -> kura_redact:record(?LATE_SECRET, #{state => ~"open"}) end,
+            #{state => ~"open"}, #{state => ~"[redacted]"}},
+        {"renamed_columns", fun() -> kura_schema:renamed_columns(?LATE_SECRET) end, #{}, #{
+            label => ~"label_text"
+        }},
+        {"fields_by_column", fun() -> kura_schema:fields_by_column(?LATE_SECRET) end, #{}, #{
+            ~"label_text" => label
+        }},
+        {"encrypted_fields", fun() -> kura_schema:encrypted_fields(?LATE_SECRET) end, [], [
+            secret
+        ]},
+        {"encryption_specs", fun() -> maps:keys(kura_schema:encryption_specs(?LATE_SECRET)) end, [],
+            [secret]}
+    ],
+    [
+        {Name, fun() ->
+            try
+                [?assertEqual(Unloaded, Ask()) || {_, Ask, Unloaded, _} <- Asked],
+                ok = load_schema(?LATE_SECRET, [{"redact/0", "redact() -> [state]."}]),
+                ?assertEqual(Loaded, First())
+            after
+                kura_schema:forget(?LATE_SECRET),
+                code:purge(?LATE_SECRET),
+                code:delete(?LATE_SECRET)
+            end
+        end}
+     || {Name, First, _, Loaded} <- Asked
+    ].
 
 a_loaded_module_that_is_not_a_schema_stays_one_test_() ->
     [?_assertNot(kura_schema:is_schema(lists)), ?_assertNot(kura_schema:is_schema(lists))].
@@ -58,14 +94,17 @@ load_schema(Module) ->
 load_schema(Module, Callbacks) ->
     Fields = [
         #kura_field{name = id, type = id, primary_key = true},
-        #kura_field{name = state, type = {enum, [open, closed]}}
+        #kura_field{name = state, type = {enum, [open, closed]}},
+        #kura_field{name = label, type = string, column = ~"label_text"},
+        #kura_field{name = secret, type = {encrypted, string}}
     ],
+    Exports = lists:join(", ", ["table/0", "fields/0" | [Export || {Export, _} <- Callbacks]]),
     Forms = [
         form(io_lib:format("-module(~w).", [Module])),
-        form("-compile(export_all)."),
+        form(["-export([", Exports, "])."]),
         form("table() -> <<\"late_items\">>."),
         form(io_lib:format("fields() -> ~w.", [Fields]))
-        | [form(Callback) || Callback <- Callbacks]
+        | [form(Callback) || {_Export, Callback} <- Callbacks]
     ],
     {ok, Module, Binary} = compile:forms(Forms),
     {module, Module} = code:load_binary(Module, "kura_test_late_schema.erl", Binary),
