@@ -134,6 +134,12 @@ backend), and `load` (backend → internal). Supported types include `id`,
 The backend dialect's `column_type/1` callback determines the SQL column
 type emitted in DDL.
 
+`load` reads a value in the Erlang form a driver with a native type
+returns, and in the form a backend without one stores: a boolean as `1` or
+`0`, a date, time or datetime as ISO 8601 text, a decimal as numeric text,
+and JSON, embeds and arrays as JSON text. A row therefore loads to the same
+Erlang terms on every backend.
+
 ### `kura_migration` and `kura_migrator`
 
 `kura_migration` is a behaviour for writing migrations with `up/0` and

@@ -135,6 +135,39 @@ multi(_) -> erlang:error(not_implemented).
 preload(_, _, _) -> erlang:error(not_implemented).
 query(_, _) -> erlang:error(not_implemented).
 
+load_row_reads_a_row_as_a_backend_without_native_types_stores_it_test() ->
+    Stored = #{
+        id => 1,
+        name => ~"n",
+        birth_date => ~"1990-01-02",
+        status => ~"active",
+        score => 2,
+        active => 0,
+        tags => ~"[\"a\",\"b\"]",
+        metadata => ~"{\"a\":1}",
+        ref_id => ~"0192e4a0-7b1a-7c3e-8f00-000000000001",
+        happened_at => ~"2024-01-15 10:30:00",
+        inserted_at => ~"2024-01-15T10:30:00Z",
+        updated_at => null
+    },
+    ?assertEqual(
+        #{
+            id => 1,
+            name => ~"n",
+            birth_date => {1990, 1, 2},
+            status => active,
+            score => 2.0,
+            active => false,
+            tags => [~"a", ~"b"],
+            metadata => #{~"a" => 1},
+            ref_id => ~"0192e4a0-7b1a-7c3e-8f00-000000000001",
+            happened_at => {{2024, 1, 15}, {10, 30, 0}},
+            inserted_at => {{2024, 1, 15}, {10, 30, 0}},
+            updated_at => undefined
+        },
+        kura_db:load_row(kura_test_type_schema, Stored)
+    ).
+
 load_row_leaves_a_row_read_by_table_name_untouched_test() ->
     Row = #{id => 1, title => ~"raw"},
     ?assertEqual(Row, kura_db:load_row(~"kura_test_schema", Row)).

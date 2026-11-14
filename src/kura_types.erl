@@ -476,7 +476,16 @@ spec_context(_Spec, Context) -> Context.
 %% Load: driver result → Erlang term
 %%----------------------------------------------------------------------
 
--doc "Convert a driver result value back to an Erlang term.".
+-doc """
+Convert a driver result value back to an Erlang term.
+
+A value is accepted in the Erlang form a driver with a native type for it
+returns, and in the form a backend without one stores it in: a `boolean` as
+the integer `1` or `0`, a `date`, `time`, `utc_datetime` or `naive_datetime`
+as ISO 8601 text (a `utc_datetime` with an offset is moved to UTC, and a
+fraction of a second is dropped), a `decimal` as numeric text, and `jsonb`,
+an embed or an array as JSON text. Anything else is `{error, Reason}`.
+""".
 -spec load(kura_type(), term()) -> {ok, term()} | {error, binary()}.
 load(_Type, null) ->
     {ok, undefined};
@@ -490,6 +499,8 @@ load(smallint, V) when is_integer(V) ->
     {ok, V};
 load(decimal, V) when is_number(V) ->
     {ok, V};
+load(decimal, V) when is_binary(V) ->
+    stored_decimal(V);
 load(binary, V) when is_binary(V) ->
     {ok, V};
 load(float, V) when is_number(V) ->
@@ -500,14 +511,26 @@ load(text, V) when is_binary(V) ->
     {ok, V};
 load(boolean, V) when is_boolean(V) ->
     {ok, V};
+load(boolean, 1) ->
+    {ok, true};
+load(boolean, 0) ->
+    {ok, false};
 load(date, {Y, M, D} = V) when is_integer(Y), is_integer(M), is_integer(D) ->
     {ok, V};
+load(date, V) when is_binary(V) ->
+    parse_date(V);
 load(time, {H, M, S} = V) when is_integer(H), is_integer(M), is_integer(S) ->
     {ok, V};
+load(time, V) when is_binary(V) ->
+    parse_time(V);
 load(utc_datetime, {{_, _, _}, {_, _, _}} = V) ->
     {ok, V};
+load(utc_datetime, V) when is_binary(V) ->
+    parse_datetime(V, utc);
 load(naive_datetime, {{_, _, _}, {_, _, _}} = V) ->
     {ok, V};
+load(naive_datetime, V) when is_binary(V) ->
+    parse_datetime(V, naive);
 load(uuid, V) when is_binary(V), byte_size(V) =:= 16 ->
     {ok, format_uuid(binary:encode_hex(V, lowercase))};
 load(uuid, V) when is_binary(V) ->
@@ -535,6 +558,11 @@ load({enum, Values}, V) when is_binary(V) ->
     end;
 load({array, Inner}, V) when is_list(V) ->
     load_array(Inner, V, no_context, []);
+load({array, Inner} = Type, V) when is_binary(V) ->
+    case encryption(Inner) of
+        none -> stored_array(Type, V);
+        _ -> erlang:error({kura_crypto, malformed_frame})
+    end;
 load({embed, embeds_one, Mod}, V) when is_binary(V) ->
     case json_decode(V) of
         {ok, Map} when is_map(Map) -> {ok, load_embed_map(Mod, Map)};
@@ -569,6 +597,31 @@ load(Type, _V) ->
 
 cannot_load(Type) ->
     {error, <<"cannot load ", (format_type(Type))/binary>>}.
+
+stored_array({array, Inner} = Type, Text) ->
+    case json_decode(Text) of
+        {ok, List} when is_list(List) -> load_array(Inner, List, no_context, []);
+        _NotAJsonArray -> cannot_load(Type)
+    end.
+
+stored_decimal(Text) ->
+    case try_parse_integer(Text) of
+        {ok, _} = Integer ->
+            Integer;
+        {error, _} ->
+            try
+                {ok, binary_to_float(with_fraction(Text))}
+            catch
+                error:badarg -> {error, ~"is not a valid decimal"}
+            end
+    end.
+
+%% binary_to_float/1 wants a fraction, so `1e3` is read as `1.0e3`.
+with_fraction(Text) ->
+    case {binary:match(Text, ~"."), binary:split(Text, [~"e", ~"E"])} of
+        {nomatch, [Mantissa, Exponent]} -> <<Mantissa/binary, ".0e", Exponent/binary>>;
+        _ -> Text
+    end.
 
 -doc """
 Like `load/2`, for a value read from the column `Context` (`{Table,
