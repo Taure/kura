@@ -638,6 +638,12 @@ is safe to log. See `kura_redact` and the
 [telemetry guide](guides/telemetry.md#redacted-fields) for what is
 replaced where.
 
+Raw SQL is reported as written. Pass `#{sensitive => true}` to
+`kura_repo_worker:query/4` to redact its parameters. A failed statement's
+error is reported to telemetry without its message and detail, which can
+quote row values; `{telemetry_error_detail, true}` reports the whole error
+for statements on schemas without redacted fields.
+
 ### Defaults that change in 3.0
 
 These settings keep their 2.x behaviour when left out, and kura logs one
@@ -649,6 +655,11 @@ warning per boot when the permissive default is in effect. Set them now.
 | `encryption_write_format` | `v1` | `v2` | frame version new encrypted values are written in; v2 binds a value to its column. See [Encryption at rest](#encryption-at-rest) |
 | `require_tenant` | `false` | `true` | a query or changeset write in a process with no tenant raises instead of running unscoped; see [Multitenancy](guides/multitenancy.md#requiring-a-tenant). An application with no tenants sets `false` |
 | `strict_assoc_cast` | `false` | `true` | `cast_assoc`, `cast_embed` and `put_assoc` of a raw map must name the child fields params may set (`cast` or `with`); see [Nested Changesets](guides/cast_assoc.md) |
+
+## Security
+
+Report a vulnerability privately through the repository's Security tab.
+[SECURITY.md](SECURITY.md) has the supported versions and what is in scope.
 
 ## Plugins
 
