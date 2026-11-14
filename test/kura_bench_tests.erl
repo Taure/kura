@@ -2,6 +2,8 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+-define(RECORDED_REPO, kura_bench_recorded_repo).
+
 %%----------------------------------------------------------------------
 %% Test fixture
 %%----------------------------------------------------------------------
@@ -18,9 +20,34 @@ bench_test_() ->
             {"stream large dataset in batches", {timeout, 120, fun t_stream_large_dataset/0}},
             {"cost of loading one row", {timeout, 60, fun t_load_row_cost/0}},
             {"cost of one statement's telemetry metadata",
-                {timeout, 60, fun t_telemetry_metadata_cost/0}}
+                {timeout, 60, fun t_telemetry_metadata_cost/0}},
+            {"insert, update_all and all as a job queue runs them",
+                {timeout, 120, fun t_job_queue_loop/0}}
         ]
     end}.
+
+%% These run kura_repo_worker against a driver that answers at once, so the
+%% time is kura's own: compiling, scoping, redacting, loading and telemetry.
+recorded_bench_test_() ->
+    {setup,
+        fun() ->
+            {ok, _} = application:ensure_all_started(telemetry),
+            ok = kura_query_cache:init(),
+            kura_test_recording_driver:configure(?RECORDED_REPO),
+            kura_query_cache:flush()
+        end,
+        fun(_) ->
+            kura_test_recording_driver:unconfigure(),
+            kura_query_cache:flush()
+        end,
+        fun(_) ->
+            [
+                {"all/2 on a cached shape", {timeout, 120, fun t_cached_all_cost/0}},
+                {"all/2 of a join on a cached shape", {timeout, 120, fun t_cached_join_all_cost/0}},
+                {"insert, update_all and all without a database",
+                    {timeout, 120, fun t_recorded_job_queue_cost/0}}
+            ]
+        end}.
 
 setup() ->
     application:ensure_all_started(minato),
@@ -310,3 +337,89 @@ telemetry_metadata_times(0, _SQL, _Result) ->
 telemetry_metadata_times(N, SQL, Result) ->
     _ = kura_db:build_telemetry_metadata(kura_stress_repo, SQL, [~"bench@bench.com", 1], Result),
     telemetry_metadata_times(N - 1, SQL, Result).
+
+t_cached_all_cost() ->
+    Q = kura_query:limit(
+        kura_query:where(kura_query:from(kura_stress_schema), {email, '=', ~"bench@bench.com"}), 1
+    ),
+    N = 200000,
+    ok = recorded_all_times(1000, Q),
+    {Us, ok} = timer:tc(fun() -> recorded_all_times(N, Q) end),
+    ?debugFmt("~nall/2, cached shape: ~p ns/call (~p calls)", [Us * 1000 div N, N]).
+
+t_cached_join_all_cost() ->
+    Q = kura_query:where(
+        kura_query:join(
+            kura_query:from(kura_stress_schema),
+            inner,
+            kura_stress_post_schema,
+            {id, user_id}
+        ),
+        {email, '=', ~"bench@bench.com"}
+    ),
+    N = 200000,
+    ok = recorded_all_times(1000, Q),
+    {Us, ok} = timer:tc(fun() -> recorded_all_times(N, Q) end),
+    ?debugFmt("~nall/2 of a join, cached shape: ~p ns/call (~p calls)", [Us * 1000 div N, N]).
+
+recorded_all_times(0, _Q) ->
+    _ = kura_test_recording_driver:statements(),
+    ok;
+recorded_all_times(N, Q) ->
+    {ok, []} = kura_repo_worker:all(?RECORDED_REPO, Q),
+    _ = drained(N),
+    recorded_all_times(N - 1, Q).
+
+drained(N) when N rem 500 =:= 0 -> kura_test_recording_driver:statements();
+drained(_N) -> [].
+
+t_recorded_job_queue_cost() ->
+    N = 50000,
+    ok = recorded_job_times(500),
+    {Us, ok} = timer:tc(fun() -> recorded_job_times(N) end),
+    ?debugFmt("~njob queue loop, no database: ~p ns/iteration (~p iterations)", [
+        Us * 1000 div N, N
+    ]).
+
+recorded_job_times(0) ->
+    _ = kura_test_recording_driver:statements(),
+    ok;
+recorded_job_times(N) ->
+    ok = job_iteration(?RECORDED_REPO, N),
+    _ = drained(N),
+    recorded_job_times(N - 1).
+
+t_job_queue_loop() ->
+    clean_tables(),
+    N = 500,
+    ok = job_times(kura_stress_repo, 50),
+    {Us, ok} = timer:tc(fun() -> job_times(kura_stress_repo, N) end),
+    ?debugFmt("~njob queue loop, PostgreSQL: ~p us/iteration (~p iterations)", [Us div N, N]).
+
+job_times(_Repo, 0) ->
+    ok;
+job_times(Repo, N) ->
+    ok = job_iteration(Repo, N),
+    job_times(Repo, N - 1).
+
+%% Enqueue a row, claim what is available, read the claimed rows back.
+job_iteration(Repo, N) ->
+    Name = <<"job_", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+    CS = kura_changeset:cast(
+        kura_stress_schema,
+        #{},
+        #{~"name" => Name, ~"email" => <<Name/binary, "@bench.com">>},
+        [name, email]
+    ),
+    {ok, _} = kura_repo_worker:insert(Repo, CS),
+    Available = kura_query:where(kura_query:from(kura_stress_schema), {counter, '=', 0}),
+    {ok, _} = kura_repo_worker:update_all(Repo, Available, #{counter => N}),
+    Claimed = kura_query:limit(
+        kura_query:order_by(
+            kura_query:where(kura_query:from(kura_stress_schema), {counter, '=', N}),
+            [{id, asc}]
+        ),
+        10
+    ),
+    {ok, _} = kura_repo_worker:all(Repo, Claimed),
+    ok.
