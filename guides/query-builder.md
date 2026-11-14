@@ -161,6 +161,22 @@ Raw SQL fragments with `?` placeholders:
 kura_query:where(Q, {fragment, ~"lower(?) = ?", [~"Email", ~"alice@example.com"]}).
 ```
 
+Each `?` binds the next parameter. A `?` inside a string literal, a quoted
+identifier, a dollar-quoted string or a comment is text and binds nothing:
+
+```erlang
+kura_query:where(Q, {fragment, ~"title <> 'why?' AND author = ?", [~"alice"]}).
+```
+
+The number of `?` placeholders has to equal the number of parameters;
+otherwise compiling the query raises
+`{kura, {fragment_placeholder_mismatch, Placeholders, Params}}`. A fragment
+cannot use the `?` operators of PostgreSQL's `jsonb` for that reason: use
+`jsonb_exists/2`, `jsonb_exists_any/2` or `jsonb_exists_all/2`.
+
+The SQL text of a fragment is trusted. Never build it from outside input;
+pass values as parameters.
+
 ### Encrypted Fields
 
 A randomized encrypted field (`{encrypted, Inner}`) cannot be compared to a

@@ -14,7 +14,9 @@ edge_case_test_() ->
             {"text matches treat wildcards as text", fun t_text_match_is_literal/0},
             {"text matches place the wildcard", fun t_text_match_position/0},
             {"case-insensitive text matches", fun t_text_match_ignores_case/0},
-            {"escape_like makes a like pattern literal", fun t_escape_like/0}
+            {"escape_like makes a like pattern literal", fun t_escape_like/0},
+            {"a question mark in a fragment literal binds nothing",
+                fun t_fragment_literal_question_mark/0}
         ]
     end}.
 
@@ -132,3 +134,24 @@ t_escape_like() ->
     ?assertEqual([~"100%"], names(kura_query:where(From, {name, like, Pattern(~"100%")}))),
     ?assertEqual([~"a\\b"], names(kura_query:where(From, {name, like, Pattern(~"a\\")}))),
     ?assertEqual([~"100%", ~"1000"], names(kura_query:where(From, {name, like, ~"100%"}))).
+
+t_fragment_literal_question_mark() ->
+    ok = reset(),
+    [
+        {ok, _} = insert_item(#{name => N, note => Note})
+     || {N, Note} <- [{~"a", ~"why?"}, {~"b", ~"ok"}]
+    ],
+    From = kura_query:from(kura_test_edge_schema),
+    ?assertEqual(
+        [~"a"],
+        names(kura_query:where(From, {fragment, ~"\"note\" = 'why?' AND \"name\" = ?", [~"a"]}))
+    ),
+    ?assertEqual(
+        [~"b"],
+        names(
+            kura_query:where(
+                kura_query:where(From, {name, ~"b"}),
+                {fragment, ~"\"note\" <> 'why?' -- really?\n AND \"note\" = ?", [~"ok"]}
+            )
+        )
+    ).

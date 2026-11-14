@@ -592,7 +592,7 @@ compile_condition({'not', Condition}, Ctx, Counter) ->
     {Part, Params, NewCounter} = compile_condition(Condition, Ctx, Counter),
     {[~"NOT (", Part, ~")"], Params, NewCounter};
 compile_condition({fragment, SQL, Params}, _Ctx, Counter) ->
-    {RewrittenSQL, NewCounter} = rewrite_fragment_placeholders(SQL, Counter),
+    {RewrittenSQL, NewCounter} = rewrite_fragment_placeholders(SQL, Params, Counter),
     {RewrittenSQL, Params, NewCounter};
 compile_condition({{distance, _, _, _} = Distance, Op, Threshold}, Ctx, Counter) when
     ?KURA_IS_THRESHOLD_OP(Op)
@@ -1006,16 +1006,117 @@ join_and(Parts) ->
 join_or(Parts) ->
     lists:join(~" OR ", Parts).
 
-rewrite_fragment_placeholders(SQL, StartCounter) when is_binary(SQL) ->
-    rewrite_fragment(SQL, StartCounter, <<>>).
+%% Each `?` of a fragment becomes the next `$N`. A `?` inside a string
+%% literal, a quoted identifier, a dollar-quoted string or a comment is text,
+%% not a placeholder, and is left as it is. The count has to match the
+%% parameters: a fragment that binds more or fewer than it names would shift
+%% every parameter after it.
+rewrite_fragment_placeholders(SQL, Params, StartCounter) when is_binary(SQL), is_list(Params) ->
+    {Rewritten, NextCounter} = fragment_text(SQL, StartCounter, <<>>),
+    case NextCounter - StartCounter =:= length(Params) of
+        true ->
+            {Rewritten, NextCounter};
+        false ->
+            erlang:error(
+                {kura, {fragment_placeholder_mismatch, NextCounter - StartCounter, length(Params)}}
+            )
+    end.
 
-rewrite_fragment(<<>>, Counter, Acc) ->
+fragment_text(<<>>, Counter, Acc) ->
     {Acc, Counter};
-rewrite_fragment(<<"?", Rest/binary>>, Counter, Acc) ->
-    Placeholder = [~"$", integer_to_binary(Counter)],
-    rewrite_fragment(Rest, Counter + 1, <<Acc/binary, (iolist_to_binary(Placeholder))/binary>>);
-rewrite_fragment(<<C, Rest/binary>>, Counter, Acc) ->
-    rewrite_fragment(Rest, Counter, <<Acc/binary, C>>).
+fragment_text(<<"?", Rest/binary>>, Counter, Acc) ->
+    fragment_text(Rest, Counter + 1, <<Acc/binary, "$", (integer_to_binary(Counter))/binary>>);
+fragment_text(<<"'", Rest/binary>>, Counter, Acc) ->
+    Escapes = escape_string_prefix(Acc),
+    fragment_quoted(Rest, $', Escapes, Counter, <<Acc/binary, "'">>);
+fragment_text(<<"\"", Rest/binary>>, Counter, Acc) ->
+    fragment_quoted(Rest, $", false, Counter, <<Acc/binary, "\"">>);
+fragment_text(<<"--", Rest/binary>>, Counter, Acc) ->
+    fragment_line_comment(Rest, Counter, <<Acc/binary, "--">>);
+fragment_text(<<"/*", Rest/binary>>, Counter, Acc) ->
+    fragment_block_comment(Rest, 1, Counter, <<Acc/binary, "/*">>);
+fragment_text(<<"$", Rest/binary>>, Counter, Acc) ->
+    case dollar_quote_tag(Rest, Acc) of
+        {ok, Tag, AfterTag} ->
+            fragment_dollar_quoted(AfterTag, Tag, Counter, <<Acc/binary, Tag/binary>>);
+        none ->
+            fragment_text(Rest, Counter, <<Acc/binary, "$">>)
+    end;
+fragment_text(<<Byte, Rest/binary>>, Counter, Acc) ->
+    fragment_text(Rest, Counter, <<Acc/binary, Byte>>).
+
+%% A doubled quote stays inside the literal. In an escape string (`E'...'`)
+%% a backslash escapes the byte after it, a quote included.
+fragment_quoted(<<Quote, Quote, Rest/binary>>, Quote, Escapes, Counter, Acc) ->
+    fragment_quoted(Rest, Quote, Escapes, Counter, <<Acc/binary, Quote, Quote>>);
+fragment_quoted(<<Quote, Rest/binary>>, Quote, _Escapes, Counter, Acc) ->
+    fragment_text(Rest, Counter, <<Acc/binary, Quote>>);
+fragment_quoted(<<"\\", Byte, Rest/binary>>, Quote, true, Counter, Acc) ->
+    fragment_quoted(Rest, Quote, true, Counter, <<Acc/binary, "\\", Byte>>);
+fragment_quoted(<<Byte, Rest/binary>>, Quote, Escapes, Counter, Acc) ->
+    fragment_quoted(Rest, Quote, Escapes, Counter, <<Acc/binary, Byte>>);
+fragment_quoted(<<>>, _Quote, _Escapes, Counter, Acc) ->
+    {Acc, Counter}.
+
+fragment_line_comment(<<"\n", Rest/binary>>, Counter, Acc) ->
+    fragment_text(Rest, Counter, <<Acc/binary, "\n">>);
+fragment_line_comment(<<Byte, Rest/binary>>, Counter, Acc) ->
+    fragment_line_comment(Rest, Counter, <<Acc/binary, Byte>>);
+fragment_line_comment(<<>>, Counter, Acc) ->
+    {Acc, Counter}.
+
+%% PostgreSQL nests block comments.
+fragment_block_comment(<<"*/", Rest/binary>>, 1, Counter, Acc) ->
+    fragment_text(Rest, Counter, <<Acc/binary, "*/">>);
+fragment_block_comment(<<"*/", Rest/binary>>, Depth, Counter, Acc) ->
+    fragment_block_comment(Rest, Depth - 1, Counter, <<Acc/binary, "*/">>);
+fragment_block_comment(<<"/*", Rest/binary>>, Depth, Counter, Acc) ->
+    fragment_block_comment(Rest, Depth + 1, Counter, <<Acc/binary, "/*">>);
+fragment_block_comment(<<Byte, Rest/binary>>, Depth, Counter, Acc) ->
+    fragment_block_comment(Rest, Depth, Counter, <<Acc/binary, Byte>>);
+fragment_block_comment(<<>>, _Depth, Counter, Acc) ->
+    {Acc, Counter}.
+
+fragment_dollar_quoted(Text, Tag, Counter, Acc) ->
+    case binary:split(Text, Tag) of
+        [Body, Rest] -> fragment_text(Rest, Counter, <<Acc/binary, Body/binary, Tag/binary>>);
+        [Unterminated] -> {<<Acc/binary, Unterminated/binary>>, Counter}
+    end.
+
+%% `$$` or `$tag$` opens a dollar-quoted string, unless the `$` continues an
+%% identifier. `$1` is a parameter, not a tag.
+dollar_quote_tag(Rest, Before) ->
+    case identifier_byte(last_byte(Before)) of
+        true -> none;
+        false -> dollar_quote_tag(Rest, <<"$">>, first)
+    end.
+
+dollar_quote_tag(<<"$", Rest/binary>>, Tag, _Position) ->
+    {ok, <<Tag/binary, "$">>, Rest};
+dollar_quote_tag(<<Byte, _/binary>>, _Tag, first) when Byte >= $0, Byte =< $9 ->
+    none;
+dollar_quote_tag(<<Byte, Rest/binary>>, Tag, _Position) ->
+    case identifier_byte(Byte) of
+        true -> dollar_quote_tag(Rest, <<Tag/binary, Byte>>, rest);
+        false -> none
+    end;
+dollar_quote_tag(<<>>, _Tag, _Position) ->
+    none.
+
+escape_string_prefix(Before) ->
+    case Before of
+        <<Head:(byte_size(Before) - 1)/binary, E>> when E =:= $E; E =:= $e ->
+            not identifier_byte(last_byte(Head));
+        _ ->
+            false
+    end.
+
+last_byte(<<>>) -> $\s;
+last_byte(Binary) -> binary:last(Binary).
+
+identifier_byte(Byte) ->
+    (Byte >= $a andalso Byte =< $z) orelse (Byte >= $A andalso Byte =< $Z) orelse
+        (Byte >= $0 andalso Byte =< $9) orelse Byte =:= $_ orelse Byte >= 128.
 
 qualified_table(Table, undefined) ->
     quote_ident(Table);
@@ -1093,7 +1194,7 @@ build_row_placeholders([Field | Rest], Row, N) ->
 compile_select_exprs([], _Ctx, Counter) ->
     {[], [], Counter};
 compile_select_exprs([{Alias, {fragment, SQL, Params}} | Rest], Ctx, Counter) ->
-    {RewrittenSQL, C2} = rewrite_fragment_placeholders(SQL, Counter),
+    {RewrittenSQL, C2} = rewrite_fragment_placeholders(SQL, Params, Counter),
     Part = [RewrittenSQL, ~" AS ", quote_ident(atom_to_binary(Alias, utf8))],
     {Parts, MoreParams, C3} = compile_select_exprs(Rest, Ctx, C2),
     {[Part | Parts], Params ++ MoreParams, C3};

@@ -111,6 +111,95 @@ escape_like_test() ->
     ?assertEqual(~"日本\\%", kura_query:escape_like(~"日本%")),
     ?assertError(function_clause, kura_query:escape_like("list")).
 
+fragment_sql(SQL, Params) ->
+    Q = kura_query:where(
+        kura_query:where(kura_query:from(kura_test_schema), {id, 7}), {fragment, SQL, Params}
+    ),
+    {Compiled, [7 | Bound]} = kura_dialect_pg:to_sql(Q),
+    {Prefix, Bound} = {~"SELECT * FROM \"users\" WHERE \"id\" = $1 AND ", Params},
+    Size = byte_size(Prefix),
+    <<Prefix:Size/binary, Rewritten/binary>> = Compiled,
+    Rewritten.
+
+fragment_question_mark_in_text_is_not_a_placeholder_test() ->
+    [
+        ?assertEqual(Expected, fragment_sql(SQL, Params))
+     || {SQL, Params, Expected} <- [
+            {~"a = 'why?' AND b = ?", [1], ~"a = 'why?' AND b = $2"},
+            {~"a = 'it''s?' AND b = ?", [1], ~"a = 'it''s?' AND b = $2"},
+            {~"a = '\\' AND b = ?", [1], ~"a = '\\' AND b = $2"},
+            {~"a = E'\\'?' AND b = ?", [1], ~"a = E'\\'?' AND b = $2"},
+            {~"a = e'x\\\\' AND b = ?", [1], ~"a = e'x\\\\' AND b = $2"},
+            {~"type'?' = ?", [1], ~"type'?' = $2"},
+            {~"\"odd?\" = ?", [1], ~"\"odd?\" = $2"},
+            {~"\"a\"\"?\" = ?", [1], ~"\"a\"\"?\" = $2"},
+            {~"a = ? -- why?\nAND b = ?", [1, 2], ~"a = $2 -- why?\nAND b = $3"},
+            {~"a = ? -- trailing?", [1], ~"a = $2 -- trailing?"},
+            {
+                ~"a = ? /* is /* nested? */ ok? */ AND b = ?",
+                [1, 2],
+                ~"a = $2 /* is /* nested? */ ok? */ AND b = $3"
+            },
+            {~"a = $$?$$ AND b = ?", [1], ~"a = $$?$$ AND b = $2"},
+            {~"a = $q$ $$ ? $q$ AND b = ?", [1], ~"a = $q$ $$ ? $q$ AND b = $2"},
+            {~"a - b = ? AND c / d = ?", [1, 2], ~"a - b = $2 AND c / d = $3"},
+            {~"a = 'x' || ? || 'y?'", [1], ~"a = 'x' || $2 || 'y?'"},
+            {~"1 = 1", [], ~"1 = 1"}
+        ]
+    ].
+
+fragment_placeholder_count_must_match_test() ->
+    [
+        ?assertError(
+            {kura, {fragment_placeholder_mismatch, Found, Given}},
+            kura_dialect_pg:to_sql(
+                kura_query:where(kura_query:from(kura_test_schema), {fragment, SQL, Params})
+            )
+        )
+     || {SQL, Params, Found, Given} <- [
+            {~"a = 'why?'", [1], 0, 1},
+            {~"a = ? AND b = ?", [1], 2, 1},
+            {~"a = ?", [], 1, 0},
+            {~"a = $1", [1], 0, 1},
+            {~"data ? 'key' AND b = ?", [1], 2, 1}
+        ]
+    ].
+
+select_fragment_question_mark_in_text_test() ->
+    Q = kura_query:select_expr(kura_query:from(kura_test_schema), [
+        {label, {fragment, ~"CASE WHEN age > ? THEN 'old?' ELSE 'young?' END", [50]}}
+    ]),
+    ?assertEqual(
+        {
+            ~"SELECT CASE WHEN age > $1 THEN 'old?' ELSE 'young?' END AS \"label\" FROM \"users\"",
+            [50]
+        },
+        kura_dialect_pg:to_sql(Q)
+    ),
+    ?assertError(
+        {kura, {fragment_placeholder_mismatch, 0, 1}},
+        kura_dialect_pg:to_sql(
+            kura_query:select_expr(kura_query:from(kura_test_schema), [
+                {label, {fragment, ~"'?'", [50]}}
+            ])
+        )
+    ).
+
+fragment_mismatch_is_raised_through_the_cache_test() ->
+    application:set_env(kura, repos, #{fragment_repo => #{dialect => kura_dialect_pg}}),
+    try
+        Q = kura_query:where(kura_query:from(kura_test_schema), {fragment, ~"a = '?'", [1]}),
+        [
+            ?assertError(
+                {kura, {fragment_placeholder_mismatch, 0, 1}},
+                kura_query_compiler:to_sql_cached(fragment_repo, Q)
+            )
+         || _ <- [first, second]
+        ]
+    after
+        application:unset_env(kura, repos)
+    end.
+
 empty_in_matches_no_row_test() ->
     [
         ?assertEqual(
