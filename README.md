@@ -650,16 +650,17 @@ write is the driver's error, message included: log its `code`.
 
 ### Defaults that change in 3.0
 
-These settings keep their 2.x behaviour when left out, and kura logs one
-warning per boot when the permissive default is in effect. Set them now.
+These settings are unset by default. Unset, each keeps its 2.x behaviour
+and logs one warning per boot, the first time what it governs is used. A
+setting given either value is a decision and logs nothing. Set them now.
 
-| Setting | 2.x default | 3.0 default | Effect |
+| Setting | Unset in 2.x | 3.0 default | Effect |
 | --- | --- | --- | --- |
 | `max_page_size` | not capped | `1000` | largest `page_size` / `limit` `kura_paginator` accepts; see the [pagination guide](guides/pagination.md) |
-| `encryption_write_format` | `v1` | `v2` | frame version new encrypted values are written in; v2 binds a value to its column. See [Encryption at rest](#encryption-at-rest) |
-| `require_tenant` | `false` | `true` on a repo that declares a tenancy strategy, `false` on any other | a query or changeset write in a process with no tenant raises instead of running unscoped; set it for a repo in the repo's config, or here for every repo that sets none. See [Multitenancy](guides/multitenancy.md#requiring-a-tenant) |
-| `strict_assoc_cast` | `false` | `true` | `cast_assoc`, `cast_embed` and `put_assoc` of a raw map must name the child fields params may set (`cast` or `with`); see [Nested Changesets](guides/cast_assoc.md) |
-| `strict_locks` | `false` | `true` | `kura_query:lock/2` refuses lock text it cannot read instead of writing it into the statement; see the [query builder guide](guides/query-builder.md) |
+| `encryption_write_format` | writes `v1` | `v2` | frame version new encrypted values are written in; v2 binds a value to its column. See [Encryption at rest](#encryption-at-rest) |
+| `require_tenant` | as `false` | planned: `true` on a repo that declares a tenancy strategy, which 2.x has no way to declare, and `false` on any other | a query or changeset write in a process with no tenant raises instead of running unscoped; set it for a repo in the repo's config, or here for every repo that sets none. See [Multitenancy](guides/multitenancy.md#requiring-a-tenant) |
+| `strict_assoc_cast` | as `false` | `true` | `cast_assoc`, `cast_embed` and `put_assoc` of a raw map must name the child fields params may set (`cast` or `with`); see [Nested Changesets](guides/cast_assoc.md) |
+| `strict_locks` | as `false` | `true` | `kura_query:lock/2` refuses lock text it cannot read instead of writing it into the statement; see the [query builder guide](guides/query-builder.md) |
 
 kura reads these, and `telemetry_error_detail`, when it starts, and does
 not start with a value it cannot read: the error names the setting.
