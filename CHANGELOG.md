@@ -28,9 +28,12 @@ Behaviour that changes for existing callers:
   comment of a fragment is left alone. A fragment whose placeholders do not
   match its parameters raises
   `{kura, {fragment_placeholder_mismatch, Placeholders, Params}}`.
-- `kura_query:lock/2` takes a closed set of clauses and raises
-  `{kura, {invalid_lock, Lock}}` for anything else. Spell another clause
-  `{fragment, SQL}`.
+- `kura_query:lock/2` reads a lock given as text: `FOR` with a strength,
+  `OF` tables, `NOWAIT` or `SKIP LOCKED`, one clause or several. Text it
+  cannot read is written into the statement as before, with one warning
+  per boot; `{strict_locks, true}` refuses it with
+  `{kura, {invalid_lock, Text}}`, as 3.0 will. A term that is not a lock
+  raises `{kura, {invalid_lock, Lock}}`.
 - `kura_paginator` returns a tagged error for a `page`, `page_size` or
   `limit` that is not a positive integer.
 - `insert_all` of `[]` returns `{ok, 0}`; entries that do not set the same
@@ -39,9 +42,12 @@ Behaviour that changes for existing callers:
   `{kura, {too_many_parameters, Count, 65535}}`.
 - `#kura_field.column` is honoured in every statement and in loaded rows.
 - The `timestamps/0` callback is read; it was declared but never called.
-- Values a backend without native types stores now load: `1`/`0` as a
-  boolean, ISO 8601 text as a date, time or datetime, numeric text as a
-  decimal, JSON text as an array. They used to come back as stored.
+  One kura cannot use (not a list of one or two of the schema's fields)
+  logs a warning once per boot and the fields named `inserted_at` and
+  `updated_at` are stamped as before, as they are for `[]` on a schema
+  that has them. kura 3.0 raises on the first and stamps nothing for `[]`.
+- `kura_types:load(decimal, Text)` returns the text, exact, for a decimal a
+  driver hands over as text. A loaded row is as it was.
 - A database constraint error the changeset does not declare is reported
   on a field only when its name is one the database generates for a single
   column of the changeset's table, or `<table>_pkey`. Any other name is
@@ -51,9 +57,12 @@ Behaviour that changes for existing callers:
   the error's code and the names in it, and drops its message and detail,
   for every statement. `{telemetry_error_detail, true}` restores the whole
   error for statements on schemas without redacted fields.
-- The same event's `source` is the table, not the schema, of a
-  schema-qualified table, and a keyword inside a longer word is not taken
-  for one.
+- The same event's `source` is the table kura compiled the statement for,
+  where kura built the statement: for a query with a CTE, the table the
+  query is from, not the first one in the CTE's body. For raw SQL it is
+  still read from the text, where it is now the table, not the schema, of
+  a schema-qualified table, and a keyword inside a longer word is not
+  taken for one.
 - Telemetry params are redacted when a joined schema, a subquery, a CTE or
   a combined query reads a redacted field, not only the `from` schema.
 - `kura_tenant:with_tenant/2` and `without_tenant/1` check the tenant
@@ -62,16 +71,17 @@ Behaviour that changes for existing callers:
   `require_tenant` they raised `tenant_required` inside `without_tenant/1`.
 - `kura_stream:stream/4` raises
   `{kura, {unsupported_capability, cursors, PoolModule}}` on a backend
-  that declares capability model 2 without `cursors`.
+  that declares a capability model and no `cursors`.
 - `validate_confirmation/2,3` reports a mismatch on the field itself when
   no `<field>_confirmation` atom exists, and matches a confirmation given
   under a binary key.
-- A query that uses full-text search, a window function, a vector distance
-  or a `skip_locked` lock raises
+- A query that uses full-text search, a window function, a vector
+  distance, a lock or `DISTINCT ON` raises
   `{kura, {unsupported_capability, Capability, PoolModule}}` when the
-  repo's pool module declares capabilities and not that one. A pool module
-  that declares capability model 2 is also checked for `row_locks` and
-  `distinct_on`.
+  repo's pool module declares a capability model and not that capability.
+  A pool module without `capability_model/0`, as every backend released
+  for 2.30 is, is not checked. A model kura does not know keeps the repo's
+  pool from starting.
 
 New API:
 
@@ -84,18 +94,25 @@ New API:
   `changeset/1`.
 - `kura_repo_worker:query/4` with `#{sensitive => true}` redacts a raw
   statement's parameters in telemetry and the query log.
-- `kura_tenant:without_tenant/1`, `scope/0` and `adopt/1`; `with_tenant/2`
-  and `without_tenant/1` also take `{Module, Function, Args}`.
+- `kura_tenant:without_tenant/1`, `current_scope/0` and `adopt/1`;
+  `with_tenant/2` and `without_tenant/1` also take
+  `{Module, Function, Args}`.
+- `kura_query:sources/1`: every schema and table a query reads, through
+  joins, CTEs, combinations, subqueries and preloads.
+- Lock terms `{Strength, #{tables => Tables, wait => Wait}}` and a list of
+  locks, for `FOR UPDATE OF posts SKIP LOCKED` and several clauses.
 - Capabilities `row_locks`, `distinct_on` and `cursors`, the optional
-  `kura_capabilities` callback `capability_model/0` and
-  `kura_capabilities:check/2`. A pool module without `capability_model/0`
-  is checked for the four 2.30 capabilities only.
+  `kura_capabilities` callback `capability_model/0`, and
+  `kura_capabilities:check/2` and `model/1`.
+- Optional `kura_dialect` callback `load_stored/2`: a backend without
+  native types turns what it stores (`1`/`0` for a boolean, ISO 8601 text
+  for a date or time) into the value kura loads. Core reads no backend's
+  stored forms itself.
 - Optional `kura_dialect` callback `placeholder/1`; the migrator writes its
   version statements with it.
 - `kura_migration:column_name/0`: a column in a `#kura_column{}`, a table
   constraint, an `alter_table` operation, an index or a `safe/0` entry is
   an atom or a binary.
-- `kura_db:load_rows/2`.
 
 Settings, all optional:
 
@@ -103,14 +120,22 @@ Settings, all optional:
 | --- | --- | --- |
 | `max_page_size` | unset (1000 in 3.0) | largest page size `kura_paginator` accepts |
 | `strict_assoc_cast` | `false` (`true` in 3.0) | a nested cast must name the fields params may set |
-| `require_tenant` | `false` (`true` in 3.0) | a statement in a process with no tenant raises |
+| `require_tenant` | `false` | a statement in a process with no tenant raises; also a repo setting, which wins |
+| `strict_locks` | `false` (`true` in 3.0) | lock text kura cannot read is refused |
 | `encryption_write_format` | `v1` (`v2` in 3.0) | frame version of new encrypted values |
 | `telemetry_error_detail` | `false` | report the whole error to telemetry |
 
-The first four log one warning per boot while unset.
+`max_page_size`, `strict_assoc_cast`, `require_tenant`, `strict_locks` and
+`encryption_write_format` log one warning per boot while unset, the first
+time what they govern is used. In 3.0 a tenant is required by default only
+on a repo that declares a tenancy strategy. kura does not start with a
+value it cannot read for any of the six: the error names the setting.
+
+`require_tenant` judges a query by everything it reads, joins included: a
+shared schema joined to a tenant-scoped one no longer passes.
 
 CI runs the suites on PostgreSQL 14, 15, 16, 17 and 18, and a release needs
-every one of them to pass.
+every one of them to pass. Only the release job has write permissions.
 
 ### Bug Fixes
 

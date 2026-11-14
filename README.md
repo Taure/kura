@@ -654,8 +654,12 @@ warning per boot when the permissive default is in effect. Set them now.
 | --- | --- | --- | --- |
 | `max_page_size` | not capped | `1000` | largest `page_size` / `limit` `kura_paginator` accepts; see the [pagination guide](guides/pagination.md) |
 | `encryption_write_format` | `v1` | `v2` | frame version new encrypted values are written in; v2 binds a value to its column. See [Encryption at rest](#encryption-at-rest) |
-| `require_tenant` | `false` | `true` | a query or changeset write in a process with no tenant raises instead of running unscoped; see [Multitenancy](guides/multitenancy.md#requiring-a-tenant). An application with no tenants sets `false` |
+| `require_tenant` | `false` | `true` on a repo that declares a tenancy strategy, `false` on any other | a query or changeset write in a process with no tenant raises instead of running unscoped; set it for a repo in the repo's config, or here for every repo that sets none. See [Multitenancy](guides/multitenancy.md#requiring-a-tenant) |
 | `strict_assoc_cast` | `false` | `true` | `cast_assoc`, `cast_embed` and `put_assoc` of a raw map must name the child fields params may set (`cast` or `with`); see [Nested Changesets](guides/cast_assoc.md) |
+| `strict_locks` | `false` | `true` | `kura_query:lock/2` refuses lock text it cannot read instead of writing it into the statement; see the [query builder guide](guides/query-builder.md) |
+
+kura reads these, and `telemetry_error_detail`, when it starts, and does
+not start with a value it cannot read: the error names the setting.
 
 ## Security
 

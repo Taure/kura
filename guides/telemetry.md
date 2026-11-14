@@ -26,7 +26,7 @@ Emitted after every query execution.
 | `result` | `ok \| error` | Whether the query succeeded |
 | `num_rows` | `integer()` | Number of rows returned or affected |
 | `repo` | `module()` | The repo module that ran the query |
-| `source` | `binary() \| undefined` | The first table the statement names, without its schema qualifier |
+| `source` | `binary() \| undefined` | The table kura compiled the statement for: a query's `from`, a write's table. For raw SQL, the first table the text names, without its schema qualifier |
 | `tenant` | `undefined \| {prefix, binary()} \| {attribute, {atom(), term()}}` | Current tenant (if any) at query time |
 | `error_reason` | `term() \| undefined` | The error when `result =:= error`: its code and the names in it, without its message and detail |
 
