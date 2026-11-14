@@ -220,8 +220,16 @@ validate_subset(CS, Field, AllowedValues) ->
 
 -doc """
 Validate that the params repeat the change to `Field` under
-`<Field>_confirmation`. A mismatch is reported on that name, or on `Field`
-itself when no such atom exists in the system: kura does not create one.
+`<Field>_confirmation`, as an atom or a binary key.
+
+A mismatch is reported on `<Field>_confirmation` when the changeset has a
+field of that name, and on `Field` when it has none: kura does not create
+the atom. Declare the confirmation as a virtual field to have the error
+there:
+
+```erlang
+#kura_field{name = password_confirmation, type = string, virtual = true}
+```
 """.
 -spec validate_confirmation(#kura_changeset{}, atom()) -> #kura_changeset{}.
 validate_confirmation(CS, Field) ->
@@ -234,21 +242,38 @@ validate_confirmation(CS, Field, Opts) ->
         undefined ->
             CS;
         Val ->
-            Msg = maps:get(message, Opts, ~"does not match"),
-            case confirmation(Field, CS#kura_changeset.params) of
-                {_ErrorField, {ok, Val}} -> CS;
-                {ErrorField, _Given} -> add_error(CS, ErrorField, Msg)
+            Name = <<(atom_to_binary(Field, utf8))/binary, "_confirmation">>,
+            case confirmation(Name, CS#kura_changeset.params) of
+                {ok, Val} ->
+                    CS;
+                _Other ->
+                    add_error(
+                        CS,
+                        confirmation_field(Name, Field, CS#kura_changeset.types),
+                        maps:get(message, Opts, ~"does not match")
+                    )
             end
     end.
 
--spec confirmation(atom(), map()) -> {atom(), {ok, term()} | error}.
-confirmation(Field, Params) ->
-    Name = <<(atom_to_binary(Field, utf8))/binary, "_confirmation">>,
+%% An atom key of the params exists as an atom, and so does a field of the
+%% changeset, so neither answer depends on what else has made the atom.
+-spec confirmation(binary(), map()) -> {ok, term()} | error.
+confirmation(Name, Params) when is_map_key(Name, Params) ->
+    maps:find(Name, Params);
+confirmation(Name, Params) ->
     try binary_to_existing_atom(Name, utf8) of
-        Key when is_map_key(Key, Params) -> {Key, maps:find(Key, Params)};
-        Key -> {Key, maps:find(Name, Params)}
+        Key -> maps:find(Key, Params)
     catch
-        error:badarg -> {Field, maps:find(Name, Params)}
+        error:badarg -> error
+    end.
+
+-spec confirmation_field(binary(), atom(), map()) -> atom().
+confirmation_field(Name, Field, Types) ->
+    try binary_to_existing_atom(Name, utf8) of
+        Key when is_map_key(Key, Types) -> Key;
+        _Key -> Field
+    catch
+        error:badarg -> Field
     end.
 
 -doc "Validate `Field` with a custom function returning `ok` or `{error, Message}`.".
