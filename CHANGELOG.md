@@ -149,7 +149,11 @@ sees the CTEs listed before it, as PostgreSQL resolves them: its own name
 and a later CTE's name are tables there.
 
 CI runs the suites on PostgreSQL 14, 15, 16, 17 and 18, and a release needs
-every one of them to pass. Only the release job has write permissions.
+every one of them to pass. The PostgreSQL legs have a read-only token. The
+`ci` job grants the reusable workflow `contents: write` and
+`pull-requests: write`, which only its dependency-submission and PR-summary
+jobs take; the jobs that build and test the code run read-only. The release
+job has `contents: write`.
 
 ### Bug Fixes
 

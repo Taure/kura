@@ -26,6 +26,12 @@ permissions:
 jobs:
   ci:
     uses: Taure/erlang-ci/.github/workflows/ci.yml@v2.2.5
+    # The most a job of that workflow may ask for, not what each one gets.
+    # Two of its jobs declare a write scope, and GitHub refuses the run
+    # unless the caller grants them: dependency-submission (contents: write,
+    # for the dependency graph API) and summary (pull-requests: write, for
+    # the PR comment). Every other job, including all that build or run this
+    # repository's code, takes the workflow's own default, contents: read.
     permissions:
       contents: write
       pull-requests: write
