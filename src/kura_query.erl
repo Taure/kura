@@ -1590,7 +1590,6 @@ names_cte(Source, Names) when is_atom(Source) ->
 
 -spec cte_names(term()) -> [term()].
 cte_names([{Name, _Body} | Rest]) -> [Name | cte_names(Rest)];
-cte_names([_ | Rest]) -> cte_names(Rest);
 cte_names(_) -> [].
 
 -spec bodies(term()) -> [#kura_query{}].
