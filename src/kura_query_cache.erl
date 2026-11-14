@@ -40,8 +40,11 @@ The ETS table is owned by `kura_query_cache_owner` (a gen_server under
 -export([start_link/0, init/1, handle_call/3, handle_cast/2]).
 -export_type([entry/0]).
 
--doc "A compiled shape's SQL and parameter template, or a shape that cannot be cached.".
--type entry() :: {binary(), [term()]} | uncacheable.
+-doc """
+A compiled shape's SQL, its parameter template and what the compiler worked
+out about the shape, or a shape that cannot be cached.
+""".
+-type entry() :: {binary(), [term()], kura_query_compiler:facts()} | uncacheable.
 
 -define(TABLE, kura_query_cache).
 -define(DEFAULT_MAX_MEMORY_WORDS, 8000000).
@@ -80,8 +83,8 @@ get(Key) ->
             case ets:lookup(?TABLE, Key) of
                 [{_, uncacheable}] ->
                     {ok, uncacheable};
-                [{_, {SQL, Template}}] when is_binary(SQL), is_list(Template) ->
-                    {ok, {SQL, Template}};
+                [{_, {SQL, Template, Facts}}] when is_binary(SQL), is_list(Template) ->
+                    {ok, {SQL, Template, Facts}};
                 _ ->
                     miss
             end

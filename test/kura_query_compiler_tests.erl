@@ -22,6 +22,7 @@
 ]).
 
 -define(REPO, my_test_repo).
+-define(FACTS, #{shown => plain, source => undefined, tenant_scoped => []}).
 
 set_repo_dialect(Dialect) ->
     application:set_env(kura, repos, #{?REPO => #{dialect => Dialect}}).
@@ -77,7 +78,10 @@ to_sql_cached_miss_compiles_and_stores_test() ->
         Result = kura_query_compiler:to_sql_cached(?REPO, Q),
         ?assertEqual(kura_query_compiler:to_sql(?REPO, Q), Result),
         Key = {?REPO, kura_tenant:get_tenant(), Q},
-        ?assertEqual({ok, Result}, kura_query_cache:get(Key))
+        {SQL, Template} = Result,
+        ?assertEqual(
+            {ok, {SQL, Template, kura_query_compiler:facts(Q)}}, kura_query_cache:get(Key)
+        )
     after
         unset_repo()
     end.
@@ -88,9 +92,11 @@ to_sql_cached_hit_returns_stored_result_test() ->
     try
         Q = #kura_query{from = cache_hit_schema},
         Stored = {~"PRE_BAKED_SQL", [pre_baked_param]},
+        {SQL, Template} = Stored,
         Key = {?REPO, kura_tenant:get_tenant(), Q},
-        kura_query_cache:put(Key, Stored),
-        ?assertEqual(Stored, kura_query_compiler:to_sql_cached(?REPO, Q))
+        kura_query_cache:put(Key, {SQL, Template, ?FACTS}),
+        ?assertEqual(Stored, kura_query_compiler:to_sql_cached(?REPO, Q)),
+        ?assertEqual({SQL, Template, ?FACTS}, kura_query_compiler:statement(?REPO, Q))
     after
         unset_repo()
     end.
@@ -391,7 +397,7 @@ entry_holding_a_large_binary_is_never_interned_test() ->
     kura_query_cache:flush(),
     try
         Key = {?REPO, undefined, binary:copy(~"x", 64 * 1024)},
-        ok = kura_query_cache:put(Key, {~"SELECT 1", []}),
+        ok = kura_query_cache:put(Key, {~"SELECT 1", [], ?FACTS}),
         ?assertEqual(miss, kura_query_cache:get(Key))
     after
         kura_query_cache:flush()
@@ -403,7 +409,7 @@ memory_cap_counts_off_heap_binaries_test() ->
     application:set_env(kura, query_cache_max_memory, 5000),
     try
         Keys = [{?REPO, undefined, binary:copy(<<N>>, 16 * 1024)} || N <- lists:seq(1, 10)],
-        _ = [ok = kura_query_cache:put(K, {~"SELECT 1", []}) || K <- Keys],
+        _ = [ok = kura_query_cache:put(K, {~"SELECT 1", [], ?FACTS}) || K <- Keys],
         ?assert(kura_query_cache:entry_count() < 10)
     after
         application:unset_env(kura, query_cache_max_memory),
@@ -416,11 +422,11 @@ flush_resets_the_off_heap_count_test() ->
     application:set_env(kura, query_cache_max_memory, 6000),
     try
         Key = fun(N) -> {?REPO, undefined, binary:copy(<<N>>, 16 * 1024)} end,
-        ok = kura_query_cache:put(Key(1), {~"SELECT 1", []}),
-        ok = kura_query_cache:put(Key(2), {~"SELECT 1", []}),
+        ok = kura_query_cache:put(Key(1), {~"SELECT 1", [], ?FACTS}),
+        ok = kura_query_cache:put(Key(2), {~"SELECT 1", [], ?FACTS}),
         kura_query_cache:flush(),
-        ok = kura_query_cache:put(Key(3), {~"SELECT 1", []}),
-        ok = kura_query_cache:put(Key(4), {~"SELECT 1", []}),
+        ok = kura_query_cache:put(Key(3), {~"SELECT 1", [], ?FACTS}),
+        ok = kura_query_cache:put(Key(4), {~"SELECT 1", [], ?FACTS}),
         ?assertEqual(2, kura_query_cache:entry_count())
     after
         application:unset_env(kura, query_cache_max_memory),
@@ -435,8 +441,8 @@ repeated_put_of_one_key_counts_it_once_test() ->
     application:set_env(kura, query_cache_max_memory, 6000),
     try
         Key = fun(N) -> {?REPO, undefined, binary:copy(<<N>>, 16 * 1024)} end,
-        _ = [ok = kura_query_cache:put(Key(1), {~"SELECT 1", []}) || _ <- [1, 2, 3]],
-        ok = kura_query_cache:put(Key(2), {~"SELECT 1", []}),
+        _ = [ok = kura_query_cache:put(Key(1), {~"SELECT 1", [], ?FACTS}) || _ <- [1, 2, 3]],
+        ok = kura_query_cache:put(Key(2), {~"SELECT 1", [], ?FACTS}),
         ?assertEqual(2, kura_query_cache:entry_count())
     after
         application:unset_env(kura, query_cache_max_memory),
@@ -449,10 +455,10 @@ count_lives_in_the_cache_table_test() ->
     kura_query_cache:flush(),
     try
         Key = {?REPO, undefined, binary:copy(~"k", 1024)},
-        ok = kura_query_cache:put(Key, {~"SELECT 1", []}),
+        ok = kura_query_cache:put(Key, {~"SELECT 1", [], ?FACTS}),
         ?assertEqual(2, ets:info(kura_query_cache, size)),
         ?assertEqual(1, kura_query_cache:entry_count()),
-        ?assertEqual({ok, {~"SELECT 1", []}}, kura_query_cache:get(Key)),
+        ?assertEqual({ok, {~"SELECT 1", [], ?FACTS}}, kura_query_cache:get(Key)),
         ok = kura_query_cache:flush(),
         ?assertEqual(0, ets:info(kura_query_cache, size))
     after
@@ -465,11 +471,11 @@ table_without_a_count_row_still_caches_test() ->
     kura_query_cache:init(),
     kura_query_cache:flush(),
     try
-        ets:insert(kura_query_cache, {{?REPO, undefined, old_entry}, {~"SELECT 1", []}}),
+        ets:insert(kura_query_cache, {{?REPO, undefined, old_entry}, {~"SELECT 1", [], ?FACTS}}),
         Key = {?REPO, undefined, binary:copy(~"k", 1024)},
-        ok = kura_query_cache:put(Key, {~"SELECT 2", []}),
+        ok = kura_query_cache:put(Key, {~"SELECT 2", [], ?FACTS}),
         ?assertEqual(2, kura_query_cache:entry_count()),
-        ?assertEqual({ok, {~"SELECT 2", []}}, kura_query_cache:get(Key))
+        ?assertEqual({ok, {~"SELECT 2", [], ?FACTS}}, kura_query_cache:get(Key))
     after
         kura_query_cache:flush()
     end.
@@ -627,10 +633,10 @@ binary_count_is_exact_for_key_result_and_maps_test() ->
         JustOver = binary:copy(~"o", 65),
         Sql = binary:copy(~"q", 200),
         Key = {?REPO, Big, #{m => Big}, [AtLimit, 7, JustOver]},
-        ok = kura_query_cache:put(Key, {Sql, []}),
+        ok = kura_query_cache:put(Key, {Sql, [], ?FACTS}),
         Expected = 2 * (1024 div W + 1) + (65 div W + 1) + (200 div W + 1),
         ?assertEqual(Expected, binary_count()),
-        ok = kura_query_cache:put({?REPO, undefined, small}, {~"SELECT 1", [a, 1]}),
+        ok = kura_query_cache:put({?REPO, undefined, small}, {~"SELECT 1", [a, 1], ?FACTS}),
         ?assertEqual(Expected, binary_count())
     after
         kura_query_cache:flush()
@@ -646,7 +652,7 @@ large_result_is_never_interned_test() ->
     kura_query_cache:flush(),
     try
         Key = {?REPO, undefined, small_key},
-        ok = kura_query_cache:put(Key, {~"SELECT 1", lists:seq(1, 5000)}),
+        ok = kura_query_cache:put(Key, {~"SELECT 1", lists:seq(1, 5000), ?FACTS}),
         ?assertEqual(miss, kura_query_cache:get(Key))
     after
         kura_query_cache:flush()

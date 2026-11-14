@@ -46,13 +46,15 @@ with `kura_repo_worker:query/4` and `#{sensitive => true}`.
     record/2,
     changeset/1,
     query_params/2,
+    mode/1,
+    shown/2,
     sensitive_params/1,
     update_all_params/3,
     write_params/3,
     error_reason/1
 ]).
 
--export_type([shown/0]).
+-export_type([shown/0, mode/0]).
 
 -doc """
 A statement's parameters as telemetry may show them: the parameters
@@ -60,6 +62,13 @@ themselves for a statement on a schema with no redacted field, else
 `{redacted, Shown}`.
 """.
 -type shown() :: [term()] | {redacted, [term()]}.
+
+-doc """
+How the parameters of a query are shown: as they are (`plain`), as they
+are but marked as a redacted schema's (`redacted`), or each replaced
+(`hidden`).
+""".
+-type mode() :: plain | redacted | hidden.
 
 -define(REDACTED, ~"[redacted]").
 -define(ERROR_KEYS, [code, severity, constraint, table, schema, column, data_type]).
@@ -119,10 +128,29 @@ the query, or a query nested in it, filters on a redacted field, and is
 """.
 -spec query_params(#kura_query{}, [term()]) -> shown().
 query_params(Query, Params) ->
+    shown(mode(Query), Params).
+
+%% How the parameters of any query of this shape are shown. It depends on
+%% the query's sources and on which fields its conditions name, never on a
+%% value, so it is worked out once for a cached shape.
+-doc false.
+-spec mode(#kura_query{}) -> mode().
+mode(Query) ->
     case reads_redacted(Query) of
-        true -> {redacted, filtered_params(Query, Params)};
-        false -> Params
+        false ->
+            plain;
+        true ->
+            case filters_redacted(Query) of
+                true -> hidden;
+                false -> redacted
+            end
     end.
+
+-doc false.
+-spec shown(mode(), [term()]) -> shown().
+shown(plain, Params) -> Params;
+shown(redacted, Params) -> {redacted, Params};
+shown(hidden, Params) -> {redacted, all_redacted(Params)}.
 
 -doc """
 What telemetry may show of parameters the caller says are sensitive: one

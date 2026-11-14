@@ -218,7 +218,9 @@ preload_many_to_many(
                 {OwnerCols, RelatedCols},
                 OwnerTuples
             ),
-            #{rows := JoinRows} = kura_db:query(RepoMod, JoinSQL, JoinParams),
+            #{rows := JoinRows} = kura_db:query(
+                RepoMod, JoinSQL, JoinParams, JoinParams, kura_db:source_name(JoinThrough)
+            ),
             RelTuples = lists:usort([fk_tuple(RelatedCols, JR) || JR <- JoinRows]),
             case RelTuples of
                 [] ->

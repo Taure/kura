@@ -79,7 +79,9 @@ Raw SQL through a repo's `query/2` is never scoped and never checked.
     adopt/1,
     scope_query/2,
     tenant_for/2,
-    require/2
+    require/2,
+    scoped_sources/1,
+    permit/3
 ]).
 
 -define(UNSCOPED, kura_tenant_unscoped).
@@ -283,22 +285,40 @@ warn_unless_decided(RepoMod) ->
 %% own body is checked instead. A preload runs as a query of its own and is
 %% checked there.
 check_scoped(#kura_query{} = Query) ->
-    check_sources([
-        Source
-     || {Role, Source} <- kura_query:sources(Query), Role =:= from orelse Role =:= join
-    ]);
+    refuse(scoped_sources(Query));
 check_scoped(undefined) ->
     ok;
 check_scoped(Source) ->
-    check_sources([Source]).
+    refuse([Scoped || Scoped <- [Source], tenant_scoped(Scoped)]).
 
-check_sources([]) ->
+-spec refuse([atom() | binary()]) -> ok.
+refuse([]) -> ok;
+refuse([Source | _]) -> error({kura, {tenant_required, Source}}).
+
+%% What a query reads that needs a tenant. It depends on the query's
+%% sources only, so it is worked out once for a cached shape.
+-doc false.
+-spec scoped_sources(#kura_query{}) -> [atom() | binary()].
+scoped_sources(Query) ->
+    [
+        Source
+     || {Role, Source} <- kura_query:sources(Query),
+        Role =:= from orelse Role =:= join,
+        tenant_scoped(Source)
+    ].
+
+%% tenant_for/2 for a query whose scoped sources are already known.
+-doc false.
+-spec permit(module(), undefined | strategy(), [atom() | binary()]) -> ok.
+permit(_RepoMod, undefined, []) ->
     ok;
-check_sources([Source | Rest]) ->
-    case tenant_scoped(Source) of
-        true -> error({kura, {tenant_required, Source}});
-        false -> check_sources(Rest)
-    end.
+permit(RepoMod, undefined, Scoped) ->
+    case required(RepoMod) =:= true andalso erlang:get(?UNSCOPED) =/= true of
+        true -> refuse(Scoped);
+        false -> ok
+    end;
+permit(RepoMod, _Tenant, _Scoped) ->
+    warn_unless_decided(RepoMod).
 
 tenant_scoped(Source) when is_atom(Source) ->
     case kura_schema:is_schema(Source) andalso erlang:function_exported(Source, tenant_scoped, 0) of

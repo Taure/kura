@@ -11,6 +11,7 @@ for pool lookup, sandbox support, telemetry, and type loading.
 -export([
     query/3,
     query/4,
+    query/5,
     query_on/4,
     query_on/5,
     transaction/2,
@@ -28,7 +29,9 @@ for pool lookup, sandbox support, telemetry, and type loading.
     load_rows/3,
     build_log_event/5,
     build_telemetry_metadata/4,
+    build_telemetry_metadata/5,
     extract_source/1,
+    source_name/1,
     default_logger/0
 ]).
 
@@ -39,7 +42,7 @@ for pool lookup, sandbox support, telemetry, and type loading.
     held/1,
     extract_result_status/1,
     extract_num_rows/1,
-    emit_telemetry/6
+    emit_telemetry/7
 ]).
 -endif.
 
@@ -85,6 +88,12 @@ either way.
 """.
 -spec query(module(), iodata(), [term()], kura_redact:shown()) -> map() | {error, term()}.
 query(RepoMod, SQL, Params, Shown) ->
+    query(RepoMod, SQL, Params, Shown, from_sql).
+
+-doc false.
+-spec query(module(), iodata(), [term()], kura_redact:shown(), source()) ->
+    map() | {error, term()}.
+query(RepoMod, SQL, Params, Shown, Source) ->
     Pool = get_pool(RepoMod),
     DriverMod = get_driver_module(RepoMod),
     T0 = erlang:monotonic_time(),
@@ -98,10 +107,10 @@ query(RepoMod, SQL, Params, Shown) ->
         end,
     case Shown of
         {redacted, ShownParams} ->
-            _ = observed(RepoMod, SQL, ShownParams, T0, shown_result(Result)),
+            _ = observed(RepoMod, SQL, ShownParams, T0, shown_result(Result), Source),
             Result;
         _ ->
-            observed(RepoMod, SQL, Params, T0, Result)
+            observed(RepoMod, SQL, Params, T0, Result, Source)
     end.
 
 shown_result({error, Reason}) -> {error, kura_redact:error_reason(Reason)};
@@ -137,14 +146,31 @@ query_on(RepoMod, Conn, SQL, Params, Opts) ->
     DriverMod = get_driver_module(RepoMod),
     T0 = erlang:monotonic_time(),
     Result = DriverMod:query_on(Conn, SQL, Params, Opts#{decode_opts => ?DECODE_OPTS}),
-    observed(RepoMod, SQL, Params, T0, Result).
+    observed(RepoMod, SQL, Params, T0, Result, from_sql).
 
--spec observed(module(), iodata(), [term()], integer(), Result) -> Result.
-observed(RepoMod, SQL, Params, T0, Result) ->
+-spec observed(module(), iodata(), [term()], integer(), Result, source()) -> Result.
+observed(RepoMod, SQL, Params, T0, Result, Source) ->
     DurationNative = erlang:monotonic_time() - T0,
     DurationUs = erlang:convert_time_unit(DurationNative, native, microsecond),
-    emit_telemetry(RepoMod, SQL, Params, Result, DurationNative, DurationUs),
+    emit_telemetry(RepoMod, SQL, Params, Result, DurationNative, DurationUs, Source),
     Result.
+
+%% What a statement reads or writes, as telemetry names it: the table kura
+%% compiled the statement for, or `from_sql` for SQL kura did not build,
+%% whose text is read for it.
+-type source() :: binary() | undefined | from_sql.
+
+-doc false.
+-spec source_name(kura_dialect:table() | undefined) -> binary() | undefined.
+source_name(undefined) ->
+    undefined;
+source_name(Table) when is_binary(Table) ->
+    Table;
+source_name(Source) when is_atom(Source) ->
+    case kura_schema:is_schema(Source) of
+        true -> Source:table();
+        false -> atom_to_binary(Source)
+    end.
 
 %%----------------------------------------------------------------------
 %% Transaction
@@ -941,13 +967,13 @@ load_field(Type, V, Specs, K) ->
 %% Telemetry
 %%----------------------------------------------------------------------
 
-emit_telemetry(RepoMod, SQL, Params, Result, DurationNative, DurationUs) ->
+emit_telemetry(RepoMod, SQL, Params, Result, DurationNative, DurationUs, Source) ->
     try
         Measurements = #{
             duration => DurationNative,
             duration_us => DurationUs
         },
-        Metadata = build_telemetry_metadata(RepoMod, SQL, Params, Result),
+        Metadata = build_telemetry_metadata(RepoMod, SQL, Params, Result, Source),
         telemetry:execute([kura, repo, query], Measurements, Metadata),
         emit_legacy_log(RepoMod, SQL, Params, Result, DurationUs)
     catch
@@ -970,6 +996,10 @@ emit_legacy_log(RepoMod, SQL, Params, Result, DurationUs) ->
     end.
 
 build_telemetry_metadata(RepoMod, SQL, Params, Result) ->
+    build_telemetry_metadata(RepoMod, SQL, Params, Result, from_sql).
+
+-doc false.
+build_telemetry_metadata(RepoMod, SQL, Params, Result, Named) ->
     SQLBin = iolist_to_binary(SQL),
     {ResultStatus, NumRows, ErrorReason} =
         case Result of
@@ -978,7 +1008,11 @@ build_telemetry_metadata(RepoMod, SQL, Params, Result) ->
             {error, Reason} -> {error, 0, shown_error(Reason)};
             _ -> {ok, 0, undefined}
         end,
-    Source = extract_source(SQLBin),
+    Source =
+        case Named of
+            from_sql -> extract_source(SQLBin);
+            _ -> Named
+        end,
     #{
         query => SQLBin,
         params => Params,

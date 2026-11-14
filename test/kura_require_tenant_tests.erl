@@ -23,6 +23,7 @@ with_setting(Setting, Tests) ->
         fun() ->
             setting(Setting),
             kura_test_recording_driver:configure(?REPO),
+            kura_query_cache:init(),
             kura_query_cache:flush()
         end,
         fun(_) ->
@@ -91,6 +92,7 @@ required_test_() ->
             setting(false),
             {SQL, []} = kura_query_compiler:to_sql_cached(?REPO, scoped()),
             ?assertEqual({SQL, []}, kura_query_compiler:to_sql_cached(?REPO, scoped())),
+            ?assertEqual(1, kura_query_cache:entry_count()),
             setting(true),
             ?assertError(?REFUSED(?SCOPED), kura_query_compiler:to_sql_cached(?REPO, scoped()))
         end},
@@ -229,6 +231,7 @@ joined_test_() ->
                     kura_query_compiler:to_sql_cached(?REPO, Join)
                 end)
             ),
+            ?assertEqual(1, kura_query_cache:entry_count()),
             ?assertError(?REFUSED(?SCOPED), kura_query_compiler:to_sql_cached(?REPO, Join))
         end},
         {"shared schemas joined to each other need no tenant", fun() ->
