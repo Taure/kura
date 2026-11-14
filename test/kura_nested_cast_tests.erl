@@ -233,6 +233,17 @@ warning_test_() ->
                 end)
             )
         end},
+        {"true: refused, no warning", fun() ->
+            ?assertEqual(
+                [],
+                warnings_from(true, fun() ->
+                    ?assertError(
+                        {kura, {nested_cast_needs_allow_list, ?POST, comments}},
+                        kura_changeset:cast_assoc(post(#{comments => [comment_params()]}), comments)
+                    )
+                end)
+            )
+        end},
         {"an allow-list: no warning", fun() ->
             ?assertEqual(
                 [],

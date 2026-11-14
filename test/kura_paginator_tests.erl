@@ -33,7 +33,8 @@ paginator_test_() ->
             %% Maximum page size
             {"size at the maximum is served", fun t_size_at_the_maximum/0},
             {"infinity lifts the configured maximum", fun t_infinity_lifts_the_maximum/0},
-            {"no maximum set: served, warned once", fun t_no_maximum_warns_once/0}
+            {"no maximum set: served, warned once", fun t_no_maximum_warns_once/0},
+            {"a maximum set: no warning", fun t_a_set_maximum_is_quiet/0}
         ]
     end}.
 
@@ -283,6 +284,29 @@ t_no_maximum_warns_once() ->
         logger:remove_handler(?MODULE),
         kura_boot_warning:forget(max_page_size)
     end.
+
+t_a_set_maximum_is_quiet() ->
+    Q = kura_query:from(kura_test_schema),
+    [
+        begin
+            application:set_env(kura, max_page_size, Max),
+            kura_boot_warning:forget(max_page_size),
+            ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
+            try
+                {ok, Page} = kura_paginator:paginate(kura_test_repo, Q, #{page_size => 2000}),
+                ?assertEqual(30, length(maps:get(entries, Page))),
+                {ok, _} = kura_paginator:paginate(kura_test_repo, Q, #{
+                    page_size => 2000, max_page_size => infinity
+                }),
+                ?assertEqual([], max_page_size_warnings())
+            after
+                logger:remove_handler(?MODULE),
+                application:unset_env(kura, max_page_size),
+                kura_boot_warning:forget(max_page_size)
+            end
+        end
+     || Max <- [5000, infinity]
+    ].
 
 max_page_size_warnings() ->
     receive
