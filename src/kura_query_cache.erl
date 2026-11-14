@@ -85,7 +85,12 @@ get(Key) ->
                     {ok, uncacheable};
                 [{_, {SQL, Template, Facts}}] when is_binary(SQL), is_list(Template) ->
                     {ok, {SQL, Template, Facts}};
-                _ ->
+                [] ->
+                    miss;
+                %% Stored by another release of kura, as after a hot upgrade.
+                %% put/2 does not replace an entry, so it is dropped here.
+                [Unreadable] ->
+                    _ = ets:delete_object(?TABLE, Unreadable),
                     miss
             end
     end.

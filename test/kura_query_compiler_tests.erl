@@ -86,6 +86,25 @@ to_sql_cached_miss_compiles_and_stores_test() ->
         unset_repo()
     end.
 
+%% An entry from a release that stored no facts, still in the table after a
+%% hot upgrade, is not served, and the shape's next compile takes its place.
+to_sql_cached_entry_without_facts_is_a_miss_test() ->
+    set_repo_dialect(kura_dialect_pg),
+    kura_query_cache:init(),
+    try
+        Q = #kura_query{from = cache_old_entry_schema},
+        Key = {?REPO, kura_tenant:get_tenant(), Q},
+        true = ets:insert(kura_query_cache, {Key, {~"PRE_BAKED_SQL", [pre_baked_param]}}),
+        ?assertEqual(miss, kura_query_cache:get(Key)),
+        {SQL, Template} = kura_query_compiler:to_sql(?REPO, Q),
+        ?assertEqual({SQL, Template}, kura_query_compiler:to_sql_cached(?REPO, Q)),
+        ?assertEqual(
+            {ok, {SQL, Template, kura_query_compiler:facts(Q)}}, kura_query_cache:get(Key)
+        )
+    after
+        unset_repo()
+    end.
+
 to_sql_cached_hit_returns_stored_result_test() ->
     set_repo_dialect(kura_dialect_pg),
     kura_query_cache:init(),
