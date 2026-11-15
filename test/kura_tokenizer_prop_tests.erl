@@ -124,6 +124,8 @@ lock_under(Strict, Text) ->
         {ok, kura_query:lock_clause(Text)}
     catch
         error:Reason -> {error, Reason}
+    after
+        application:unset_env(kura, strict_locks)
     end.
 
 compiled_lock(Stored) ->

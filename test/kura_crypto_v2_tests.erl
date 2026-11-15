@@ -356,6 +356,7 @@ t_chosen_write_format_is_quiet() ->
 
 write_format_warnings(Run) ->
     kura_boot_warning:forget(encryption_write_format),
+    _ = logger:remove_handler(?MODULE),
     ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
     try
         _ = Run(),

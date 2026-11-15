@@ -53,6 +53,7 @@ unlisted_named_field_test_() ->
         end},
         {"the warning is logged once for a schema", fun() ->
             {_, [_]} = fields_and_warnings(?CUSTOM),
+            _ = logger:remove_handler(?MODULE),
             ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
             try
                 _ = kura_schema:timestamp_fields(?CUSTOM),
@@ -92,6 +93,7 @@ unusable_declaration_test_() ->
         end},
         {"the warning is logged once for a schema", fun() ->
             {_, [_]} = fields_and_warnings(?MALFORMED),
+            _ = logger:remove_handler(?MODULE),
             ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
             try
                 _ = kura_schema:timestamp_fields(?MALFORMED),
@@ -104,6 +106,7 @@ unusable_declaration_test_() ->
 
 fields_and_warnings(Schema) ->
     kura_schema:forget(Schema),
+    _ = logger:remove_handler(?MODULE),
     ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
     try
         Fields = kura_schema:timestamp_fields(Schema),

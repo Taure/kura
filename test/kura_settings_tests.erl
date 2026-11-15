@@ -120,6 +120,7 @@ boot_reason(encryption_write_format, _Value) -> {kura_crypto, invalid_write_form
 boot_reason(Key, Value) -> {kura, {invalid_setting, Key, Value}}.
 
 logged(Run) ->
+    _ = logger:remove_handler(?MODULE),
     ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => error}),
     try
         Result = Run(),

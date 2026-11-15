@@ -265,6 +265,7 @@ warnings_from(Setting, Run) ->
         _ -> application:set_env(kura, strict_assoc_cast, Setting)
     end,
     kura_boot_warning:forget(strict_assoc_cast),
+    _ = logger:remove_handler(?MODULE),
     ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
     try
         _ = Run(),

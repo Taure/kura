@@ -270,6 +270,7 @@ t_infinity_lifts_the_maximum() ->
 t_no_maximum_warns_once() ->
     Q = kura_query:from(kura_test_schema),
     kura_boot_warning:forget(max_page_size),
+    _ = logger:remove_handler(?MODULE),
     ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
     try
         {ok, Small} = kura_paginator:paginate(kura_test_repo, Q, #{page_size => 1000}),
@@ -291,6 +292,7 @@ t_a_set_maximum_is_quiet() ->
         begin
             application:set_env(kura, max_page_size, Max),
             kura_boot_warning:forget(max_page_size),
+            _ = logger:remove_handler(?MODULE),
             ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
             try
                 {ok, Page} = kura_paginator:paginate(kura_test_repo, Q, #{page_size => 2000}),

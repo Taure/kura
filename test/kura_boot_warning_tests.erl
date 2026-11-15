@@ -55,6 +55,7 @@ once_test_() ->
 
 logged_by(Run) ->
     forget(),
+    _ = logger:remove_handler(?MODULE),
     ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
     try
         _ = Run(),

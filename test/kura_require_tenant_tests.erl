@@ -555,6 +555,7 @@ warnings_from(Setting, Repo, Run) ->
     setting(Setting),
     kura_test_recording_driver:configure(?REPO, Repo),
     kura_boot_warning:forget(require_tenant),
+    _ = logger:remove_handler(?MODULE),
     ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
     try
         _ = Run(),

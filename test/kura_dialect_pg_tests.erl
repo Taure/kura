@@ -796,6 +796,7 @@ lock_set_on_the_record_is_checked_at_compile_test() ->
 lock_warnings(Strict, Run) ->
     strict_locks(Strict),
     kura_boot_warning:forget(lock_text),
+    _ = logger:remove_handler(?MODULE),
     ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
     try
         Result = Run(),
