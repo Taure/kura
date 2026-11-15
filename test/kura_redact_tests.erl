@@ -87,6 +87,26 @@ changeset_errors_quoting_a_redacted_number_test() ->
         [{base, ?R}, {base, ~"is 4 long"}], (kura_redact:changeset(CS))#kura_changeset.errors
     ).
 
+changeset_params_under_binary_keys_test() ->
+    CS0 = kura_changeset:cast(?S, #{}, #{email => ~"a@b.c"}, [email]),
+    CS = CS0#kura_changeset{
+        params = #{~"token" => ~"new", ~"email" => ~"a@b.c", 7 => ~"kept"}
+    },
+    ?assertEqual(
+        #{~"token" => ?R, ~"email" => ~"a@b.c", 7 => ~"kept"},
+        (kura_redact:changeset(CS))#kura_changeset.params
+    ).
+
+changeset_with_a_redacted_value_that_is_no_text_test() ->
+    CS0 = kura_changeset:cast(?S, #{}, #{email => ~"a@b.c"}, [email]),
+    CS = CS0#kura_changeset{
+        changes = #{token => 1.5, password_hash => undefined},
+        errors = [{base, ~"is 1.5"}]
+    },
+    Shown = kura_redact:changeset(CS),
+    ?assertEqual(#{token => ?R, password_hash => ?R}, Shown#kura_changeset.changes),
+    ?assertEqual([{base, ~"is 1.5"}], Shown#kura_changeset.errors).
+
 schemaless_changeset_is_left_alone_test() ->
     CS = kura_changeset:cast(#{token => string}, #{}, #{token => ~"t"}, [token]),
     ?assertEqual(CS, kura_redact:changeset(CS)).
@@ -133,7 +153,8 @@ telemetry_test_() ->
                 fun t_error_detail_not_a_boolean/0},
             {"a database message is not put on a changeset of a redacting schema",
                 fun t_base_error/0},
-            {"raw SQL is shown as it is unless marked sensitive", fun t_raw_sql/0}
+            {"raw SQL is shown as it is unless marked sensitive", fun t_raw_sql/0},
+            {"a stream's cursor statement: every value when it filters on one", fun t_stream/0}
         ]}.
 
 forward(_Event, _Measurements, Metadata, #{pid := Pid}) ->
@@ -475,6 +496,106 @@ t_raw_sql() ->
     after
         application:unset_env(kura, telemetry_error_detail)
     end.
+
+t_stream() ->
+    Each = fun(_Rows) -> ok end,
+    ByToken = kura_query:where(kura_query:from(?S), {token, '=', ~"t"}),
+    {ok, [Declared | _], [[~"t"] | _]} = observed(fun() ->
+        kura_stream:stream(?REPO, ByToken, Each, #{})
+    end),
+    ?assertEqual([?R], maps:get(params, Declared)),
+    ?assertEqual(~"accounts", maps:get(source, Declared)),
+    ByEmail = kura_query:where(kura_query:from(?S), {email, '=', ~"a@b.c"}),
+    {ok, [Shown | _], _} = observed(fun() -> kura_stream:stream(?REPO, ByEmail, Each, #{}) end),
+    ?assertEqual([~"a@b.c"], maps:get(params, Shown)).
+
+write_params_test_() ->
+    [
+        {"a table, or a schema with nothing redacted: as they are", [
+            ?_assertEqual([~"t"], kura_redact:write_params(~"accounts", [token], [~"t"])),
+            ?_assertEqual(
+                [~"n"], kura_redact:write_params(kura_test_edge_schema, [name], [~"n"])
+            )
+        ]},
+        {"values by field, row after row",
+            ?_assertEqual(
+                {redacted, [~"a", ?R, ~"b", ?R]},
+                kura_redact:write_params(?S, [email, token], [~"a", ~"t", ~"b", ~"u"])
+            )},
+        {"values that do not divide into rows: every value",
+            ?_assertEqual(
+                {redacted, [?R, ?R, ?R]},
+                kura_redact:write_params(?S, [email, token], [~"a", ~"t", ~"b"])
+            )},
+        {"no field named: every value",
+            ?_assertEqual({redacted, [?R]}, kura_redact:write_params(?S, [], [~"t"]))},
+        {"values somewhere among the parameters: every value when one is redacted", [
+            ?_assertEqual(
+                {redacted, [?R, ?R]},
+                kura_redact:write_params(?S, {touches, [id, token]}, [1, ~"t"])
+            ),
+            ?_assertEqual(
+                {redacted, [1, ~"a"]},
+                kura_redact:write_params(?S, {touches, [id, email]}, [1, ~"a"])
+            )
+        ]}
+    ].
+
+update_all_params_test_() ->
+    Plain = kura_query:from(kura_test_edge_schema),
+    ByToken = kura_query:select(kura_query:where(kura_query:from(?S), {token, '=', ~"t"}), [id]),
+    [
+        ?_assertEqual(
+            [~"n", 1],
+            kura_redact:update_all_params(
+                kura_query:where(Plain, {id, '=', 1}), [name], [~"n", 1]
+            )
+        ),
+        ?_assertEqual(
+            {redacted, [?R, ?R]},
+            kura_redact:update_all_params(
+                kura_query:where(Plain, {id, in, {subquery, ByToken}}), [name], [~"n", ~"t"]
+            )
+        )
+    ].
+
+mode_test_() ->
+    From = kura_query:from(kura_test_secret_vector_schema),
+    Secret = {distance, embedding, l2, ~"[1.0,0.0,0.0]"},
+    Other = {distance, content, l2, ~"[1.0,0.0,0.0]"},
+    Row = kura_query:from(?S),
+    [
+        ?_assertEqual(plain, kura_redact:mode(kura_query:from(kura_test_edge_schema))),
+        ?_assertEqual(redacted, kura_redact:mode(From)),
+        {"a distance after one from another field", [
+            ?_assertEqual(
+                hidden,
+                kura_redact:mode(From#kura_query{order_bys = [{Other, asc}, {Secret, asc}]})
+            ),
+            ?_assertEqual(
+                redacted,
+                kura_redact:mode(From#kura_query{order_bys = [{Other, asc}, {id, desc}]})
+            ),
+            ?_assertEqual(
+                hidden,
+                kura_redact:mode(From#kura_query{select = {exprs, [{near, Other}, {far, Secret}]}})
+            ),
+            ?_assertEqual(
+                redacted,
+                kura_redact:mode(From#kura_query{select = {exprs, [{near, Other}, {id, id}]}})
+            )
+        ]},
+        {"a condition on several fields at once", [
+            ?_assertEqual(
+                hidden,
+                kura_redact:mode(Row#kura_query{wheres = [{[email, token], in, [[~"a", ~"t"]]}]})
+            ),
+            ?_assertEqual(
+                redacted,
+                kura_redact:mode(Row#kura_query{wheres = [{[email, id], in, [[~"a", 1]]}]})
+            )
+        ]}
+    ].
 
 sensitive_params_test() ->
     ?assertEqual({redacted, [?R, ?R]}, kura_redact:sensitive_params([~"t", 1])),
