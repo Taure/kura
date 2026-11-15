@@ -47,6 +47,19 @@ property_test_() ->
             end}
         ]}}.
 
+not_a_dollar_tag_test_() ->
+    [
+        {"a tag does not start with a digit",
+            ?_assertEqual({ok, ~"$1$ $1 $1$", [7]}, fragment_sql(~"$1$ ? $1$", [7], 0))},
+        {"DEL is not a tag byte",
+            ?_assertEqual(
+                {ok, <<"$a", 127, "$ $1 $a", 127, "$">>, [7]},
+                fragment_sql(<<"$a", 127, "$ ? $a", 127, "$">>, [7], 0)
+            )},
+        {"a dollar inside a word starts no tag",
+            ?_assertEqual({ok, ~"a$b$ $1 $b$", [7]}, fragment_sql(~"a$b$ ? $b$", [7], 0))}
+    ].
+
 like_model_test_() ->
     [
         ?_assert(like(~"a%", ~"abc")),
@@ -381,8 +394,18 @@ gen_segment() ->
 gen_text(Alphabet) ->
     ?LET(Chars, list(oneof(Alphabet)), bytes(Chars)).
 
+%% A tag is made of identifier bytes and does not start with a digit.
 gen_dollar_tag() ->
-    oneof([<<>>, ?LET(Chars, non_empty(list(oneof("tag_"))), bytes(Chars))]).
+    oneof([
+        <<>>,
+        ?LET(
+            {First, Rest},
+            {oneof("tgAZ_" ++ [128, 255]), list(oneof("agAZ_0189" ++ [128, 255]))},
+            dollar_tag(First, Rest)
+        )
+    ]).
+
+dollar_tag(First, Rest) -> list_to_binary([First | Rest]).
 
 %%----------------------------------------------------------------------
 %% The table a statement names
