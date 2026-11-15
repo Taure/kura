@@ -44,7 +44,7 @@ kura_tenant:put_tenant({prefix, ~"tenant_acme"}).
 kura_tenant:put_tenant({attribute, {org_id, 42}}).
 ```
 
-Returns the previously set tenant (or `undefined`). Anything that is not one of the two strategies raises `{invalid_tenant, Tenant}`, as does an attribute value of `is_nil`, `is_not_nil`, `undefined`, `null` or `nil`: a tenant built from a claim that was missing is refused, not run as a tenant that owns nothing.
+Returns the previously set tenant (or `undefined`). Anything that is not one of the two strategies raises `{invalid_tenant, Tenant}`, as does an attribute value of `is_nil`, `is_not_nil`, `undefined`, `null` or `nil`: a tenant built from a claim that was missing is refused, not run as a tenant that owns nothing. An attribute tenant's field is an atom that names a field: `and`, `or`, `not`, `exists`, `not_exists` and `fragment`, which `kura_query` reads as the head of a condition, are refused the same way, and so is a query from a schema that has no stored field of that name, where the query has no join and no CTE that could bring the column in.
 
 `put_tenant/1` sets the tenant for the rest of the process's life. That fits a process that serves one request and ends. In a process that outlives its work (a pool worker, a job runner, a `gen_server`) use [`with_tenant/2`](#temporary-tenant-scope), or the next piece of work runs under the last one's tenant.
 

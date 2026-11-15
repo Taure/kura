@@ -94,6 +94,13 @@ any value, the permissive one included, is a decision and logs nothing.
   schema from then on, whichever function is asked first. kura used to
   remember for the life of the VM that the name was not a schema, which
   left it a bare table: no redaction and no encrypted-field guard.
+- A compiled query and a schema's load plan are kept with a format
+  version, and one kept by another release of kura, or one kura cannot
+  read, is dropped and worked out again where it used to be served or to
+  raise on every use. That covers the format, not a module whose code
+  changed: after a hot code upgrade of kura or of a schema module, call
+  `kura_query_cache:flush/0`, and `kura_schema:forget/1` for each schema
+  that changed.
 
 #### Changesets and writes
 
@@ -124,6 +131,16 @@ any value, the permissive one included, is a decision and logs nothing.
 - An attribute tenant whose value is `undefined`, `null` or `nil` raises
   `{invalid_tenant, Tenant}`. It used to count as a tenant, compare the
   field with `NULL` and stamp inserts with no owner.
+- The field of an attribute tenant has to be a field. A name
+  `kura_query` reads as the head of a condition (`and`, `or`, `not`,
+  `exists`, `not_exists`, `fragment`) raises `{invalid_tenant, Tenant}`
+  where the tenant is set, as a field that is not an atom already did.
+- A query from a schema that has no stored field of the tenant's name
+  raises `{invalid_tenant, Tenant}` before it is compiled, where the
+  database used to refuse the unknown column. kura checks this only where
+  it can tell: the query, or a query combined with it, is from a schema
+  and has no join and no CTE. A schema that leaves out a tenant column its
+  table has must declare it to be read under that tenant.
 - `kura_tenant:with_tenant/2` checks the tenant before changing anything
   and restores the previous one however the function ends. Parallel
   preloads run in the caller's tenant scope.
@@ -140,7 +157,14 @@ any value, the permissive one included, is a decision and logs nothing.
   still read from the text, where it is now the table, not the schema, of
   a schema-qualified table, a keyword inside a longer word is not taken
   for one, and `IF EXISTS` or `IF NOT EXISTS` after `TABLE` is passed
-  over: the source of `DROP TABLE IF EXISTS t` was `IF`.
+  over: the source of `DROP TABLE IF EXISTS t` was `IF`. `ONLY` after
+  `FROM`, `UPDATE` or `TABLE` is passed over too.
+- For raw SQL, a keyword inside a string literal, a quoted identifier, a
+  comment or a dollar-quoted string is not read, so a table named only
+  there is never the `source`. Only the first 8192 bytes of the statement
+  are read. A table name that is not made of ASCII letters, digits and
+  underscores, or that those bytes cut short, gives `undefined`; such a
+  name used to be reported as it was written.
 - The same event's `num_rows` is the number of rows a write affected. It
   was `0` for a write that returns no rows: `insert_all`, `update_all` and
   `delete_all` without `returning`, and raw SQL.
@@ -161,7 +185,12 @@ any value, the permissive one included, is a decision and logs nothing.
   `{Module, Function}`. See [Nested Changesets](cast_assoc.md).
 - Schema callbacks `redact/0` and `tenant_scoped/0`;
   `kura_schema:redacted_fields/1` and `kura_schema:renamed_columns/1`;
-  `kura_redact:record/2` and `kura_redact:changeset/1`.
+  `kura_redact:record/2` and `kura_redact:changeset/1`. Both are for
+  logging and never raise: what they cannot read (an error that is not
+  `{Field, Message}`, a message that is not text, a value under a key that
+  is not a field name, a term that is not a changeset) is replaced by
+  `~"[redacted]"`, not passed through. A message that is a string or an
+  atom comes back as a binary.
 - `kura_repo_worker:query/4` with `#{sensitive => true}` redacts a raw
   statement's parameters in telemetry and the query log.
 - `kura_tenant:without_tenant/1`, `kura_tenant:current_scope/0` and
