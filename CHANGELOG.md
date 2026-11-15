@@ -2,162 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+git-cliff writes this file from the commit subjects. What a release
+changes for an application that runs on kura, and each setting with its
+default, is in [Upgrading](guides/upgrading.md).
 
 ## [unreleased]
-
-### Caller-visible changes
-
-Behaviour that changes for existing callers:
-
-- A join without `select` returns the `from` schema's columns only. It
-  used to return every joined table's columns, and a joined column of the
-  same name replaced the `from` row's value.
-- A field of a joined schema that has a `column` of its own is read and
-  filtered by that column. A field two joined schemas store under different
-  columns raises `{kura, {ambiguous_field, Field, Columns}}`.
-- A combined query (`union`, `intersect`, `except`) puts its `ORDER BY`,
-  `LIMIT` and `OFFSET` after the last branch, and parenthesises a branch
-  that has its own. The statement was a syntax error on PostgreSQL before.
-- `{Field, in, []}` compiles to `1 = 0` and `{Field, not_in, []}` to
-  `1 = 1`, where it was invalid SQL.
-- `get`, `get_by` and `reload` bind every value: the atoms `is_nil` and
-  `is_not_nil` as values are no longer read as operators.
-- A `?` inside a string, a quoted identifier, a dollar-quoted string or a
-  comment of a fragment is left alone. A fragment whose placeholders do not
-  match its parameters raises
-  `{kura, {fragment_placeholder_mismatch, Placeholders, Params}}`.
-- `kura_query:lock/2` reads a lock given as text: `FOR` with a strength,
-  `OF` tables, `NOWAIT` or `SKIP LOCKED`, one clause or several. Text it
-  cannot read is written into the statement as before, with one warning
-  per boot; `{strict_locks, true}` refuses it with
-  `{kura, {invalid_lock, Text}}`, as 3.0 will. A term that is not a lock
-  raises `{kura, {invalid_lock, Lock}}`.
-- `kura_paginator` returns a tagged error for a `page`, `page_size` or
-  `limit` that is not a positive integer.
-- `insert_all` of `[]` returns `{ok, 0}`; entries that do not set the same
-  fields return `{error, {entries_differ, Fields, EntryFields}}`; a
-  statement over PostgreSQL's bind limit raises
-  `{kura, {too_many_parameters, Count, 65535}}`.
-- `#kura_field.column` is honoured in every statement and in loaded rows.
-- The `timestamps/0` callback is read; it was declared but never called.
-  One kura cannot use (not a list of one or two of the schema's fields)
-  logs a warning once per boot and the fields named `inserted_at` and
-  `updated_at` are stamped as before, as they are for `[]` on a schema
-  that has them. kura 3.0 raises on the first and stamps nothing for `[]`.
-- `kura_types:load(decimal, Text)` returns the text, exact, for a decimal a
-  driver hands over as text. A loaded row is as it was.
-- A database constraint error the changeset does not declare is reported
-  on a field only when its name is one the database generates for a single
-  column of the changeset's table, or `<table>_pkey`. Any other name is
-  reported on `base`; the field used to be guessed from the second word of
-  the name. A failed many-to-many join row is reported on the association.
-- The `error_reason` of the `[kura, repo, query]` telemetry event keeps
-  the error's code and the names in it, and drops its message and detail,
-  for every statement. `{telemetry_error_detail, true}` restores the whole
-  error for statements on schemas without redacted fields.
-- The same event's `source` is the table kura compiled the statement for,
-  where kura built the statement: for a query with a CTE, the table the
-  query is from, not the first one in the CTE's body. For raw SQL it is
-  still read from the text, where it is now the table, not the schema, of
-  a schema-qualified table, and a keyword inside a longer word is not
-  taken for one.
-- Telemetry params are redacted when a joined schema, a subquery, a CTE or
-  a combined query reads a redacted field, not only the `from` schema. A
-  condition is judged against the redacted fields of every source in the
-  query, so one in a subquery that names the outer query's field, or a
-  field an outer CTE hands it, is hidden; so is a plain column that shares
-  the name. A distance from a redacted vector field hides the vector.
-- A schema module loaded after kura was first asked about its name is a
-  schema from then on. `kura_schema:is_schema/1` used to remember `false`
-  for the life of the VM, which left the name a bare table: no redaction
-  and no encrypted-field guard.
-- A changeset of a schema with redacted fields no longer carries the
-  database's message on `base`, which can quote a value (`invalid input
-  syntax for type uuid: "..."`): the error is `database error 22P02`, its
-  code. `kura_redact:changeset/1` replaces any error message that holds a
-  redacted field's value.
-- An attribute tenant whose value is `undefined`, `null` or `nil` raises
-  `{invalid_tenant, Tenant}`. It used to count as a tenant, compare the
-  field with `NULL` and stamp inserts with no owner.
-- `kura_tenant:with_tenant/2` and `without_tenant/1` check the tenant
-  before changing anything and restore the previous one however the
-  function ends. Parallel preloads run in the caller's tenant scope: under
-  `require_tenant` they raised `tenant_required` inside `without_tenant/1`.
-- `kura_stream:stream/4` raises
-  `{kura, {unsupported_capability, cursors, PoolModule}}` on a backend
-  that declares a capability model and no `cursors`.
-- `validate_confirmation/2,3` reports a mismatch on the field itself when
-  no `<field>_confirmation` atom exists, and matches a confirmation given
-  under a binary key.
-- A query that uses full-text search, a window function, a vector
-  distance, a lock or `DISTINCT ON` raises
-  `{kura, {unsupported_capability, Capability, PoolModule}}` when the
-  repo's pool module declares a capability model and not that capability.
-  A pool module without `capability_model/0`, as every backend released
-  for 2.30 is, is not checked. A model kura does not know keeps the repo's
-  pool from starting.
-
-New API:
-
-- `where` and `having` operators `contains`, `starts_with`, `ends_with`,
-  `icontains`, `istarts_with`, `iends_with`; `kura_query:escape_like/1`.
-- `cast_assoc/3`, `cast_embed/3` and `put_assoc/4` take `cast`, the child
-  fields params may set, and `with` as `{Module, Function}`.
-- Schema callbacks `redact/0` and `tenant_scoped/0`;
-  `kura_schema:redacted_fields/1`; `kura_redact:record/2` and
-  `changeset/1`.
-- `kura_repo_worker:query/4` with `#{sensitive => true}` redacts a raw
-  statement's parameters in telemetry and the query log.
-- `kura_tenant:without_tenant/1`, `current_scope/0` and `adopt/1`;
-  `with_tenant/2` and `without_tenant/1` also take
-  `{Module, Function, Args}`.
-- `kura_query:sources/1`: every schema and table a query reads, through
-  joins, CTEs, combinations, subqueries and preloads.
-- Lock terms `{Strength, #{tables => Tables, wait => Wait}}` and a list of
-  locks, for `FOR UPDATE OF posts SKIP LOCKED` and several clauses.
-- Capabilities `row_locks`, `distinct_on` and `cursors`, the optional
-  `kura_capabilities` callback `capability_model/0`, and
-  `kura_capabilities:check/2` and `model/1`.
-- Optional `kura_dialect` callback `load_stored/2`: a backend without
-  native types turns what it stores (`1`/`0` for a boolean, ISO 8601 text
-  for a date or time) into the value kura loads. Core reads no backend's
-  stored forms itself.
-- Optional `kura_dialect` callback `placeholder/1`; the migrator writes its
-  version statements with it.
-- `kura_migration:column_name/0`: a column in a `#kura_column{}`, a table
-  constraint, an `alter_table` operation, an index or a `safe/0` entry is
-  an atom or a binary.
-
-Settings, all optional:
-
-| Setting | Default | Effect |
-| --- | --- | --- |
-| `max_page_size` | unset (1000 in 3.0) | largest page size `kura_paginator` accepts |
-| `strict_assoc_cast` | `false` (`true` in 3.0) | a nested cast must name the fields params may set |
-| `require_tenant` | `false` | a statement in a process with no tenant raises; also a repo setting, which wins |
-| `strict_locks` | `false` (`true` in 3.0) | lock text kura cannot read is refused |
-| `encryption_write_format` | `v1` (`v2` in 3.0) | frame version of new encrypted values |
-| `telemetry_error_detail` | `false` | report the whole error to telemetry |
-
-`max_page_size`, `strict_assoc_cast`, `require_tenant`, `strict_locks` and
-`encryption_write_format` log one warning per boot while unset, the first
-time what they govern is used. In 3.0 a tenant is required by default only
-on a repo that declares a tenancy strategy. kura does not start with a
-value it cannot read for any of the six: the error names the setting.
-
-`require_tenant` judges a query by everything it reads, joins included: a
-shared schema joined to a tenant-scoped one no longer passes. A CTE's body
-sees the CTEs listed before it, as PostgreSQL resolves them: its own name
-and a later CTE's name are tables there.
-
-CI runs the suites on PostgreSQL 14, 15, 16, 17 and 18, and a release needs
-every one of them to pass. The PostgreSQL legs have a read-only token. The
-`ci` job grants the reusable workflow `contents: write` and
-`pull-requests: write`, which only its dependency-submission and PR-summary
-jobs take; the jobs that build and test the code run read-only. The release
-job has `contents: write`.
 
 ### Bug Fixes
 
@@ -177,11 +26,45 @@ job has `contents: write`.
 - *(repo)* Report an undeclared constraint on its column's field or on base
 - *(telemetry)* Drop the error's message and detail, cover every schema a query reads
 - *(schema)* Make no atom from a column name or a confirmation name
+- *(types)* Keep a decimal given as text exact instead of making it a float
+- *(dialect)* Read a backend's stored forms in its dialect, not in kura_types:load
+- *(capabilities)* Check a backend only once it declares a capability model
+- *(query)* Read PostgreSQL's whole locking clause and pass other text through
+- *(tenant)* Require a tenant for what a query joins, not only what it is from
+- *(schema)* Stamp by field name when timestamps/0 cannot be used
+- *(schema)* Do not remember that a module had no load plan
+- *(tenant)* A CTE's body reads a table where it names itself or a later CTE
+- *(redact)* Judge a condition by the redacted fields of every source in the query
+- *(tenant)* Refuse an attribute tenant whose value is undefined, null or nil
+- *(redact)* Keep a redacted value out of a changeset's errors
+- *(schema)* A module loaded after its name was first asked about is a schema
+- *(query)* Warn about lock text only while strict_locks is unset
+- *(schema)* Keep stamping inserted_at and updated_at beside timestamps/0
+- *(changeset)* Report a confirmation mismatch on a field the changeset fixes
+- *(schema)* A module loaded later is read whatever is asked of it first
+- *(cache)* Drop a cache entry kura cannot read
+- *(paginator)* One error for a max_page_size kura cannot use
+- *(telemetry)* Name the table after TABLE IF EXISTS as a raw statement's source
+- *(telemetry)* Report the rows a write affected as num_rows
 
 ### Documentation
 
 - *(query)* Escape_like/1 patterns match the same text on SQLite
 - Add a security policy
+- *(changelog)* Section the releases since 2.0.0 and list the unreleased changes
+- *(api)* Hide the functions kura's modules call between themselves
+- Describe the unreleased changes as they now stand
+- *(tenant)* Say that adopt/1 lasts for the process's life and where not to use it
+- *(ci)* Say which CI jobs hold a write token and why
+- *(pool)* Say why kura_pool_ets declares no capability model
+- *(tenant)* An explicit prefix is not a tenant check
+- *(capabilities)* List the capabilities with colons, not dashes
+- *(capabilities)* Say which repo's queries are not checked
+- *(tenant)* The 3.0 default is a plan, raw SQL goes through query/3
+- *(query)* An atom that is a schema module names its table in a lock
+- *(readme)* The settings that change in 3.0 are unset, not false
+- *(telemetry)* Link opentelemetry_kura where it lives
+- *(upgrading)* What changes after 2.30.0, each setting with its default, the new API
 
 ### Features
 
@@ -193,6 +76,7 @@ job has `contents: write`.
 - *(redact)* Keep sensitive field values out of telemetry and logs
 - *(capabilities)* Check row_locks, distinct_on and cursors
 - *(migration)* Name a column by a binary as well as by an atom
+- *(tenant)* Make require_tenant a repo setting
 
 ### Miscellaneous
 
@@ -201,6 +85,11 @@ job has `contents: write`.
 ### Refactor
 
 - Satisfy eqwalizer and elp lint on the new code
+- *(query)* Walk a query's sources and nested queries in one place
+- *(settings)* Read kura's settings in one place and check them at boot
+- *(query)* Read a lock map's wait in a typed step
+- *(query)* Drop a clause of cte_names that cannot match
+- *(redact)* Drop a clause of names_field that cannot match
 
 ### Testing
 
@@ -209,10 +98,47 @@ job has `contents: write`.
 - *(postgres)* Run against the released kura_postgres modules and fail when they drift
 - *(postgres)* Transactions, sandbox and pool start through the real driver
 - *(migrator)* Deny CREATE on public before the bootstrap-failure case
+- *(bench)* Time all/2 on a cached shape and a job queue's loop
+- *(bench)* Time the cached shapes on a repo whose settings are stored
+- *(settings)* A decided setting logs no warning
+- *(tenant)* Reach the cache hit before asserting a hit is refused
+- Share ill_typed/1 between the test modules that were given a copy
+- *(prop)* Properties for the code that reads caller-written SQL text
+- *(query)* Check escape_like against PostgreSQL's LIKE and ILIKE
+- *(boot_warning)* Cover once/2 and forget/1
+- A killed run leaves no log handler or lock setting behind
+- *(capabilities)* Expressions after the first, lock maps and lists, a pool module not yet loaded
+- *(tenant)* The unset warning from a direct compile and from a cache hit, a write that names no table
+- *(compiler)* An uncacheable shape hands back its facts
+- *(query)* The like-escape suite's repo module
+- *(schema)* Ask about a module with nothing remembered of it
+- *(prop)* Dollar-quote tags of any identifier byte, and what is not a tag
+- *(query)* Sources/1 reads what follows an entry it cannot read
+- *(repo)* A delete shows its key in telemetry
+- *(settings)* A page size of 1, a repo's require_tenant, and what a refused value is told to be
+- *(redact)* Parameters by position and by touch, binary param keys, a later distance, a stream's cursor
+- *(app)* Start with valid settings, and with one that is not
+- *(dialect)* Placeholder/2, of_repo/1 and loads_stored/1, for a dialect that is loaded, unloaded or missing
+- *(repo)* A started repo takes a false require_tenant from the application environment
+- *(telemetry)* The source of raw SQL with keywords in any case, and keywords inside longer words
+
+### Build
+
+- *(mutate)* Run the suites that cover each module's new code
+- *(mutate)* Run the capability and tenant suites against the query compiler
+- *(mutate)* Run the statement suites against the repo worker
+- *(mutate)* Run the suites that cover them against db, dialect, stream, preloader, assoc casts and repo settings
 
 ### Perf
 
 - *(db)* Look a schema up once per result set and find the source without a regex
+- *(query)* Work out a query shape's tenant, redaction and source once
+- *(db)* Load a row as before when the dialect reads no stored forms
+- *(compiler)* Walk a query's sources once for its facts
+
+### Style
+
+- Sigil for two binaries, drop comments that restate the code
 
 ## [2.30.0] - 2026-11-05
 
