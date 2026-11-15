@@ -12,6 +12,32 @@ posts() -> kura_query:from(?POST).
 users() -> kura_query:from(?USER).
 comments() -> kura_query:from(?COMMENT).
 
+%% A record built by hand can hold an entry the builders would not write.
+%% What follows it is still read: the tenant check judges a query by this.
+what_follows_an_entry_kura_cannot_read_is_read_test_() ->
+    Odd = kura_test_typing:ill_typed(odd),
+    [
+        {"a join",
+            ?_assertEqual(
+                [{from, ?POST}, {join, ?USER}],
+                kura_query:sources(
+                    (posts())#kura_query{joins = [Odd, {inner, ?USER, {author_id, id}, undefined}]}
+                )
+            )},
+        {"a CTE",
+            ?_assertEqual(
+                [{from, ?POST}, {from, ?USER}],
+                kura_query:sources((posts())#kura_query{ctes = [Odd, {~"people", users()}]})
+            )},
+        {"a combination",
+            ?_assertEqual(
+                [{from, ?POST}, {from, ?COMMENT}],
+                kura_query:sources(
+                    (posts())#kura_query{combinations = [Odd, {union, comments()}]}
+                )
+            )}
+    ].
+
 sources_test_() ->
     Sub = kura_query:select(users(), [id]),
     [
