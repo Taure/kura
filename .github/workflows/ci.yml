@@ -103,6 +103,16 @@ jobs:
   release:
     needs: [ci, postgres]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    uses: Taure/erlang-ci/.github/workflows/release.yml@v2.2.5
+    uses: Taure/erlang-ci/.github/workflows/release.yml@v2.3.2
     permissions:
       contents: write
+
+  hex-publish:
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    uses: Taure/erlang-ci/.github/workflows/hex-publish.yml@v2.3.2
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      tag: ${{ needs.release.outputs.tag }}
