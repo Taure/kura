@@ -42,6 +42,11 @@ property_test_() ->
             {"any binary has a source made of its own word characters, or none", fun() ->
                 run(prop_any_source())
             end},
+            {"a statement of any size is read in a bounded number of steps", fun() ->
+                run(prop_source_is_bounded())
+            end},
+            {"a table named in a literal, a quoted name, a comment or a dollar quote is no source",
+                fun() -> run(prop_source_reads_no_quiet_text()) end},
             {"an escaped pattern matches its text and nothing else", fun() ->
                 run(prop_escape_like())
             end}
@@ -486,8 +491,96 @@ written_word(Name, false) -> {Name, Name}.
 prop_any_source() ->
     ?FORALL(
         Statement,
-        oneof([binary(), gen_text("FROMfrom INTOUPDATEtable\"._\n\tx1")]),
+        oneof([
+            binary(),
+            gen_text("FROMfrom INTOUPDATEtable\"._\n\tx1"),
+            gen_text("FROM from INTO only ONLY if not exists Ee\"'._\n-/*$q\\x1" ++ [200])
+        ]),
         any_source(Statement)
+    ).
+
+%% The bound is on reductions, which do not depend on what else the machine
+%% is doing. Reading every byte of the longest of these takes millions.
+prop_source_is_bounded() ->
+    ?FORALL(
+        {Chunk, Copies, Tail},
+        {
+            oneof([binary(), gen_text("FROM from INTO only if not exists Ee\"'._\n-/*$q\\x1")]),
+            oneof([range(0, 64), range(1024, 65536)]),
+            binary()
+        },
+        source_is_bounded(<<(binary:copy(Chunk, Copies))/binary, Tail/binary>>)
+    ).
+
+source_is_bounded(Statement) ->
+    {reductions, Before} = erlang:process_info(self(), reductions),
+    Source = kura_db:extract_source(Statement),
+    {reductions, After} = erlang:process_info(self(), reductions),
+    After - Before < 100000 andalso any_source(Statement) andalso
+        (Source =:= undefined orelse
+            binary:match(binary:part(Statement, 0, min(byte_size(Statement), 8192)), Source) =/=
+                nomatch).
+
+%% Text that names a table where no statement is read: the source is the
+%% table named outside it, or none when there is no such table or the
+%% statement is longer than what is read.
+prop_source_reads_no_quiet_text() ->
+    ?FORALL(
+        {Before, Named, After},
+        {
+            list(gen_quiet_segment()),
+            oneof([none, {oneof([~"FROM", ~"INTO", ~"UPDATE", ~"TABLE"]), gen_quiet_segments()}]),
+            list(gen_quiet_segment())
+        },
+        source_reads_no_quiet_text(Before, Named, After)
+    ).
+
+source_reads_no_quiet_text(Before, Named, After) ->
+    {Clause, Expected} =
+        case Named of
+            none -> {[], undefined};
+            {Keyword, Gap} -> {[Keyword, $\s, written_gap(Gap), ~"visible_t "], ~"visible_t"}
+        end,
+    Statement = iolist_to_binary([written_gap(Before), Clause, written_gap(After)]),
+    case kura_db:extract_source(Statement) of
+        Expected -> true;
+        undefined -> byte_size(Statement) > 8192;
+        _ -> false
+    end.
+
+written_gap(Segments) ->
+    [[segment_text(Segment), $\s] || Segment <- Segments].
+
+%% Between a keyword and its table only a comment may stand.
+gen_quiet_segments() ->
+    list(
+        oneof([
+            {line_comment, gen_naming_text("'\"$ ")},
+            {block_comment, gen_naming_text("'\"-$ "), list(gen_naming_text("'\"-$ "))}
+        ])
+    ).
+
+gen_quiet_segment() ->
+    oneof([
+        {plain,
+            oneof([~"SELECT", ~"a,", ~"1", ~"*", ~"(", ~")", ~"=", ~"$1", ~"x.from", ~"wherefrom"])},
+        {literal, gen_naming_text("\"-/*$\\ '")},
+        {escape_literal, gen_naming_text("\"-/*$\\ '")},
+        {identifier, gen_naming_text("'-/*$\\ \"")},
+        {line_comment, gen_naming_text("'\"-/*$ ")},
+        {block_comment, gen_naming_text("'\"-$ "), list(gen_naming_text("'\"-$ "))},
+        {dollar_quoted, gen_dollar_tag(), gen_naming_text("'\"-/* \n")}
+    ]).
+
+gen_naming_text(Alphabet) ->
+    ?LET(
+        {Before, Keyword, After},
+        {
+            gen_text(Alphabet),
+            oneof([~"FROM", ~"from", ~"INTO", ~"UPDATE", ~"TABLE", ~"FROM ONLY"]),
+            gen_text(Alphabet)
+        },
+        <<Before/binary, $\s, Keyword/binary, " hidden_t ", After/binary>>
     ).
 
 any_source(Statement) ->

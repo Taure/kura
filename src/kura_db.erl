@@ -1049,123 +1049,251 @@ shown_error(Reason) ->
     ((C >= $a andalso C =< $z) orelse (C >= $A andalso C =< $Z) orelse
         (C >= $0 andalso C =< $9) orelse C =:= $_)
 ).
+%% What PostgreSQL takes as part of an identifier or keyword.
+-define(IS_IDENTIFIER(C), (?IS_WORD(C) orelse C =:= $$ orelse C >= 128)).
+%% How much of a statement is read for the table it names.
+-define(SOURCE_WINDOW, 8192).
 
 -doc """
 The table a statement names first: the name after its first `FROM`, `INTO`,
 `UPDATE` or `TABLE`, without quotes and without a schema qualifier, past an
-`IF EXISTS` or `IF NOT EXISTS` after `TABLE`. `undefined` when there is none.
+`IF EXISTS` or `IF NOT EXISTS` after `TABLE` and an `ONLY` after `FROM`,
+`UPDATE` or `TABLE`. `undefined` when there is none.
+
+The text of a string literal, a quoted identifier, a comment and a
+dollar-quoted string is not read for a keyword. Only the first 8192 bytes
+of the statement are read. A name that is not made of ASCII letters,
+digits and underscores, or that the 8192 bytes cut short, is `undefined`
+too. Never raises.
 """.
 -spec extract_source(iodata()) -> binary() | undefined.
-extract_source(SQL) when is_binary(SQL) -> source(SQL);
-extract_source(SQL) -> source(iolist_to_binary(SQL)).
+extract_source(<<Window:?SOURCE_WINDOW/binary, _, _/binary>>) ->
+    source(Window, cut);
+extract_source(SQL) when is_binary(SQL) ->
+    source(SQL, whole);
+extract_source(SQL) ->
+    try iolist_to_binary(SQL) of
+        Text -> extract_source(Text)
+    catch
+        error:badarg -> undefined
+    end.
 
-source(<<C, Rest/binary>>) when
-    ?IS_LETTER(C, $F); ?IS_LETTER(C, $I); ?IS_LETTER(C, $U); ?IS_LETTER(C, $T)
-->
-    case named_after(C, Rest) of
-        undefined -> source(after_word(Rest));
-        Table -> Table
+%% A `$` goes on an identifier and does not start one.
+source(<<C, _/binary>> = Text, Cut) when ?IS_WORD(C); C >= 128 ->
+    Size = identifier_size(Text, 0),
+    <<Word:Size/binary, Rest/binary>> = Text,
+    case Rest of
+        <<$', Quoted/binary>> when Word =:= ~"E"; Word =:= ~"e" ->
+            source(after_quoted(Quoted, $', escapes), Cut);
+        _ ->
+            case named_after(Word, Rest, Cut) of
+                none -> source(Rest, Cut);
+                Source -> Source
+            end
     end;
-source(<<C, Rest/binary>>) when ?IS_WORD(C) ->
-    source(after_word(Rest));
-source(<<_, Rest/binary>>) ->
-    source(Rest);
-source(<<>>) ->
+source(<<$., Rest/binary>>, Cut) ->
+    source(after_identifier(gap(Rest)), Cut);
+source(<<$', Rest/binary>>, Cut) ->
+    source(after_quoted(Rest, $', plain), Cut);
+source(<<$", Rest/binary>>, Cut) ->
+    source(after_quoted(Rest, $", plain), Cut);
+source(<<"--", Rest/binary>>, Cut) ->
+    source(after_line(Rest), Cut);
+source(<<"/*", Rest/binary>>, Cut) ->
+    source(after_block_comment(Rest, 1), Cut);
+source(<<$$, Rest/binary>>, Cut) ->
+    source(after_dollar(Rest), Cut);
+source(<<_, Rest/binary>>, Cut) ->
+    source(Rest, Cut);
+source(<<>>, _Cut) ->
     undefined.
 
-after_word(<<C, Rest/binary>>) when ?IS_WORD(C) -> after_word(Rest);
-after_word(Rest) -> Rest.
+%% A doubled quote stays inside. In an escape string (E'...') a backslash
+%% escapes the byte after it, a quote included.
+after_quoted(<<Quote, Quote, Rest/binary>>, Quote, Escapes) ->
+    after_quoted(Rest, Quote, Escapes);
+after_quoted(<<Quote, Rest/binary>>, Quote, _Escapes) ->
+    Rest;
+after_quoted(<<$\\, _, Rest/binary>>, Quote, escapes) ->
+    after_quoted(Rest, Quote, escapes);
+after_quoted(<<_, Rest/binary>>, Quote, Escapes) ->
+    after_quoted(Rest, Quote, Escapes);
+after_quoted(<<>>, _Quote, _Escapes) ->
+    <<>>.
 
-named_after(F, <<R, O, M, Space, Rest/binary>>) when
-    ?IS_LETTER(F, $F), ?IS_LETTER(R, $R), ?IS_LETTER(O, $O), ?IS_LETTER(M, $M), ?IS_SPACE(Space)
+after_line(<<$\n, Rest/binary>>) -> Rest;
+after_line(<<_, Rest/binary>>) -> after_line(Rest);
+after_line(<<>>) -> <<>>.
+
+%% PostgreSQL nests block comments.
+after_block_comment(<<"*/", Rest/binary>>, 1) -> Rest;
+after_block_comment(<<"*/", Rest/binary>>, Depth) -> after_block_comment(Rest, Depth - 1);
+after_block_comment(<<"/*", Rest/binary>>, Depth) -> after_block_comment(Rest, Depth + 1);
+after_block_comment(<<_, Rest/binary>>, Depth) -> after_block_comment(Rest, Depth);
+after_block_comment(<<>>, _Depth) -> <<>>.
+
+%% What follows a `$`. `$$` or `$tag$` opens a dollar-quoted string that
+%% the same tag closes. `$1` is a parameter: a tag does not start with a
+%% digit.
+after_dollar(<<C, _/binary>> = Rest) when C >= $0, C =< $9 ->
+    Rest;
+after_dollar(Rest) ->
+    Size = tag_size(Rest, 0),
+    case Rest of
+        <<Tag:Size/binary, $$, Body/binary>> ->
+            case binary:split(Body, <<$$, Tag/binary, $$>>) of
+                [_Body, After] -> After;
+                [_Unterminated] -> <<>>
+            end;
+        _ ->
+            Rest
+    end.
+
+tag_size(<<C, Rest/binary>>, Size) when ?IS_WORD(C); C >= 128 -> tag_size(Rest, Size + 1);
+tag_size(_Rest, Size) -> Size.
+
+identifier_size(<<C, Rest/binary>>, Size) when ?IS_IDENTIFIER(C) ->
+    identifier_size(Rest, Size + 1);
+identifier_size(_Rest, Size) ->
+    Size.
+
+after_identifier(<<C, Rest/binary>>) when ?IS_IDENTIFIER(C) -> after_identifier(Rest);
+after_identifier(Rest) -> Rest.
+
+%% The table named after `Word`, when it is one of the keywords and a name
+%% follows it. `none` when it is another word or no name follows, so that
+%% the statement is read on.
+named_after(<<F, R, O, M>>, Rest, Cut) when
+    ?IS_LETTER(F, $F), ?IS_LETTER(R, $R), ?IS_LETTER(O, $O), ?IS_LETTER(M, $M)
 ->
-    table_name(Rest);
-named_after(I, <<N, T, O, Space, Rest/binary>>) when
-    ?IS_LETTER(I, $I), ?IS_LETTER(N, $N), ?IS_LETTER(T, $T), ?IS_LETTER(O, $O), ?IS_SPACE(Space)
+    table_name(after_only(gap(Rest)), Cut);
+named_after(<<I, N, T, O>>, Rest, Cut) when
+    ?IS_LETTER(I, $I), ?IS_LETTER(N, $N), ?IS_LETTER(T, $T), ?IS_LETTER(O, $O)
 ->
-    table_name(Rest);
-named_after(U, <<P, D, A, T, E, Space, Rest/binary>>) when
+    table_name(gap(Rest), Cut);
+named_after(<<U, P, D, A, T, E>>, Rest, Cut) when
     ?IS_LETTER(U, $U),
     ?IS_LETTER(P, $P),
     ?IS_LETTER(D, $D),
     ?IS_LETTER(A, $A),
     ?IS_LETTER(T, $T),
-    ?IS_LETTER(E, $E),
-    ?IS_SPACE(Space)
+    ?IS_LETTER(E, $E)
 ->
-    table_name(Rest);
-named_after(T, <<A, B, L, E, Space, Rest/binary>>) when
+    table_name(after_only(gap(Rest)), Cut);
+named_after(<<T, A, B, L, E>>, Rest, Cut) when
     ?IS_LETTER(T, $T),
     ?IS_LETTER(A, $A),
     ?IS_LETTER(B, $B),
     ?IS_LETTER(L, $L),
-    ?IS_LETTER(E, $E),
-    ?IS_SPACE(Space)
+    ?IS_LETTER(E, $E)
 ->
-    table_name(after_existence(spaces(Rest)));
-named_after(_Letter, _Rest) ->
-    undefined.
+    table_name(after_only(after_existence(gap(Rest))), Cut);
+named_after(_Word, _Rest, _Cut) ->
+    none.
+
+%% Spaces and comments, which may stand between any two words.
+gap(<<Space, Rest/binary>>) when ?IS_SPACE(Space) -> gap(Rest);
+gap(<<"--", Rest/binary>>) -> gap(after_line(Rest));
+gap(<<"/*", Rest/binary>>) -> gap(after_block_comment(Rest, 1));
+gap(Rest) -> Rest.
 
 %% `IF EXISTS` and `IF NOT EXISTS` stand between `TABLE` and the name. `IF`
 %% alone is a name: PostgreSQL does not reserve it.
-after_existence(<<I, F, Space, Rest/binary>> = Named) when
-    ?IS_LETTER(I, $I), ?IS_LETTER(F, $F), ?IS_SPACE(Space)
-->
-    case after_exists(after_not(spaces(Rest))) of
-        undefined -> Named;
-        Name -> Name
-    end;
 after_existence(Named) ->
-    Named.
-
-after_not(<<N, O, T, Space, Rest/binary>>) when
-    ?IS_LETTER(N, $N), ?IS_LETTER(O, $O), ?IS_LETTER(T, $T), ?IS_SPACE(Space)
-->
-    spaces(Rest);
-after_not(Rest) ->
-    Rest.
-
-after_exists(<<E, X, I, S, T, S2, Rest/binary>>) when
-    ?IS_LETTER(E, $E),
-    ?IS_LETTER(X, $X),
-    ?IS_LETTER(I, $I),
-    ?IS_LETTER(S, $S),
-    ?IS_LETTER(T, $T),
-    ?IS_LETTER(S2, $S)
-->
-    case Rest of
-        <<C, _/binary>> when ?IS_WORD(C) -> undefined;
-        _ -> Rest
-    end;
-after_exists(_Rest) ->
-    undefined.
-
-spaces(<<Space, Rest/binary>>) when ?IS_SPACE(Space) -> spaces(Rest);
-spaces(Rest) -> Rest.
-
-table_name(Named) ->
-    case word(spaces(Named)) of
-        {Word, <<$., After/binary>>} when Word =/= <<>> ->
-            case word(After) of
-                {<<>>, _} -> Word;
-                {Table, _} -> Table
+    case keyword(Named) of
+        {<<I, F>>, Rest} when ?IS_LETTER(I, $I), ?IS_LETTER(F, $F) ->
+            case after_exists(after_not(gap(Rest))) of
+                none -> Named;
+                Name -> Name
             end;
-        {<<>>, _} ->
-            undefined;
-        {Word, _} ->
-            Word
+        _ ->
+            Named
     end.
 
-word(<<$", Rest/binary>>) ->
+after_not(Text) ->
+    case keyword(Text) of
+        {<<N, O, T>>, Rest} when ?IS_LETTER(N, $N), ?IS_LETTER(O, $O), ?IS_LETTER(T, $T) ->
+            gap(Rest);
+        _ ->
+            Text
+    end.
+
+after_exists(Text) ->
+    case keyword(Text) of
+        {<<E, X, I, S, T, S2>>, Rest} when
+            ?IS_LETTER(E, $E),
+            ?IS_LETTER(X, $X),
+            ?IS_LETTER(I, $I),
+            ?IS_LETTER(S, $S),
+            ?IS_LETTER(T, $T),
+            ?IS_LETTER(S2, $S)
+        ->
+            gap(Rest);
+        _ ->
+            none
+    end.
+
+%% `ONLY` stands between the keyword and the name. PostgreSQL reserves it,
+%% so it is never the name.
+after_only(Named) ->
+    case keyword(Named) of
+        {<<O, N, L, Y>>, Rest} when
+            ?IS_LETTER(O, $O), ?IS_LETTER(N, $N), ?IS_LETTER(L, $L), ?IS_LETTER(Y, $Y)
+        ->
+            gap(Rest);
+        _ ->
+            Named
+    end.
+
+keyword(Text) ->
+    Size = identifier_size(Text, 0),
+    <<Word:Size/binary, Rest/binary>> = Text,
+    {Word, Rest}.
+
+%% The last part of a possibly qualified name: `undefined` when it cannot
+%% be read or the window may have cut it short, rather than a part of it.
+%% `none` when no name starts here.
+table_name(Named, Cut) ->
+    case name(Named) of
+        none -> none;
+        {Name, Rest} -> qualified(Name, Rest, Cut)
+    end.
+
+qualified(Name, Rest, Cut) ->
+    case gap(Rest) of
+        <<$., After/binary>> ->
+            case name(gap(After)) of
+                none -> whole_name(Name, After, Cut);
+                {Table, AfterTable} -> qualified(Table, AfterTable, Cut)
+            end;
+        After ->
+            whole_name(Name, After, Cut)
+    end.
+
+whole_name(_Name, <<>>, cut) -> undefined;
+whole_name(Name, _Rest, _Cut) -> Name.
+
+%% One part of a name, bare or in double quotes, and what follows it. The
+%% part is `undefined` when it is not made of word characters only, as when
+%% a doubled quote goes on with it. `none` when no name starts here.
+name(<<$", Rest/binary>>) ->
     Size = word_size(Rest, 0),
     case Rest of
-        <<Word:Size/binary, $", After/binary>> -> {Word, After};
-        <<Word:Size/binary, After/binary>> -> {Word, After}
+        <<_:Size/binary, $", $", Inside/binary>> -> {undefined, after_quoted(Inside, $", plain)};
+        <<Name:Size/binary, $", After/binary>> when Size > 0 -> {Name, After};
+        <<$", _/binary>> -> none;
+        <<>> -> none;
+        _ -> {undefined, after_quoted(Rest, $", plain)}
     end;
-word(Rest) ->
-    Size = word_size(Rest, 0),
-    <<Word:Size/binary, After/binary>> = Rest,
-    {Word, After}.
+name(Text) ->
+    Size = word_size(Text, 0),
+    case Text of
+        <<_:Size/binary, C, _/binary>> when ?IS_IDENTIFIER(C) ->
+            {undefined, after_identifier(Text)};
+        <<Name:Size/binary, After/binary>> when Size > 0 -> {Name, After};
+        _ ->
+            none
+    end.
 
 word_size(<<C, Rest/binary>>, Size) when ?IS_WORD(C) -> word_size(Rest, Size + 1);
 word_size(_Rest, Size) -> Size.

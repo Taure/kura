@@ -141,6 +141,163 @@ extract_source_without_a_regex_test_() ->
         ]}
     ].
 
+extract_source_reads_no_keyword_in_quoted_text_test_() ->
+    Source = fun kura_db:extract_source/1,
+    [
+        {"a string literal", [
+            ?_assertEqual(~"t", Source(~"SELECT 'x from hidden' FROM t")),
+            ?_assertEqual(~"t", Source(~"SELECT 'it''s from hidden' FROM t")),
+            ?_assertEqual(~"t", Source(~"SELECT N'from hidden', 'a' 'into hidden' FROM t")),
+            ?_assertEqual(undefined, Source(~"SELECT 'x from hidden"))
+        ]},
+        {"an escape string", [
+            ?_assertEqual(~"t", Source(~"SELECT E'it\\'s from hidden' FROM t")),
+            ?_assertEqual(~"t", Source(~"SELECT e'\\\\' FROM t")),
+            ?_assertEqual(~"t", Source(~"SELECT E'a''\\\\\\' from hidden' FROM t")),
+            {"a backslash escapes nothing in a plain literal",
+                ?_assertEqual(~"t", Source(~"SELECT '\\' FROM t"))},
+            {"nor after a word that only ends in e",
+                ?_assertEqual(~"t", Source(~"SELECT name'\\' FROM t"))}
+        ]},
+        {"a quoted identifier", [
+            ?_assertEqual(~"t", Source(~"SELECT \"x from hidden\" FROM t")),
+            ?_assertEqual(~"t", Source(~"SELECT \"a\"\" from hidden\" FROM t")),
+            ?_assertEqual(undefined, Source(~"SELECT \"x from hidden"))
+        ]},
+        {"a line comment", [
+            ?_assertEqual(~"t", Source(~"-- update hidden\nSELECT 1 FROM t")),
+            ?_assertEqual(~"t", Source(~"SELECT 1 FROM -- from hidden\n t")),
+            ?_assertEqual(undefined, Source(~"SELECT 1 -- from hidden"))
+        ]},
+        {"a block comment, nested as PostgreSQL nests them", [
+            ?_assertEqual(~"users", Source(~"/* from audit_log */ SELECT * FROM users")),
+            ?_assertEqual(~"t", Source(~"/* a /* from hidden */ into hidden */ SELECT 1 FROM t")),
+            ?_assertEqual(~"t", Source(~"SELECT 1 FROM/* from hidden */t")),
+            ?_assertEqual(~"t", Source(~"DROP TABLE IF /* a */ EXISTS /* b */ t")),
+            ?_assertEqual(undefined, Source(~"SELECT 1 /* from hidden")),
+            ?_assertEqual(undefined, Source(~"SELECT 1 /* /* */ from hidden"))
+        ]},
+        {"a dollar-quoted string", [
+            ?_assertEqual(~"t", Source(~"SELECT $q$ from hidden $q$ FROM t")),
+            ?_assertEqual(~"t", Source(~"SELECT $$ from hidden $$ FROM t")),
+            ?_assertEqual(~"t", Source(~"SELECT $q$ $$ from hidden $x$ $q$ FROM t")),
+            ?_assertEqual(~"t", Source(~"SELECT $q1$ from hidden $q1$ FROM t")),
+            ?_assertEqual(undefined, Source(~"SELECT $q$ from hidden $$ FROM t")),
+            {"a parameter opens none",
+                ?_assertEqual(~"t", Source(~"SELECT $1 FROM t WHERE a = $2"))},
+            {"nor does a dollar inside a name",
+                ?_assertEqual(~"t", Source(~"SELECT a$b$ FROM t WHERE c$b$ = 1"))},
+            {"nor a dollar that no tag follows",
+                ?_assertEqual(~"t", Source(~"SELECT $ a, $b FROM t"))}
+        ]},
+        {"a column named as a keyword",
+            ?_assertEqual(~"u", Source(~"SELECT t.from, t.\"into\", t . update FROM u"))}
+    ].
+
+extract_source_steps_over_only_test_() ->
+    Source = fun kura_db:extract_source/1,
+    [
+        [
+            ?_assertEqual(~"t", Source(SQL))
+         || SQL <- [
+                ~"SELECT * FROM ONLY t",
+                ~"select * from only\n\"s\".\"t\" x",
+                ~"DELETE FROM ONLY /* a */ t",
+                ~"UPDATE ONLY t SET a = 1",
+                ~"ALTER TABLE ONLY t ADD COLUMN c int",
+                ~"ALTER TABLE IF EXISTS ONLY t ADD COLUMN c int",
+                ~"TRUNCATE TABLE oNlY t"
+            ]
+        ],
+        {"a longer word is a name", [
+            ?_assertEqual(~"only_these", Source(~"SELECT * FROM only_these")),
+            ?_assertEqual(~"onlyx", Source(~"SELECT * FROM onlyx t"))
+        ]},
+        {"it is never the name", [
+            ?_assertEqual(undefined, Source(~"SELECT * FROM ONLY")),
+            ?_assertEqual(undefined, Source(~"SELECT * FROM ONLY (t)"))
+        ]},
+        {"INTO takes none", ?_assertEqual(~"only", Source(~"INSERT INTO only t"))}
+    ].
+
+extract_source_of_a_name_it_cannot_read_test_() ->
+    Source = fun kura_db:extract_source/1,
+    [
+        {"a qualifier is passed over whatever it holds", [
+            ?_assertEqual(~"t", Source(~"SELECT * FROM \"we\"\"ird\".\"t\"")),
+            ?_assertEqual(~"t", Source(~"SELECT * FROM \"my schema\".t")),
+            ?_assertEqual(~"t", Source(~"SELECT * FROM db.s.t")),
+            ?_assertEqual(~"t", Source(~"SELECT * FROM s . t x")),
+            ?_assertEqual(~"t", Source(~"SELECT * FROM \"my schema\" /* a */ .\n\"t\"")),
+            ?_assertEqual(~"t", Source(~"SELECT * FROM \"db\".s$1.\"t\" x"))
+        ]},
+        {"a name with more than letters, digits and underscores is none", [
+            ?_assertEqual(undefined, Source(SQL))
+         || SQL <- [
+                ~"SELECT * FROM \"my table\"",
+                ~"SELECT * FROM \"ta\"\"ble\"",
+                ~"SELECT * FROM \"\"\"table\"",
+                ~"SELECT * FROM s.\"my table\"",
+                ~"SELECT * FROM \"s\".\"t\"\"x\"",
+                ~"SELECT * FROM \"my.table\"",
+                ~"SELECT * FROM a$b",
+                ~"SELECT * FROM \"a$b\"",
+                <<"SELECT * FROM tabl", 195, 169>>,
+                <<"SELECT * FROM ", 195, 169, "t x">>,
+                ~"SELECT * FROM \"never closed",
+                ~"SELECT * FROM \"my table\".\"\""
+            ]
+        ]},
+        {"and no later table stands in for it",
+            ?_assertEqual(undefined, Source(~"SELECT * FROM \"my table\" JOIN t ON TRUE, INTO u"))}
+    ].
+
+extract_source_reads_the_start_of_a_statement_test_() ->
+    Source = fun kura_db:extract_source/1,
+    Long = binary:copy(~"a, ", 3000),
+    Named = fun(Size) -> <<"SELECT 1 FROM ", (binary:copy(~"n", Size - 14))/binary>> end,
+    [
+        {"a table named in the first 8192 bytes",
+            ?_assertEqual(~"t", Source([~"SELECT 1 FROM t WHERE x IN (", Long, ~")"]))},
+        {"one named after them is none",
+            ?_assertEqual(undefined, Source([~"SELECT ", Long, ~"1 FROM t"]))},
+        {"a name that ends before them", [
+            ?_assertEqual(binary:copy(~"n", 8178), Source(Named(8192))),
+            ?_assertEqual(binary:copy(~"n", 8176), Source([Named(8190), ~" x"])),
+            ?_assertEqual(binary:copy(~"n", 8176), Source([Named(8190), ~" JOIN u ON TRUE"]))
+        ]},
+        {"a name they may have cut short is none", [
+            ?_assertEqual(undefined, Source([Named(8192), ~"n"])),
+            ?_assertEqual(undefined, Source([Named(8192), ~" x"])),
+            ?_assertEqual(undefined, Source([Named(8191), ~" .x"])),
+            ?_assertEqual(undefined, Source([Named(8192), binary:copy(~"n", 9000)])),
+            ?_assertEqual(undefined, Source([~"SELECT 1 FROM s.", binary:copy(~"n", 8176), ~"n"])),
+            ?_assertEqual(undefined, Source([binary:copy(~" ", 8187), ~"FROM t"])),
+            ?_assertEqual(undefined, Source([binary:copy(~" ", 8186), ~"FROM s.t"]))
+        ]},
+        {"megabytes are not read", fun() ->
+            Huge = binary:copy(~"x from' ", 1 bsl 19),
+            ?assertEqual(undefined, Source(Huge)),
+            ?assert(reductions(fun() -> Source(Huge) end) < 100000)
+        end}
+    ].
+
+extract_source_of_what_is_no_text_test_() ->
+    Source = fun(SQL) -> kura_db:extract_source(kura_test_typing:ill_typed(SQL)) end,
+    [
+        ?_assertEqual(undefined, Source(from_t)),
+        ?_assertEqual(undefined, Source(<<1:3>>)),
+        ?_assertEqual(undefined, Source([~"SELECT 1 FROM t" | from_u])),
+        ?_assertEqual(undefined, Source([~"SELECT 1 FROM t", 256])),
+        ?_assertEqual(undefined, Source({~"SELECT 1 FROM t"}))
+    ].
+
+reductions(Run) ->
+    {reductions, Before} = erlang:process_info(self(), reductions),
+    _ = Run(),
+    {reductions, After} = erlang:process_info(self(), reductions),
+    After - Before.
+
 extract_source_reads_keywords_in_any_case_test_() ->
     [
         ?_assertEqual(~"t", kura_db:extract_source(SQL))
