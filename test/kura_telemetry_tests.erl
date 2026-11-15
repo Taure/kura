@@ -140,3 +140,43 @@ extract_source_without_a_regex_test_() ->
             ?_assertEqual(~"tenant_a", Source(~"SELECT * FROM tenant_a.(x)"))
         ]}
     ].
+
+extract_source_reads_keywords_in_any_case_test_() ->
+    [
+        ?_assertEqual(~"t", kura_db:extract_source(SQL))
+     || SQL <- [
+            ~"insert into t (a) values (1)",
+            ~"InSeRt InTo\tt (a) values (1)",
+            ~"update t set a = 1",
+            ~"uPdAtE\nt set a = 1",
+            ~"delete from t",
+            ~"select 1 from\rt",
+            ~"create table t (a int)",
+            ~"alter TaBlE\tt add column c int",
+            ~"drop table if exists t",
+            ~"DROP TABLE iF\teXiStS\nt",
+            ~"create table if not exists t (a int)",
+            ~"CREATE TABLE If\rNoT\tExIsTs\nt (a int)"
+        ]
+    ].
+
+extract_source_reads_whole_words_test_() ->
+    Source = fun kura_db:extract_source/1,
+    [
+        {"a keyword at the end of a longer word", [
+            ?_assertEqual(~"t", Source(~"SELECT Xfrom a FROM t")),
+            ?_assertEqual(~"t", Source(~"SELECT 1from a FROM t")),
+            ?_assertEqual(~"t", Source(~"SELECT _from a FROM t")),
+            ?_assertEqual(~"t", Source(~"SELECT aFROM b FROM t"))
+        ]},
+        {"a keyword at the start of a longer word", [
+            ?_assertEqual(~"t", Source(~"SELECT intox a, tablex b FROM t"))
+        ]},
+        {"IF, NOT and EXISTS as part of a name", [
+            ?_assertEqual(~"ifxexists", Source(~"CREATE TABLE ifxexists (a int)")),
+            ?_assertEqual(~"IF", Source(~"DROP TABLE IF notxexists")),
+            ?_assertEqual(~"IF", Source(~"DROP TABLE IF EXISTSed t")),
+            ?_assertEqual(~"IF", Source(~"DROP TABLE IF EXISTS1 t")),
+            ?_assertEqual(~"IF", Source(~"DROP TABLE IF EXISTS_x t"))
+        ]}
+    ].
