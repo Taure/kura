@@ -109,6 +109,9 @@ required_test_() ->
             setting(true),
             ?assertError(?REFUSED(?SCOPED), kura_query_compiler:to_sql_cached(?REPO, scoped()))
         end},
+        {"a write that names no table is not refused", fun() ->
+            ?assertEqual(ok, kura_tenant:require(?REPO, undefined))
+        end},
         {"a spawned process has no tenant", fun() ->
             kura_tenant:put_tenant(?TENANT),
             {Pid, Ref} = spawn_monitor(fun() -> kura_repo_worker:all(?REPO, scoped()) end),
@@ -514,6 +517,31 @@ warning_test_() ->
                 warnings_from(unset, #{}, fun() ->
                     kura_tenant:with_tenant({prefix, ~"t1"}, Write),
                     kura_tenant:with_tenant({prefix, ~"t1"}, Write)
+                end)
+            )
+        end},
+        {"unset: so does a statement compiled without the cache", fun() ->
+            ?assertMatch(
+                [#{repo := ?REPO}],
+                warnings_from(unset, #{}, fun() ->
+                    kura_tenant:put_tenant(?TENANT),
+                    kura_query_compiler:to_sql(?REPO, shared())
+                end)
+            )
+        end},
+        {"unset: so does a statement served from the cache", fun() ->
+            ?assertMatch(
+                [#{repo := ?REPO}],
+                warnings_from(unset, #{}, fun() ->
+                    kura_query_cache:init(),
+                    kura_query_cache:flush(),
+                    kura_tenant:put_tenant(?TENANT),
+                    Compiled = kura_query_compiler:to_sql_cached(?REPO, shared()),
+                    ?assertEqual(1, kura_query_cache:entry_count()),
+                    ?assertMatch([_], warnings()),
+                    kura_boot_warning:forget(require_tenant),
+                    ?assertEqual(Compiled, kura_query_compiler:to_sql_cached(?REPO, shared())),
+                    ?assertEqual(1, kura_query_cache:entry_count())
                 end)
             )
         end},
