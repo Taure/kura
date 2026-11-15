@@ -83,87 +83,335 @@ with `kura_repo_worker:query/4` and `#{sensitive => true}`.
 -doc """
 Return `Record`, a map of `Schema`'s fields, with the value of each
 redacted field replaced by `~"[redacted]"`. Safe to log.
+
+The records an association of `Schema` holds, such as preloaded ones, are
+redacted by the association's schema. A key is a field's name as an atom,
+a binary or a string; the value under any other key is replaced, since
+kura cannot tell which field it is.
+
+Never raises. Where `Record` is not a map, or `Schema` is not a module
+whose `redact/0` returns a list of fields, the result is
+`#{base => ~"[redacted]"}`.
 """.
 -spec record(module(), map()) -> map().
-record(Schema, Record) when is_map(Record) ->
-    case kura_schema:redacted_fields(Schema) of
-        [] -> Record;
-        Redacted -> redacted_map(Record, Redacted)
-    end.
+record(Schema, Record) ->
+    shown_map(hidden_in(Schema), Record).
 
 -doc """
-Return `Changeset` with the redacted fields' values replaced in its
-`data`, `changes` and `params`, and with every error message that holds
-one of those values replaced whole: a message that quotes a redacted
-field's text or integer, as a database's `invalid input syntax` does. Safe
-to log; not for writing.
+Return `Changeset` safe to log; not for writing.
+
+The redacted fields' values are replaced in its `data`, `changes` and
+`params`, as `record/2` replaces them, and so is every error message that
+holds one of those values: a message that quotes a redacted field's text
+or integer, as a database's `invalid input syntax` does. The changesets
+in `assoc_changes` are redacted the same way.
 
 ```erlang
 [{base, ~"invalid input syntax for type uuid: \"tok-SECRET\""}] = CS#kura_changeset.errors,
 [{base, ~"[redacted]"}] = (kura_redact:changeset(CS))#kura_changeset.errors.
 ```
+
+Never raises, whatever the changeset holds. What kura cannot read is
+replaced, never passed through:
+
+- an error message that is not text (a binary, a string or an atom), and
+  every message when `data`, `changes` or `params` is not a map, becomes
+  `~"[redacted]"`. A message that is text is returned as a binary;
+- an error that is not a `{Field, Message}` tuple with an atom for a field
+  becomes `{Field, ~"[redacted]"}` when it starts with one, and
+  `{base, ~"[redacted]"}` when it does not;
+- a `data`, `changes` or `params` that is not a map becomes
+  `#{base => ~"[redacted]"}`;
+- an entry of `assoc_changes` that is not a changeset, a term that is not
+  a changeset at all, and a changeset whose schema is not a module with a
+  `redact/0` that returns a list of fields, become an invalid changeset
+  whose only error is `{base, ~"[redacted]"}`.
+
+A changeset without a schema has nothing redacted but its `assoc_changes`.
 """.
 -spec changeset(#kura_changeset{}) -> #kura_changeset{}.
-changeset(#kura_changeset{schema = undefined} = CS) ->
-    CS;
-changeset(#kura_changeset{schema = Schema} = CS) ->
-    case kura_schema:redacted_fields(Schema) of
-        [] ->
-            CS;
-        Redacted ->
+changeset(#kura_changeset{schema = undefined, assoc_changes = Assocs} = CS) ->
+    CS#kura_changeset{assoc_changes = shown_assocs(Assocs)};
+changeset(
+    #kura_changeset{
+        schema = Schema, data = Data, changes = Changes, params = Params, assoc_changes = Assocs
+    } = CS
+) ->
+    case hidden_in(Schema) of
+        unknown ->
+            hidden_changeset();
+        {[], Nested} when map_size(Nested) =:= 0 ->
+            CS#kura_changeset{assoc_changes = shown_assocs(Assocs)};
+        Hidden ->
             CS#kura_changeset{
-                data = redacted_map(CS#kura_changeset.data, Redacted),
-                changes = redacted_map(CS#kura_changeset.changes, Redacted),
-                params = redacted_map(CS#kura_changeset.params, Redacted),
-                errors = redacted_errors(CS#kura_changeset.errors, quotable(CS, Redacted))
+                data = shown_map(Hidden, Data),
+                changes = shown_map(Hidden, Changes),
+                params = shown_map(Hidden, Params),
+                errors = shown_errors(
+                    CS#kura_changeset.errors, quotable([Data, Changes, Params], Hidden)
+                ),
+                assoc_changes = shown_assocs(Assocs)
             }
+    end;
+changeset(_NotAChangeset) ->
+    hidden_changeset().
+
+-spec hidden_changeset() -> #kura_changeset{}.
+hidden_changeset() ->
+    #kura_changeset{valid = false, errors = [{base, ?REDACTED}]}.
+
+-spec shown_assocs(term()) -> #{atom() => #kura_changeset{} | [#kura_changeset{}]}.
+shown_assocs(Assocs) when is_map(Assocs) ->
+    #{assoc_name(Name) => shown_assoc(Value) || Name := Value <- Assocs};
+shown_assocs(_NotAMap) ->
+    #{base => hidden_changeset()}.
+
+-spec assoc_name(term()) -> atom().
+assoc_name(Name) when is_atom(Name) -> Name;
+assoc_name(_Name) -> base.
+
+-spec shown_assoc(term()) -> #kura_changeset{} | [#kura_changeset{}].
+shown_assoc([Changeset | Rest]) ->
+    case shown_assoc(Rest) of
+        Shown when is_list(Shown) -> [changeset(Changeset) | Shown];
+        Shown -> [changeset(Changeset), Shown]
+    end;
+shown_assoc([]) ->
+    [];
+shown_assoc(Changeset) ->
+    changeset(Changeset).
+
+%% What is hidden in a map of a schema's fields: its redacted fields, and
+%% the schema of each association, whose records are redacted by it.
+%% `unknown` when the schema cannot say, so that everything is hidden.
+-type hidden() :: {[atom()], #{atom() => module()}}.
+
+-spec hidden_in(term()) -> hidden() | unknown.
+hidden_in(Schema) when is_atom(Schema) ->
+    case redacted(Schema) of
+        unknown -> unknown;
+        Redacted -> hidden_in(Schema, Redacted)
+    end;
+hidden_in(_Schema) ->
+    unknown.
+
+-spec hidden_in(module(), [atom()]) -> hidden() | unknown.
+hidden_in(Schema, Redacted) ->
+    try
+        {Redacted,
+            #{
+                Assoc#kura_assoc.name => Target
+             || true <- [kura_schema:is_schema(Schema)],
+                #kura_assoc{} = Assoc <- kura_schema:associations(Schema),
+                Target <- [kura_schema:assoc_target(Assoc)],
+                is_atom(Target),
+                Target =/= undefined
+            }}
+    catch
+        _:_ -> unknown
     end.
 
-quotable(#kura_changeset{data = Data, changes = Changes, params = Params}, Redacted) ->
-    lists:usort([
-        Text
-     || Map <- [Data, Changes, Params],
-        Key := Value <- Map,
-        names_redacted(Key, Redacted),
-        Text <- quoted_as(Value)
-    ]).
+%% The redacted fields of a schema, `[]` for a name that is no schema, and
+%% `unknown` when what its redact/0 returns is not a list of fields.
+-spec redacted(term()) -> [atom()] | unknown.
+redacted(Schema) when is_atom(Schema) ->
+    try kura_schema:redacted_fields(Schema) of
+        Fields ->
+            case all_atoms(Fields) of
+                true -> Fields;
+                false -> unknown
+            end
+    catch
+        _:_ -> unknown
+    end;
+redacted(_Schema) ->
+    unknown.
 
-quoted_as(Value) when is_binary(Value), Value =/= <<>> -> [Value];
-quoted_as(Value) when is_integer(Value) -> [integer_to_binary(Value)];
-quoted_as(_Value) -> [].
+-spec all_atoms(term()) -> boolean().
+all_atoms([Field | Fields]) when is_atom(Field) -> all_atoms(Fields);
+all_atoms(Fields) -> Fields =:= [].
 
-redacted_errors(Errors, []) ->
-    Errors;
-redacted_errors(Errors, Quotable) ->
-    [redacted_error(Error, Quotable) || Error <- Errors].
+-spec shown_map(hidden() | unknown, term()) -> map().
+shown_map({[], Nested}, Map) when is_map(Map), map_size(Nested) =:= 0 ->
+    Map;
+shown_map({_Redacted, _Nested} = Hidden, Map) when is_map(Map) ->
+    #{Key => shown_value(entry(Key, Hidden), Value) || Key := Value <- Map};
+shown_map(_Hidden, _Map) ->
+    hidden_map().
 
-redacted_error({Field, Message}, Quotable) ->
-    case binary:match(Message, Quotable) of
-        nomatch -> {Field, Message};
-        _Found -> {Field, ?REDACTED}
+-spec hidden_map() -> map().
+hidden_map() ->
+    #{base => ?REDACTED}.
+
+-spec shown_value(hide | show | {nested, module()}, term()) -> term().
+shown_value(hide, _Value) -> ?REDACTED;
+shown_value(show, Value) -> Value;
+shown_value({nested, Target}, Value) -> shown_nested(Target, Value).
+
+-spec shown_nested(module(), term()) -> term().
+shown_nested(Target, Value) when is_map(Value) -> shown_map(hidden_in(Target), Value);
+shown_nested(Target, [Value | Rest]) -> [shown_nested(Target, Value) | nested_rest(Target, Rest)];
+shown_nested(_Target, #kura_changeset{} = Changeset) -> changeset(Changeset);
+shown_nested(_Target, Value) when is_atom(Value); Value =:= [] -> Value;
+shown_nested(_Target, _Value) -> ?REDACTED.
+
+-spec nested_rest(module(), term()) -> [term()].
+nested_rest(Target, [Value | Rest]) ->
+    [shown_nested(Target, Value) | nested_rest(Target, Rest)];
+nested_rest(_Target, []) ->
+    [];
+nested_rest(_Target, _Tail) ->
+    [?REDACTED].
+
+%% What a key of a map of fields says of its value: a redacted field's is
+%% hidden, an association's is its records, any other field's is shown. A
+%% key that is no name cannot say, so its value is hidden.
+-spec entry(term(), hidden()) -> hide | show | {nested, module()}.
+entry(Key, {Redacted, Nested}) when is_atom(Key) ->
+    case lists:member(Key, Redacted) of
+        true ->
+            hide;
+        false ->
+            case Nested of
+                #{Key := Target} -> {nested, Target};
+                #{} -> show
+            end
+    end;
+entry(Key, {Redacted, Nested} = Hidden) when is_binary(Key) ->
+    case [Name || Name <- Redacted ++ maps:keys(Nested), atom_to_binary(Name, utf8) =:= Key] of
+        [Name | _] -> entry(Name, Hidden);
+        [] -> show
+    end;
+entry(Key, Hidden) when is_list(Key) ->
+    case text(Key) of
+        {ok, Name} -> entry(Name, Hidden);
+        error -> hide
+    end;
+entry(_Key, _Hidden) ->
+    hide.
+
+%% The text of every value hidden in the maps, as an error message would
+%% quote it. `unknown` when a map is not one: its values cannot be told.
+-spec quotable([term()], hidden()) -> [binary()] | unknown.
+quotable(Maps, Hidden) ->
+    case [Map || Map <- Maps, not is_map(Map)] of
+        [] ->
+            lists:usort([
+                Text
+             || Map <- Maps, Value <- hidden_values(Hidden, Map), Text <- texts(Value)
+            ]);
+        _NotAMap ->
+            unknown
     end.
 
-redacted_map(Map, Redacted) ->
-    #{K => redacted_value(K, V, Redacted) || K := V <- Map}.
+-spec hidden_values(hidden() | unknown, term()) -> [term()].
+hidden_values({_Redacted, _Nested} = Hidden, Map) when is_map(Map) ->
+    lists:append([hidden_value(entry(Key, Hidden), Value) || Key := Value <- Map]);
+hidden_values(_Hidden, Map) ->
+    [Map].
 
-redacted_value(Key, Value, Redacted) ->
-    case names_redacted(Key, Redacted) of
-        true -> ?REDACTED;
-        false -> Value
+-spec hidden_value(hide | show | {nested, module()}, term()) -> [term()].
+hidden_value(hide, Value) -> [Value];
+hidden_value(show, _Value) -> [];
+hidden_value({nested, Target}, Value) -> hidden_nested(Target, Value).
+
+-spec hidden_nested(module(), term()) -> [term()].
+hidden_nested(Target, Value) when is_map(Value) ->
+    hidden_values(hidden_in(Target), Value);
+hidden_nested(Target, [Value | Rest]) ->
+    hidden_nested(Target, Value) ++ hidden_nested(Target, Rest);
+hidden_nested(_Target, Value) when is_atom(Value); Value =:= [] ->
+    [];
+hidden_nested(_Target, Value) ->
+    [Value].
+
+%% Every text and integer in a value, at any depth: an error message can
+%% quote an element of a list as it can quote the whole.
+-spec texts(term()) -> [binary()].
+texts(<<>>) ->
+    [];
+texts(Value) when is_binary(Value) ->
+    [Value];
+texts(Value) when is_integer(Value) ->
+    [integer_to_binary(Value)];
+texts(Value) when is_list(Value) ->
+    case text(Value) of
+        {ok, <<>>} -> [];
+        {ok, Text} -> [Text];
+        error -> element_texts(Value)
+    end;
+texts(Value) when is_tuple(Value) ->
+    element_texts(tuple_to_list(Value));
+texts(Value) when is_map(Value) ->
+    element_texts(maps:keys(Value)) ++ element_texts(maps:values(Value));
+texts(_Value) ->
+    [].
+
+-spec element_texts(term()) -> [binary()].
+element_texts([Value | Rest]) -> texts(Value) ++ element_texts(Rest);
+element_texts(Tail) -> texts(Tail).
+
+-spec shown_errors(term(), [binary()] | unknown) -> [{atom(), binary()}].
+shown_errors([Error | Rest], Quotable) ->
+    [shown_error(Error, Quotable) | shown_errors(Rest, Quotable)];
+shown_errors([], _Quotable) ->
+    [];
+shown_errors(_NotAList, _Quotable) ->
+    [{base, ?REDACTED}].
+
+-spec shown_error(term(), [binary()] | unknown) -> {atom(), binary()}.
+shown_error({Field, Message}, Quotable) when is_atom(Field) ->
+    {Field, shown_message(Message, Quotable)};
+shown_error(Error, _Quotable) when
+    is_tuple(Error), tuple_size(Error) >= 1, is_atom(element(1, Error))
+->
+    {element(1, Error), ?REDACTED};
+shown_error(_Error, _Quotable) ->
+    {base, ?REDACTED}.
+
+-spec shown_message(term(), [binary()] | unknown) -> binary().
+shown_message(_Message, unknown) ->
+    ?REDACTED;
+shown_message(Message, Quotable) ->
+    case message_text(Message) of
+        {ok, Text} when Quotable =:= [] ->
+            Text;
+        {ok, Text} ->
+            case binary:match(Text, Quotable) of
+                nomatch -> Text;
+                _Found -> ?REDACTED
+            end;
+        error ->
+            ?REDACTED
     end.
 
-names_redacted(Key, Redacted) when is_atom(Key) ->
-    lists:member(Key, Redacted);
-names_redacted(Key, Redacted) when is_binary(Key) ->
-    lists:any(fun(Field) -> atom_to_binary(Field, utf8) =:= Key end, Redacted);
-names_redacted(_Key, _Redacted) ->
-    false.
+-spec message_text(term()) -> {ok, binary()} | error.
+message_text(Message) when is_atom(Message) -> {ok, atom_to_binary(Message, utf8)};
+message_text(Message) -> text(Message).
+
+%% Never raises: a raise here would carry the redacted values in its
+%% stacktrace.
+-spec text(term()) -> {ok, binary()} | error.
+text(Text) when is_binary(Text) ->
+    {ok, Text};
+text(Chars) when is_list(Chars) ->
+    try unicode:characters_to_binary(Chars) of
+        Text when is_binary(Text) -> {ok, Text};
+        _Incomplete -> error
+    catch
+        _:_ -> error
+    end;
+text(_NotText) ->
+    error.
 
 %% What telemetry may show of the parameters of a compiled `Query`: `Params`
 %% itself when no schema it reads has a redacted field, else
 %% {redacted, Shown}. `Shown` holds one ~"[redacted]" per parameter when the
 %% query, or a query nested in it, filters on a redacted field, and is
 %% `Params` otherwise.
+%%
+%% This and the functions below never raise: a raise would carry the
+%% parameters in its stacktrace. What cannot be read counts as redacted.
 -doc false.
 -spec query_params(#kura_query{}, [term()]) -> shown().
 query_params(Query, Params) ->
@@ -175,13 +423,17 @@ query_params(Query, Params) ->
 -doc false.
 -spec mode(#kura_query{}) -> mode().
 mode(Query) ->
-    mode(Query, kura_query:sources(Query)).
+    try kura_query:sources(Query) of
+        Sources -> mode(Query, Sources)
+    catch
+        _:_ -> hidden
+    end.
 
 %% mode/1 for a caller that has the query's sources already.
 -doc false.
 -spec mode(#kura_query{}, [kura_query:source()]) -> mode().
 mode(Query, Sources) ->
-    case redacted_read(Sources) of
+    try redacted_read(Sources) of
         [] ->
             plain;
         Redacted ->
@@ -189,13 +441,15 @@ mode(Query, Sources) ->
                 true -> hidden;
                 false -> redacted
             end
+    catch
+        _:_ -> hidden
     end.
 
 -doc false.
 -spec shown(mode(), [term()]) -> shown().
-shown(plain, Params) -> Params;
-shown(redacted, Params) -> {redacted, Params};
-shown(hidden, Params) -> {redacted, all_redacted(Params)}.
+shown(plain, Params) when is_list(Params) -> Params;
+shown(redacted, Params) when is_list(Params) -> {redacted, Params};
+shown(_Mode, Params) -> {redacted, all_redacted(Params)}.
 
 %% What telemetry may show of parameters the caller says are sensitive: one
 %% ~"[redacted]" for each.
@@ -203,12 +457,6 @@ shown(hidden, Params) -> {redacted, all_redacted(Params)}.
 -spec sensitive_params([term()]) -> shown().
 sensitive_params(Params) ->
     {redacted, all_redacted(Params)}.
-
-filtered_params(Query, Params) ->
-    case filters_redacted(Query) of
-        true -> all_redacted(Params);
-        false -> Params
-    end.
 
 %% What telemetry may show of the parameters of an update_all of `Query`
 %% that sets `SetFields`. As query_params/2, and every parameter is replaced
@@ -219,12 +467,16 @@ update_all_params(#kura_query{from = From} = Query, SetFields, Params) ->
     case redacted_of(From) of
         [] ->
             query_params(Query, Params);
+        unknown ->
+            sensitive_params(Params);
         Redacted ->
-            case any_member(SetFields, Redacted) of
-                true -> {redacted, all_redacted(Params)};
-                false -> {redacted, filtered_params(Query, Params)}
+            case touches(SetFields, Redacted) orelse mode(Query) =:= hidden of
+                true -> sensitive_params(Params);
+                false -> shown(redacted, Params)
             end
-    end.
+    end;
+update_all_params(_NotAQuery, _SetFields, Params) ->
+    sensitive_params(Params).
 
 %% What telemetry may show of the parameters of a write to `Schema`:
 %% `Params` itself when the schema has no redacted field, else
@@ -235,38 +487,54 @@ update_all_params(#kura_query{from = From} = Query, SetFields, Params) ->
 -doc false.
 -spec write_params(kura_dialect:table(), [atom()] | {touches, [atom()]}, [term()]) -> shown().
 write_params(Schema, Fields, Params) when is_atom(Schema) ->
-    case kura_schema:redacted_fields(Schema) of
-        [] -> Params;
+    case redacted(Schema) of
+        [] when is_list(Params) -> Params;
+        unknown -> sensitive_params(Params);
         Redacted -> {redacted, shown(Fields, Redacted, Params)}
     end;
+write_params(Table, _Fields, Params) when is_binary(Table), is_list(Params) ->
+    Params;
 write_params(_Table, _Fields, Params) ->
-    Params.
+    sensitive_params(Params).
 
-shown({touches, Fields}, Redacted, Params) ->
-    case any_member(Fields, Redacted) of
+shown({touches, Fields}, Redacted, Params) when is_list(Params) ->
+    case touches(Fields, Redacted) of
         true -> all_redacted(Params);
         false -> Params
     end;
-shown([], _Redacted, Params) ->
-    all_redacted(Params);
-shown(Fields, Redacted, Params) ->
-    case length(Params) rem length(Fields) of
-        0 -> by_position(Params, Fields, Fields, Redacted);
-        _ -> all_redacted(Params)
-    end.
+shown([_ | _] = Fields, Redacted, Params) when length(Params) rem length(Fields) =:= 0 ->
+    by_position(Params, Fields, Fields, Redacted);
+shown(_Fields, _Redacted, Params) ->
+    all_redacted(Params).
 
-any_member(Fields, Redacted) ->
-    lists:any(fun(Field) -> lists:member(Field, Redacted) end, Fields).
+%% Fields that are no list of fields count as touching a redacted one.
+touches([Field | Fields], Redacted) ->
+    lists:member(Field, Redacted) orelse touches(Fields, Redacted);
+touches([], _Redacted) ->
+    false;
+touches(_NotAList, _Redacted) ->
+    true.
 
 by_position([], _Fields, _AllFields, _Redacted) ->
     [];
 by_position(Params, [], AllFields, Redacted) ->
     by_position(Params, AllFields, AllFields, Redacted);
 by_position([Value | Params], [Field | Fields], AllFields, Redacted) ->
-    [redacted_value(Field, Value, Redacted) | by_position(Params, Fields, AllFields, Redacted)].
+    [positioned(Field, Value, Redacted) | by_position(Params, Fields, AllFields, Redacted)].
 
-all_redacted(Params) ->
-    [?REDACTED || _ <- Params].
+positioned(Field, Value, Redacted) when is_atom(Field) ->
+    case lists:member(Field, Redacted) of
+        true -> ?REDACTED;
+        false -> Value
+    end;
+positioned(_Field, _Value, _Redacted) ->
+    ?REDACTED.
+
+%% One ~"[redacted]" for each parameter, and one for what is not a list or
+%% follows a list that does not end.
+all_redacted([_ | Params]) -> [?REDACTED | all_redacted(Params)];
+all_redacted([]) -> [];
+all_redacted(_NotAList) -> [?REDACTED].
 
 %% What telemetry may show of the error of a failed statement: the error's
 %% code and the names in it, never its message or detail, which can quote a
@@ -278,17 +546,18 @@ error_reason(Reason) when is_atom(Reason) -> Reason;
 error_reason({Tag, Reason}) when is_atom(Tag), is_map(Reason) -> {Tag, error_reason(Reason)};
 error_reason(_Reason) -> redacted.
 
-filters_redacted(Query) ->
-    names_anywhere(Query, redacted_read(kura_query:sources(Query))).
-
 %% The redacted fields of every source the query reads, at any depth. A
 %% condition is judged against all of them and not only those of its own
 %% level: the database resolves a name a subquery's sources lack to the
 %% outer query's column, and a CTE hands its columns to whatever reads it.
+-spec redacted_read([kura_query:source()]) -> [atom()].
 redacted_read(Sources) ->
     lists:usort(
-        lists:append([redacted_of(Source) || {Role, Source} <- Sources, Role =/= preload])
+        lists:append([readable(redacted_of(Source)) || {Role, Source} <- Sources, Role =/= preload])
     ).
+
+-spec readable([atom()] | unknown) -> [atom()].
+readable(Redacted) when is_list(Redacted) -> Redacted.
 
 names_anywhere(_Query, []) ->
     false;
@@ -321,7 +590,8 @@ measures([_ | Rest], Redacted) ->
 measures(_, _Redacted) ->
     false.
 
-redacted_of(From) when is_atom(From), From =/= undefined -> kura_schema:redacted_fields(From);
+-spec redacted_of(term()) -> [atom()] | unknown.
+redacted_of(From) when is_atom(From), From =/= undefined -> redacted(From);
 redacted_of(_From) -> [].
 
 names_field([Condition | Rest], Redacted) ->
@@ -336,7 +606,7 @@ condition_names({'not', Inner}, Redacted) ->
 condition_names(Condition, Redacted) when is_tuple(Condition), tuple_size(Condition) >= 2 ->
     case element(1, Condition) of
         Field when is_atom(Field) -> lists:member(Field, Redacted);
-        Fields when is_list(Fields) -> any_member(Fields, Redacted);
+        Fields when is_list(Fields) -> touches(Fields, Redacted);
         {distance, Field, _Metric, _Vector} -> lists:member(Field, Redacted);
         _ -> false
     end;

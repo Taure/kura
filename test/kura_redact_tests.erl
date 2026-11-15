@@ -8,6 +8,7 @@
 
 -define(REPO, kura_redact_test_repo).
 -define(S, kura_test_secret_schema).
+-define(OWNER, kura_test_secret_owner_schema).
 -define(R, ~"[redacted]").
 
 %%----------------------------------------------------------------------
@@ -93,7 +94,7 @@ changeset_params_under_binary_keys_test() ->
         params = #{~"token" => ~"new", ~"email" => ~"a@b.c", 7 => ~"kept"}
     },
     ?assertEqual(
-        #{~"token" => ?R, ~"email" => ~"a@b.c", 7 => ~"kept"},
+        #{~"token" => ?R, ~"email" => ~"a@b.c", 7 => ?R},
         (kura_redact:changeset(CS))#kura_changeset.params
     ).
 
@@ -110,6 +111,244 @@ changeset_with_a_redacted_value_that_is_no_text_test() ->
 schemaless_changeset_is_left_alone_test() ->
     CS = kura_changeset:cast(#{token => string}, #{}, #{token => ~"t"}, [token]),
     ?assertEqual(CS, kura_redact:changeset(CS)).
+
+changeset_error_messages_that_are_no_binary_test_() ->
+    CS = secret_changeset(),
+    Errors = fun(Entries) ->
+        (kura_redact:changeset(CS#kura_changeset{errors = ill_typed(Entries)}))#kura_changeset.errors
+    end,
+    [
+        {"a string is shown as its text",
+            ?_assertEqual([{email, ~"is not allowed"}], Errors([{email, "is not allowed"}]))},
+        {"a string that quotes a redacted value",
+            ?_assertEqual([{email, ?R}], Errors([{email, "is not tok-SECRET"}]))},
+        {"a quote in pieces",
+            ?_assertEqual([{email, ?R}], Errors([{email, ["is not tok-", [~"SECRET"]]}]))},
+        {"an atom is shown as its text",
+            ?_assertEqual([{email, ~"required"}], Errors([{email, required}]))},
+        {"a message that is no text",
+            ?_assertEqual(
+                [{email, ?R}, {email, ?R}, {email, ?R}],
+                Errors([{email, {invalid, ~"x"}}, {email, [~"is", not_text]}, {email, 1.5}])
+            )},
+        {"text that is not Unicode",
+            ?_assertEqual([{email, ?R}], Errors([{email, [~"is ", <<255>>]}]))}
+    ].
+
+changeset_error_entries_of_another_shape_test_() ->
+    CS = secret_changeset(),
+    Errors = fun(Entries) ->
+        (kura_redact:changeset(CS#kura_changeset{errors = ill_typed(Entries)}))#kura_changeset.errors
+    end,
+    [
+        {"a longer tuple keeps its field",
+            ?_assertEqual([{email, ?R}], Errors([{email, ~"is short", [{min, 3}]}]))},
+        {"a tuple of one", ?_assertEqual([{email, ?R}], Errors([{email}]))},
+        {"a field that is no atom",
+            ?_assertEqual([{base, ?R}, {base, ?R}], Errors([{~"email", ~"is short"}, {7, 8, 9}]))},
+        {"an entry that is no tuple",
+            ?_assertEqual([{base, ?R}, {base, ?R}, {base, ?R}], Errors([~"is short", {}, email]))},
+        {"errors that are no list", [
+            ?_assertEqual([{base, ?R}], Errors(~"tok-SECRET is short")),
+            ?_assertEqual([{base, ?R}], Errors(#{email => ~"is short"}))
+        ]},
+        {"a list that does not end",
+            ?_assertEqual(
+                [{email, ~"is short"}, {base, ?R}],
+                Errors(improper({email, ~"is short"}, ~"tok-SECRET"))
+            )}
+    ].
+
+changeset_with_nothing_to_quote_still_reads_its_errors_test() ->
+    CS0 = kura_changeset:cast(?S, #{}, #{email => ~"a@b.c"}, [email]),
+    CS = CS0#kura_changeset{errors = ill_typed([{email, ~"is short"}, {email, ~"x", y}, z])},
+    ?assertEqual(
+        [{email, ~"is short"}, {email, ?R}, {base, ?R}],
+        (kura_redact:changeset(CS))#kura_changeset.errors
+    ).
+
+changeset_errors_quoting_a_redacted_value_that_is_no_binary_test_() ->
+    CS = secret_changeset(),
+    Errors = fun(Token) ->
+        Shown = kura_redact:changeset(CS#kura_changeset{
+            changes = #{token => Token},
+            params = #{},
+            errors = [{base, ~"is tok-OTHER, not 42"}, {base, ~"is invalid"}]
+        }),
+        Shown#kura_changeset.errors
+    end,
+    Quoted = [{base, ?R}, {base, ~"is invalid"}],
+    [
+        {"a string", ?_assertEqual(Quoted, Errors("tok-OTHER"))},
+        {"a string in pieces", ?_assertEqual(Quoted, Errors(["tok-", ~"OTHER"]))},
+        {"inside a list", ?_assertEqual(Quoted, Errors([~"tok-OTHER", 7.5]))},
+        {"inside a tuple", ?_assertEqual(Quoted, Errors({wrapped, ~"tok-OTHER"}))},
+        {"inside a map", [
+            ?_assertEqual(Quoted, Errors(#{value => ~"tok-OTHER"})),
+            ?_assertEqual(Quoted, Errors(#{~"tok-OTHER" => value}))
+        ]},
+        {"a number inside a list", ?_assertEqual(Quoted, Errors([42, 7.5]))},
+        {"after a list that does not end",
+            ?_assertEqual(Quoted, Errors(improper(7.5, ~"tok-OTHER")))},
+        {"nothing that can be quoted",
+            ?_assertEqual(
+                [{base, ~"is tok-OTHER, not 42"}, {base, ~"is invalid"}], Errors([7.5, {}, ""])
+            )}
+    ].
+
+changeset_fields_that_are_no_map_test() ->
+    CS = secret_changeset(),
+    Shown = kura_redact:changeset(CS#kura_changeset{
+        data = ill_typed([{token, ~"tok-SECRET"}]),
+        errors = [{email, ~"is short"}]
+    }),
+    ?assertEqual(#{base => ?R}, Shown#kura_changeset.data),
+    ?assertEqual(#{token => ?R}, Shown#kura_changeset.changes),
+    ?assertEqual([{email, ?R}], Shown#kura_changeset.errors),
+    ?assertEqual(
+        #{base => ?R},
+        (kura_redact:changeset(CS#kura_changeset{changes = ill_typed(~"tok-SECRET")}))#kura_changeset.changes
+    ),
+    ?assertEqual(
+        #{base => ?R},
+        (kura_redact:changeset(CS#kura_changeset{params = ill_typed({token, ~"tok-SECRET"})}))#kura_changeset.params
+    ).
+
+changeset_keys_that_are_no_atom_or_binary_test() ->
+    CS = secret_changeset(),
+    Shown = kura_redact:changeset(CS#kura_changeset{
+        params = #{
+            "token" => ~"tok-SECRET",
+            "email" => ~"a@b.c",
+            [~"tok", "en"] => ~"tok-SECRET",
+            {token} => ~"tok-SECRET",
+            [token] => ~"tok-SECRET"
+        }
+    }),
+    ?assertEqual(
+        #{
+            "token" => ?R,
+            "email" => ~"a@b.c",
+            [~"tok", "en"] => ?R,
+            {token} => ?R,
+            [token] => ?R
+        },
+        Shown#kura_changeset.params
+    ).
+
+changeset_of_a_schema_that_cannot_be_read_test_() ->
+    Hidden = #kura_changeset{valid = false, errors = [{base, ?R}]},
+    CS = secret_changeset(),
+    [
+        {"a schema that is no atom",
+            ?_assertEqual(
+                Hidden, kura_redact:changeset(CS#kura_changeset{schema = ill_typed(~"accounts")})
+            )},
+        {"redact/0 that is no list of fields",
+            ?_assertEqual(
+                Hidden,
+                kura_redact:changeset(CS#kura_changeset{schema = kura_test_bad_redact_schema})
+            )},
+        {"no changeset at all", [
+            ?_assertEqual(Hidden, kura_redact:changeset(ill_typed(~"tok-SECRET"))),
+            ?_assertEqual(
+                Hidden, kura_redact:changeset(ill_typed({kura_changeset, true, ?S, #{}}))
+            )
+        ]}
+    ].
+
+nested_changesets_test() ->
+    Child = secret_changeset(),
+    Parent0 = kura_changeset:cast(?OWNER, #{}, #{name => ~"n"}, [name]),
+    Parent = Parent0#kura_changeset{
+        assoc_changes = ill_typed(#{
+            account => Child,
+            accounts => [Child, ~"tok-SECRET"],
+            other => {token, ~"tok-SECRET"},
+            more => improper(Child, ~"tok-SECRET")
+        })
+    },
+    Hidden = #kura_changeset{valid = false, errors = [{base, ?R}]},
+    ShownChild = kura_redact:changeset(Child),
+    Shown = kura_redact:changeset(Parent),
+    ?assertEqual(#{token => ?R}, ShownChild#kura_changeset.changes),
+    ?assertEqual(
+        #{
+            account => ShownChild,
+            accounts => [ShownChild, Hidden],
+            other => Hidden,
+            more => [ShownChild, Hidden]
+        },
+        Shown#kura_changeset.assoc_changes
+    ),
+    ?assertEqual(
+        #{base => Hidden},
+        (kura_redact:changeset(Parent#kura_changeset{assoc_changes = ill_typed([Child])}))#kura_changeset.assoc_changes
+    ),
+    Schemaless = kura_changeset:cast(#{name => string}, #{}, #{name => ~"n"}, [name]),
+    ?assertEqual(
+        #{account => ShownChild},
+        (kura_redact:changeset(Schemaless#kura_changeset{assoc_changes = #{account => Child}}))#kura_changeset.assoc_changes
+    ).
+
+nested_values_of_an_association_test() ->
+    Account = #{email => ~"a@b.c", token => ~"tok-SECRET"},
+    ShownAccount = #{email => ~"a@b.c", token => ?R},
+    Parent0 = kura_changeset:cast(?OWNER, #{}, #{name => ~"n"}, [name]),
+    Parent = Parent0#kura_changeset{
+        data = #{id => 1, accounts => [Account, not_loaded, 7], account => undefined},
+        changes = #{name => ~"n", account => {token, ~"tok-SECRET"}},
+        params = #{
+            ~"name" => ~"n",
+            ~"accounts" => improper(#{~"token" => ~"tok-SECRET"}, ~"tok-SECRET"),
+            "account" => Account
+        },
+        errors = [{base, ~"tok-SECRET is taken"}, {name, ~"is short"}]
+    },
+    Shown = kura_redact:changeset(Parent),
+    ?assertEqual(
+        #{id => 1, accounts => [ShownAccount, not_loaded, ?R], account => undefined},
+        Shown#kura_changeset.data
+    ),
+    ?assertEqual(#{name => ~"n", account => ?R}, Shown#kura_changeset.changes),
+    ?assertEqual(
+        #{~"name" => ~"n", ~"accounts" => [#{~"token" => ?R}, ?R], "account" => ShownAccount},
+        Shown#kura_changeset.params
+    ),
+    ?assertEqual([{base, ?R}, {name, ~"is short"}], Shown#kura_changeset.errors),
+    ?assertEqual(
+        #{id => 1, accounts => [ShownAccount]},
+        kura_redact:record(?OWNER, #{id => 1, accounts => [Account]})
+    ).
+
+record_that_cannot_be_read_test_() ->
+    [
+        {"no map",
+            ?_assertEqual(
+                #{base => ?R}, kura_redact:record(?S, ill_typed([{token, ~"tok-SECRET"}]))
+            )},
+        {"a schema that is no atom",
+            ?_assertEqual(
+                #{base => ?R}, kura_redact:record(ill_typed(~"accounts"), #{token => ~"t"})
+            )},
+        {"redact/0 that is no list of fields",
+            ?_assertEqual(
+                #{base => ?R}, kura_redact:record(kura_test_bad_redact_schema, #{token => ~"t"})
+            )},
+        {"no map, of a name that is no schema",
+            ?_assertEqual(#{base => ?R}, kura_redact:record(not_a_schema, ill_typed(~"t")))}
+    ].
+
+secret_changeset() ->
+    kura_changeset:cast(
+        ?S, #{id => 1}, #{token => ~"tok-SECRET", email => ~"a@b.c"}, [token]
+    ).
+
+-spec ill_typed(term()) -> dynamic().
+ill_typed(Term) -> Term.
+
+-spec improper(term(), term()) -> dynamic().
+improper(Head, Tail) -> [Head | ill_typed(Tail)].
 
 %%----------------------------------------------------------------------
 %% Telemetry
@@ -600,6 +839,77 @@ mode_test_() ->
 sensitive_params_test() ->
     ?assertEqual({redacted, [?R, ?R]}, kura_redact:sensitive_params([~"t", 1])),
     ?assertEqual({redacted, []}, kura_redact:sensitive_params([])).
+
+parameters_that_are_no_list_test_() ->
+    Query = kura_query:where(kura_query:from(?S), {token, '=', ~"t"}),
+    [
+        ?_assertEqual({redacted, [?R]}, kura_redact:sensitive_params(ill_typed(~"t"))),
+        ?_assertEqual(
+            {redacted, [?R, ?R]}, kura_redact:sensitive_params(improper(~"t", ~"u"))
+        ),
+        ?_assertEqual({redacted, [?R]}, kura_redact:query_params(Query, ill_typed(~"t"))),
+        ?_assertEqual(
+            {redacted, [?R, ?R]},
+            kura_redact:write_params(?S, [email, token], improper(~"a", ~"t"))
+        ),
+        ?_assertEqual(
+            {redacted, [?R, ?R]},
+            kura_redact:write_params(?S, {touches, [token]}, improper(~"a", ~"t"))
+        ),
+        ?_assertEqual(
+            {redacted, [?R]},
+            kura_redact:write_params(?S, {touches, [email]}, ill_typed(~"t"))
+        ),
+        ?_assertEqual(
+            {redacted, [?R]},
+            kura_redact:update_all_params(Query, [email], ill_typed(~"t"))
+        )
+    ].
+
+fields_that_are_no_list_of_fields_test_() ->
+    ByEmail = kura_query:where(kura_query:from(?S), {email, '=', ~"a"}),
+    [
+        ?_assertEqual(
+            {redacted, [?R, ?R]}, kura_redact:write_params(?S, ill_typed(token), [~"a", ~"t"])
+        ),
+        ?_assertEqual(
+            {redacted, [?R, ?R]},
+            kura_redact:write_params(?S, improper(email, token), [~"a", ~"t"])
+        ),
+        ?_assertEqual(
+            {redacted, [?R, ?R]},
+            kura_redact:write_params(?S, {touches, ill_typed(token)}, [~"a", ~"t"])
+        ),
+        ?_assertEqual(
+            {redacted, [?R]},
+            kura_redact:write_params(kura_test_bad_redact_schema, [token], [~"t"])
+        ),
+        ?_assertEqual(
+            {redacted, [?R]}, kura_redact:write_params(ill_typed({accounts}), [token], [~"t"])
+        ),
+        ?_assertEqual(
+            {redacted, [?R, ?R]},
+            kura_redact:update_all_params(ByEmail, ill_typed(token), [~"t", ~"a"])
+        )
+    ].
+
+a_mode_or_query_that_cannot_be_read_test_() ->
+    [
+        ?_assertEqual({redacted, [?R]}, kura_redact:shown(ill_typed(shown), [~"t"])),
+        ?_assertEqual({redacted, [?R]}, kura_redact:shown(redacted, ill_typed(~"t"))),
+        ?_assertEqual({redacted, [?R]}, kura_redact:shown(plain, ill_typed(~"t"))),
+        ?_assertEqual(hidden, kura_redact:mode(ill_typed({kura_query, ~"t"}))),
+        ?_assertEqual(
+            hidden, kura_redact:mode(kura_query:from(?S), ill_typed(~"t"))
+        ),
+        ?_assertEqual(
+            {redacted, [?R]}, kura_redact:query_params(ill_typed({kura_query, ~"t"}), [~"t"])
+        ),
+        ?_assertEqual(
+            {redacted, [?R]},
+            kura_redact:update_all_params(ill_typed({kura_query, ~"t"}), [email], [~"t"])
+        )
+    ].
 
 error_reason_test_() ->
     [
