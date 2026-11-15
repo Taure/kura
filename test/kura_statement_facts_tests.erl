@@ -48,7 +48,8 @@ facts_test_() ->
             {"a shape kura cannot cache has its facts too", fun t_uncacheable/0},
             {"telemetry names the table kura compiled for", fun t_source/0},
             {"raw SQL is read for its table", fun t_raw_source/0},
-            {"telemetry counts the rows a write affected", fun t_rows_affected/0}
+            {"telemetry counts the rows a write affected", fun t_rows_affected/0},
+            {"a delete's key is shown", fun t_delete_key_is_shown/0}
         ]}.
 
 t_facts() ->
@@ -270,6 +271,10 @@ t_rows_affected() ->
             kura_repo_worker:query(?REPO, ~"UPDATE shared_items SET name = $1", [~"d"])
         end)
     ).
+
+t_delete_key_is_shown() ->
+    CS = kura_changeset:cast(?SECRET, #{id => 1}, #{}, []),
+    ?assertEqual({[1], [1]}, shown(fun() -> kura_repo_worker:delete(?REPO, CS) end)).
 
 observed(Run) ->
     Handler = {?MODULE, make_ref()},
