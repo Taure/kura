@@ -53,3 +53,16 @@ invalid_encryption_write_format_refuses_start_test() ->
     after
         application:unset_env(kura, encryption_write_format)
     end.
+
+any_other_invalid_setting_refuses_start_test() ->
+    application:set_env(kura, max_page_size, 0),
+    try
+        ?assertError({kura, {invalid_setting, max_page_size, 0}}, kura_app:start(normal, []))
+    after
+        application:unset_env(kura, max_page_size)
+    end.
+
+valid_settings_do_not_refuse_start_test() ->
+    clear_kura_env(),
+    {ok, _} = application:ensure_all_started(kura),
+    ?assertMatch({error, {already_started, _}}, kura_app:start(normal, [])).
