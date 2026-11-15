@@ -1054,8 +1054,8 @@ shown_error(Reason) ->
 
 -doc """
 The table a statement names first: the name after its first `FROM`, `INTO`,
-`UPDATE` or `TABLE`, without quotes and without a schema qualifier.
-`undefined` when there is none.
+`UPDATE` or `TABLE`, without quotes and without a schema qualifier, past an
+`IF EXISTS` or `IF NOT EXISTS` after `TABLE`. `undefined` when there is none.
 """.
 -spec extract_source(iodata()) -> binary() | undefined.
 extract_source(SQL) when is_binary(SQL) -> source(SQL);
@@ -1104,14 +1104,49 @@ named_after(T, <<A, B, L, E, Space, Rest/binary>>) when
     ?IS_LETTER(E, $E),
     ?IS_SPACE(Space)
 ->
-    table_name(Rest);
+    table_name(after_existence(spaces(Rest)));
 named_after(_Letter, _Rest) ->
     undefined.
 
-table_name(<<Space, Rest/binary>>) when ?IS_SPACE(Space) ->
-    table_name(Rest);
-table_name(Rest) ->
-    case word(Rest) of
+%% `IF EXISTS` and `IF NOT EXISTS` stand between `TABLE` and the name. `IF`
+%% alone is a name: PostgreSQL does not reserve it.
+after_existence(<<I, F, Space, Rest/binary>> = Named) when
+    ?IS_LETTER(I, $I), ?IS_LETTER(F, $F), ?IS_SPACE(Space)
+->
+    case after_exists(after_not(spaces(Rest))) of
+        undefined -> Named;
+        Name -> Name
+    end;
+after_existence(Named) ->
+    Named.
+
+after_not(<<N, O, T, Space, Rest/binary>>) when
+    ?IS_LETTER(N, $N), ?IS_LETTER(O, $O), ?IS_LETTER(T, $T), ?IS_SPACE(Space)
+->
+    spaces(Rest);
+after_not(Rest) ->
+    Rest.
+
+after_exists(<<E, X, I, S, T, S2, Rest/binary>>) when
+    ?IS_LETTER(E, $E),
+    ?IS_LETTER(X, $X),
+    ?IS_LETTER(I, $I),
+    ?IS_LETTER(S, $S),
+    ?IS_LETTER(T, $T),
+    ?IS_LETTER(S2, $S)
+->
+    case Rest of
+        <<C, _/binary>> when ?IS_WORD(C) -> undefined;
+        _ -> Rest
+    end;
+after_exists(_Rest) ->
+    undefined.
+
+spaces(<<Space, Rest/binary>>) when ?IS_SPACE(Space) -> spaces(Rest);
+spaces(Rest) -> Rest.
+
+table_name(Named) ->
+    case word(spaces(Named)) of
         {Word, <<$., After/binary>>} when Word =/= <<>> ->
             case word(After) of
                 {<<>>, _} -> Word;

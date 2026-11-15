@@ -388,29 +388,65 @@ gen_dollar_tag() ->
 
 prop_source_is_named() ->
     ?FORALL(
-        {Filler, Keyword, Gap, Qualifier, Table, Rest},
+        {Filler, Keywords, Gap, Qualifier, Table, Rest},
         {
             list(
                 oneof([~"SELECT", ~"a,", ~"b", ~"*", ~"(", ~"count(x)", ~"1", ~"fromage", ~"x_from"])
             ),
-            oneof([~"FROM", ~"INTO", ~"UPDATE", ~"TABLE"]),
+            oneof([
+                [~"FROM"],
+                [~"INTO"],
+                [~"UPDATE"],
+                [~"TABLE"],
+                [~"TABLE", ~"IF", ~"EXISTS"],
+                [~"TABLE", ~"IF", ~"NOT", ~"EXISTS"]
+            ]),
             gen_gap(),
             oneof([none, gen_written_word()]),
             gen_written_word(),
             oneof([<<>>, ~" WHERE x = 1", ~"(a, b)", ~"\n", ~" AS f FROM other"])
         },
-        source_is_named(Filler, Keyword, Gap, Qualifier, Table, Rest)
+        source_is_named(Filler, Keywords, Gap, Qualifier, Table, Rest)
     ).
 
-source_is_named(Filler, Keyword, Gap, Qualifier, {Written, Name}, Rest) ->
+source_is_named(Filler, Keywords, Gap, Qualifier, {Written, Name}, Rest) ->
     Qualified =
         case Qualifier of
             none -> Written;
             {Schema, _} -> [Schema, $., Written]
         end,
-    Statement = [[[Word, $\s] || Word <- Filler], gen_cased_now(Keyword), Gap, Qualified, Rest],
+    Statement = [
+        [[Word, $\s] || Word <- Filler],
+        [[gen_cased_now(Keyword), Gap] || Keyword <- Keywords],
+        Qualified,
+        Rest
+    ],
     kura_db:extract_source(Statement) =:= Name andalso
         kura_db:extract_source(iolist_to_binary(Statement)) =:= Name.
+
+existence_clause_test_() ->
+    Source = fun kura_db:extract_source/1,
+    [
+        ?_assertEqual(~"t", Source(~"DROP TABLE IF EXISTS t")),
+        ?_assertEqual(~"t", Source(~"CREATE TABLE IF NOT EXISTS t (id integer)")),
+        ?_assertEqual(~"t", Source(~"ALTER TABLE IF EXISTS t ADD COLUMN c integer")),
+        ?_assertEqual(~"t", Source(~"drop table if\n exists \"s\".\"t\" cascade")),
+        ?_assertEqual(~"t", Source(~"CREATE TEMP TABLE IF NOT EXISTS\"t\" (id integer)")),
+        ?_assertEqual(undefined, Source(~"DROP TABLE IF EXISTS")),
+        {"a table may be named if, not or exists", [
+            ?_assertEqual(~"if", Source(~"DROP TABLE if")),
+            ?_assertEqual(~"if", Source(~"DROP TABLE if CASCADE")),
+            ?_assertEqual(~"IF", Source(~"DROP TABLE IF NOT")),
+            ?_assertEqual(~"if", Source(~"DROP TABLE IF EXISTS if")),
+            ?_assertEqual(~"not", Source(~"DROP TABLE IF EXISTS not")),
+            ?_assertEqual(~"exists", Source(~"CREATE TABLE IF NOT EXISTS exists (id integer)")),
+            ?_assertEqual(~"IF", Source(~"DROP TABLE IF EXISTSX t"))
+        ]},
+        {"a statement that names no table has no source", [
+            ?_assertEqual(undefined, Source(~"DROP INDEX IF EXISTS t_name_index")),
+            ?_assertEqual(undefined, Source(~"DROP INDEX CONCURRENTLY IF EXISTS t_name_index"))
+        ]}
+    ].
 
 gen_written_word() ->
     ?LET(
