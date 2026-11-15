@@ -73,17 +73,22 @@ a_module_loaded_later_is_read_whatever_is_asked_first_test_() ->
      || {Name, First, _, Loaded} <- Asked
     ].
 
+%% What kura remembers of a module outlives the code that worked it out, so
+%% each of these starts from nothing remembered.
 a_loaded_module_that_is_not_a_schema_stays_one_test_() ->
-    [?_assertNot(kura_schema:is_schema(lists)), ?_assertNot(kura_schema:is_schema(lists))].
+    {setup, fun() -> kura_schema:forget(lists) end, [
+        ?_assertNot(kura_schema:is_schema(lists)), ?_assertNot(kura_schema:is_schema(lists))
+    ]}.
 
 a_module_that_is_not_a_schema_has_no_plan_test_() ->
-    [
+    {setup, fun() -> kura_schema:forget(lists) end, [
         ?_assertEqual(undefined, kura_schema:load_plan(lists)),
         ?_assertEqual(undefined, kura_schema:load_plan(lists)),
         ?_assertEqual(#{a => 1}, kura_db:load_row(lists, #{a => 1}))
-    ].
+    ]}.
 
 a_schema_keeps_its_plan_test() ->
+    kura_schema:forget(kura_test_schema),
     Plan = kura_schema:load_plan(kura_test_schema),
     ?assertMatch({#{id := _}, _, _}, Plan),
     ?assertEqual(Plan, kura_schema:load_plan(kura_test_schema)).
