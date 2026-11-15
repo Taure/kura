@@ -175,6 +175,17 @@ every_shown_and_source_is_read_back_test_() ->
         ]
     ].
 
+an_uncacheable_shape_is_read_back_test() ->
+    kura_query_cache:init(),
+    Key = {?REPO, undefined, uncacheable_shape},
+    try
+        ok = kura_query_cache:put(Key, uncacheable),
+        ?assertEqual({ok, uncacheable}, kura_query_cache:get(Key)),
+        ?assertEqual(1, kura_query_cache:entry_count())
+    after
+        kura_query_cache:flush()
+    end.
+
 replaced(Store) ->
     set_repo_dialect(kura_dialect_pg),
     kura_query_cache:init(),

@@ -128,6 +128,20 @@ a_kept_plan_that_cannot_be_read_is_replaced_test_() ->
             ]
         end}.
 
+a_kept_plan_is_served_as_it_was_kept_test() ->
+    Key = {kura_schema, load_plan, kura_test_schema},
+    kura_schema:forget(kura_test_schema),
+    _ = kura_schema:load_plan(kura_test_schema),
+    {Version, _Plan} = persistent_term:get(Key),
+    Kept = {#{name => integer}, #{}, #{}},
+    try
+        persistent_term:put(Key, {Version, Kept}),
+        ?assertEqual(Kept, kura_schema:load_plan(kura_test_schema)),
+        ?assertEqual({Version, Kept}, persistent_term:get(Key))
+    after
+        kura_schema:forget(kura_test_schema)
+    end.
+
 a_kept_plan_carries_a_version_test() ->
     kura_schema:forget(kura_test_schema),
     Plan = kura_schema:load_plan(kura_test_schema),

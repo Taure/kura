@@ -377,6 +377,8 @@ a_tenant_field_that_is_no_column_of_the_schema_is_refused_test_() ->
         {"a query", NoColumn, From},
         {"a query with conditions", NoColumn, kura_query:where(From, {title, ~"a"})},
         {"a branch of a union", {attribute, ?T}, kura_query:union(From, Edge)},
+        {"the second of two branches", {attribute, ?T},
+            kura_query:union(kura_query:union(From, From), Edge)},
         {"a branch of a branch", {attribute, ?T},
             kura_query:union_all(From, kura_query:except(From, Edge))}
     ],

@@ -81,6 +81,65 @@ build_telemetry_metadata_error_test() ->
     ?assertEqual(0, maps:get(num_rows, Meta)),
     ?assertEqual(#{code => <<"23505">>}, maps:get(error_reason, Meta)).
 
+%% Bytes just outside the letters, the digits and the ASCII range.
+extract_source_at_the_edge_of_a_name_test_() ->
+    Named = [
+        <<127, "FROM t">>,
+        <<"x", 128, " FROM t">>,
+        ~"x[FROM t",
+        ~"x{FROM t",
+        ~"x:FROM t",
+        ~"9:FROM t",
+        <<"x", 127, "FROM t">>,
+        ~"FROM t[",
+        ~"FROM t{",
+        ~"FROM t:x",
+        <<"FROM t", 127>>,
+        <<"$a", 128, "$ FROM hidden $a", 128, "$ FROM t">>,
+        <<"$a", 129, "$ FROM hidden $a", 129, "$ FROM t">>,
+        <<"$a", 127, "$ FROM t">>,
+        ~"x$a$ FROM t $a$",
+        <<"x", 128, "$a$ FROM t $a$">>,
+        <<"x", 129, "$a$ FROM t $a$">>,
+        <<"x", 127, "$a$ FROM hidden $a$ FROM t">>
+    ],
+    Unnamed = [
+        <<128, "FROM t">>,
+        <<129, "FROM t">>,
+        <<"x", 128, "FROM t">>,
+        <<"x", 129, "FROM t">>,
+        <<"FROM t", 128>>,
+        <<"FROM t", 129>>,
+        ~"FROM t$x"
+    ],
+    [?_assertEqual({SQL, ~"t"}, {SQL, kura_db:extract_source(SQL)}) || SQL <- Named] ++
+        [?_assertEqual({SQL, undefined}, {SQL, kura_db:extract_source(SQL)}) || SQL <- Unnamed] ++
+        [
+            ?_assertEqual(~"T", kura_db:extract_source(~"FROM T[")),
+            ?_assertEqual(~"T", kura_db:extract_source(~"FROM T^")),
+            ?_assertEqual(~"t9", kura_db:extract_source(~"FROM t9:"))
+        ].
+
+build_telemetry_metadata_result_test_() ->
+    Reported = fun(Result) ->
+        maps:with(
+            [result, num_rows, error_reason],
+            kura_repo_worker:build_telemetry_metadata(my_repo, ~"SELECT 1", [], Result)
+        )
+    end,
+    Ok = fun(Rows) -> #{result => ok, num_rows => Rows, error_reason => undefined} end,
+    [
+        ?_assertEqual(Ok(4), Reported(#{command => delete, num_rows => 4})),
+        ?_assertEqual(Ok(1), Reported(#{command => select, rows => [#{id => 1}]})),
+        {"a count that is no number is not reported",
+            ?_assertEqual(Ok(1), Reported(#{num_rows => many, rows => [#{id => 1}]}))},
+        {"a result that is neither rows nor a count", [
+            ?_assertEqual(Ok(0), Reported(#{command => listen})),
+            ?_assertEqual(Ok(0), Reported(#{rows => none})),
+            ?_assertEqual(Ok(0), Reported(ok))
+        ]}
+    ].
+
 build_telemetry_metadata_rows_affected_test_() ->
     Counted = fun(Result) ->
         maps:get(
