@@ -149,14 +149,14 @@ If you use [`telemetry_metrics`](https://github.com/beam-telemetry/telemetry_met
 
 ### OpenTelemetry
 
-Use [opentelemetry_kura](https://github.com/novaframework/opentelemetry_kura) to automatically create OpenTelemetry spans for every query:
+Use [opentelemetry_kura](https://github.com/Taure/opentelemetry_kura) to automatically create OpenTelemetry spans for every query:
 
 ```erlang
 %% In your application's start/2
 opentelemetry_kura:setup().
 ```
 
-See the [opentelemetry_kura](https://github.com/novaframework/opentelemetry_kura) documentation for details.
+See the [opentelemetry_kura](https://github.com/Taure/opentelemetry_kura) documentation for details.
 
 ## Legacy Log Configuration
 
