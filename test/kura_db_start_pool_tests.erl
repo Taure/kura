@@ -177,6 +177,18 @@ a_started_repo_takes_require_tenant_from_the_application_environment_test() ->
         application:unset_env(kura, require_tenant)
     end.
 
+a_started_repo_takes_a_false_from_the_application_environment_test() ->
+    application:set_env(kura, require_tenant, false),
+    try
+        Seen = with_pool_answer({ok, self()}, #{}, fun() ->
+            ok = kura_repo_worker:start(kura_db_failing_repo),
+            maps:get(require_tenant, kura_repo:settings(kura_db_failing_repo), unset)
+        end),
+        ?assertEqual(false, Seen)
+    after
+        application:unset_env(kura, require_tenant)
+    end.
+
 %%----------------------------------------------------------------------
 %% kura_repo_worker:start/1 reports a pool that did not start
 %%----------------------------------------------------------------------
