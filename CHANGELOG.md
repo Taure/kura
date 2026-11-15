@@ -46,6 +46,11 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(paginator)* One error for a max_page_size kura cannot use
 - *(telemetry)* Name the table after TABLE IF EXISTS as a raw statement's source
 - *(telemetry)* Report the rows a write affected as num_rows
+- *(redact)* The logging helpers return whatever they are given
+- *(tenant)* An attribute tenant's field is a field, not a condition
+- *(telemetry)* The raw SQL source is read from statement text only
+- *(cache)* A cached plan kura cannot read is compiled again
+- *(redact)* Read a changeset's fields as what they hold
 
 ### Documentation
 
@@ -65,6 +70,8 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(readme)* The settings that change in 3.0 are unset, not false
 - *(telemetry)* Link opentelemetry_kura where it lives
 - *(upgrading)* What changes after 2.30.0, each setting with its default, the new API
+- *(changelog)* Regenerate the unreleased section with git-cliff
+- *(upgrading)* What the redaction, tenant, source and cache fixes change
 
 ### Features
 
@@ -121,6 +128,8 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(dialect)* Placeholder/2, of_repo/1 and loads_stored/1, for a dialect that is loaded, unloaded or missing
 - *(repo)* A started repo takes a false require_tenant from the application environment
 - *(telemetry)* The source of raw SQL with keywords in any case, and keywords inside longer words
+- *(redact)* Nested values, a schema with nothing hidden and update_all parameters
+- Kept cache entries, a union's later branch, a statement's result and bytes at the edge of a name
 
 ### Build
 
@@ -128,6 +137,7 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(mutate)* Run the capability and tenant suites against the query compiler
 - *(mutate)* Run the statement suites against the repo worker
 - *(mutate)* Run the suites that cover them against db, dialect, stream, preloader, assoc casts and repo settings
+- *(mutate)* Run the redaction properties against kura_redact
 
 ### Perf
 
@@ -135,6 +145,7 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(query)* Work out a query shape's tenant, redaction and source once
 - *(db)* Load a row as before when the dialect reads no stored forms
 - *(compiler)* Walk a query's sources once for its facts
+- *(schema)* A kept schema answer is one read
 
 ### Style
 
