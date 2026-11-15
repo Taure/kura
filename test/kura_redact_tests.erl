@@ -327,6 +327,65 @@ nested_values_of_an_association_test() ->
         kura_redact:record(?OWNER, #{id => 1, accounts => [Account]})
     ).
 
+%% A schema with nothing to hide gets back what it gave.
+nothing_hidden_is_left_as_it_is_test() ->
+    Plain = kura_test_plain_ssn_schema,
+    CS0 = kura_changeset:cast(Plain, #{}, #{ssn => ~"1"}, [ssn]),
+    CS = CS0#kura_changeset{
+        data = ill_typed(#{7 => ~"kept"}),
+        errors = ill_typed([{ssn, "is short"}, {ssn}])
+    },
+    ?assertEqual(CS, kura_redact:changeset(CS)),
+    ?assertEqual(#{7 => ~"kept"}, kura_redact:record(Plain, ill_typed(#{7 => ~"kept"}))).
+
+errors_that_quote_a_nested_value_test() ->
+    Parent0 = kura_changeset:cast(?OWNER, #{}, #{name => ~"n"}, [name]),
+    Parent = Parent0#kura_changeset{
+        data = #{accounts => [#{token => ~"tok-MANY"}, not_loaded, []], account => undefined},
+        changes = #{account => #{token => ~"tok-ONE"}},
+        errors = [
+            {base, ~"tok-MANY is taken"},
+            {base, ~"tok-ONE is taken"},
+            {name, ~"is undefined"},
+            {name, ~"is not_loaded"}
+        ]
+    },
+    ?assertEqual(
+        [{base, ?R}, {base, ?R}, {name, ~"is undefined"}, {name, ~"is not_loaded"}],
+        (kura_redact:changeset(Parent))#kura_changeset.errors
+    ).
+
+a_changeset_among_the_values_of_an_association_test() ->
+    Child = secret_changeset(),
+    Parent0 = kura_changeset:cast(?OWNER, #{}, #{name => ~"n"}, [name]),
+    Parent = Parent0#kura_changeset{changes = ill_typed(#{accounts => [Child], account => Child})},
+    ShownChild = kura_redact:changeset(Child),
+    ?assertEqual(
+        #{accounts => [ShownChild], account => ShownChild},
+        (kura_redact:changeset(Parent))#kura_changeset.changes
+    ).
+
+update_all_params_of_a_redacted_schema_test_() ->
+    Query = kura_query:where(kura_query:from(?S), {email, ~"a@b.c"}),
+    Params = [~"new@b.c", ~"a@b.c"],
+    [
+        {"a set field that is not redacted",
+            ?_assertEqual(
+                {redacted, Params}, kura_redact:update_all_params(Query, [email], Params)
+            )},
+        {"a set field that is redacted",
+            ?_assertEqual(
+                {redacted, [?R, ?R]}, kura_redact:update_all_params(Query, [token], Params)
+            )},
+        {"a schema whose redacted fields cannot be read",
+            ?_assertEqual(
+                {redacted, [?R, ?R]},
+                kura_redact:update_all_params(
+                    kura_query:from(kura_test_bad_redact_schema), [name], Params
+                )
+            )}
+    ].
+
 record_that_cannot_be_read_test_() ->
     [
         {"no map",
