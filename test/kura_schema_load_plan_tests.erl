@@ -93,6 +93,49 @@ a_schema_keeps_its_plan_test() ->
     ?assertMatch({#{id := _}, _, _}, Plan),
     ?assertEqual(Plan, kura_schema:load_plan(kura_test_schema)).
 
+%% A plan another release of kura kept, or one that is not a plan, is
+%% worked out again and kept in its place.
+a_kept_plan_that_cannot_be_read_is_replaced_test_() ->
+    Key = {kura_schema, load_plan, kura_test_schema},
+    {setup,
+        fun() ->
+            kura_schema:forget(kura_test_schema),
+            Plan = kura_schema:load_plan(kura_test_schema),
+            {Plan, persistent_term:get(Key)}
+        end,
+        fun(_) -> kura_schema:forget(kura_test_schema) end, fun({Plan, Kept}) ->
+            {Types, Specs, ByColumn} = Plan,
+            [
+                {Title, fun() ->
+                    persistent_term:put(Key, Unreadable),
+                    ?assertEqual(
+                        #{id => 1, name => ~"n"},
+                        kura_db:load_row(kura_test_schema, #{id => 1, name => ~"n"})
+                    ),
+                    ?assertEqual(Plan, kura_schema:load_plan(kura_test_schema)),
+                    ?assertEqual(Kept, persistent_term:get(Key))
+                end}
+             || {Title, Unreadable} <- [
+                    {"no version", Plan},
+                    {"an older version", {0, Plan}},
+                    {"a version that is not a number", {old, Plan}},
+                    {"two parts", setelement(2, Kept, {Types, Specs})},
+                    {"types that are not a map", setelement(2, Kept, {[], Specs, ByColumn})},
+                    {"specs that are not a map", setelement(2, Kept, {Types, [], ByColumn})},
+                    {"columns that are not a map", setelement(2, Kept, {Types, Specs, []})},
+                    {"an atom", plan}
+                ]
+            ]
+        end}.
+
+a_kept_plan_carries_a_version_test() ->
+    kura_schema:forget(kura_test_schema),
+    Plan = kura_schema:load_plan(kura_test_schema),
+    ?assertMatch(
+        {Version, Plan} when is_integer(Version),
+        persistent_term:get({kura_schema, load_plan, kura_test_schema})
+    ).
+
 load_schema(Module) ->
     load_schema(Module, []).
 

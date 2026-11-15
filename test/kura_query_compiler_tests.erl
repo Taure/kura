@@ -105,6 +105,95 @@ to_sql_cached_entry_without_facts_is_a_miss_test() ->
         unset_repo()
     end.
 
+%% A row another release of kura wrote holds no version, or another one.
+to_sql_cached_replaces_a_row_of_another_version_test_() ->
+    Entry = {~"PRE_BAKED_SQL", [], ?FACTS},
+    [
+        {Title, fun() ->
+            replaced(fun(Key) -> true = ets:insert(kura_query_cache, Row(Key)) end)
+        end}
+     || {Title, Row} <- [
+            {"no version", fun(Key) -> {Key, Entry} end},
+            {"no version, an uncacheable shape", fun(Key) -> {Key, uncacheable} end},
+            {"an older version", fun(Key) -> {Key, {0, Entry}} end},
+            {"a version that is not a number", fun(Key) -> {Key, {old, Entry}} end},
+            {"an older version of an uncacheable shape", fun(Key) -> {Key, {0, uncacheable}} end},
+            {"a version beside the entry", fun(Key) -> {Key, 1, Entry} end},
+            {"a key alone", fun(Key) -> {Key} end}
+        ]
+    ].
+
+%% An entry is served only when every part of it is what the compiler stores.
+to_sql_cached_replaces_an_entry_it_cannot_read_test_() ->
+    [
+        {Title, fun() ->
+            replaced(fun(Key) ->
+                ok = kura_query_cache:put(Key, kura_test_typing:ill_typed(Entry))
+            end)
+        end}
+     || {Title, Entry} <- [
+            {"facts that are not a map", {~"PRE_BAKED_SQL", [], [plain]}},
+            {"no shown", {~"PRE_BAKED_SQL", [], maps:remove(shown, ?FACTS)}},
+            {"no source", {~"PRE_BAKED_SQL", [], maps:remove(source, ?FACTS)}},
+            {"no tenant_scoped", {~"PRE_BAKED_SQL", [], maps:remove(tenant_scoped, ?FACTS)}},
+            {"an unknown shown", {~"PRE_BAKED_SQL", [], maps:put(shown, loud, ?FACTS)}},
+            {"a source that is not a name", {~"PRE_BAKED_SQL", [], maps:put(source, users, ?FACTS)}},
+            {"tenant_scoped that is not a list", {
+                ~"PRE_BAKED_SQL", [], maps:put(tenant_scoped, users, ?FACTS)
+            }},
+            {"tenant_scoped holding no source", {
+                ~"PRE_BAKED_SQL", [], maps:put(tenant_scoped, [users, 7], ?FACTS)
+            }},
+            {"tenant_scoped that does not end", {
+                ~"PRE_BAKED_SQL", [], maps:put(tenant_scoped, [users | orders], ?FACTS)
+            }},
+            {"SQL that is not a binary", {"PRE_BAKED_SQL", [], ?FACTS}},
+            {"a template that is not a list", {~"PRE_BAKED_SQL", {}, ?FACTS}},
+            {"no facts", {~"PRE_BAKED_SQL", []}},
+            {"an atom", cached}
+        ]
+    ].
+
+every_shown_and_source_is_read_back_test_() ->
+    [
+        fun() ->
+            kura_query_cache:init(),
+            Key = {?REPO, undefined, {read_back, Facts}},
+            try
+                ok = kura_query_cache:put(Key, {~"SELECT 1", [1], Facts}),
+                ?assertEqual({ok, {~"SELECT 1", [1], Facts}}, kura_query_cache:get(Key))
+            after
+                kura_query_cache:flush()
+            end
+        end
+     || Facts <- [
+            #{shown => plain, source => undefined, tenant_scoped => []},
+            #{shown => redacted, source => ~"users", tenant_scoped => [users]},
+            #{shown => hidden, source => ~"users", tenant_scoped => [users, ~"orders"]}
+        ]
+    ].
+
+replaced(Store) ->
+    set_repo_dialect(kura_dialect_pg),
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        Q = #kura_query{from = cache_unreadable_schema},
+        Key = {?REPO, kura_tenant:get_tenant(), Q},
+        _ = Store(Key),
+        ?assertEqual(miss, kura_query_cache:get(Key)),
+        ?assertEqual(0, kura_query_cache:entry_count()),
+        _ = Store(Key),
+        {SQL, Params} = kura_query_compiler:to_sql(?REPO, Q),
+        Facts = kura_query_compiler:facts(Q),
+        ?assertEqual({SQL, Params, Facts}, kura_query_compiler:statement(?REPO, Q)),
+        ?assertEqual({ok, {SQL, Params, Facts}}, kura_query_cache:get(Key)),
+        ?assertEqual(1, kura_query_cache:entry_count())
+    after
+        kura_query_cache:flush(),
+        unset_repo()
+    end.
+
 to_sql_cached_hit_returns_stored_result_test() ->
     set_repo_dialect(kura_dialect_pg),
     kura_query_cache:init(),

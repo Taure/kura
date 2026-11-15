@@ -135,6 +135,10 @@ ignored.
 -export_type([on_delete/0, field_encryption/0]).
 
 -define(NOT_KEPT, '$kura_not_kept').
+%% A kept load plan carries this number, and one kept with another, or with
+%% none, was kept by another release of kura and is worked out again. Raise
+%% it whenever what a plan holds changes.
+-define(LOAD_PLAN_FORMAT, 1).
 
 -doc """
 Referential action for a foreign key when the referenced row is deleted.
@@ -336,19 +340,32 @@ field_specs(Mod) ->
     {#{atom() => kura_types:kura_type()}, #{atom() => field_encryption()}, #{binary() => atom()}}
     | undefined.
 load_plan(Mod) ->
-    cache_defined({kura_schema, load_plan, Mod}, fun() ->
-        %% is_schema/1 loads the module the first time the name is asked
-        %% about, so a table named by a bare atom costs no code server call
-        %% for each result set.
-        _ = is_schema(Mod),
-        case erlang:module_loaded(Mod) andalso erlang:function_exported(Mod, fields, 0) of
-            true ->
-                {Types, Specs} = field_specs(Mod),
-                {Types, Specs, fields_by_column(Mod)};
-            false ->
-                undefined
-        end
-    end).
+    Key = {kura_schema, load_plan, Mod},
+    case persistent_term:get(Key, ?NOT_KEPT) of
+        {?LOAD_PLAN_FORMAT, {Types, Specs, ByColumn} = Plan} when
+            is_map(Types), is_map(Specs), is_map(ByColumn)
+        ->
+            Plan;
+        _NotKeptOrUnreadable ->
+            planned(Key, Mod)
+    end.
+
+%% A module that is not a schema now may be loaded as one later, so
+%% `undefined` is worked out again each time.
+planned(Key, Mod) ->
+    %% is_schema/1 loads the module the first time the name is asked about,
+    %% so a table named by a bare atom costs no code server call for each
+    %% result set.
+    _ = is_schema(Mod),
+    case erlang:module_loaded(Mod) andalso erlang:function_exported(Mod, fields, 0) of
+        true ->
+            {Types, Specs} = field_specs(Mod),
+            Plan = {Types, Specs, fields_by_column(Mod)},
+            persistent_term:put(Key, {?LOAD_PLAN_FORMAT, Plan}),
+            Plan;
+        false ->
+            undefined
+    end.
 
 encryption_specs(Table, Fields, Columns, Types) ->
     #{
@@ -968,22 +985,6 @@ forget(Mod) ->
 %%----------------------------------------------------------------------
 %% Internal: persistent_term cache
 %%----------------------------------------------------------------------
-
-%% A module that is not a schema now may be loaded as one later, so
-%% `undefined` is worked out again each time.
-cache_defined(Key, Fun) ->
-    try
-        persistent_term:get(Key)
-    catch
-        error:badarg ->
-            case Fun() of
-                undefined ->
-                    undefined;
-                Value ->
-                    persistent_term:put(Key, Value),
-                    Value
-            end
-    end.
 
 %% The answer for a name that is not a schema is not kept: a module of
 %% that name may be loaded later, and is_schema/1 is what notices. A kept

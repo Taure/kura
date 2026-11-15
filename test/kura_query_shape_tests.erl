@@ -150,7 +150,7 @@ every_pg_condition_kind_is_cached_as_a_template_test() ->
     with_pg(fun() ->
         _ = [kura_query_compiler:to_sql_cached(?REPO, Q) || N <- [1, 2], {_, Q} <- queries(N)],
         ?assertEqual(length(queries(1)), kura_query_cache:entry_count()),
-        ?assertEqual([], ets:match_object(kura_query_cache, {'_', uncacheable}))
+        ?assertEqual([], [Key || {Key, uncacheable} <- cache_entries()])
     end).
 
 queries_differing_only_in_values_share_one_entry_test() ->
@@ -423,7 +423,7 @@ valid_template_test_() ->
 
 %% The cache table also holds a reserved row for its binary count.
 cache_entries() ->
-    [Entry || {Key, _} = Entry <- ets:tab2list(kura_query_cache), is_tuple(Key)].
+    [{Key, Entry} || {Key, {_Format, Entry}} <- ets:tab2list(kura_query_cache), is_tuple(Key)].
 
 vec(N) ->
     iolist_to_binary([~"[", integer_to_binary(N), ~".0]"]).
