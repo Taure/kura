@@ -44,12 +44,27 @@ needing() ->
             kura_query:select_expr(from(), [
                 {position, kura_query:over(row_number, #{order_by => [{id, asc}]})}
             ])},
+        {window_functions,
+            kura_query:select_expr(from(), [
+                {id, id}, {position, kura_query:over(row_number, #{order_by => [{id, asc}]})}
+            ])},
         {vector, kura_query:order_by(from(), [{Vector, asc}])},
         {vector, kura_query:select_expr(from(), [{distance, Vector}])},
+        {vector, kura_query:select_expr(from(), [{id, id}, {distance, Vector}])},
         {vector, kura_query:where(from(), {Vector, '<', 0.5})},
         {select_for_update_skip_locked, kura_query:lock(from(), {for_update, skip_locked})},
         {select_for_update_skip_locked, kura_query:lock(from(), ~"FOR SHARE SKIP LOCKED")},
         {select_for_update_skip_locked, (from())#kura_query{lock = ~"for update skip locked"}},
+        {select_for_update_skip_locked,
+            kura_query:lock(
+                from(), {for_update, #{tables => [~"kura_vector_items"], wait => skip_locked}}
+            )},
+        {select_for_update_skip_locked,
+            kura_query:lock(from(), [
+                {for_update, #{tables => [~"kura_vector_items"]}}, {for_share, skip_locked}
+            ])},
+        {row_locks,
+            kura_query:lock(from(), [{for_update, #{tables => [~"kura_vector_items"]}}, for_share])},
         {row_locks, kura_query:lock(from(), for_update)},
         {row_locks, kura_query:lock(from(), {for_share, nowait})},
         {row_locks, kura_query:lock(from(), ~"FOR KEY SHARE")},
@@ -182,6 +197,29 @@ model_test_() ->
         ?_assertEqual(
             {error, {invalid_capability_model, ?MISDATED, 2}},
             kura_capabilities:validate(?MISDATED)
+        )
+    ].
+
+%% erlang:function_exported/3 is false for a module nothing has loaded yet,
+%% which a backend's pool module is when the first repo is configured.
+a_module_not_yet_loaded_is_asked_test_() ->
+    Unloaded = fun(Module) ->
+        _ = code:purge(Module),
+        _ = code:delete(Module),
+        _ = code:purge(Module),
+        false = erlang:module_loaded(Module),
+        Module
+    end,
+    [
+        ?_assertEqual(1, kura_capabilities:model(Unloaded(?CURRENT))),
+        ?_assertEqual(unchecked, kura_capabilities:model(Unloaded(?UNDATED))),
+        ?_assertEqual(
+            {error, {invalid_capability_model, ?MISDATED, 2}},
+            kura_capabilities:validate(Unloaded(?MISDATED))
+        ),
+        ?_assertError(
+            {kura, {unsupported_capability, cursors, ?CURRENT}},
+            kura_capabilities:check(Unloaded(?CURRENT), cursors)
         )
     ].
 
