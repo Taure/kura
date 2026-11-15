@@ -56,6 +56,55 @@ an_attribute_tenant_with_no_value_is_refused_everywhere_test_() ->
      || Missing <- [undefined, null, nil]
     ].
 
+an_attribute_tenant_whose_field_heads_a_condition_is_refused_everywhere_test_() ->
+    Sub = {subquery, kura_query:from(?S)},
+    [
+        {atom_to_list(Head), fun() ->
+            kura_tenant:clear_tenant(),
+            Bad = kura_test_typing:ill_typed({attribute, {Head, Rest}}),
+            Refused = {invalid_tenant, Bad},
+            ?assertError(Refused, kura_tenant:put_tenant(Bad)),
+            ?assertError(Refused, kura_tenant:with_tenant(Bad, fun() -> ran end)),
+            ?assertError(Refused, kura_tenant:with_tenant(Bad, {erlang, self, []})),
+            ?assertError(Refused, kura_tenant:adopt({Bad, false})),
+            ?assertEqual(undefined, kura_tenant:get_tenant()),
+            _ = erlang:put(kura_tenant, Bad),
+            ?assertError(Refused, kura_tenant:get_tenant()),
+            ?assertError(Refused, kura_tenant:current_scope()),
+            _ = erlang:erase(kura_tenant)
+        end}
+     || {Head, Rest} <- [
+            {'or', [{org_id, 7}, {org_id, is_not_nil}]},
+            {'and', []},
+            {'not', {org_id, 7}},
+            {exists, Sub},
+            {not_exists, Sub},
+            {fragment, ~"1 = 1"}
+        ]
+    ].
+
+an_attribute_tenant_on_a_plain_field_is_taken_as_it_is_test_() ->
+    [
+        fun() ->
+            kura_tenant:clear_tenant(),
+            Tenant = {attribute, {Field, Value}},
+            ?assertEqual(undefined, kura_tenant:put_tenant(Tenant)),
+            ?assertEqual(Tenant, kura_tenant:get_tenant()),
+            ?assertEqual(Tenant, kura_tenant:with_tenant(Tenant, fun kura_tenant:get_tenant/0)),
+            ?assertEqual(Tenant, kura_tenant:clear_tenant())
+        end
+     || {Field, Value} <- [
+            {org_id, 7},
+            {org_id, ~"acme"},
+            {org_id, [1, 2]},
+            {org_id, #{id => 7}},
+            {org_id, true},
+            {in, 7},
+            {between, {1, 2}},
+            {'or_id', 7}
+        ]
+    ].
+
 put_tenant_accepts_undefined_as_no_tenant_test() ->
     kura_tenant:clear_tenant(),
     ?assertEqual(undefined, kura_tenant:put_tenant(undefined)),
@@ -319,6 +368,62 @@ scope_query_appends_after_existing_conditions_test() ->
     Q = kura_query:where(kura_query:from(?S), {title, ~"a"}),
     #kura_query{wheres = Wheres} = kura_tenant:scope_query({attribute, ?T}, Q),
     ?assertEqual([{title, ~"a"}, ?T], Wheres).
+
+a_tenant_field_that_is_no_column_of_the_schema_is_refused_test_() ->
+    NoColumn = {attribute, {no_such_field, 7}},
+    From = kura_query:from(?S),
+    Edge = kura_query:from(kura_test_edge_schema),
+    Refused = [
+        {"a query", NoColumn, From},
+        {"a query with conditions", NoColumn, kura_query:where(From, {title, ~"a"})},
+        {"a branch of a union", {attribute, ?T}, kura_query:union(From, Edge)},
+        {"a branch of a branch", {attribute, ?T},
+            kura_query:union_all(From, kura_query:except(From, Edge))}
+    ],
+    Read = [
+        {"a join can bring the column in",
+            kura_query:join(From, inner, kura_test_edge_schema, {id, id})},
+        {"a CTE can bring the column in",
+            kura_query:with_cte(From, ~"posts", kura_query:from(~"other"))},
+        {"a table that is no schema", kura_query:from(~"posts")},
+        {"a name that is no schema", kura_query:from(posts)},
+        {"a subquery reads the outer query's column",
+            kura_query:where(
+                kura_query:from(~"posts"), {id, in, {subquery, kura_query:from(?S)}}
+            )}
+    ],
+    [
+        {Name, fun() ->
+            ?assertError({invalid_tenant, Tenant}, kura_tenant:scope_query(Tenant, Q))
+        end}
+     || {Name, Tenant, Q} <- Refused
+    ] ++
+        [
+            {Name, fun() ->
+                ?assertMatch(
+                    #kura_query{wheres = [_ | _]}, kura_tenant:scope_query(NoColumn, Q)
+                )
+            end}
+         || {Name, Q} <- Read
+        ] ++
+        [
+            {"a field of the schema scopes it", fun() ->
+                ?assertMatch(
+                    #kura_query{wheres = [?T]}, kura_tenant:scope_query({attribute, ?T}, From)
+                ),
+                ?assertMatch(
+                    #kura_query{wheres = [{title, 7}]},
+                    kura_tenant:scope_query({attribute, {title, 7}}, From)
+                )
+            end},
+            {"a virtual field is no column", fun() ->
+                Virtual = {attribute, {full_name, 7}},
+                ?assertError(
+                    {invalid_tenant, Virtual},
+                    kura_tenant:scope_query(Virtual, kura_query:from(kura_test_schema))
+                )
+            end}
+        ].
 
 compiled_sql_without_tenant_is_unchanged_test() ->
     setup(),

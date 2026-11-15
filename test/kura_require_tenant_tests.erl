@@ -10,6 +10,8 @@
 -define(SCOPED, kura_test_edge_schema).
 -define(SHARED, kura_test_shared_schema).
 -define(TENANT, {attribute, {qty, 7}}).
+%% A tenant on a field the shared schema has too.
+-define(NAMED, {attribute, {name, ~"acme"}}).
 -define(REFUSED(Source), {kura, {tenant_required, Source}}).
 
 setting(Setting) ->
@@ -97,6 +99,35 @@ required_runs_with_a_tenant_test_() ->
             ?assertMatch({_, _}, binary:match(SQL, ~"\"qty\""))
         end}
      || {Name, Run} <- writes_and_reads()
+    ]).
+
+%% A tenant whose field heads a condition would scope to every tenant's
+%% rows and still count as a tenant.
+a_tenant_that_scopes_nothing_is_no_tenant_test_() ->
+    Bad = kura_test_typing:ill_typed({attribute, {'or', [{qty, 7}, {qty, is_not_nil}]}}),
+    with_setting(true, [
+        {Name, fun() ->
+            ?assertError({invalid_tenant, Bad}, kura_tenant:with_tenant(Bad, Run)),
+            _ = erlang:put(kura_tenant, Bad),
+            ?assertError({invalid_tenant, Bad}, Run()),
+            _ = erlang:erase(kura_tenant),
+            ?assertError(?REFUSED(?SCOPED), Run()),
+            ?assertEqual([], statements()),
+            ?assertEqual(0, kura_query_cache:entry_count())
+        end}
+     || {Name, Run} <- writes_and_reads()
+    ]).
+
+a_tenant_field_that_is_no_column_is_refused_test_() ->
+    NoColumn = {attribute, {no_such_field, 7}},
+    with_setting(true, [
+        {Name, fun() ->
+            ?assertError({invalid_tenant, NoColumn}, kura_tenant:with_tenant(NoColumn, Run)),
+            ?assertError({invalid_tenant, NoColumn}, kura_tenant:with_tenant(NoColumn, Run)),
+            ?assertEqual([], statements())
+        end}
+     || {Name, Run} <- writes_and_reads(),
+        lists:member(Name, ["all", "get", "get_by", "reload", "update_all", "delete_all"])
     ]).
 
 required_test_() ->
@@ -504,7 +535,7 @@ warning_test_() ->
             ?assertMatch(
                 [#{repo := ?REPO}],
                 warnings_from(unset, #{}, fun() ->
-                    kura_tenant:put_tenant(?TENANT),
+                    kura_tenant:put_tenant(?NAMED),
                     Query(),
                     Query(),
                     kura_tenant:with_tenant({prefix, ~"t1"}, Query)
@@ -524,7 +555,7 @@ warning_test_() ->
             ?assertMatch(
                 [#{repo := ?REPO}],
                 warnings_from(unset, #{}, fun() ->
-                    kura_tenant:put_tenant(?TENANT),
+                    kura_tenant:put_tenant(?NAMED),
                     kura_query_compiler:to_sql(?REPO, shared())
                 end)
             )
@@ -535,7 +566,7 @@ warning_test_() ->
                 warnings_from(unset, #{}, fun() ->
                     kura_query_cache:init(),
                     kura_query_cache:flush(),
-                    kura_tenant:put_tenant(?TENANT),
+                    kura_tenant:put_tenant(?NAMED),
                     Compiled = kura_query_compiler:to_sql_cached(?REPO, shared()),
                     ?assertEqual(1, kura_query_cache:entry_count()),
                     ?assertMatch([_], warnings()),
@@ -557,7 +588,7 @@ warning_test_() ->
         end},
         {"setting a tenant runs nothing, so warns of nothing", fun() ->
             ?assertEqual(
-                [], warnings_from(unset, #{}, fun() -> kura_tenant:put_tenant(?TENANT) end)
+                [], warnings_from(unset, #{}, fun() -> kura_tenant:put_tenant(?NAMED) end)
             )
         end}
     ] ++
@@ -571,8 +602,8 @@ warning_test_() ->
                 ?assertEqual(
                     [],
                     warnings_from(Env, Repo, fun() ->
-                        kura_tenant:with_tenant(?TENANT, Query),
-                        kura_tenant:with_tenant(?TENANT, Write)
+                        kura_tenant:with_tenant(?NAMED, Query),
+                        kura_tenant:with_tenant(?NAMED, Write)
                     end)
                 )
             end}

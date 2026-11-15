@@ -63,6 +63,15 @@
 %% to tell the two apart, so a new unary operator must be added here.
 -define(KURA_IS_UNARY_OP(Op), (Op =:= is_nil orelse Op =:= is_not_nil)).
 
+%% The atoms that head a condition which is not a field's: `{'and', List}`,
+%% `{'not', Condition}`, `{exists, Subquery}`, `{fragment, SQL, Params}`.
+%% kura_tenant refuses them as a tenant field, which would otherwise scope
+%% by that condition, so a new one must be added here.
+-define(KURA_IS_CONDITION_HEAD(Atom),
+    (Atom =:= 'and' orelse Atom =:= 'or' orelse Atom =:= 'not' orelse Atom =:= exists orelse
+        Atom =:= not_exists orelse Atom =:= fragment)
+).
+
 %% The operators of a vector distance threshold `{Distance, Op, Number}`.
 -define(KURA_IS_THRESHOLD_OP(Op),
     (Op =:= '<' orelse Op =:= '<=' orelse Op =:= '>' orelse Op =:= '>=')

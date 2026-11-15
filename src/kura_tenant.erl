@@ -116,9 +116,14 @@ than storing something that would scope nothing. The attribute value cannot be
 `is_nil` or `is_not_nil`, which a condition reads as a test rather than a value,
 nor `undefined`, `null` or `nil`: a tenant with no value, such as one read from
 a claim that was missing, would count as a tenant, match no row and stamp
-inserts with no owner. `with_tenant/2` and `adopt/1` refuse the same.
-`undefined` in place of the strategy is accepted and leaves the process
-without a tenant.
+inserts with no owner. The attribute field is the name of a field and cannot
+be `and`, `or`, `not`, `exists`, `not_exists` or `fragment`: a condition reads
+those as its own words, so the tenant would scope by whatever stands in place
+of the value. `with_tenant/2` and `adopt/1` refuse the same. `undefined` in
+place of the strategy is accepted and leaves the process without a tenant.
+
+Name the field in your own code. A field taken from a request is not a
+tenant: `scope_query/2` checks it against the schema only where it can.
 """.
 -spec put_tenant(undefined | strategy()) -> undefined | strategy().
 put_tenant(Tenant) ->
@@ -142,6 +147,7 @@ validate_tenant({prefix, Prefix}) when is_binary(Prefix) ->
     {prefix, Prefix};
 validate_tenant({attribute, {Field, Value}}) when
     is_atom(Field),
+    not ?KURA_IS_CONDITION_HEAD(Field),
     Value =/= is_nil,
     Value =/= is_not_nil,
     Value =/= undefined,
@@ -402,12 +408,47 @@ The condition goes through the guard of `kura_query:where/2`, so a `Field`
 that is encrypted in a schema of the query raises instead of binding the
 tenant value, also when it is deterministic: writes refuse an encrypted
 tenant field, so reads do too.
+
+A `Field` that is not a stored field of the schema the query reads raises
+`{invalid_tenant, Strategy}`, where kura can tell: the query, or a query
+combined with it, is from a schema and has no join and no CTE, either of
+which can bring the column in. Any other query is left to the database, as
+is a subquery. So does a `Field` that `put_tenant/1` refuses.
 """.
 -spec scope_query(undefined | strategy(), #kura_query{}) -> #kura_query{}.
-scope_query({attribute, {Field, Value}}, Query) when is_atom(Field) ->
+scope_query({attribute, {Field, Value}} = Strategy, Query) when is_atom(Field) ->
+    _ = validate_tenant(Strategy),
+    ok = check_column(Strategy, Field, Query),
     scoped(Query, {Field, Value});
 scope_query(_Strategy, Query) ->
     Query.
+
+-spec check_column(strategy(), atom(), term()) -> ok.
+check_column(
+    Strategy,
+    Field,
+    #kura_query{from = From, joins = [], ctes = [], combinations = Combinations}
+) ->
+    case names_column(From, Field) of
+        true -> check_combined(Strategy, Field, Combinations);
+        false -> error({invalid_tenant, Strategy})
+    end;
+check_column(_Strategy, _Field, _Query) ->
+    ok.
+
+-spec check_combined(strategy(), atom(), term()) -> ok.
+check_combined(Strategy, Field, [{_Kind, Combined} | Rest]) ->
+    ok = check_column(Strategy, Field, Combined),
+    check_combined(Strategy, Field, Rest);
+check_combined(_Strategy, _Field, _Rest) ->
+    ok.
+
+-spec names_column(term(), atom()) -> boolean().
+names_column(From, Field) when is_atom(From), From =/= undefined ->
+    not kura_schema:is_schema(From) orelse
+        lists:member(Field, kura_schema:non_virtual_fields(From));
+names_column(_From, _Field) ->
+    true.
 
 -spec scoped(#kura_query{}, {atom(), term()}) -> #kura_query{}.
 scoped(Query, Condition) ->
