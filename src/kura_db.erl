@@ -1018,10 +1018,8 @@ build_telemetry_metadata(RepoMod, SQL, Params, Result, Named) ->
     SQLBin = iolist_to_binary(SQL),
     {ResultStatus, NumRows, ErrorReason} =
         case Result of
-            #{rows := Rows} -> {ok, length(Rows), undefined};
-            #{num_rows := N} -> {ok, N, undefined};
             {error, Reason} -> {error, 0, shown_error(Reason)};
-            _ -> {ok, 0, undefined}
+            _ -> {ok, extract_num_rows(Result), undefined}
         end,
     Source =
         case Named of

@@ -46,7 +46,8 @@ facts_test_() ->
             {"a hit is refused a missing tenant as the miss was", fun t_hit_requires_a_tenant/0},
             {"a query that cannot be split has its facts too", fun t_malformed/0},
             {"telemetry names the table kura compiled for", fun t_source/0},
-            {"raw SQL is read for its table", fun t_raw_source/0}
+            {"raw SQL is read for its table", fun t_raw_source/0},
+            {"telemetry counts the rows a write affected", fun t_rows_affected/0}
         ]}.
 
 t_facts() ->
@@ -226,6 +227,38 @@ t_raw_source() ->
         kura_db:build_telemetry_metadata(
             ?REPO, ~"SELECT * FROM \"users\"", [], #{rows => []}, undefined
         )
+    ).
+
+t_rows_affected() ->
+    Counted = fun(Result, Run) ->
+        kura_test_recording_driver:reply_with([Result]),
+        {_Result, [Event]} = observed(Run),
+        maps:get(num_rows, Event)
+    end,
+    Shared = kura_query:from(?SHARED),
+    ?assertEqual(
+        2,
+        Counted(#{command => insert, rows => [], num_rows => 2}, fun() ->
+            kura_repo_worker:insert_all(?REPO, ?SHARED, [#{name => ~"a"}, #{name => ~"b"}])
+        end)
+    ),
+    ?assertEqual(
+        3,
+        Counted(#{command => update, rows => [], num_rows => 3}, fun() ->
+            kura_repo_worker:update_all(?REPO, Shared, #{name => ~"c"})
+        end)
+    ),
+    ?assertEqual(
+        4,
+        Counted(#{command => delete, rows => [], num_rows => 4}, fun() ->
+            kura_repo_worker:delete_all(?REPO, Shared)
+        end)
+    ),
+    ?assertEqual(
+        5,
+        Counted(#{command => update, rows => [], num_rows => 5}, fun() ->
+            kura_repo_worker:query(?REPO, ~"UPDATE shared_items SET name = $1", [~"d"])
+        end)
     ).
 
 observed(Run) ->

@@ -81,6 +81,27 @@ build_telemetry_metadata_error_test() ->
     ?assertEqual(0, maps:get(num_rows, Meta)),
     ?assertEqual(#{code => <<"23505">>}, maps:get(error_reason, Meta)).
 
+build_telemetry_metadata_rows_affected_test_() ->
+    Counted = fun(Result) ->
+        maps:get(
+            num_rows,
+            kura_repo_worker:build_telemetry_metadata(my_repo, ~"SELECT 1", [], Result)
+        )
+    end,
+    [
+        {"a write that returns no rows counts the rows it affected", [
+            ?_assertEqual(3, Counted(#{command => insert, num_rows => 3, rows => []})),
+            ?_assertEqual(2, Counted(#{command => update, num_rows => 2, rows => []})),
+            ?_assertEqual(4, Counted(#{command => delete, num_rows => 4}))
+        ]},
+        ?_assertEqual(
+            2, Counted(#{command => insert, num_rows => 2, rows => [#{id => 1}, #{id => 2}]})
+        ),
+        ?_assertEqual(1, Counted(#{command => select, rows => [#{id => 1}]})),
+        ?_assertEqual(0, Counted(#{command => select, rows => []})),
+        ?_assertEqual(0, Counted({error, timeout}))
+    ].
+
 build_telemetry_metadata_no_source_test() ->
     Result = #{command => select, rows => []},
     Meta = kura_repo_worker:build_telemetry_metadata(

@@ -66,6 +66,7 @@ integration_test_() ->
 
             %% Bulk ops
             {"insert_all bulk inserts", fun t_insert_all/0},
+            {"telemetry counts the rows a bulk write affected", fun t_bulk_rows_affected/0},
             {"update_all bulk updates", fun t_update_all/0},
             {"delete_all bulk deletes", fun t_delete_all/0},
             {"insert fails closed on an undumpable field", fun t_insert_dump_fails_closed/0},
@@ -874,6 +875,36 @@ t_insert_all() ->
     ?assertEqual(3, Count),
     {ok, Found} = kura_test_repo:get_by(kura_test_schema, [{email, <<"bulk2@example.com">>}]),
     ?assertEqual(<<"Bulk2">>, maps:get(name, Found)).
+
+t_bulk_rows_affected() ->
+    Handler = {?MODULE, rows_affected},
+    ok = telemetry:attach(
+        Handler, [kura, repo, query], fun ?MODULE:forward_telemetry/4, #{pid => self()}
+    ),
+    Counted = fun(Run) ->
+        _ = Run(),
+        [maps:get(num_rows, Event) || Event <- telemetry_events([])]
+    end,
+    Mine = kura_query:where(kura_query:from(kura_test_schema), {name, like, ~"Counted%"}),
+    try
+        ?assertEqual(
+            [3],
+            Counted(fun() ->
+                {ok, 3} = kura_test_repo:insert_all(kura_test_schema, [
+                    #{name => ~"Counted1", email => ~"counted1@example.com"},
+                    #{name => ~"Counted2", email => ~"counted2@example.com"},
+                    #{name => ~"Counted3", email => ~"counted3@example.com"}
+                ])
+            end)
+        ),
+        ?assertEqual(
+            [3], Counted(fun() -> {ok, 3} = kura_test_repo:update_all(Mine, #{age => 30}) end)
+        ),
+        ?assertEqual([3], Counted(fun() -> {ok, 3} = kura_test_repo:delete_all(Mine) end)),
+        ?assertEqual([0], Counted(fun() -> {ok, 0} = kura_test_repo:delete_all(Mine) end))
+    after
+        telemetry:detach(Handler)
+    end.
 
 t_update_all() ->
     {ok, _} = insert_user(<<"UpdAll1">>, <<"updall1@example.com">>),
