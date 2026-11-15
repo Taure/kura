@@ -52,6 +52,7 @@ max_page_size_test_() ->
     [
         ?_assertEqual(unset, Read()),
         ?_assertEqual(50, with_setting(max_page_size, 50, Read)),
+        ?_assertEqual(1, with_setting(max_page_size, 1, Read)),
         ?_assertEqual(infinity, with_setting(max_page_size, infinity, Read))
         | [
             ?_assertError(
@@ -70,9 +71,29 @@ read_test_() ->
         ?_assertEqual({invalid, v3}, with_setting(encryption_write_format, v3, Read))
     ].
 
+validate_repo_test_() ->
+    Invalid = {error, {invalid_setting, require_tenant, yes}},
+    FromEnvironment = fun() -> kura_settings:validate_repo(#{pool_size => 2}) end,
+    [
+        ?_assertEqual(ok, kura_settings:validate_repo(#{require_tenant => true})),
+        ?_assertEqual(ok, kura_settings:validate_repo(#{require_tenant => false})),
+        ?_assertEqual(Invalid, kura_settings:validate_repo(#{require_tenant => yes})),
+        ?_assertEqual(ok, FromEnvironment()),
+        ?_assertEqual(ok, with_setting(require_tenant, true, FromEnvironment)),
+        ?_assertEqual(Invalid, with_setting(require_tenant, yes, FromEnvironment)),
+        {"the repo's own value is the one judged",
+            ?_assertEqual(
+                ok,
+                with_setting(require_tenant, yes, fun() ->
+                    kura_settings:validate_repo(#{require_tenant => false})
+                end)
+            )}
+    ].
+
 validate_test_() ->
     [
         ?_assertEqual(ok, kura_settings:validate()),
+        ?_assertEqual(ok, with_setting(max_page_size, 1, fun kura_settings:validate/0)),
         {"every valid value passes", fun() ->
             Valid =
                 [{Flag, true} || Flag <- ?FLAGS] ++
@@ -92,7 +113,8 @@ validate_test_() ->
                         with_setting(Key, Value, fun kura_settings:validate/0)
                     end),
                     ?assertEqual({error, {invalid_setting, Key, Value}}, Result),
-                    ?assertMatch([#{setting := Key, value := Value, expected := _}], Logged)
+                    [#{setting := Key, value := Value, expected := Expected}] = Logged,
+                    ?assert(is_binary(Expected))
                 end
             }
          || {Key, Value} <- ?INVALID
