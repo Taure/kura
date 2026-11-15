@@ -94,6 +94,11 @@ utf8_text(Chars) -> unicode:characters_to_binary(Chars).
 
 clauses_text(Clauses) -> iolist_to_binary([Text || {Text, _Clause} <- Clauses]).
 
+repeated(Chunk, Copies, Tail) -> <<(binary:copy(Chunk, Copies))/binary, Tail/binary>>.
+
+naming_text(Before, Keyword, After) ->
+    <<Before/binary, $\s, Keyword/binary, " hidden_t ", After/binary>>.
+
 %%----------------------------------------------------------------------
 %% Locks
 %%----------------------------------------------------------------------
@@ -509,7 +514,7 @@ prop_source_is_bounded() ->
             oneof([range(0, 64), range(1024, 65536)]),
             binary()
         },
-        source_is_bounded(<<(binary:copy(Chunk, Copies))/binary, Tail/binary>>)
+        source_is_bounded(repeated(Chunk, Copies, Tail))
     ).
 
 source_is_bounded(Statement) ->
@@ -580,7 +585,7 @@ gen_naming_text(Alphabet) ->
             oneof([~"FROM", ~"from", ~"INTO", ~"UPDATE", ~"TABLE", ~"FROM ONLY"]),
             gen_text(Alphabet)
         },
-        <<Before/binary, $\s, Keyword/binary, " hidden_t ", After/binary>>
+        naming_text(Before, Keyword, After)
     ).
 
 any_source(Statement) ->

@@ -145,7 +145,9 @@ to_sql_cached_replaces_an_entry_it_cannot_read_test_() ->
                 ~"PRE_BAKED_SQL", [], maps:put(tenant_scoped, [users, 7], ?FACTS)
             }},
             {"tenant_scoped that does not end", {
-                ~"PRE_BAKED_SQL", [], maps:put(tenant_scoped, [users | orders], ?FACTS)
+                ~"PRE_BAKED_SQL",
+                [],
+                maps:put(tenant_scoped, [users | kura_test_typing:ill_typed(orders)], ?FACTS)
             }},
             {"SQL that is not a binary", {"PRE_BAKED_SQL", [], ?FACTS}},
             {"a template that is not a list", {~"PRE_BAKED_SQL", {}, ?FACTS}},

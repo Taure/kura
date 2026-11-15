@@ -189,7 +189,7 @@ gen_term() ->
     ]).
 
 gen_few(Generator) ->
-    ?LET(Count, range(0, 3), vector(Count, Generator)).
+    ?LET(Count, range(0, 3), counted(Count, Generator)).
 
 realised({improper, Elements, Tail}) ->
     realised(Elements) ++ realised(Tail);
@@ -244,7 +244,7 @@ gen_tuple_of(FieldGen) ->
     ?LET(
         Count,
         range(0, 14),
-        ?LET(Fields, vector(Count, FieldGen), list_to_tuple([kura_changeset | Fields]))
+        ?LET(Fields, counted(Count, FieldGen), changeset_of(Fields))
     ).
 
 gen_any_field() ->
@@ -254,9 +254,9 @@ gen_field(Schema) ->
     frequency([{5, gen_field_map(Schema)}, {1, gen_no_map()}]).
 
 gen_hiding_map(?OWNER) ->
-    ?LET(Map, gen_field_map(?OWNER), Map#{accounts => [#{token => ?MARKER}]});
+    ?LET(Map, gen_field_map(?OWNER), with_entry(Map, accounts, [#{token => ?MARKER}]));
 gen_hiding_map(Schema) ->
-    ?LET(Map, gen_field_map(Schema), Map#{token => ?MARKER}).
+    ?LET(Map, gen_field_map(Schema), with_entry(Map, token, ?MARKER)).
 
 %% The owner hides nothing of its own: the marker is in its associations'
 %% records, and under keys that name no field. A schema that is not the
@@ -269,7 +269,7 @@ gen_field_map(?OWNER) ->
             gen_few({gen_unreadable_key(), gen_secret()}),
             gen_few({gen_assoc_key(), gen_nested()})
         },
-        maps:from_list(Shown ++ Nested ++ Hidden)
+        map_of(Shown, Nested, Hidden)
     );
 gen_field_map(_Schema) ->
     ?LET(
@@ -281,7 +281,7 @@ gen_field_map(_Schema) ->
                 gen_assoc_key(), oneof([undefined, gen_shown_record(), gen_few(gen_shown_record())])
             })
         },
-        maps:from_list(Shown ++ Nested ++ Hidden)
+        map_of(Shown, Nested, Hidden)
     ).
 
 gen_shown_key() -> oneof([id, email, name, ~"email", ~"name", "email"]).
@@ -307,7 +307,7 @@ gen_nested() ->
     ]).
 
 gen_shown_record() ->
-    ?LET(Shown, gen_few({gen_shown_key(), gen_term()}), maps:from_list(Shown)).
+    ?LET(Shown, gen_few({gen_shown_key(), gen_term()}), map_of(Shown, [], [])).
 
 gen_secret() ->
     oneof([
@@ -373,7 +373,7 @@ gen_assocs() ->
         ?LET(
             Entries,
             gen_few({oneof([accounts, account, other, ~"accounts", 7]), gen_assoc()}),
-            maps:from_list(Entries)
+            map_of(Entries, [], [])
         ),
         gen_no_map()
     ]).
@@ -431,6 +431,15 @@ gen_error() ->
 %%----------------------------------------------------------------------
 %% PropEr instances are untyped; these hand them to the typed API.
 %%----------------------------------------------------------------------
+
+%% PropEr instances are untyped; these put them together.
+counted(Count, Generator) -> vector(Count, Generator).
+
+changeset_of(Fields) -> list_to_tuple([kura_changeset | Fields]).
+
+with_entry(Map, Key, Value) -> Map#{Key => Value}.
+
+map_of(Shown, Nested, Hidden) -> maps:from_list(Shown ++ Nested ++ Hidden).
 
 -spec ill_typed(term()) -> dynamic().
 ill_typed(Term) -> Term.

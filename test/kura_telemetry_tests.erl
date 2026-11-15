@@ -287,7 +287,7 @@ extract_source_of_what_is_no_text_test_() ->
     [
         ?_assertEqual(undefined, Source(from_t)),
         ?_assertEqual(undefined, Source(<<1:3>>)),
-        ?_assertEqual(undefined, Source([~"SELECT 1 FROM t" | from_u])),
+        ?_assertEqual(undefined, Source([~"SELECT 1 FROM t" | kura_test_typing:ill_typed(from_u)])),
         ?_assertEqual(undefined, Source([~"SELECT 1 FROM t", 256])),
         ?_assertEqual(undefined, Source({~"SELECT 1 FROM t"}))
     ].

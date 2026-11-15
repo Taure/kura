@@ -122,6 +122,12 @@ changeset_error_messages_that_are_no_binary_test_() ->
             ?_assertEqual([{email, ~"is not allowed"}], Errors([{email, "is not allowed"}]))},
         {"a string that quotes a redacted value",
             ?_assertEqual([{email, ?R}], Errors([{email, "is not tok-SECRET"}]))},
+        {"text in pieces is shown joined",
+            ?_assertEqual(
+                [{email, ~"is not allowed"}], Errors([{email, ["is not ", [~"allow", $e], "d"]}])
+            )},
+        {"text that does not end as a list",
+            ?_assertEqual([{email, ?R}], Errors([{email, improper($a, ~"b")}]))},
         {"a quote in pieces",
             ?_assertEqual([{email, ?R}], Errors([{email, ["is not tok-", [~"SECRET"]]}]))},
         {"an atom is shown as its text",
