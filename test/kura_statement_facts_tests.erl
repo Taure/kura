@@ -45,6 +45,7 @@ facts_test_() ->
             {"a hit is redacted as the miss was", fun t_hit_is_redacted/0},
             {"a hit is refused a missing tenant as the miss was", fun t_hit_requires_a_tenant/0},
             {"a query that cannot be split has its facts too", fun t_malformed/0},
+            {"a shape kura cannot cache has its facts too", fun t_uncacheable/0},
             {"telemetry names the table kura compiled for", fun t_source/0},
             {"raw SQL is read for its table", fun t_raw_source/0},
             {"telemetry counts the rows a write affected", fun t_rows_affected/0}
@@ -165,6 +166,15 @@ t_malformed() ->
     ?assertEqual(
         #{shown => redacted, source => ~"accounts", tenant_scoped => [?SECRET]},
         kura_query_compiler:facts(Q)
+    ).
+
+t_uncacheable() ->
+    Q = kura_query:where(kura_query:from(?SECRET), {id, 1}),
+    {Shape, _Values} = kura_query_shape:split(Q),
+    kura_query_cache:put({?REPO, kura_tenant:get_tenant(), Shape}, uncacheable),
+    ?assertMatch(
+        {_SQL, [1], #{shown := redacted, source := ~"accounts", tenant_scoped := [?SECRET]}},
+        kura_query_compiler:statement(?REPO, Q)
     ).
 
 t_source() ->
