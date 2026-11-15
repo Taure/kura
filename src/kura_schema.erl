@@ -134,6 +134,8 @@ ignored.
 
 -export_type([on_delete/0, field_encryption/0]).
 
+-define(NOT_KEPT, '$kura_not_kept').
+
 -doc """
 Referential action for a foreign key when the referenced row is deleted.
 
@@ -984,11 +986,17 @@ cache_defined(Key, Fun) ->
     end.
 
 %% The answer for a name that is not a schema is not kept: a module of
-%% that name may be loaded later, and is_schema/1 is what notices.
+%% that name may be loaded later, and is_schema/1 is what notices. A kept
+%% answer was therefore worked out from a schema, and is read without asking.
 schema_cache({kura_schema, _Tag, Mod} = Key, NotASchema, Fun) ->
-    case is_schema(Mod) of
-        true -> cache(Key, Fun);
-        false -> NotASchema
+    case persistent_term:get(Key, ?NOT_KEPT) of
+        ?NOT_KEPT ->
+            case is_schema(Mod) of
+                true -> cache(Key, Fun);
+                false -> NotASchema
+            end;
+        Kept ->
+            Kept
     end.
 
 %% Keys are {kura_schema, Tag, Mod}; forget/1 relies on that shape.
