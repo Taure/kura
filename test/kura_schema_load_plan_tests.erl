@@ -45,7 +45,7 @@ a_module_loaded_later_is_read_whatever_is_asked_first_test_() ->
             secret, state
         ]},
         {"kura_redact:record", fun() -> kura_redact:record(?LATE_SECRET, #{state => ~"open"}) end,
-            #{state => ~"open"}, #{state => ~"[redacted]"}},
+            #{base => ~"[redacted]"}, #{state => ~"[redacted]"}},
         {"renamed_columns", fun() -> kura_schema:renamed_columns(?LATE_SECRET) end, #{}, #{
             label => ~"label_text"
         }},
