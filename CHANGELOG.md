@@ -83,6 +83,7 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(upgrading)* What waits for the next kura_sqlite and rebar3_kura
 - *(changelog)* Describe 2.31.0 as it ships
 - *(upgrading)* Which fragment conditions change their result, and what to check
+- *(multitenancy)* Show the line a fragment's closing parenthesis is written on
 
 ### Features
 

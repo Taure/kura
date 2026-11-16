@@ -98,7 +98,12 @@ Under the attribute strategy:
 - **Queries** (`all`, `one`, `get`, `exists`, aggregates, `stream`, preloads): the tenant condition is added to the query, to every CTE and union, and to every `in` and `exists` subquery, however deeply nested.
 - **Record writes** (`update`, `delete`, including optimistic locking): the record is addressed by its key and the tenant, so another tenant's row is not found rather than written.
 - **Bulk writes** (`update_all`, `delete_all`): the tenant condition is added to the statement's conditions, as for a query. A change to the tenant field is pinned to the current tenant, so a row cannot be moved to another tenant.
-- **Fragments**: a `{fragment, SQL, Params}` condition is written inside parentheses and the tenant condition is joined to it with `AND`, so an `OR` in the fragment's text does not reach past the tenant: `WHERE (title ILIKE $1 OR body ILIKE $2) AND "org_id" = $3`. That holds in a query, an `update_all` and a `delete_all`.
+- **Fragments**: a `{fragment, SQL, Params}` condition is written inside parentheses and the tenant condition is joined to it with `AND`, so an `OR` in the fragment's text does not reach past the tenant. That holds in a query, an `update_all` and a `delete_all`. The closing parenthesis is on a line of its own:
+
+  ```sql
+  WHERE (title ILIKE $1 OR body ILIKE $2
+  ) AND "org_id" = $3
+  ```
 - **Inserts** (`insert`, `insert_all`): the tenant field and value are set on every row.
 - **Upserts** (`on_conflict` with a `DO UPDATE` action): the update only applies when the conflicting row belongs to the same tenant. A conflict with another tenant's row leaves it untouched.
 
