@@ -95,7 +95,7 @@ For your own log lines, `kura_redact:record(Schema, Map)` and
 replaced. In the `params` of a changeset whose schema has redacted fields
 or associations, the value under a key that names no field, embed or
 association of the schema, such as a confirmation or a mistyped name, is
-replaced too.
+replaced too, and so is an error message that quotes it.
 
 ## Attaching Handlers
 

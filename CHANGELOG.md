@@ -58,7 +58,7 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(tenant)* Refuse a write before its prepare functions and before hooks run
 - *(redact)* Hide a record or changeset of a module that is no schema
 - *(redact)* Redact an embed whose schema lists redacted fields
-- *(redact)* Hide a changeset's params under keys that name no field, embed or association
+- *(redact)* Hide a changeset's params under keys that name no field, embed or association, and the error messages that quote them
 - *(preload)* Give preload/4 a spec that takes a conditional preload
 - *(query)* Give preload/2 and the query record a type that takes a conditional preload
 

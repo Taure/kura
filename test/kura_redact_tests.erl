@@ -78,6 +78,49 @@ changeset_errors_that_quote_a_redacted_value_test() ->
     Printed = iolist_to_binary(io_lib:format("~p", [Shown])),
     ?assertEqual(nomatch, binary:match(Printed, [~"tok-SECRET", ~"old-HASH"])).
 
+%% A message can quote what a key of the params that names no field
+%% holds, at any depth of an association's params.
+changeset_errors_that_quote_a_hidden_param_test_() ->
+    Errors = [
+        {token, ~"tok-OTHER does not match"},
+        {base, ~"member-OTHER is taken"},
+        {email, ~"has invalid format"}
+    ],
+    Shown = [{token, ?R}, {base, ?R}, {email, ~"has invalid format"}],
+    [
+        {"under a key of a schema with redacted fields",
+            ?_assertEqual(
+                Shown,
+                (kura_redact:changeset((secret_changeset())#kura_changeset{
+                    params = #{
+                        ~"token_confirmation" => ~"tok-OTHER", ~"usrname" => ~"member-OTHER"
+                    },
+                    errors = Errors
+                }))#kura_changeset.errors
+            )},
+        {"under a key of an association's params",
+            ?_assertEqual(
+                Shown,
+                (kura_redact:changeset(
+                    (kura_changeset:cast(?OWNER, #{}, #{}, []))#kura_changeset{
+                        params = #{
+                            ~"accounts" => [#{~"token_confirmation" => ~"tok-OTHER"}],
+                            ~"acounts" => [#{~"email" => ~"member-OTHER"}]
+                        },
+                        errors = Errors
+                    }
+                ))#kura_changeset.errors
+            )},
+        {"a value shown in the params is no reason to hide a message",
+            ?_assertEqual(
+                [{email, ~"a@b.c is taken"}],
+                (kura_redact:changeset((secret_changeset())#kura_changeset{
+                    params = #{~"email" => ~"a@b.c"},
+                    errors = [{email, ~"a@b.c is taken"}]
+                }))#kura_changeset.errors
+            )}
+    ].
+
 changeset_errors_quoting_a_redacted_number_test() ->
     CS0 = kura_changeset:cast(?S, #{}, #{token => ~"t"}, [token]),
     CS = CS0#kura_changeset{

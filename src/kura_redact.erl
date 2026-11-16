@@ -113,8 +113,9 @@ Return `Changeset` safe to log; not for writing.
 The redacted fields' values are replaced in its `data`, `changes` and
 `params`, as `record/2` replaces them, and so is every error message that
 holds one of those values: a message that quotes a redacted field's text
-or integer, as a database's `invalid input syntax` does. The changesets
-in `assoc_changes` are redacted the same way.
+or integer, as a database's `invalid input syntax` does, or what a
+replaced key of the `params` holds. The changesets in `assoc_changes` are
+redacted the same way.
 
 ```erlang
 [{base, ~"invalid input syntax for type uuid: \"tok-SECRET\""}] = CS#kura_changeset.errors,
@@ -190,7 +191,7 @@ shown_changeset(Changeset, Hidden) ->
                 data = shown_map(Hidden, Data),
                 changes = shown_map(Hidden, Changes),
                 params = shown_params(Schema, Hidden, Params),
-                errors = shown_errors(Errors, quotable([Data, Changes, Params], Hidden))
+                errors = shown_errors(Errors, quotable(Schema, Hidden, [Data, Changes], Params))
             }
     end.
 
@@ -295,7 +296,9 @@ shown_params(Schema, Hidden, Params) ->
 %% Params are what a caller was sent, under the keys it was sent with. In
 %% a schema with something to hide, a key that names none of its fields
 %% can hold what a redacted field or an association's record holds, as a
-%% confirmation or a mistyped name does, so its value is hidden.
+%% confirmation or a mistyped name does, so its value is hidden. What is
+%% shown and what an error message may quote are both read from here, so
+%% the two cannot differ.
 -spec read_params(term(), hidden() | unknown, term()) ->
     shown | hidden | [{term(), reading(), term()}].
 read_params(Schema, {Redacted, Nested} = Hidden, Params) when
@@ -417,39 +420,50 @@ entry(Key, Hidden) when is_list(Key) ->
 entry(_Key, _Hidden) ->
     hide.
 
-%% The text of every value hidden in the maps, as an error message would
-%% quote it. `unknown` when a map is not one: its values cannot be told.
--spec quotable([term()], hidden()) -> [binary()] | unknown.
-quotable(Maps, Hidden) ->
-    case [Map || Map <- Maps, not is_map(Map)] of
+%% The text of every value hidden in the maps of fields and in the
+%% params, as an error message would quote it. `unknown` when one of them
+%% is not a map: its values cannot be told.
+-spec quotable(term(), hidden(), [term()], term()) -> [binary()] | unknown.
+quotable(Schema, Hidden, Fields, Params) ->
+    case [Map || Map <- [Params | Fields], not is_map(Map)] of
         [] ->
-            lists:usort([
-                Text
-             || Map <- Maps, Value <- hidden_values(Hidden, Map), Text <- texts(Value)
-            ]);
+            Values =
+                hidden_params(Schema, Hidden, Params) ++
+                    lists:append([hidden_values(Hidden, Map) || Map <- Fields]),
+            lists:usort([Text || Value <- Values, Text <- texts(Value)]);
         _NotAMap ->
             unknown
     end.
 
 -spec hidden_values(hidden() | unknown, term()) -> [term()].
 hidden_values({_Redacted, _Nested} = Hidden, Map) when is_map(Map) ->
-    lists:append([hidden_value(entry(Key, Hidden), Value) || Key := Value <- Map]);
+    lists:append([hidden_value(fields, entry(Key, Hidden), Value) || Key := Value <- Map]);
 hidden_values(_Hidden, Map) ->
     [Map].
 
--spec hidden_value(reading(), term()) -> [term()].
-hidden_value(hide, Value) -> [Value];
-hidden_value(show, _Value) -> [];
-hidden_value({nested, Target}, Value) -> hidden_nested(Target, Value).
+-spec hidden_params(term(), hidden() | unknown, term()) -> [term()].
+hidden_params(Schema, Hidden, Params) ->
+    case read_params(Schema, Hidden, Params) of
+        shown -> [];
+        hidden -> [Params];
+        Read -> lists:append([hidden_value(params, Reading, Value) || {_, Reading, Value} <- Read])
+    end.
 
--spec hidden_nested(module(), term()) -> [term()].
-hidden_nested(Target, Value) when is_map(Value) ->
+-spec hidden_value(holds(), reading(), term()) -> [term()].
+hidden_value(_Holds, hide, Value) -> [Value];
+hidden_value(_Holds, show, _Value) -> [];
+hidden_value(Holds, {nested, Target}, Value) -> hidden_nested(Holds, Target, Value).
+
+-spec hidden_nested(holds(), module(), term()) -> [term()].
+hidden_nested(fields, Target, Value) when is_map(Value) ->
     hidden_values(hidden_in(Target), Value);
-hidden_nested(Target, [Value | Rest]) ->
-    hidden_nested(Target, Value) ++ hidden_nested(Target, Rest);
-hidden_nested(_Target, Value) when is_atom(Value); Value =:= [] ->
+hidden_nested(params, Target, Value) when is_map(Value) ->
+    hidden_params(Target, hidden_in(Target), Value);
+hidden_nested(Holds, Target, [Value | Rest]) ->
+    hidden_nested(Holds, Target, Value) ++ hidden_nested(Holds, Target, Rest);
+hidden_nested(_Holds, _Target, Value) when is_atom(Value); Value =:= [] ->
     [];
-hidden_nested(_Target, Value) ->
+hidden_nested(_Holds, _Target, Value) ->
     [Value].
 
 %% Every text and integer in a value, at any depth: an error message can
