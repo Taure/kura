@@ -1419,6 +1419,7 @@ migration_ops(Module, Dir) ->
     log_warnings(Module, check_unsafe_operations(Ops, get_safe_entries(Module))),
     Ops.
 
+-doc false.
 -spec record_sql(up | down, module()) -> binary().
 record_sql(up, RepoMod) ->
     iolist_to_binary([
