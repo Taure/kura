@@ -13,6 +13,21 @@ the exceptions under [Behaviour that changes](#behaviour-that-changes).
 Several checks are new and off until asked for; see
 [Settings](#settings).
 
+### Sibling packages
+
+kura_postgres, kura_sqlite and rebar3_kura are released on their own. The
+releases that exist today keep working with this kura; three things wait
+for their next release:
+
+- the text-match operators on SQLite (`contains`, `starts_with`,
+  `ends_with` and their case-insensitive forms) need the next kura_sqlite;
+- so do the optional backend callbacks under
+  [For a backend](#for-a-backend), which no released kura_sqlite
+  implements yet;
+- until the next rebar3_kura, a migration that writes a column's name as a
+  binary makes the generator propose dropping that column and adding it
+  again. Keep column names atoms in migrations for now.
+
 ### Settings
 
 All are optional and live in the `kura` application environment.
