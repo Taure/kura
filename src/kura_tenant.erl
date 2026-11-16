@@ -45,7 +45,8 @@ of a changeset is refused before its `prepare_changes` functions and its
 itself and in every CTE, combination and subquery inside it. Two things
 lift the requirement:
 
-- a schema shared by every tenant exports `tenant_scoped() -> false`;
+- a schema whose `tenant_scoped/0` returns `false`, whatever fields it
+  declares;
 - a deliberate cross-tenant path, such as an admin report or a
   maintenance job, runs inside `without_tenant/1`.
 
@@ -83,8 +84,9 @@ virtual. It is matched on the field in every query, `update_all` and
 `delete_all` and in every `update`, `delete` and upsert of a record, and
 its inserts are stamped with the tenant, whatever its `tenant_scoped/0`
 returns: a schema that stores the tenant's field holds each tenant's
-rows, and saying `false` does not open them to every tenant. To read all
-tenants' rows, run the query in `without_tenant/1`.
+rows, and under a tenant, saying `false` does not open them to every
+tenant; a process without a tenant is not refused for it (see Requiring a
+tenant). To read all tenants' rows, run the query in `without_tenant/1`.
 
 **Shared.** The schema exports `tenant_scoped() -> false` and does not
 declare `Field`. No tenant owns its rows, so nothing of it names the

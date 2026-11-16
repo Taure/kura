@@ -119,7 +119,7 @@ Under an attribute tenant `{attribute, {Field, Value}}` every schema is in one o
 | Shared | says `tenant_scoped() -> false` and does not declare `Field` | reads and writes run as in a process without a tenant: no condition, no stamp, no warning |
 | Undeclared | does not declare `Field` and has not said it is shared | where a tenant is required, a statement on it is refused; elsewhere it runs as in 2.30, with one warning |
 
-A schema that declares the tenant's field is scoped even when it says `tenant_scoped() -> false`. It holds each tenant's rows, so they are matched on the field, and saying `false` does not open them to every tenant. To read all tenants' rows, run the query inside [`kura_tenant:without_tenant/1`](#requiring-a-tenant).
+A schema that declares the tenant's field is scoped even when it says `tenant_scoped() -> false`. It holds each tenant's rows, so they are matched on the field, and under a tenant, saying `false` does not open them to every tenant; a process without a tenant is not refused for it (see [Requiring a Tenant](#requiring-a-tenant)). To read all tenants' rows, run the query inside [`kura_tenant:without_tenant/1`](#requiring-a-tenant).
 
 A table named by a binary, or by an atom that is no schema module, is matched on the field: kura cannot tell what columns it has, and the database decides.
 

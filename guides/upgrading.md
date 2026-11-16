@@ -268,11 +268,16 @@ any value, the permissive one included, is a decision and logs nothing.
   attribute tenant a query, `update_all` or `delete_all` that reads only
   such schemas gets no tenant condition, and a write of its records
   (`insert`, `update`, `delete`, an upsert, `insert_all`, the records of
-  an association) is neither matched on the tenant nor stamped with it. A
-  schema without the callback is scoped as in 2.30, and so is one that
-  declares the tenant's field, whatever the callback returns: it is
+  an association) is neither matched on the tenant nor stamped with it.
+  Under an attribute tenant a schema without the callback is scoped when
+  it declares the tenant's field and undeclared when it does not, and one
+  that declares the field is scoped whatever the callback returns: it is
   matched on the field, and all tenants' rows are read inside
-  `kura_tenant:without_tenant/1`. See
+  `kura_tenant:without_tenant/1`. An undeclared schema is refused on a
+  repo whose `require_tenant` is `true`; see [Tenancy](#tenancy). A
+  process without a tenant names no field to judge by, so there
+  `require_tenant` exempts a schema that returns `false` whatever fields
+  it declares. See
   [Multitenancy](multitenancy.md#the-three-states-of-a-schema).
 - `t:kura_migration:column_name/0`: a column in a `#kura_column{}`, a table
   constraint, an `alter_table` operation, an index or a `safe/0` entry is

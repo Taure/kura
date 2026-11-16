@@ -195,12 +195,15 @@ written by a process that has no tenant, and under an attribute tenant a
 query that reads only such schemas gets no tenant condition and a write
 of its records is neither matched on the tenant nor stamped with it.
 
-That is for a schema without the tenant's field. A schema that declares
-the field of the attribute tenant holds each tenant's rows, so it is
-matched on the field whatever this callback returns: read all tenants'
-rows inside `kura_tenant:without_tenant/1`. Under a prefix tenant the
-schema's table is qualified with the tenant's schema like any other. See
-`m:kura_tenant`.
+Under an attribute tenant that is for a schema without the tenant's
+field. A schema that declares the field of the attribute tenant holds
+each tenant's rows, so it is matched on the field whatever this
+callback returns: read all tenants' rows inside
+`kura_tenant:without_tenant/1`. A process without a tenant names no
+field, so there the callback alone decides: with `require_tenant` set,
+a schema that returns `false` is read and written without a tenant
+whatever fields it declares. Under a prefix tenant the schema's table is
+qualified with the tenant's schema like any other. See `m:kura_tenant`.
 """.
 -callback tenant_scoped() -> boolean().
 -doc """
