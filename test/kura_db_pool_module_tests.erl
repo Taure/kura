@@ -317,3 +317,13 @@ load_row_maps_a_renamed_column_onto_its_field_test() ->
             #{item_id => 1, item_title => ~"t", quantity => 2, note => ~"n"}
         )
     ).
+
+%% A driver that makes no atom from a column name hands the name over as text.
+load_row_maps_a_renamed_column_named_in_text_onto_its_field_test() ->
+    ?assertEqual(
+        #{id => 1, title => ~"t", qty => 2, note => ~"n", ~"extra" => 3},
+        kura_db:load_row(
+            kura_test_renamed_schema,
+            #{~"item_id" => 1, ~"item_title" => ~"t", ~"quantity" => 2, note => ~"n", ~"extra" => 3}
+        )
+    ).

@@ -940,6 +940,7 @@ keyed_by_field(Row, ByColumn) when map_size(ByColumn) =:= 0 -> Row;
 keyed_by_field(Row, ByColumn) -> #{field_key(Key, ByColumn) => V || Key := V <- Row}.
 
 field_key(Key, ByColumn) when is_atom(Key) -> maps:get(atom_to_binary(Key, utf8), ByColumn, Key);
+field_key(Key, ByColumn) when is_binary(Key) -> maps:get(Key, ByColumn, Key);
 field_key(Key, _ByColumn) -> Key.
 
 load_fields(Row, Types, Specs, undefined) ->
