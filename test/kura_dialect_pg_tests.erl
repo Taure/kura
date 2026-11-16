@@ -117,7 +117,8 @@ fragment_sql(SQL, Params) ->
     Q = kura_query:where(
         kura_query:where(kura_query:from(kura_test_schema), {id, 7}), {fragment, SQL, Params}
     ),
-    {Compiled, [7 | Bound]} = kura_dialect_pg:to_sql(Q),
+    {SQL1, [7 | Bound]} = kura_dialect_pg:to_sql(Q),
+    Compiled = iolist_to_binary(SQL1),
     {Prefix, Bound} = {~"SELECT * FROM \"users\" WHERE \"id\" = $1 AND (", Params},
     Size = byte_size(Prefix),
     Inner = byte_size(Compiled) - Size - 2,

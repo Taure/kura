@@ -404,7 +404,7 @@ an_undeclared_tenant_field_warns_once_for_each_schema_test_() ->
                 end),
                 ?assertMatch(#{schema := ?SCOPED, field := no_such_field}, Report),
                 ?assertEqual([field, fix, msg, schema], lists:sort(maps:keys(Report))),
-                Text = unicode:characters_to_binary(io_lib:format("~0p", [Report])),
+                Text = iolist_to_binary(io_lib:format("~0p", [Report])),
                 ?assertEqual(nomatch, binary:match(Text, ~"9f3"))
             end},
             {"a statement compiled without the cache warns too", fun() ->
