@@ -161,7 +161,7 @@ changeset_params_that_name_a_field_test_() ->
         {"the params of an association are read by its schema",
             ?_assertEqual(
                 #{
-                    ~"nmae" => ~"n",
+                    ~"nmae" => ?R,
                     ~"accounts" => [
                         #{~"email" => ~"a@b.c", ~"token" => ?R, ~"token_confirmation" => ?R}
                     ],
@@ -180,6 +180,42 @@ changeset_params_that_name_a_field_test_() ->
                         account => #{email => ~"a@b.c", tokne => ~"tok-SECRET"}
                     }
                 }))#kura_changeset.params
+            )},
+        {"a schema with associations and no redacted field shows no value under another key",
+            ?_assertEqual(
+                #{
+                    ~"name" => ~"n",
+                    ~"acounts" => ?R,
+                    ~"token_confirmation" => ?R
+                },
+                (kura_redact:changeset(Owner#kura_changeset{
+                    params = #{
+                        ~"name" => ~"n",
+                        ~"acounts" => [#{~"token" => ~"tok-SECRET"}],
+                        ~"token_confirmation" => ~"tok-SECRET"
+                    }
+                }))#kura_changeset.params
+            )},
+        {"an association of a schema with redacted fields is a name too",
+            ?_assertEqual(
+                #{
+                    ~"name" => ~"n",
+                    ~"api_key" => ?R,
+                    ~"members" => [#{~"email" => ~"a@b.c", ~"token" => ?R}],
+                    members => [#{email => ~"a@b.c", tokne => ?R}],
+                    ~"membres" => ?R
+                },
+                (kura_redact:changeset(
+                    (kura_changeset:cast(kura_test_secret_team_schema, #{}, #{}, []))#kura_changeset{
+                        params = #{
+                            ~"name" => ~"n",
+                            ~"api_key" => ~"key-SECRET",
+                            ~"members" => [#{~"email" => ~"a@b.c", ~"token" => ~"tok-SECRET"}],
+                            members => [#{email => ~"a@b.c", tokne => ~"tok-SECRET"}],
+                            ~"membres" => [#{~"email" => ~"a@b.c"}]
+                        }
+                    }
+                ))#kura_changeset.params
             )},
         {"data and changes keep the keys that name no field",
             ?_test(begin

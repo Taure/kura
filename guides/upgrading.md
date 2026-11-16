@@ -247,13 +247,13 @@ any value, the permissive one included, is a decision and logs nothing.
   `{Field, Message}`, a message that is not text, a value under a key that
   is not a field name) is replaced by `~"[redacted]"`, not passed through,
   and a message that is a string or an atom comes back as a binary. In
-  the `params` of a changeset whose schema has redacted fields, a value is
-  shown only under a key that names a field, an embed or an association of
-  the schema: the value under a confirmation or a mistyped key is
-  replaced, and the key is kept. A schema with neither redacted fields nor
-  associations has nothing to hide: its record or changeset is returned as
-  it is. A term that is not a changeset, and a module that is not a
-  schema, give `~"[redacted]"` under `base`.
+  the `params` of a changeset whose schema has redacted fields or
+  associations, a value is shown only under a key that names a field, an
+  embed or an association of the schema: the value under a confirmation or
+  a mistyped key is replaced, and the key is kept. A schema with neither
+  redacted fields nor associations has nothing to hide: its record or
+  changeset is returned as it is. A term that is not a changeset, and a
+  module that is not a schema, give `~"[redacted]"` under `base`.
 - `kura_repo_worker:query/4` with `#{sensitive => true}` redacts a raw
   statement's parameters in telemetry and the query log.
 - `kura_tenant:without_tenant/1`, `kura_tenant:current_scope/0` and

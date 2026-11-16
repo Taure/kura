@@ -122,14 +122,15 @@ in `assoc_changes` are redacted the same way.
 ```
 
 `params` are what the caller was sent, under the keys it was sent with.
-For a schema with redacted fields, a value in `params` is shown only under
-a key that names a field, an embed or an association of the schema, as an
-atom, a binary or a string. The value under any other key is replaced and
-the key is kept, since a confirmation such as `~"password_confirmation"`
-or a mistyped name can hold what a redacted field holds. A confirmation
-declared as a virtual field is a field: list it in `redact/0` beside the
-field it confirms. The params of an association are read the same way, by
-its schema.
+For a schema with redacted fields or with associations, a value in
+`params` is shown only under a key that names a field, an embed or an
+association of the schema, as an atom, a binary or a string. The value
+under any other key is replaced and the key is kept, since a confirmation
+such as `~"password_confirmation"` or a mistyped name can hold what a
+redacted field or an association's record holds. A confirmation declared
+as a virtual field is a field: list it in `redact/0` beside the field it
+confirms. The params of an association are read the same way, by its
+schema.
 
 ```erlang
 #{~"email" := ~"a@b.c", ~"password" := ~"[redacted]", ~"password_confirmation" := ~"[redacted]"} =
@@ -178,6 +179,7 @@ shown_changeset(_Changeset, unknown) ->
 shown_changeset(Changeset, {[], Nested}) when map_size(Nested) =:= 0 ->
     with_shown_assocs(Changeset);
 shown_changeset(Changeset, Hidden) ->
+    Schema = element(#kura_changeset.schema, Changeset),
     Data = element(#kura_changeset.data, Changeset),
     Changes = element(#kura_changeset.changes, Changeset),
     Params = element(#kura_changeset.params, Changeset),
@@ -187,7 +189,7 @@ shown_changeset(Changeset, Hidden) ->
             Shown#kura_changeset{
                 data = shown_map(Hidden, Data),
                 changes = shown_map(Hidden, Changes),
-                params = shown_params(element(#kura_changeset.schema, Changeset), Hidden, Params),
+                params = shown_params(Schema, Hidden, Params),
                 errors = shown_errors(Errors, quotable([Data, Changes, Params], Hidden))
             }
     end.
@@ -282,27 +284,31 @@ shown_map({_Redacted, _Nested} = Hidden, Map) when is_map(Map) ->
 shown_map(_Hidden, _Map) ->
     hidden_map().
 
-%% Params are what a caller was sent, under the keys it was sent with. In
-%% a schema with redacted fields a key that names none of its fields can
-%% hold what a redacted field holds, as a confirmation or a mistyped name
-%% does, so its value is hidden.
 -spec shown_params(term(), hidden() | unknown, term()) -> map().
-shown_params(Schema, {[_ | _], _Nested} = Hidden, Params) when is_atom(Schema), is_map(Params) ->
+shown_params(Schema, Hidden, Params) ->
+    case read_params(Schema, Hidden, Params) of
+        shown -> Params;
+        hidden -> hidden_map();
+        Read -> #{Key => shown_value(params, Reading, Value) || {Key, Reading, Value} <- Read}
+    end.
+
+%% Params are what a caller was sent, under the keys it was sent with. In
+%% a schema with something to hide, a key that names none of its fields
+%% can hold what a redacted field or an association's record holds, as a
+%% confirmation or a mistyped name does, so its value is hidden.
+-spec read_params(term(), hidden() | unknown, term()) ->
+    shown | hidden | [{term(), reading(), term()}].
+read_params(Schema, {Redacted, Nested} = Hidden, Params) when
+    is_atom(Schema), is_map(Params), (Redacted =/= [] orelse map_size(Nested) > 0)
+->
     case param_names(Schema, Hidden) of
-        unknown ->
-            hidden_map();
-        Names ->
-            #{
-                Key => shown_value(params, param(Key, Names, Hidden), Value)
-             || Key := Value <- Params
-            }
+        unknown -> hidden;
+        Names -> [{Key, param(Key, Names, Hidden), Value} || Key := Value <- Params]
     end;
-shown_params(_Schema, {[], Nested}, Params) when is_map(Params), map_size(Nested) =:= 0 ->
-    Params;
-shown_params(_Schema, {[], _Nested} = Hidden, Params) when is_map(Params) ->
-    #{Key => shown_value(params, entry(Key, Hidden), Value) || Key := Value <- Params};
-shown_params(_Schema, _Hidden, _Params) ->
-    hidden_map().
+read_params(_Schema, {[], Nested}, Params) when is_map(Params), map_size(Nested) =:= 0 ->
+    shown;
+read_params(_Schema, _Hidden, _Params) ->
+    hidden.
 
 %% Every name a key of a schema's params can be: its fields, virtual ones
 %% included, its embeds and its associations.
@@ -321,7 +327,7 @@ param_names(Schema, {Redacted, Nested}) ->
         _:_ -> unknown
     end.
 
--spec param(term(), [atom()], hidden()) -> hide | show | {nested, module()}.
+-spec param(term(), [atom()], hidden()) -> reading().
 param(Key, Names, Hidden) ->
     case named(Key, Names) of
         {ok, Name} -> entry(Name, Hidden);
@@ -355,7 +361,9 @@ hidden_map() ->
 %% decides how the maps nested in it are read.
 -type holds() :: fields | params.
 
--spec shown_value(holds(), hide | show | {nested, module()}, term()) -> term().
+-type reading() :: hide | show | {nested, module()}.
+
+-spec shown_value(holds(), reading(), term()) -> term().
 shown_value(_Holds, hide, _Value) -> ?REDACTED;
 shown_value(_Holds, show, Value) -> Value;
 shown_value(Holds, {nested, Target}, Value) -> shown_nested(Holds, Target, Value).
@@ -385,7 +393,7 @@ nested_rest(_Holds, _Target, _Tail) ->
 %% What a key of a map of fields says of its value: a redacted field's is
 %% hidden, an association's is its records, any other field's is shown. A
 %% key that is no name cannot say, so its value is hidden.
--spec entry(term(), hidden()) -> hide | show | {nested, module()}.
+-spec entry(term(), hidden()) -> reading().
 entry(Key, {Redacted, Nested}) when is_atom(Key) ->
     case lists:member(Key, Redacted) of
         true ->
@@ -429,7 +437,7 @@ hidden_values({_Redacted, _Nested} = Hidden, Map) when is_map(Map) ->
 hidden_values(_Hidden, Map) ->
     [Map].
 
--spec hidden_value(hide | show | {nested, module()}, term()) -> [term()].
+-spec hidden_value(reading(), term()) -> [term()].
 hidden_value(hide, Value) -> [Value];
 hidden_value(show, _Value) -> [];
 hidden_value({nested, Target}, Value) -> hidden_nested(Target, Value).
