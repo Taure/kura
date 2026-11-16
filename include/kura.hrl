@@ -68,6 +68,14 @@
     (Op =:= '<' orelse Op =:= '<=' orelse Op =:= '>' orelse Op =:= '>=')
 ).
 
+%% The operators that match a field against a literal text: `{Field, Op,
+%% Text}`. The dialect escapes the LIKE wildcards in Text, so it matches
+%% only itself. The `i` forms ignore case.
+-define(KURA_IS_TEXT_MATCH_OP(Op),
+    (Op =:= contains orelse Op =:= starts_with orelse Op =:= ends_with orelse
+        Op =:= icontains orelse Op =:= istarts_with orelse Op =:= iends_with)
+).
+
 %% The operators of a deterministic encrypted lookup `{Field, Op, Frames}`,
 %% which kura_query:where/2 and having/2 build in place of an equality on
 %% a deterministic field. Frames are ciphertexts, never plaintext.
@@ -84,21 +92,21 @@
     limit :: non_neg_integer() | undefined,
     offset :: non_neg_integer() | undefined,
     distinct = false :: boolean() | [atom()],
-    lock :: binary() | undefined,
+    lock :: kura_query:lock() | binary() | undefined,
     prefix :: binary() | undefined,
-    preloads = [] :: [atom() | {atom(), list()}],
+    preloads = [] :: [atom() | {atom(), list() | map()}],
     ctes = [] :: [{binary(), #kura_query{}}],
     combinations = [] :: [{union | union_all | intersect | except, #kura_query{}}],
     include_deleted = false :: boolean()
 }).
 
 -record(kura_column, {
-    name :: atom(),
+    name :: atom() | binary(),
     type :: kura_types:kura_type(),
     nullable = true :: boolean(),
     default :: term(),
     primary_key = false :: boolean(),
-    references :: {binary(), atom()} | undefined,
+    references :: {binary(), atom() | binary()} | undefined,
     on_delete :: kura_schema:on_delete() | undefined,
     on_update :: kura_schema:on_delete() | undefined
 }).

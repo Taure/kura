@@ -1,7 +1,6 @@
 -module(kura_migration_stress_tests).
 
 -include_lib("eunit/include/eunit.hrl").
--include("kura.hrl").
 
 -define(LOCK_KEY, 571629482).
 

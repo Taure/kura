@@ -20,6 +20,7 @@ CS3 = kura_changeset:unique_constraint(CS2, email).
     cast_assoc/2,
     cast_assoc/3,
     put_assoc/3,
+    put_assoc/4,
     validate_required/2,
     validate_format/3,
     validate_length/3,
@@ -217,7 +218,21 @@ validate_subset(CS, Field, AllowedValues) ->
             add_error(CS, Field, ~"is invalid")
     end.
 
--doc "Validate that `Field` has a matching confirmation field in params.".
+-doc """
+Validate that the params repeat the change to `Field` under
+`<Field>_confirmation`, as an atom or a binary key.
+
+A mismatch is reported on `<Field>_confirmation` wherever an atom of that
+name exists, and it exists in any application whose loaded code names the
+confirmation: in a schema, in the view that shows the error, in the params.
+kura does not create the atom, so where there is none the mismatch is
+reported on `Field`. A changeset that has the confirmation as a field
+always reports it there; declare it as a virtual field to be sure of it:
+
+```erlang
+#kura_field{name = password_confirmation, type = string, virtual = true}
+```
+""".
 -spec validate_confirmation(#kura_changeset{}, atom()) -> #kura_changeset{}.
 validate_confirmation(CS, Field) ->
     validate_confirmation(CS, Field, #{}).
@@ -229,17 +244,38 @@ validate_confirmation(CS, Field, Opts) ->
         undefined ->
             CS;
         Val ->
-            ConfField = confirmation_field(Field),
-            Msg = maps:get(message, Opts, ~"does not match"),
-            case CS#kura_changeset.params of
-                #{ConfField := Val} -> CS;
-                #{} -> add_error(CS, ConfField, Msg)
+            Name = <<(atom_to_binary(Field, utf8))/binary, "_confirmation">>,
+            case confirmation(Name, CS#kura_changeset.params) of
+                {ok, Val} ->
+                    CS;
+                _Other ->
+                    add_error(
+                        CS,
+                        confirmation_field(Name, Field),
+                        maps:get(message, Opts, ~"does not match")
+                    )
             end
     end.
 
-confirmation_field(Field) ->
-    %% elp:ignore W0023 - bounded by schema field names
-    list_to_atom(atom_to_list(Field) ++ "_confirmation").
+-spec confirmation(binary(), map()) -> {ok, term()} | error.
+confirmation(Name, Params) when is_map_key(Name, Params) ->
+    maps:find(Name, Params);
+confirmation(Name, Params) ->
+    try binary_to_existing_atom(Name, utf8) of
+        Key -> maps:find(Key, Params)
+    catch
+        error:badarg -> error
+    end.
+
+%% The name is never made into an atom: one that the application's code
+%% names exists already, and one that only the params name must not.
+-spec confirmation_field(binary(), atom()) -> atom().
+confirmation_field(Name, Field) ->
+    try
+        binary_to_existing_atom(Name, utf8)
+    catch
+        error:badarg -> Field
+    end.
 
 -doc "Validate `Field` with a custom function returning `ok` or `{error, Message}`.".
 -spec validate_change(#kura_changeset{}, atom(), fun((term()) -> ok | {error, binary()})) ->
@@ -274,13 +310,12 @@ unique_constraint(CS = #kura_changeset{schema = undefined, constraints = Constra
     C = #kura_constraint{type = unique, constraint = Name, field = Field, message = Msg},
     CS#kura_changeset{constraints = Constraints ++ [C]};
 unique_constraint(CS = #kura_changeset{schema = SchemaMod, constraints = Constraints}, Field, Opts) ->
-    Table = SchemaMod:table(),
-    Name = maps:get(
-        name, Opts, <<Table/binary, "_", (atom_to_binary(Field, utf8))/binary, "_key">>
-    ),
     Msg = maps:get(message, Opts, ~"has already been taken"),
-    C = #kura_constraint{type = unique, constraint = Name, field = Field, message = Msg},
-    CS#kura_changeset{constraints = Constraints ++ [C]}.
+    Declared = [
+        #kura_constraint{type = unique, constraint = Name, field = Field, message = Msg}
+     || Name <- constraint_names(SchemaMod, Field, ~"_key", Opts)
+    ],
+    CS#kura_changeset{constraints = Constraints ++ Declared}.
 
 -doc "Declare a foreign key constraint on `Field`.".
 -spec foreign_key_constraint(#kura_changeset{}, atom()) -> #kura_changeset{}.
@@ -305,13 +340,12 @@ foreign_key_constraint(
 foreign_key_constraint(
     CS = #kura_changeset{schema = SchemaMod, constraints = Constraints}, Field, Opts
 ) ->
-    Table = SchemaMod:table(),
-    Name = maps:get(
-        name, Opts, <<Table/binary, "_", (atom_to_binary(Field, utf8))/binary, "_fkey">>
-    ),
     Msg = maps:get(message, Opts, ~"does not exist"),
-    C = #kura_constraint{type = foreign_key, constraint = Name, field = Field, message = Msg},
-    CS#kura_changeset{constraints = Constraints ++ [C]}.
+    Declared = [
+        #kura_constraint{type = foreign_key, constraint = Name, field = Field, message = Msg}
+     || Name <- constraint_names(SchemaMod, Field, ~"_fkey", Opts)
+    ],
+    CS#kura_changeset{constraints = Constraints ++ Declared}.
 
 -doc "Declare a check constraint with the given `Constraint` name mapped to `Field`.".
 -spec check_constraint(#kura_changeset{}, binary(), atom()) -> #kura_changeset{}.
@@ -347,13 +381,23 @@ exclusion_constraint(
 exclusion_constraint(
     CS = #kura_changeset{schema = SchemaMod, constraints = Constraints}, Field, Opts
 ) ->
-    Table = SchemaMod:table(),
-    Name = maps:get(
-        name, Opts, <<Table/binary, "_", (atom_to_binary(Field, utf8))/binary, "_excl">>
-    ),
     Msg = maps:get(message, Opts, ~"violates an exclusion constraint"),
-    C = #kura_constraint{type = exclusion, constraint = Name, field = Field, message = Msg},
-    CS#kura_changeset{constraints = Constraints ++ [C]}.
+    Declared = [
+        #kura_constraint{type = exclusion, constraint = Name, field = Field, message = Msg}
+     || Name <- constraint_names(SchemaMod, Field, ~"_excl", Opts)
+    ],
+    CS#kura_changeset{constraints = Constraints ++ Declared}.
+
+-spec constraint_names(module(), atom(), binary(), map()) -> [binary()].
+constraint_names(_SchemaMod, _Field, _Suffix, #{name := Name}) ->
+    [Name];
+constraint_names(SchemaMod, Field, Suffix, #{}) ->
+    Table = SchemaMod:table(),
+    ByField = <<Table/binary, "_", (atom_to_binary(Field, utf8))/binary, Suffix/binary>>,
+    case kura_schema:renamed_columns(SchemaMod) of
+        #{Field := Column} -> [<<Table/binary, "_", Column/binary, Suffix/binary>>, ByField];
+        #{} -> [ByField]
+    end.
 
 -doc "Add an error to the changeset for `Field`.".
 -spec add_error(#kura_changeset{}, atom(), binary()) -> #kura_changeset{}.
@@ -454,31 +498,84 @@ traverse_errors(#kura_changeset{errors = Errors}, Fun) ->
 %% Association casting (delegated to kura_changeset_assoc)
 %%----------------------------------------------------------------------
 
--doc "Cast nested association parameters into child changesets.".
+-doc """
+Cast nested association parameters into child changesets, taking every
+castable field of the child from the params. Prefer `cast_assoc/3` with
+an allow-list; see it for why.
+""".
 -spec cast_assoc(#kura_changeset{}, atom()) -> #kura_changeset{}.
 cast_assoc(CS, AssocName) ->
     kura_changeset_assoc:cast_assoc(CS, AssocName).
 
--doc "Cast nested association parameters with options. Opts: `with` - custom changeset function.".
+-doc """
+Cast nested association parameters into child changesets.
+
+`Opts` says which of the child's fields the params may set:
+
+- `cast => [Field]` - only these fields, as `cast/4` would.
+- `with => {Module, Function}` or `with => fun((Data, Params) -> Changeset)` -
+  the child's own changeset function, called as
+  `Module:Function(Data, Params)`. Use it to validate the child as well.
+  It wins over `cast`.
+
+```erlang
+kura_changeset:cast_assoc(CS, comments, #{cast => [body]}).
+kura_changeset:cast_assoc(CS, comments, #{with => {comment, changeset}}).
+```
+
+With neither, the params may set every non-virtual field of the child
+except a single-column primary key and the foreign key. Nested params
+usually arrive in a request, so that lets a request set fields such as
+`approved` or `deleted_at`. Set `{kura, [{strict_assoc_cast, true}]}` to
+make the allow-list mandatory: a nested cast without one then raises
+`{kura, {nested_cast_needs_allow_list, Schema, Name}}`. Left unset, the
+permissive default stays and kura logs one warning per boot; `false`
+keeps it without the warning. The default becomes `true` in kura 3.0.
+
+A `cast` list naming a field that cannot be cast (unknown, virtual, the
+primary key or the foreign key) raises
+`{kura, {invalid_nested_cast, Schema, Name, {cast, Fields}}}`.
+""".
 -spec cast_assoc(#kura_changeset{}, atom(), map()) -> #kura_changeset{}.
 cast_assoc(CS, AssocName, Opts) ->
     kura_changeset_assoc:cast_assoc(CS, AssocName, Opts).
 
--doc "Put pre-built changesets or raw maps directly as association changes.".
+-doc """
+Put pre-built changesets or raw maps directly as association changes. A
+raw map is cast like nested params with no allow-list; see `put_assoc/4`.
+""".
 -spec put_assoc(#kura_changeset{}, atom(), term()) -> #kura_changeset{}.
 put_assoc(CS, AssocName, Value) ->
     kura_changeset_assoc:put_assoc(CS, AssocName, Value).
+
+-doc """
+Put pre-built changesets or raw maps as association changes. `Opts` takes
+the `cast` and `with` options of `cast_assoc/3` and applies them to the
+raw maps; changesets are used as they are. With `strict_assoc_cast` set,
+a raw map needs one of the two.
+""".
+-spec put_assoc(#kura_changeset{}, atom(), term(), map()) -> #kura_changeset{}.
+put_assoc(CS, AssocName, Value, Opts) ->
+    kura_changeset_assoc:put_assoc(CS, AssocName, Value, Opts).
 
 %%----------------------------------------------------------------------
 %% Embed casting (delegated to kura_changeset_assoc)
 %%----------------------------------------------------------------------
 
--doc "Cast nested embedded schema parameters into parent changes.".
+-doc """
+Cast nested embedded schema parameters into parent changes, taking every
+non-virtual field of the embedded schema from the params. Prefer
+`cast_embed/3` with an allow-list.
+""".
 -spec cast_embed(#kura_changeset{}, atom()) -> #kura_changeset{}.
 cast_embed(CS, EmbedName) ->
     kura_changeset_assoc:cast_embed(CS, EmbedName).
 
--doc "Cast nested embedded schema parameters with options. Opts: `with` - custom changeset function.".
+-doc """
+Cast nested embedded schema parameters into parent changes. `Opts` takes
+the `cast` and `with` options of `cast_assoc/3`, and `strict_assoc_cast`
+applies in the same way.
+""".
 -spec cast_embed(#kura_changeset{}, atom(), map()) -> #kura_changeset{}.
 cast_embed(CS, EmbedName, Opts) ->
     kura_changeset_assoc:cast_embed(CS, EmbedName, Opts).

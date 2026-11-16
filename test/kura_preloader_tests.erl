@@ -1,6 +1,5 @@
 -module(kura_preloader_tests).
 -include_lib("eunit/include/eunit.hrl").
--include("kura.hrl").
 
 %%----------------------------------------------------------------------
 %% get_field
@@ -174,15 +173,19 @@ join_rows(Dialect, JoinThrough, Keys, OwnerTuples) ->
 %% quote_table_bin/1, deprecated
 %%----------------------------------------------------------------------
 
+%% Called as a caller that still builds its own table name calls it.
+quote_table_bin(Table) ->
+    apply(kura_preloader, quote_table_bin, [Table]).
+
 quote_table_bin_doubles_embedded_quotes_test() ->
-    ?assertEqual(~"\"posts\"\" -- \"", kura_preloader:quote_table_bin(~"posts\" -- ")).
+    ?assertEqual(~"\"posts\"\" -- \"", quote_table_bin(~"posts\" -- ")).
 
 quote_table_bin_is_bare_without_a_prefix_tenant_test() ->
-    ?assertEqual(~"\"posts_tags\"", kura_preloader:quote_table_bin(~"posts_tags")),
+    ?assertEqual(~"\"posts_tags\"", quote_table_bin(~"posts_tags")),
     ?assertEqual(
         ~"\"posts_tags\"",
         kura_tenant:with_tenant({attribute, {org_id, 1}}, fun() ->
-            kura_preloader:quote_table_bin(~"posts_tags")
+            quote_table_bin(~"posts_tags")
         end)
     ).
 
@@ -190,6 +193,6 @@ quote_table_bin_qualifies_with_the_prefix_tenant_test() ->
     ?assertEqual(
         ~"\"tenant_a\".\"posts_tags\"",
         kura_tenant:with_tenant({prefix, ~"tenant_a"}, fun() ->
-            kura_preloader:quote_table_bin(~"posts_tags")
+            quote_table_bin(~"posts_tags")
         end)
     ).

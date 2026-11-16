@@ -476,7 +476,18 @@ spec_context(_Spec, Context) -> Context.
 %% Load: driver result → Erlang term
 %%----------------------------------------------------------------------
 
--doc "Convert a driver result value back to an Erlang term.".
+-doc """
+Convert a driver result value back to an Erlang term.
+
+A value is read in the Erlang form of its type, the one a driver with a
+native type for it returns, and `jsonb` and an embed also as JSON text.
+Anything else is `{error, Reason}`. A backend that stores a type in another
+form, such as a boolean as `1` or `0`, turns it into the Erlang form in its
+dialect's `c:kura_dialect:load_stored/2`, before this function is called.
+
+A `decimal` a driver returns as numeric text is returned as that text, since
+a float would not hold all of its digits: `{ok, ~"12345678901234567.89"}`.
+""".
 -spec load(kura_type(), term()) -> {ok, term()} | {error, binary()}.
 load(_Type, null) ->
     {ok, undefined};
@@ -490,6 +501,8 @@ load(smallint, V) when is_integer(V) ->
     {ok, V};
 load(decimal, V) when is_number(V) ->
     {ok, V};
+load(decimal, V) when is_binary(V) ->
+    exact_decimal(V);
 load(binary, V) when is_binary(V) ->
     {ok, V};
 load(float, V) when is_number(V) ->
@@ -569,6 +582,52 @@ load(Type, _V) ->
 
 cannot_load(Type) ->
     {error, <<"cannot load ", (format_type(Type))/binary>>}.
+
+%% A decimal never goes through a float: one a driver returns as text is
+%% checked and kept as that text.
+exact_decimal(Text) ->
+    case decimal_text(Text) of
+        true -> {ok, Text};
+        false -> {error, ~"is not a valid decimal"}
+    end.
+
+decimal_text(<<Sign, Digits/binary>>) when Sign =:= $-; Sign =:= $+ -> decimal_digits(Digits);
+decimal_text(Digits) -> decimal_digits(Digits).
+
+decimal_digits(Text) ->
+    case after_digits(Text, 0) of
+        {0, _Rest} ->
+            false;
+        {_Whole, <<$., Fraction/binary>>} ->
+            case after_digits(Fraction, 0) of
+                {0, _Rest} -> false;
+                {_Count, Rest} -> decimal_exponent(Rest)
+            end;
+        {_Whole, Rest} ->
+            decimal_exponent(Rest)
+    end.
+
+decimal_exponent(<<>>) ->
+    true;
+decimal_exponent(<<E, Sign, Digits/binary>>) when
+    (E =:= $e orelse E =:= $E), (Sign =:= $- orelse Sign =:= $+)
+->
+    only_digits(Digits);
+decimal_exponent(<<E, Digits/binary>>) when E =:= $e; E =:= $E ->
+    only_digits(Digits);
+decimal_exponent(_Rest) ->
+    false.
+
+only_digits(Digits) ->
+    case after_digits(Digits, 0) of
+        {Count, <<>>} -> Count > 0;
+        _ -> false
+    end.
+
+after_digits(<<Digit, Rest/binary>>, Count) when Digit >= $0, Digit =< $9 ->
+    after_digits(Rest, Count + 1);
+after_digits(Rest, Count) ->
+    {Count, Rest}.
 
 -doc """
 Like `load/2`, for a value read from the column `Context` (`{Table,

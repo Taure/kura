@@ -114,8 +114,43 @@ By default, cursor pagination uses the `id` field. You can paginate on any field
 | `cursor_field` | `id` | Field to paginate on |
 | `after` | `undefined` | Fetch entries after this cursor value (forward) |
 | `before` | `undefined` | Fetch entries before this cursor value (backward) |
+| `max_page_size` | app setting | Largest `limit` accepted, or `infinity` |
 
 Passing both `after` and `before` simultaneously raises `badarg`.
+
+## Validating and Capping the Size
+
+`page`, `page_size` and `limit` usually arrive in a request. Each must be a
+positive integer; anything else is refused before a query runs:
+
+```erlang
+{error, {invalid_page, 0}} = kura_paginator:paginate(my_repo, Q, #{page => 0}).
+{error, {invalid_page_size, -5}} = kura_paginator:paginate(my_repo, Q, #{page_size => -5}).
+{error, {invalid_limit, ~"20"}} = kura_paginator:cursor_paginate(my_repo, Q, #{limit => ~"20"}).
+```
+
+Set a maximum so a request cannot ask for the whole table:
+
+```erlang
+%% sys.config
+{kura, [{max_page_size, 200}]}
+```
+
+```erlang
+{error, {page_size_too_large, 5000, 200}} =
+    kura_paginator:paginate(my_repo, Q, #{page_size => 5000}).
+```
+
+The `max_page_size` option on a call wins over the application setting,
+and `infinity` turns the cap off for that call. A size over the maximum is
+refused, not lowered, so the caller decides whether to clamp. A maximum
+that is neither a positive integer nor `infinity` raises
+`{kura, {invalid_setting, max_page_size, Value}}`, as the setting or as the
+option.
+
+With no `max_page_size` set, nothing is capped. The first request for more
+than 1000 rows then logs one warning per boot. In kura 3.0 the default
+becomes 1000.
 
 ## When to Use Which
 

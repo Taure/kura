@@ -6,6 +6,42 @@ Implement the `table/0` and `fields/0` callbacks to define a schema module.
 Mark one field with `primary_key = true`. Optionally implement `timestamps/0`
 and `associations/0`.
 
+## Timestamps
+
+A schema with fields named `inserted_at` and `updated_at` has them set to
+the current UTC time: `inserted_at` on insert, `updated_at` on insert and
+on update. A value the write sets itself is kept.
+
+Implement `timestamps/0` to stamp fields of other names, or none. It lists
+the insert field, then the update field, each with its type:
+
+```erlang
+fields() ->
+    [#kura_field{name = id, type = id, primary_key = true},
+     #kura_field{name = created_at, type = utc_datetime},
+     #kura_field{name = modified_at, type = utc_datetime}].
+
+timestamps() -> [{created_at, utc_datetime}, {modified_at, utc_datetime}].
+```
+
+`[{created_at, utc_datetime}]` stamps on insert only. The fields are still
+declared in `fields/0`.
+
+kura 2.30 ignored `timestamps/0` and stamped the fields named `inserted_at`
+and `updated_at`. Until kura 3.0 those two are therefore stamped whatever
+`timestamps/0` says, and where that differs from the declaration kura logs
+a warning, once for each schema each time the schema is loaded:
+
+- A declaration that leaves out an `inserted_at` or `updated_at` field of
+  the schema stamps the listed fields and that field. kura 3.0 stamps only
+  the listed fields.
+- A declaration kura cannot use (not such a list, or naming a field the
+  schema does not have) stamps the fields named `inserted_at` and
+  `updated_at`. kura 3.0 raises on it.
+- `[]` is for a table whose timestamps the database maintains. It stamps
+  nothing in kura 3.0, and until then a schema that has `inserted_at` or
+  `updated_at` keeps them stamped.
+
 ```erlang
 -module(my_user).
 -behaviour(kura_schema).
@@ -35,9 +71,26 @@ fields() ->
      #kura_field{name = user_id, type = uuid, nullable = false},
      #kura_field{name = role, type = string}].
 ```
+
+## Column names
+
+A field is stored in the column of its own name unless `column` says
+otherwise:
+
+```erlang
+#kura_field{name = email, type = string, column = ~"email_address"}
+```
+
+Everywhere else the field is `email`: in changesets, in `where`,
+`order_by`, `select` and the other query clauses, in `on_conflict`
+targets, and in the maps the repo returns. Statements name the column,
+and a row read back is keyed by the field. A `{fragment, SQL, Params}` is
+SQL text, so it names the column itself. `column` on a virtual field is
+ignored.
 """.
 
 -include("kura.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 -export([
     field_names/1,
@@ -46,7 +99,12 @@ fields() ->
     encrypted_fields/1,
     encryption_specs/1,
     field_specs/1,
+    load_plan/1,
     column_map/1,
+    renamed_columns/1,
+    fields_by_column/1,
+    timestamp_fields/1,
+    redacted_fields/1,
     key/1,
     key_fields/1,
     primary_key/1,
@@ -75,6 +133,12 @@ fields() ->
 ]).
 
 -export_type([on_delete/0, field_encryption/0]).
+
+-define(NOT_KEPT, '$kura_not_kept').
+%% A kept load plan carries this number, and one kept with another, or with
+%% none, was kept by another release of kura and is worked out again. Raise
+%% it whenever what a plan holds changes.
+-define(LOAD_PLAN_FORMAT, 1).
 
 -doc """
 Referential action for a foreign key when the referenced row is deleted.
@@ -108,6 +172,8 @@ be introduced dialect-aware rather than added to this union.
     constraints/0,
     indexes/0,
     generate_id/0,
+    tenant_scoped/0,
+    redact/0,
     before_insert/1,
     after_insert/1,
     before_update/1,
@@ -122,6 +188,31 @@ be introduced dialect-aware rather than added to this union.
 -callback embeds() -> [#kura_embed{}].
 -callback constraints() -> [kura_migration:table_constraint()].
 -callback indexes() -> [kura_migration:index_def()].
+-doc """
+Return `false` for a schema every tenant shares, such as a table of plans
+or countries. With `require_tenant` set, its rows may then be read and
+written by a process that has no tenant, and under an attribute tenant a
+query that reads only such schemas gets no tenant condition and a write
+of its records is neither matched on the tenant nor stamped with it.
+
+Under an attribute tenant that is for a schema without the tenant's
+field. A schema that declares the field of the attribute tenant holds
+each tenant's rows, so it is matched on the field whatever this
+callback returns: read all tenants' rows inside
+`kura_tenant:without_tenant/1`. A process without a tenant names no
+field, so there the callback alone decides: with `require_tenant` set,
+a schema that returns `false` is read and written without a tenant
+whatever fields it declares. Under a prefix tenant the schema's table is
+qualified with the tenant's schema like any other. See `m:kura_tenant`.
+""".
+-callback tenant_scoped() -> boolean().
+-doc """
+Return the fields whose values must stay out of logs and telemetry, such
+as a password hash or a token. Encrypted fields need not be listed. In an
+embedded schema it has the embed redacted whole in every schema that
+embeds it. See `m:kura_redact`.
+""".
+-callback redact() -> [atom()].
 
 -callback generate_id() -> term().
 
@@ -183,15 +274,41 @@ field_types(Mod) ->
 Return `true` if `Mod` is a loaded module exporting `table/0`, i.e. a schema
 rather than a bare table name. Memoised, because the negative answer costs a
 `code_server` round trip on every call.
+
+A name that could not be loaded when it was first asked about is not
+written off: once a module of that name is loaded, it is looked at again,
+and what kura remembered of the name while it was not a schema is dropped
+as `forget/1` drops it.
 """.
 -spec is_schema(atom()) -> boolean().
 is_schema(Mod) when is_atom(Mod) ->
-    cache({kura_schema, is_schema, Mod}, fun() ->
-        case code:ensure_loaded(Mod) of
-            {module, Mod} -> erlang:function_exported(Mod, table, 0);
-            _ -> false
-        end
-    end).
+    Key = {kura_schema, is_schema, Mod},
+    case persistent_term:get(Key, unknown) of
+        Known when is_boolean(Known) ->
+            Known;
+        unloaded ->
+            erlang:module_loaded(Mod) andalso loaded_since(Key, Mod);
+        _Unknown ->
+            case code:ensure_loaded(Mod) of
+                {module, Mod} ->
+                    exports_table(Key, Mod);
+                _NotLoaded ->
+                    persistent_term:put(Key, unloaded),
+                    false
+            end
+    end.
+
+%% Every answer cached for the name was worked out without the module.
+-spec loaded_since(term(), module()) -> boolean().
+loaded_since(Key, Mod) ->
+    ok = forget(Mod),
+    exports_table(Key, Mod).
+
+-spec exports_table(term(), module()) -> boolean().
+exports_table(Key, Mod) ->
+    Schema = erlang:function_exported(Mod, table, 0),
+    persistent_term:put(Key, Schema),
+    Schema.
 
 -doc """
 Return the names of `Mod`'s encrypted fields (see `kura_types:encryption/1`),
@@ -201,11 +318,8 @@ filtered on.
 """.
 -spec encrypted_fields(atom()) -> [atom()].
 encrypted_fields(Mod) when is_atom(Mod) ->
-    cache({kura_schema, encrypted_fields, Mod}, fun() ->
-        case is_schema(Mod) of
-            false -> [];
-            true -> [N || N := T <- field_types(Mod), kura_types:encryption(T) =/= none]
-        end
+    schema_cache({kura_schema, encrypted_fields, Mod}, [], fun() ->
+        [N || N := T <- field_types(Mod), kura_types:encryption(T) =/= none]
     end).
 
 -doc """
@@ -221,7 +335,7 @@ left out. `#{}` if `Mod` has no encrypted fields or is not a schema.
 """.
 -spec encryption_specs(atom()) -> #{atom() => field_encryption()}.
 encryption_specs(Mod) when is_atom(Mod) ->
-    cache({kura_schema, encryption_specs, Mod}, fun() ->
+    schema_cache({kura_schema, encryption_specs, Mod}, #{}, fun() ->
         case encrypted_fields(Mod) of
             [] -> #{};
             Fields -> encryption_specs(Mod:table(), Fields, column_map(Mod), field_types(Mod))
@@ -233,6 +347,38 @@ encryption_specs(Mod) when is_atom(Mod) ->
     {#{atom() => kura_types:kura_type()}, #{atom() => field_encryption()}}.
 field_specs(Mod) ->
     cache({kura_schema, field_specs, Mod}, fun() -> {field_types(Mod), encryption_specs(Mod)} end).
+
+-doc false.
+-spec load_plan(module()) ->
+    {#{atom() => kura_types:kura_type()}, #{atom() => field_encryption()}, #{binary() => atom()}}
+    | undefined.
+load_plan(Mod) ->
+    Key = {kura_schema, load_plan, Mod},
+    case persistent_term:get(Key, ?NOT_KEPT) of
+        {?LOAD_PLAN_FORMAT, {Types, Specs, ByColumn} = Plan} when
+            is_map(Types), is_map(Specs), is_map(ByColumn)
+        ->
+            Plan;
+        _NotKeptOrUnreadable ->
+            planned(Key, Mod)
+    end.
+
+%% A module that is not a schema now may be loaded as one later, so
+%% `undefined` is worked out again each time.
+planned(Key, Mod) ->
+    %% is_schema/1 loads the module the first time the name is asked about,
+    %% so a table named by a bare atom costs no code server call for each
+    %% result set.
+    _ = is_schema(Mod),
+    case erlang:module_loaded(Mod) andalso erlang:function_exported(Mod, fields, 0) of
+        true ->
+            {Types, Specs} = field_specs(Mod),
+            Plan = {Types, Specs, fields_by_column(Mod)},
+            persistent_term:put(Key, {?LOAD_PLAN_FORMAT, Plan}),
+            Plan;
+        false ->
+            undefined
+    end.
 
 encryption_specs(Table, Fields, Columns, Types) ->
     #{
@@ -252,6 +398,167 @@ column_map(Mod) ->
         FieldMap = field_column_map(Mod:fields(), #{}),
         embed_column_map(embeds(Mod), FieldMap)
     end).
+
+-doc """
+Return the fields of `Mod` stored under a column whose name differs from
+the field's, as field name to column name. Empty for a schema that sets no
+`column`, and for a module that is not a schema.
+""".
+-spec renamed_columns(module()) -> #{atom() => binary()}.
+renamed_columns(Mod) ->
+    schema_cache({kura_schema, renamed_columns, Mod}, #{}, fun() ->
+        case erlang:function_exported(Mod, fields, 0) of
+            true -> renamed(Mod:fields(), #{});
+            false -> #{}
+        end
+    end).
+
+renamed([], Acc) ->
+    Acc;
+renamed([#kura_field{name = Name, column = Column, virtual = false} | Rest], Acc) when
+    is_binary(Column)
+->
+    case atom_to_binary(Name, utf8) of
+        Column -> renamed(Rest, Acc);
+        _ -> renamed(Rest, Acc#{Name => Column})
+    end;
+renamed([_ | Rest], Acc) ->
+    renamed(Rest, Acc).
+
+%% The columns of `Mod` that load into a field of another name, as column
+%% name to field name: the inverse of renamed_columns/1.
+-doc false.
+-spec fields_by_column(module()) -> #{binary() => atom()}.
+fields_by_column(Mod) ->
+    schema_cache({kura_schema, fields_by_column, Mod}, #{}, fun() ->
+        #{Column => Field || Field := Column <- renamed_columns(Mod)}
+    end).
+
+%% The fields the repo stamps with the current UTC time, as
+%% {OnInsert, OnUpdate}. The moduledoc says which they are and what an
+%% unusable timestamps/0 does.
+-doc false.
+-spec timestamp_fields(module()) -> {[atom()], [atom()]}.
+timestamp_fields(Mod) ->
+    cache({kura_schema, timestamp_fields, Mod}, fun() ->
+        Types = field_types(Mod),
+        Named = named_timestamps(Types),
+        case erlang:function_exported(Mod, timestamps, 0) of
+            true -> declared_timestamps(Mod, Mod:timestamps(), Types, Named);
+            false -> Named
+        end
+    end).
+
+named_timestamps(Types) ->
+    OnUpdate = [updated_at || is_map_key(updated_at, Types)],
+    {[inserted_at || is_map_key(inserted_at, Types)] ++ OnUpdate, OnUpdate}.
+
+declared_timestamps(Mod, Declared, Types, {NamedOnInsert, NamedOnUpdate} = Named) ->
+    case listed_timestamps(Declared, Types) of
+        {ok, {OnInsert, OnUpdate}} ->
+            ok = unlisted_timestamps(
+                Mod,
+                Declared,
+                lists:usort((NamedOnInsert -- OnInsert) ++ (NamedOnUpdate -- OnUpdate))
+            ),
+            {lists:usort(OnInsert ++ NamedOnInsert), lists:usort(OnUpdate ++ NamedOnUpdate)};
+        nothing when Named =:= {[], []} ->
+            Named;
+        nothing ->
+            ok = timestamps_warning(#{
+                msg =>
+                    ~"kura: timestamps/0 lists no field, and the schema's inserted_at and updated_at are stamped as kura 2.30 stamped them",
+                schema => Mod,
+                timestamps => Declared,
+                fix => ~"nothing to do to keep the stamps; kura 3.0 reads [] as stamp nothing"
+            }),
+            Named;
+        unusable ->
+            ok = timestamps_warning(#{
+                msg =>
+                    ~"kura: timestamps/0 is not a list of one or two of the schema's fields, so the fields named inserted_at and updated_at are stamped, as kura 2.30 stamped them",
+                schema => Mod,
+                timestamps => Declared,
+                fix =>
+                    ~"return [{InsertedField, Type}, {UpdatedField, Type}] or [{InsertedField, Type}], each a field of fields/0; kura 3.0 raises on anything else"
+            }),
+            Named
+    end.
+
+listed_timestamps([], _Types) ->
+    nothing;
+listed_timestamps([{Inserted, _Type}], Types) when is_map_key(Inserted, Types) ->
+    {ok, {[Inserted], []}};
+listed_timestamps([{Inserted, _InsertedType}, {Updated, _UpdatedType}], Types) when
+    is_map_key(Inserted, Types), is_map_key(Updated, Types)
+->
+    {ok, {lists:usort([Inserted, Updated]), [Updated]}};
+listed_timestamps(_Declared, _Types) ->
+    unusable.
+
+unlisted_timestamps(_Mod, _Declared, []) ->
+    ok;
+unlisted_timestamps(Mod, Declared, StillStamped) ->
+    timestamps_warning(#{
+        msg =>
+            ~"kura: timestamps/0 leaves out a field named inserted_at or updated_at, which is still stamped as kura 2.30 stamped it",
+        schema => Mod,
+        timestamps => Declared,
+        still_stamped => StillStamped,
+        fix =>
+            ~"nothing to do to keep the stamp; kura 3.0 stamps only the fields timestamps/0 lists"
+    }).
+
+%% The result is cached per schema, so this is logged once for each load of
+%% the schema.
+timestamps_warning(Report) ->
+    ?LOG_WARNING(Report),
+    ok.
+
+-doc """
+Return the fields of `Mod` whose values `m:kura_redact` replaces: its
+encrypted fields, those its `redact/0` callback lists, and each embed
+whose schema, or a schema embedded in that one at any depth, lists a
+field in its own `redact/0`. An embed is one value, so it is replaced
+whole. `[]` for a module that is not a schema.
+""".
+-spec redacted_fields(module()) -> [atom()].
+redacted_fields(Mod) ->
+    schema_cache({kura_schema, redacted_fields, Mod}, [], fun() ->
+        lists:usort(encrypted_fields(Mod) ++ redacting_embeds(Mod) ++ listed_redacted(Mod))
+    end).
+
+-spec listed_redacted(module()) -> [atom()].
+listed_redacted(Mod) ->
+    case erlang:function_exported(Mod, redact, 0) of
+        true -> Mod:redact();
+        false -> []
+    end.
+
+-spec redacting_embeds(module()) -> [atom()].
+redacting_embeds(Mod) ->
+    [
+        Name
+     || #kura_embed{name = Name, schema = Embedded} <- embeds(Mod),
+        lists:any(fun lists_a_redacted_field/1, embedded_in([Embedded], []))
+    ].
+
+-spec lists_a_redacted_field(module()) -> boolean().
+lists_a_redacted_field(Mod) ->
+    listed_redacted(Mod) =/= [].
+
+%% The schemas and every schema embedded in them, each once: a schema may
+%% embed itself.
+-spec embedded_in([module()], [module()]) -> [module()].
+embedded_in([], Seen) ->
+    Seen;
+embedded_in([Mod | Rest], Seen) ->
+    case lists:member(Mod, Seen) of
+        true ->
+            embedded_in(Rest, Seen);
+        false ->
+            embedded_in([E#kura_embed.schema || E <- embeds(Mod)] ++ Rest, [Mod | Seen])
+    end.
 
 -doc "Return list of non-virtual field names.".
 -spec non_virtual_fields(module()) -> [atom()].
@@ -292,7 +599,7 @@ key_names(Mod) ->
 -spec key_fields(module()) -> [#kura_field{}].
 key_fields(Mod) ->
     cache({kura_schema, key_fields, Mod}, fun() ->
-        FieldMap = maps:from_list([{F#kura_field.name, F} || F <- Mod:fields()]),
+        FieldMap = #{F#kura_field.name => F || F <- Mod:fields()},
         [
             case FieldMap of
                 #{N := F} -> F;
@@ -722,6 +1029,20 @@ forget(Mod) ->
 %%----------------------------------------------------------------------
 %% Internal: persistent_term cache
 %%----------------------------------------------------------------------
+
+%% The answer for a name that is not a schema is not kept: a module of
+%% that name may be loaded later, and is_schema/1 is what notices. A kept
+%% answer was therefore worked out from a schema, and is read without asking.
+schema_cache({kura_schema, _Tag, Mod} = Key, NotASchema, Fun) ->
+    case persistent_term:get(Key, ?NOT_KEPT) of
+        ?NOT_KEPT ->
+            case is_schema(Mod) of
+                true -> cache(Key, Fun);
+                false -> NotASchema
+            end;
+        Kept ->
+            Kept
+    end.
 
 %% Keys are {kura_schema, Tag, Mod}; forget/1 relies on that shape.
 cache(Key, Fun) ->

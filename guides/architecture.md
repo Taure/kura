@@ -134,6 +134,17 @@ backend), and `load` (backend → internal). Supported types include `id`,
 The backend dialect's `column_type/1` callback determines the SQL column
 type emitted in DDL.
 
+`load` reads a value in the Erlang form of its type, the one a driver with
+a native type returns. A backend that stores a type in another form, as
+SQLite stores a boolean as `1` or `0` and a date as ISO 8601 text,
+implements the optional `kura_dialect` callback `load_stored/2`, which
+turns each value of a row into the Erlang form before `load` reads it. A
+row therefore loads to the same Erlang terms on every backend, and a
+backend with native types is not read leniently.
+
+A `decimal` a driver returns as numeric text stays that text: it never
+passes through a float.
+
 ### `kura_migration` and `kura_migrator`
 
 `kura_migration` is a behaviour for writing migrations with `up/0` and
@@ -211,7 +222,14 @@ argument.
   `select_for_update_skip_locked`, ...). Consumers call
   `kura_capabilities:require/2` from supervisor init so the
   application refuses to start on a backend that lacks a required
-  feature instead of failing at runtime.
+  feature instead of failing at runtime. A backend that also declares
+  `capability_model() -> 1` has each query checked the same way: a
+  full-text match, a window function, a vector distance, a row lock, a
+  `skip_locked` lock or a `DISTINCT ON` it does not declare raises
+  `{kura, {unsupported_capability, Capability, PoolModule}}` before any SQL
+  is built, and `kura_stream` raises it for `cursors`. A backend without
+  `capability_model/0` is not checked, as in 2.30; kura 3.0 checks every
+  backend.
 
 ## Data Flow
 

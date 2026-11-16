@@ -85,7 +85,7 @@ associations() ->
 |------------------------|-------------------------------|--------------------------------------|
 | Table name             | `schema "users" do`           | `table() -> ~"users".`               |
 | Fields                 | `field :name, :string`        | `fields() -> [#kura_field{...}].`    |
-| Timestamps             | `timestamps()`                | `timestamps() -> [{inserted_at, utc_datetime}, ...].` |
+| Timestamps             | `timestamps()`                | fields named `inserted_at` / `updated_at`; `timestamps/0` for other names |
 | Associations           | `has_many :posts, ...`        | `associations() -> [#kura_assoc{...}].` |
 | Embeds                 | `embeds_many :tags, ...`      | `embeds() -> [#kura_embed{...}].`    |
 | Indexes                | (in migrations only)          | `indexes() -> [...].`                |
@@ -169,7 +169,7 @@ Ecto's repo dispatches CRUD; Kura's `kura_repo_worker` takes the repo module as 
 | `MyRepo.update(cs)`             | `kura_repo_worker:update(MyRepo, CS)`             |
 | `MyRepo.delete(struct)`         | `kura_repo_worker:delete(MyRepo, CS)`             |
 | `MyRepo.get(User, id)`          | `kura_repo_worker:get(MyRepo, my_user, Id)`       |
-| `MyRepo.get_by(User, email: e)` | `kura_repo_worker:get_by(MyRepo, my_user, #{email => E})` |
+| `MyRepo.get_by(User, email: e)` | `kura_repo_worker:get_by(MyRepo, my_user, [{email, E}])` |
 | `MyRepo.one(query)`             | `kura_repo_worker:one(MyRepo, Q)`                 |
 | `MyRepo.all(query)`             | `kura_repo_worker:all(MyRepo, Q)`                 |
 | `MyRepo.exists?(query)`         | `kura_repo_worker:exists(MyRepo, Q)`              |
@@ -247,7 +247,7 @@ Ecto uses a query DSL macro. Kura uses tuples.
 | `offset: 20`                              | `kura_query:offset(Q, 20)`                          |
 | `distinct: true`                          | `kura_query:distinct(Q)`                            |
 | `preload: [:posts]`                       | `kura_query:preload(Q, [posts])`                    |
-| `lock: "FOR UPDATE"`                      | `kura_query:lock(Q, ~"FOR UPDATE")`                 |
+| `lock: "FOR UPDATE"`                      | `kura_query:lock(Q, for_update)`                    |
 | `with cte as ...`                         | `kura_query:with_cte(Q, ~"cte_name", SubQ)`         |
 | `union ...`                               | `kura_query:union(Q1, Q2)`                          |
 

@@ -22,7 +22,7 @@
 ]).
 -endif.
 
--spec preload(module(), module(), map() | [map()], [atom() | {atom(), list()}]) ->
+-spec preload(module(), module(), map() | [map()], [atom() | {atom(), list() | map()}]) ->
     map() | [map()].
 preload(RepoMod, Schema, Record, Assocs) when is_map(Record) ->
     [Result] = preload(RepoMod, Schema, [Record], Assocs),
@@ -55,12 +55,12 @@ preload_in_parallel(RepoMod, Records, Schema, Assocs) ->
     %% Parallel preload: spawn each association query concurrently,
     %% then merge results sequentially to preserve record ordering.
     Self = self(),
-    Tenant = kura_tenant:get_tenant(),
+    Scope = kura_tenant:current_scope(),
     Refs = lists:map(
         fun(Assoc) ->
             Ref = make_ref(),
             spawn_link(fun() ->
-                ok = inherit_tenant(Tenant),
+                ok = kura_tenant:adopt(Scope),
                 Result = preload_assoc(RepoMod, Records, Schema, Assoc),
                 Self ! {preload_done, Ref, Assoc, Result}
             end),
@@ -69,12 +69,6 @@ preload_in_parallel(RepoMod, Records, Schema, Assocs) ->
         Assocs
     ),
     collect_preload_results(Refs, Records).
-
-inherit_tenant(undefined) ->
-    ok;
-inherit_tenant(Tenant) ->
-    _ = kura_tenant:put_tenant(Tenant),
-    ok.
 
 collect_preload_results([], Records) ->
     Records;
@@ -224,7 +218,9 @@ preload_many_to_many(
                 {OwnerCols, RelatedCols},
                 OwnerTuples
             ),
-            #{rows := JoinRows} = kura_db:query(RepoMod, JoinSQL, JoinParams),
+            #{rows := JoinRows} = kura_db:query(
+                RepoMod, JoinSQL, JoinParams, JoinParams, kura_db:source_name(JoinThrough)
+            ),
             RelTuples = lists:usort([fk_tuple(RelatedCols, JR) || JR <- JoinRows]),
             case RelTuples of
                 [] ->
@@ -400,7 +396,9 @@ group_m2m_join([JR | Rest], OwnerCols, RelatedCols, RelLookup, Acc) ->
         end,
     group_m2m_join(Rest, OwnerCols, RelatedCols, RelLookup, NewAcc).
 
--spec nest_preload(module(), [map()], atom(), module(), [atom() | {atom(), list()}], [map()]) ->
+-spec nest_preload(
+    module(), [map()], atom(), module(), [atom() | {atom(), list() | map()}], [map()]
+) ->
     [map()].
 nest_preload(_RepoMod, [], _AssocName, _RelSchema, _Nested, Acc) ->
     reverse_maps(Acc, []);

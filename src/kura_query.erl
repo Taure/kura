@@ -23,6 +23,7 @@ Q3 = kura_query:limit(Q2, 10).
     distance/3,
     check_distances/1,
     where/2,
+    escape_like/1,
     join/4, join/5,
     order_by/2,
     group_by/2,
@@ -31,6 +32,7 @@ Q3 = kura_query:limit(Q2, 10).
     offset/2,
     distinct/1, distinct/2,
     lock/2,
+    lock_clause/1,
     prefix/2,
     preload/2,
     with_cte/3,
@@ -47,10 +49,23 @@ Q3 = kura_query:limit(Q2, 10).
     min/2,
     max/2,
     check_encrypted/1,
-    where_unrewritten/2
+    where_unrewritten/2,
+    sources/1,
+    nested/1
 ]).
 
--export_type([window_fn/0, window_spec/0, distance/0, distance_metric/0, order/0]).
+-export_type([
+    window_fn/0,
+    window_spec/0,
+    distance/0,
+    distance_metric/0,
+    order/0,
+    lock/0,
+    row_lock/0,
+    lock_strength/0,
+    lock_wait/0,
+    source/0
+]).
 
 %% Stands for every column of a CTE whose ciphertext columns cannot be named.
 -define(ANY_COLUMN, '$kura_any_column').
@@ -62,6 +77,33 @@ Q3 = kura_query:limit(Q2, 10).
 -type distance_metric() :: l2 | cosine | inner_product.
 -type distance() :: {distance, atom(), distance_metric(), binary()}.
 -type order() :: {atom() | distance(), asc | desc}.
+
+-type lock_strength() :: for_update | for_no_key_update | for_share | for_key_share.
+-type lock_wait() :: nowait | skip_locked.
+
+-doc """
+One locking clause: a strength, alone, with a wait policy, or with the
+tables it locks and a wait policy. A table is a schema module, a table or
+alias name as an atom, or one as a binary.
+""".
+-type row_lock() ::
+    lock_strength()
+    | {lock_strength(), lock_wait()}
+    | {lock_strength(), #{tables => [atom() | binary(), ...], wait => lock_wait()}}.
+
+-doc "What `lock/2` takes: one clause, several, or SQL the caller vouches for.".
+-type lock() :: row_lock() | [row_lock(), ...] | {fragment, binary()}.
+
+-define(IS_LOCK_STRENGTH(S),
+    (S =:= for_update orelse S =:= for_no_key_update orelse S =:= for_share orelse
+        S =:= for_key_share)
+).
+-define(IS_LOCK_WAIT(W), (W =:= nowait orelse W =:= skip_locked)).
+-define(IS_BLANK(C), (C =:= $\s orelse (C >= $\t andalso C =< $\r))).
+-define(IS_NAME_START(C),
+    ((C >= $a andalso C =< $z) orelse (C >= $A andalso C =< $Z) orelse C =:= $_)
+).
+-define(IS_NAME_BYTE(C), (?IS_NAME_START(C) orelse (C >= $0 andalso C =< $9) orelse C =:= $$)).
 
 -define(IS_METRIC(M), (M =:= l2 orelse M =:= cosine orelse M =:= inner_product)).
 %% pgvector's VECTOR_MAX_DIM.
@@ -493,6 +535,19 @@ reject_distance_values(_Clause, _Improper) ->
 Add a WHERE condition. Conditions: `{field, value}`, `{field, op, value}`,
 `{'and', [...]}`, etc.
 
+`{Field, is_nil}` and `{Field, is_not_nil}` are the `NULL` tests, so in the
+two-element form those two atoms are operators, never values. A condition
+whose value is an atom that comes from outside, such as an enum filter read
+from a request, must use the three-element form: `{Field, '=', Value}` always
+binds `Value`.
+
+`{Field, contains, Text}`, `{Field, starts_with, Text}` and
+`{Field, ends_with, Text}` match `Text` as it is: `%` and `_` in it are not
+wildcards. `icontains`, `istarts_with` and `iends_with` do the same ignoring
+case. `{Field, like, Pattern}` and `{Field, ilike, Pattern}` take a pattern,
+in which `%` and `_` are wildcards; see `escape_like/1` before putting
+outside input into one.
+
 `{Distance, Op, Threshold}` keeps the rows whose vector distance from
 `distance/3` compares to the number `Threshold` by `'<'`, `'<='`, `'>'`
 or `'>='`. The distance is checked against the schema as in
@@ -553,6 +608,29 @@ a dialect without `convert_values/1` binds every value as given.
 where(Q = #kura_query{from = From, wheres = W}, Condition) ->
     check_thresholds(From, cond_thresholds(where, Condition)),
     Q#kura_query{wheres = W ++ [lookup_condition(Q, Condition, encrypted_field_in_where)]}.
+
+-doc """
+Escape `Text` for use inside a `like` or `ilike` pattern: `%`, `_` and `\`
+are each prefixed with a backslash, so they match themselves.
+
+```erlang
+Pattern = <<(kura_query:escape_like(Input))/binary, "%">>,
+Q = kura_query:where(kura_query:from(my_user), {name, like, Pattern}).
+```
+
+The backslash is the escape character of `like` and `ilike` on every
+backend: PostgreSQL's `LIKE` has it by default, and a dialect for a backend
+whose `LIKE` has none, as kura_sqlite's, names it in an `ESCAPE` clause (see
+`m:kura_dialect`). Where the whole value is to be matched as it is, use
+`contains`, `starts_with` or `ends_with` in `where/2`, which escape the
+value in SQL.
+""".
+-spec escape_like(binary()) -> binary().
+escape_like(Text) when is_binary(Text) ->
+    <<<<(escaped_like_byte(Byte))/binary>> || <<Byte>> <= Text>>.
+
+escaped_like_byte(Byte) when Byte =:= $%; Byte =:= $_; Byte =:= $\\ -> <<$\\, Byte>>;
+escaped_like_byte(Byte) -> <<Byte>>.
 
 %% where/2 without deterministic lookups: kura_tenant scopes with it, as
 %% writes refuse an encrypted tenant field in either mode.
@@ -632,7 +710,7 @@ lookup_specs(Q, {Encrypted, Ctes}) ->
             FromOwned = from_owned_fields(Q),
             maps:from_list([
                 {F, Spec}
-             || Source <- sources(Q),
+             || Source <- from_and_joins(Q),
                 not reads_cte(Source, Ctes),
                 F := #{mode := deterministic} = Spec <- source_specs(Source),
                 declared_once(F, Encrypted),
@@ -664,7 +742,7 @@ guard_scope(#kura_query{ctes = Own} = Q, OuterEncrypted, OuterCtes) ->
     {encrypted_in_scope(Q, Ctes) ++ unshadowed(OuterEncrypted, Q, Ctes), Ctes}.
 
 encrypted_in_scope(Q, Ctes) ->
-    lists:append([source_encrypted(S, Ctes) || S <- sources(Q)]).
+    lists:append([source_encrypted(S, Ctes) || S <- from_and_joins(Q)]).
 
 source_encrypted(Source, Ctes) ->
     encrypted_fields(Source) ++ cte_encrypted(Source, Ctes).
@@ -974,10 +1052,10 @@ refuse_bodies(_Malformed, _OuterEncrypted, _Ctes) ->
 unshadowed([], _Q, _Ctes) ->
     [];
 unshadowed(OuterEncrypted, Q, Ctes) ->
-    Defined = lists:append([columns(S, Ctes) || S <- sources(Q)]),
+    Defined = lists:append([columns(S, Ctes) || S <- from_and_joins(Q)]),
     [F || F <- OuterEncrypted, not lists:member(F, Defined)].
 
-sources(#kura_query{from = From, joins = Joins}) ->
+from_and_joins(#kura_query{from = From, joins = Joins}) ->
     [From | [T || {_, T, _, _} <- Joins]].
 
 columns(Source, Ctes) when is_atom(Source) ->
@@ -1099,16 +1177,297 @@ distinct(Q, Fields) ->
     refuse_columns(Fields, output_scope(Q, guard_scope(Q, [], [])), encrypted_field_in_distinct),
     Q#kura_query{distinct = Fields}.
 
--spec lock(#kura_query{}, binary()) -> #kura_query{}.
-lock(Q, LockExpr) ->
-    Q#kura_query{lock = LockExpr}.
+-doc """
+Lock the selected rows.
+
+`Lock` is a row-lock strength, `for_update`, `for_no_key_update`, `for_share`
+or `for_key_share`, alone, with a wait policy, or with the tables to lock:
+
+```erlang
+kura_query:lock(Q, for_update).
+kura_query:lock(Q, {for_update, skip_locked}).
+kura_query:lock(Q, {for_update, #{tables => [posts], wait => nowait}}).
+kura_query:lock(Q, [{for_update, #{tables => [posts]}}, {for_share, #{tables => [users]}}]).
+```
+
+`tables` names what `OF` lists: a schema module, or a table or alias name as
+an atom or a binary. An atom that is a schema module is always read as that
+schema's table, so an alias a schema module shares its name with is given as
+a binary. The dialect quotes each name, so none is ever written into the
+statement as SQL. A list holds several clauses.
+
+The same clauses are read from SQL text, whatever the case and spacing, and
+stored as the term: `~"FOR UPDATE"`, `~"for share nowait"`,
+`~"FOR UPDATE OF posts, comments SKIP LOCKED"`. An unquoted table name is
+folded to lower case, as PostgreSQL folds it.
+
+Text that is not such a clause is written into the statement as it is, as
+2.30 wrote any text. While `strict_locks` is unset in the `kura`
+application environment that logs one warning per boot, naming the text;
+`{strict_locks, false}` allows it without the warning. With
+`{strict_locks, true}` it raises `{kura, {invalid_lock, Lock}}` instead;
+that is the default in kura 3.0.
+For SQL kura should not read, say so with `{fragment, SQL}`: it is written
+as it is under either setting, without a warning, and must never hold
+outside input.
+
+Anything else raises `{kura, {invalid_lock, Lock}}`.
+""".
+-spec lock(#kura_query{}, lock() | binary()) -> #kura_query{}.
+lock(Q, Lock) ->
+    Q#kura_query{lock = lock_clause(Lock)}.
+
+-doc """
+The lock `Lock` stands for, as `lock/2` stores it. A dialect calls this on
+the `lock` of a query, which may be a record built without `lock/2`, and
+compiles what comes back:
+
+- a strength, or `{Strength, Wait}`;
+- `{Strength, #{tables := [Name, ...]}}`, with `wait` when there is one.
+  Each `Name` is a binary, to be quoted as an identifier;
+- a list of two or more of those, one per clause;
+- `{fragment, SQL}`, written as it is.
+
+Raises `{kura, {invalid_lock, Lock}}` as `lock/2` does.
+""".
+-spec lock_clause(term()) -> lock().
+lock_clause({fragment, SQL} = Fragment) when is_binary(SQL) ->
+    Fragment;
+lock_clause(Text) when is_binary(Text) ->
+    case lock_tokens(Text, []) of
+        {ok, Tokens} ->
+            case worded_locks(Tokens, []) of
+                {ok, Clauses} -> stored_lock(Clauses);
+                error -> unread_lock(Text)
+            end;
+        error ->
+            unread_lock(Text)
+    end;
+lock_clause([_ | _] = Locks) ->
+    case row_locks(Locks, []) of
+        {ok, Clauses} -> stored_lock(Clauses);
+        error -> invalid_lock(Locks)
+    end;
+lock_clause(Lock) ->
+    case row_lock(Lock) of
+        {ok, Clause} -> stored_lock([Clause]);
+        error -> invalid_lock(Lock)
+    end.
+
+%% 2.30 wrote the text into the statement; kura 3.0 refuses it.
+-spec unread_lock(binary()) -> lock().
+unread_lock(Text) ->
+    case kura_settings:flag(strict_locks) of
+        true ->
+            invalid_lock(Text);
+        false ->
+            {fragment, Text};
+        unset ->
+            ok = kura_boot_warning:once(lock_text, #{
+                msg =>
+                    ~"kura: a lock given as text is not a locking clause kura reads, and is written into the statement as it is",
+                lock => Text,
+                fix =>
+                    ~"use a lock term such as {for_update, #{tables => [posts]}}, or {fragment, SQL} for SQL kura should not read; set {kura, [{strict_locks, true}]} to refuse other text, as 3.0 does"
+            }),
+            {fragment, Text}
+    end.
+
+-type parsed_lock() :: {lock_strength(), [binary()], lock_wait() | undefined}.
+
+-spec stored_lock([parsed_lock(), ...]) -> lock().
+stored_lock([Clause]) -> stored_row_lock(Clause);
+stored_lock(Clauses) -> [stored_row_lock(Clause) || Clause <- Clauses].
+
+-spec stored_row_lock(parsed_lock()) -> row_lock().
+stored_row_lock({Strength, [], undefined}) ->
+    Strength;
+stored_row_lock({Strength, [], Wait}) ->
+    {Strength, Wait};
+stored_row_lock({Strength, [_ | _] = Tables, undefined}) ->
+    {Strength, #{tables => Tables}};
+stored_row_lock({Strength, [_ | _] = Tables, Wait}) ->
+    {Strength, #{tables => Tables, wait => Wait}}.
+
+row_locks([], Acc) ->
+    {ok, lists:reverse(Acc)};
+row_locks([Lock | Rest], Acc) ->
+    case row_lock(Lock) of
+        {ok, Clause} -> row_locks(Rest, [Clause | Acc]);
+        error -> error
+    end;
+row_locks(_Improper, _Acc) ->
+    error.
+
+-spec row_lock(term()) -> {ok, parsed_lock()} | error.
+row_lock(Strength) when ?IS_LOCK_STRENGTH(Strength) ->
+    {ok, {Strength, [], undefined}};
+row_lock({Strength, Wait}) when ?IS_LOCK_STRENGTH(Strength), ?IS_LOCK_WAIT(Wait) ->
+    {ok, {Strength, [], Wait}};
+row_lock({Strength, Spec}) when ?IS_LOCK_STRENGTH(Strength), is_map(Spec) ->
+    case map_size(maps:without([tables, wait], Spec)) of
+        0 -> map_lock(Strength, lock_tables(Spec), lock_wait(Spec));
+        _ -> error
+    end;
+row_lock(_Lock) ->
+    error.
+
+-spec map_lock(
+    lock_strength(), {ok, [binary()]} | error, {ok, lock_wait() | undefined} | error
+) -> {ok, parsed_lock()} | error.
+map_lock(Strength, {ok, Tables}, {ok, Wait}) -> {ok, {Strength, Tables, Wait}};
+map_lock(_Strength, _Tables, _Wait) -> error.
+
+-spec lock_wait(map()) -> {ok, lock_wait() | undefined} | error.
+lock_wait(#{wait := Wait}) when ?IS_LOCK_WAIT(Wait) -> {ok, Wait};
+lock_wait(#{wait := _}) -> error;
+lock_wait(#{}) -> {ok, undefined}.
+
+lock_tables(#{tables := [_ | _] = Tables}) -> lock_table_names(Tables, []);
+lock_tables(#{tables := _}) -> error;
+lock_tables(#{}) -> {ok, []}.
+
+lock_table_names([], Acc) ->
+    {ok, lists:reverse(Acc)};
+lock_table_names([Table | Rest], Acc) ->
+    case lock_table_name(Table) of
+        {ok, Name} -> lock_table_names(Rest, [Name | Acc]);
+        error -> error
+    end;
+lock_table_names(_Improper, _Acc) ->
+    error.
+
+lock_table_name(Name) when is_binary(Name) ->
+    case is_identifier(Name) of
+        true -> {ok, Name};
+        false -> error
+    end;
+lock_table_name(Table) when is_atom(Table), Table =/= undefined ->
+    case kura_schema:is_schema(Table) of
+        true -> lock_table_name(Table:table());
+        false -> lock_table_name(atom_to_binary(Table, utf8))
+    end;
+lock_table_name(_Table) ->
+    error.
+
+%% What a dialect can quote: text with something in it and no NUL, which no
+%% identifier holds.
+is_identifier(<<>>) ->
+    false;
+is_identifier(Name) ->
+    binary:match(Name, <<0>>) =:= nomatch andalso
+        is_binary(unicode:characters_to_binary(Name, utf8, utf8)).
+
+lock_tokens(<<>>, Acc) ->
+    {ok, lists:reverse(Acc)};
+lock_tokens(<<C, Rest/binary>>, Acc) when ?IS_BLANK(C) ->
+    lock_tokens(Rest, Acc);
+lock_tokens(<<$,, Rest/binary>>, Acc) ->
+    lock_tokens(Rest, [comma | Acc]);
+lock_tokens(<<$", Rest/binary>>, Acc) ->
+    case quoted_name(Rest, <<>>) of
+        {ok, Name, After} -> lock_tokens(After, [{name, Name} | Acc]);
+        error -> error
+    end;
+lock_tokens(<<C, _/binary>> = Text, Acc) when ?IS_NAME_START(C) ->
+    {Word, Rest} = bare_word(Text, 0),
+    lock_tokens(Rest, [{word, string:uppercase(Word), string:lowercase(Word)} | Acc]);
+lock_tokens(_Text, _Acc) ->
+    error.
+
+bare_word(Text, Size) ->
+    case Text of
+        <<_:Size/binary, C, _/binary>> when ?IS_NAME_BYTE(C) ->
+            bare_word(Text, Size + 1);
+        <<Word:Size/binary, Rest/binary>> ->
+            {Word, Rest}
+    end.
+
+quoted_name(<<$", $", Rest/binary>>, Acc) ->
+    quoted_name(Rest, <<Acc/binary, $">>);
+quoted_name(<<$", Rest/binary>>, Acc) ->
+    case is_identifier(Acc) of
+        true -> {ok, Acc, Rest};
+        false -> error
+    end;
+quoted_name(<<C, Rest/binary>>, Acc) ->
+    quoted_name(Rest, <<Acc/binary, C>>);
+quoted_name(<<>>, _Acc) ->
+    error.
+
+%% FOR strength [OF table [, ...]] [NOWAIT | SKIP LOCKED], once or more.
+worded_locks([], [_ | _] = Acc) ->
+    {ok, lists:reverse(Acc)};
+worded_locks([{word, ~"FOR", _} | Words], Acc) ->
+    case worded_strength(Words) of
+        {Strength, AfterStrength} ->
+            case worded_tables(AfterStrength) of
+                {Tables, AfterTables} ->
+                    {Wait, Rest} = worded_wait(AfterTables),
+                    worded_locks(Rest, [{Strength, Tables, Wait} | Acc]);
+                error ->
+                    error
+            end;
+        error ->
+            error
+    end;
+worded_locks(_Words, _Acc) ->
+    error.
+
+worded_strength([{word, ~"UPDATE", _} | Rest]) ->
+    {for_update, Rest};
+worded_strength([{word, ~"NO", _}, {word, ~"KEY", _}, {word, ~"UPDATE", _} | Rest]) ->
+    {for_no_key_update, Rest};
+worded_strength([{word, ~"SHARE", _} | Rest]) ->
+    {for_share, Rest};
+worded_strength([{word, ~"KEY", _}, {word, ~"SHARE", _} | Rest]) ->
+    {for_key_share, Rest};
+worded_strength(_Words) ->
+    error.
+
+worded_tables([{word, ~"OF", _} | Words]) -> worded_table(Words, []);
+worded_tables(Words) -> {[], Words}.
+
+worded_table([{name, Name} | Rest], Acc) -> more_worded_tables(Rest, [Name | Acc]);
+worded_table([{word, _Upper, Folded} | Rest], Acc) -> more_worded_tables(Rest, [Folded | Acc]);
+worded_table(_Words, _Acc) -> error.
+
+more_worded_tables([comma | Words], Acc) -> worded_table(Words, Acc);
+more_worded_tables(Words, Acc) -> {lists:reverse(Acc), Words}.
+
+worded_wait([{word, ~"NOWAIT", _} | Rest]) -> {nowait, Rest};
+worded_wait([{word, ~"SKIP", _}, {word, ~"LOCKED", _} | Rest]) -> {skip_locked, Rest};
+worded_wait(Words) -> {undefined, Words}.
+
+-spec invalid_lock(term()) -> no_return().
+invalid_lock(Lock) ->
+    erlang:error({kura, {invalid_lock, Lock}}).
 
 -spec prefix(#kura_query{}, binary()) -> #kura_query{}.
 prefix(Q, Schema) ->
     Q#kura_query{prefix = Schema}.
 
--doc "Add associations to preload after query execution.".
--spec preload(#kura_query{}, [atom() | {atom(), list()}]) -> #kura_query{}.
+-doc """
+Add associations to preload after query execution.
+
+Each is an association's name, `{Name, Nested}` to preload the `Nested`
+associations on the records it loads, or `{Name, Opts}` to load a
+`has_many` or `has_one` association with conditions: `Opts` is a map of
+`where`, a condition as `where/2` takes it, `order_by`, as `order_by/2`
+takes it, and `limit`. They apply to the one query that loads the
+association for every record, so `limit` caps the rows of that query, not
+the rows of each record.
+
+```erlang
+kura_query:preload(Q, [author, {comments, [author]}]),
+kura_query:preload(Q, [{comments, #{where => {approved, true}, order_by => [{inserted_at, desc}]}}]).
+```
+
+A `belongs_to` or `many_to_many` association given `Opts` is loaded whole:
+the map is not applied to it. A `through` association is preloaded by its
+name only.
+""".
+-spec preload(#kura_query{}, [atom() | {atom(), list() | map()}]) -> #kura_query{}.
 preload(Q = #kura_query{preloads = P}, Assocs) ->
     Q#kura_query{preloads = P ++ Assocs}.
 
@@ -1167,6 +1526,219 @@ whose shape already passed. So a `#kura_query{}` built or updated without
 -spec check_encrypted(#kura_query{}) -> ok.
 check_encrypted(Q) ->
     refuse_encrypted_query(Q, [], []).
+
+-doc """
+A schema or table a query reads, and how: as its `from`, through a `join`,
+or in a `preload`. `cte` marks a `from` or a join that names one of the
+query's CTEs, which is a name and not a table: what the CTE reads is listed
+from its body. A source names a CTE by its table name, a schema's being
+that of its `table/0`, and only in a query with no `prefix/2`, since a
+prefix qualifies the name and a qualified name is a table's.
+
+A CTE's body sees the CTEs listed before it, as the `WITH` kura writes has
+no `RECURSIVE`: in the body, the CTE's own name and the name of a CTE listed
+after it are tables.
+
+A later release may add a role, so a caller matches the roles it knows and
+passes over any other.
+""".
+-type source() :: {from | join | cte | preload, module() | atom() | binary()}.
+
+-doc """
+Every schema and table `Query` reads, at any depth: its `from` and joins,
+then those of its CTE bodies, of the queries combined with it, and of the
+`in`, `exists` and `not_exists` subqueries in its `WHERE` and `HAVING`
+conditions, and last what its preloads read.
+
+A preload is resolved from the associations of the `from` schema: the
+associated schema, the join table of a many-to-many, and each step of a
+`through`. Only the preloads of `Query` itself are listed, since those of a
+nested query are never run. A source may be listed more than once.
+
+Each source is `{Role, SchemaOrTable}`, the role being `from`, `join`, `cte`
+or `preload` (`t:source/0`). The set of roles may grow in a later release:
+match the roles you need and tolerate one you do not know.
+
+```erlang
+Q = kura_query:preload(kura_query:join(kura_query:from(post), inner, author, {author_id, id}), [tags]),
+[{from, post}, {join, author}, {preload, tag}, {preload, ~"posts_tags"}] = kura_query:sources(Q).
+```
+""".
+-spec sources(#kura_query{}) -> [source()].
+sources(#kura_query{from = From, preloads = Preloads} = Query) ->
+    read_sources(Query, []) ++ preload_sources(From, Preloads).
+
+-doc false.
+-spec nested(#kura_query{}) -> [#kura_query{}].
+nested(#kura_query{ctes = Ctes, combinations = Combinations, wheres = Wheres, havings = Havings}) ->
+    bodies(Ctes) ++ bodies(Combinations) ++ subqueries(Wheres) ++ subqueries(Havings).
+
+%% A nested query reads its own CTEs before those of the queries around it.
+%% A prefix qualifies every table of the query it is set on, and a qualified
+%% name is a table's, never a CTE's.
+-spec read_sources(#kura_query{}, [term()]) -> [source()].
+read_sources(
+    #kura_query{
+        from = From,
+        joins = Joins,
+        ctes = Ctes,
+        combinations = Combinations,
+        wheres = Wheres,
+        havings = Havings
+    } = Query,
+    OuterNames
+) ->
+    Names = cte_names(Ctes) ++ OuterNames,
+    Readable =
+        case Query#kura_query.prefix of
+            undefined -> Names;
+            _Prefix -> []
+        end,
+    read_source(from, From, Readable) ++ joined_sources(Joins, Readable) ++
+        cte_sources(Ctes, OuterNames) ++
+        nested_sources(bodies(Combinations) ++ subqueries(Wheres) ++ subqueries(Havings), Names).
+
+%% The statement says WITH, never WITH RECURSIVE, so a CTE's body sees the
+%% CTEs listed before it and not itself or a later one: there, that name is
+%% a table's.
+-spec cte_sources(term(), [term()]) -> [source()].
+cte_sources([{Name, #kura_query{} = Body} | Rest], Visible) ->
+    read_sources(Body, Visible) ++ cte_sources(Rest, [Name | Visible]);
+cte_sources([_ | Rest], Visible) ->
+    cte_sources(Rest, Visible);
+cte_sources(_, _Visible) ->
+    [].
+
+-spec nested_sources([#kura_query{}], [term()]) -> [source()].
+nested_sources([], _Names) ->
+    [];
+nested_sources([Query | Rest], Names) ->
+    read_sources(Query, Names) ++ nested_sources(Rest, Names).
+
+-spec joined_sources(term(), [term()]) -> [source()].
+joined_sources([{_Type, Joined, _On, _As} | Rest], Names) ->
+    read_source(join, Joined, Names) ++ joined_sources(Rest, Names);
+joined_sources([_ | Rest], Names) ->
+    joined_sources(Rest, Names);
+joined_sources(_, _Names) ->
+    [].
+
+-spec read_source(from | join, term(), [term()]) -> [source()].
+read_source(_Role, undefined, _Names) ->
+    [];
+read_source(Role, Source, Names) when is_atom(Source); is_binary(Source) ->
+    case names_cte(Source, Names) of
+        true -> [{cte, Source}];
+        false -> [{Role, Source}]
+    end;
+read_source(_Role, _Source, _Names) ->
+    [].
+
+%% The database resolves the name it is given, which for a schema is its
+%% table's and not the module's.
+-spec names_cte(atom() | binary(), [term()]) -> boolean().
+names_cte(Source, Names) when is_binary(Source) ->
+    lists:member(Source, Names);
+names_cte(Source, Names) when is_atom(Source) ->
+    case kura_schema:is_schema(Source) of
+        true -> lists:member(Source:table(), Names);
+        false -> lists:member(atom_to_binary(Source), Names)
+    end.
+
+-spec cte_names(term()) -> [term()].
+cte_names([{Name, _Body} | Rest]) -> [Name | cte_names(Rest)];
+cte_names(_) -> [].
+
+-spec bodies(term()) -> [#kura_query{}].
+bodies([{_NameOrKind, #kura_query{} = Body} | Rest]) -> [Body | bodies(Rest)];
+bodies([_ | Rest]) -> bodies(Rest);
+bodies(_) -> [].
+
+-spec subqueries(term()) -> [#kura_query{}].
+subqueries([Condition | Rest]) -> condition_subqueries(Condition) ++ subqueries(Rest);
+subqueries(_) -> [].
+
+-spec condition_subqueries(term()) -> [#kura_query{}].
+condition_subqueries({Op, Conditions}) when Op =:= 'and'; Op =:= 'or' ->
+    subqueries(Conditions);
+condition_subqueries({'not', Inner}) ->
+    condition_subqueries(Inner);
+condition_subqueries({_Field, in, {subquery, #kura_query{} = Sub}}) ->
+    [Sub];
+condition_subqueries({Exists, {subquery, #kura_query{} = Sub}}) when
+    Exists =:= exists; Exists =:= not_exists
+->
+    [Sub];
+condition_subqueries(_Condition) ->
+    [].
+
+-spec preload_sources(term(), term()) -> [source()].
+preload_sources(_Schema, []) ->
+    [];
+preload_sources(Schema, Preloads) when is_atom(Schema), Schema =/= undefined ->
+    case kura_schema:is_schema(Schema) of
+        true -> preloaded(Schema, Preloads);
+        false -> []
+    end;
+preload_sources(_Schema, _Preloads) ->
+    [].
+
+-spec preloaded(module(), term()) -> [source()].
+preloaded(Schema, [Preload | Rest]) ->
+    preload_reads(Schema, Preload) ++ preloaded(Schema, Rest);
+preloaded(_Schema, _) ->
+    [].
+
+%% As kura_preloader reads them: a bare name follows a `through`, a name
+%% with options does not, and a nested list goes on from the association's
+%% schema.
+-spec preload_reads(module(), term()) -> [source()].
+preload_reads(Schema, {Name, Nested}) when is_atom(Name), is_list(Nested) ->
+    case kura_schema:association(Schema, Name) of
+        {ok, #kura_assoc{schema = Related}} ->
+            preload_reads(Schema, Name) ++ preload_sources(Related, Nested);
+        {error, not_found} ->
+            []
+    end;
+preload_reads(Schema, {Name, Opts}) when is_atom(Name), is_map(Opts) ->
+    case kura_schema:association(Schema, Name) of
+        {ok, Assoc} -> association_reads(Assoc);
+        {error, not_found} -> []
+    end;
+preload_reads(Schema, Name) when is_atom(Name) ->
+    case kura_schema:association(Schema, Name) of
+        {ok, #kura_assoc{through = [_ | _] = Through}} -> through_reads(Schema, Through);
+        {ok, Assoc} -> association_reads(Assoc);
+        {error, not_found} -> []
+    end;
+preload_reads(_Schema, _Preload) ->
+    [].
+
+-spec through_reads(module(), [atom()]) -> [source()].
+through_reads(_Schema, []) ->
+    [];
+through_reads(Schema, [Step | Rest]) ->
+    case kura_schema:association(Schema, Step) of
+        {ok, #kura_assoc{schema = Next} = Assoc} ->
+            association_reads(Assoc) ++ through_reads(Next, Rest);
+        {error, not_found} ->
+            []
+    end.
+
+-spec association_reads(#kura_assoc{}) -> [source()].
+association_reads(#kura_assoc{type = many_to_many, join_through = JoinTable} = Assoc) when
+    JoinTable =/= undefined
+->
+    association_target(Assoc) ++ [{preload, JoinTable}];
+association_reads(Assoc) ->
+    association_target(Assoc).
+
+-spec association_target(#kura_assoc{}) -> [source()].
+association_target(Assoc) ->
+    case kura_schema:assoc_target(Assoc) of
+        undefined -> [];
+        Target -> [{preload, Target}]
+    end.
 
 -doc "Combine queries with UNION (removes duplicates).".
 -spec union(#kura_query{}, #kura_query{}) -> #kura_query{}.

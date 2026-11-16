@@ -40,6 +40,7 @@ ok = kura_repo_worker:start(MyRepo),
     multi/2,
     preload/4,
     query/3,
+    query/4,
     scope_read/1,
     pgo_query/3,
     build_log_event/5,
@@ -103,12 +104,13 @@ start(RepoMod) ->
 -doc "Execute a query and return all matching rows.".
 -spec all(module(), #kura_query{}) -> {ok, [map()]} | {error, term()}.
 all(RepoMod, Query) ->
-    {SQL, Params} = kura_query_compiler:to_sql_cached(RepoMod, scope_read(Query)),
+    {SQL, Params, #{shown := Mode, source := Source}} =
+        kura_query_compiler:statement(RepoMod, scope_read(Query)),
 
-    case kura_db:query(RepoMod, SQL, Params) of
+    case kura_db:query(RepoMod, SQL, Params, kura_redact:shown(Mode, Params), Source) of
         #{command := select, rows := Rows} ->
             Schema = Query#kura_query.from,
-            Loaded = [kura_db:load_row(Schema, Row) || Row <- Rows],
+            Loaded = kura_db:load_rows(RepoMod, Schema, Rows),
             case Query#kura_query.preloads of
                 [] -> {ok, Loaded};
                 Preloads -> {ok, kura_preloader:do_preload(RepoMod, Loaded, Schema, Preloads)}
@@ -150,7 +152,14 @@ fetch_key_field(F, Spec, SchemaMod) ->
         #{} -> error({incomplete_key, SchemaMod, F})
     end.
 
--doc "Fetch a single record matching all key-value clauses.".
+-doc """
+Fetch a single record matching all key-value clauses.
+
+Each clause is an equality and its value is always bound, so an atom taken
+from a request cannot turn into an operator: `{status, is_not_nil}` compares
+`status` with the atom rather than testing for `NULL`. For a `NULL` test use
+`one/2` with `kura_query:where/2` and `{Field, is_nil}`.
+""".
 -spec get_by(module(), module(), [{atom(), term()}]) ->
     {ok, map()} | {error, not_found} | {error, term()}.
 get_by(RepoMod, SchemaMod, Clauses) ->
@@ -217,7 +226,8 @@ aggregate(RepoMod, Query, {Agg, Field}) ->
         distinct = false
     },
     {SQL, Params} = kura_query_compiler:to_sql(RepoMod, scope_read(AggQ)),
-    case kura_db:query(RepoMod, SQL, Params) of
+    Shown = kura_redact:query_params(AggQ, Params),
+    case kura_db:query(RepoMod, SQL, Params, Shown, kura_db:source_name(AggQ#kura_query.from)) of
         #{rows := [Row]} -> {ok, maps:get(Agg, Row)};
         #{rows := []} -> {ok, nil};
         {error, _} = Err -> Err
@@ -321,7 +331,11 @@ insert(RepoMod, CS, Opts) ->
 
 do_insert(_RepoMod, CS = #kura_changeset{valid = false}, _Opts) ->
     {error, CS#kura_changeset{action = insert}};
-do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}, Opts0) when
+do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod}, Opts) ->
+    ok = permit_write(RepoMod, SchemaMod),
+    insert_permitted(RepoMod, CS, Opts).
+
+insert_permitted(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}, Opts0) when
     map_size(AC) > 0
 ->
     ok = refuse_upsert_with_assocs(Opts0),
@@ -336,7 +350,7 @@ do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC},
                 Err
         end
     end);
-do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod}, Opts0) ->
+insert_permitted(RepoMod, CS = #kura_changeset{schema = SchemaMod}, Opts0) ->
     Opts = guard_upsert(SchemaMod, Opts0),
     case needs_transaction(SchemaMod, insert) of
         true -> atomically(RepoMod, fun() -> inserted(insert_record(RepoMod, CS, Opts)) end);
@@ -368,7 +382,17 @@ update(RepoMod, CS) ->
 
 do_update(_RepoMod, CS = #kura_changeset{valid = false}) ->
     {error, CS#kura_changeset{action = update}};
-do_update(RepoMod, CS = #kura_changeset{assoc_changes = AC}) when map_size(AC) > 0 ->
+do_update(
+    RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes, assoc_changes = AC}
+) when
+    map_size(Changes) > 0; map_size(AC) > 0
+->
+    ok = permit_write(RepoMod, SchemaMod),
+    update_permitted(RepoMod, CS);
+do_update(RepoMod, CS) ->
+    update_permitted(RepoMod, CS).
+
+update_permitted(RepoMod, CS = #kura_changeset{assoc_changes = AC}) when map_size(AC) > 0 ->
     atomically(RepoMod, fun() ->
         case update_record(RepoMod, CS) of
             {ok, ParentRow} ->
@@ -377,7 +401,7 @@ do_update(RepoMod, CS = #kura_changeset{assoc_changes = AC}) when map_size(AC) >
                 Err
         end
     end);
-do_update(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
+update_permitted(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
     case needs_transaction(SchemaMod, update) of
         true -> atomically(RepoMod, fun() -> update_record(RepoMod, CS) end);
         false -> update_record(RepoMod, CS)
@@ -389,6 +413,7 @@ delete(RepoMod, CS) ->
     guard_write(RepoMod, fun() -> do_delete(RepoMod, CS) end).
 
 do_delete(RepoMod, #kura_changeset{schema = SchemaMod, data = Data}) ->
+    ok = permit_write(RepoMod, SchemaMod),
     case needs_transaction(SchemaMod, delete) of
         true -> atomically(RepoMod, fun() -> delete_record(RepoMod, SchemaMod, Data) end);
         false -> delete_record(RepoMod, SchemaMod, Data)
@@ -427,13 +452,16 @@ update_all(RepoMod, Query, Updates) ->
 
 do_update_all(RepoMod, Query, Updates) ->
     Q1 = scope_read(Query),
-    case dump_set_map(Q1#kura_query.from, pin_tenant(Updates)) of
+    From = Q1#kura_query.from,
+    case dump_set_map(From, pin_tenant(From, Updates)) of
         {error, _} = DumpErr ->
             DumpErr;
         {ok, Dumped} ->
             {SQL, Params} = kura_query_compiler:update_all(RepoMod, Q1, Dumped),
+            Shown = kura_redact:update_all_params(Q1, maps:keys(Dumped), Params),
+            Source = kura_db:source_name(Q1#kura_query.from),
 
-            case kura_db:query(RepoMod, SQL, Params) of
+            case kura_db:query(RepoMod, SQL, Params, Shown, Source) of
                 #{command := update, num_rows := Count} -> {ok, Count};
                 {error, _} = Err -> Err
             end
@@ -455,12 +483,28 @@ do_delete_all(RepoMod, Query) ->
     Q1 = scope_read(Query),
     {SQL, Params} = kura_query_compiler:delete_all(RepoMod, Q1),
 
-    case kura_db:query(RepoMod, SQL, Params) of
+    Shown = kura_redact:query_params(Q1, Params),
+    case kura_db:query(RepoMod, SQL, Params, Shown, kura_db:source_name(Q1#kura_query.from)) of
         #{command := delete, num_rows := Count} -> {ok, Count};
         {error, _} = Err -> Err
     end.
 
--doc "Bulk insert a list of maps, returning the count of inserted rows.".
+-doc """
+Bulk insert a list of maps in one statement, returning the count of
+inserted rows.
+
+An empty list inserts nothing and returns `{ok, 0}` without a statement.
+
+Every entry must set the same fields. The statement has one column list,
+so an entry with a field the others lack, or without one they have,
+returns `{error, {entries_differ, Fields, EntryFields}}` and nothing is
+written.
+
+A statement holds a limited number of bound values, 65535 on PostgreSQL,
+and each entry binds one per field. A list over the limit raises
+`{kura, {too_many_parameters, Count, Max}}`. Split the list and insert
+the parts inside one transaction.
+""".
 -spec insert_all(module(), module(), [map()]) -> {ok, non_neg_integer()} | {error, term()}.
 insert_all(RepoMod, SchemaMod, Entries) ->
     guard_write(RepoMod, fun() -> do_insert_all(RepoMod, SchemaMod, Entries) end).
@@ -468,34 +512,58 @@ insert_all(RepoMod, SchemaMod, Entries) ->
 do_insert_all(RepoMod, SchemaMod, Entries) ->
     do_insert_all(RepoMod, SchemaMod, Entries, #{}).
 
--doc "Bulk insert with options. `#{returning => true | [atom()]}` returns inserted rows.".
+-doc """
+Bulk insert with options. `#{returning => true | [atom()]}` returns
+inserted rows, so an empty list returns `{ok, 0, []}`. See `insert_all/3`
+for the limits on the entries.
+""".
 -spec insert_all(module(), module(), [map()], map()) ->
     {ok, non_neg_integer()} | {ok, non_neg_integer(), [map()]} | {error, term()}.
 insert_all(RepoMod, SchemaMod, Entries, Opts) ->
     guard_write(RepoMod, fun() -> do_insert_all(RepoMod, SchemaMod, Entries, Opts) end).
 
 do_insert_all(RepoMod, SchemaMod, Entries, Opts) ->
-    case dump_entries(SchemaMod, [maybe_apply_tenant_changes(E) || E <- Entries]) of
+    case dump_entries(SchemaMod, tenant_entries(RepoMod, SchemaMod, Entries)) of
         {error, _} = DumpErr -> DumpErr;
         {ok, Rows} -> do_insert_all_rows(RepoMod, SchemaMod, Rows, guard_upsert(SchemaMod, Opts))
     end.
 
-do_insert_all_rows(RepoMod, SchemaMod, Rows, Opts) ->
-    [First | _] = Rows,
+do_insert_all_rows(_RepoMod, _SchemaMod, [], #{returning := RetOpt}) when
+    RetOpt =:= true; is_list(RetOpt)
+->
+    {ok, 0, []};
+do_insert_all_rows(_RepoMod, _SchemaMod, [], _Opts) ->
+    {ok, 0};
+do_insert_all_rows(RepoMod, SchemaMod, [First | _] = Rows, Opts) ->
     Fields = maps:keys(First),
+    case entry_with_other_fields(Rows, Fields, length(Fields)) of
+        none -> insert_rows(RepoMod, SchemaMod, Fields, Rows, Opts);
+        Row -> {error, {entries_differ, Fields, maps:keys(Row)}}
+    end.
+
+entry_with_other_fields([], _Fields, _Count) ->
+    none;
+entry_with_other_fields([Row | Rest], Fields, Count) ->
+    case map_size(Row) =:= Count andalso lists:all(fun(F) -> is_map_key(F, Row) end, Fields) of
+        true -> entry_with_other_fields(Rest, Fields, Count);
+        false -> Row
+    end.
+
+insert_rows(RepoMod, SchemaMod, Fields, Rows, Opts) ->
     {SQL, Params} = kura_query_compiler:insert_all(RepoMod, SchemaMod, Fields, Rows, Opts),
+    Shown = kura_redact:write_params(SchemaMod, Fields, Params),
 
     case Opts of
         #{returning := RetOpt} when RetOpt =:= true; is_list(RetOpt) ->
-            case kura_db:query(RepoMod, SQL, Params) of
+            case kura_db:query(RepoMod, SQL, Params, Shown, kura_db:source_name(SchemaMod)) of
                 #{command := insert, num_rows := Count, rows := RetRows} ->
-                    Loaded = [kura_db:load_row(SchemaMod, R) || R <- RetRows],
+                    Loaded = kura_db:load_rows(RepoMod, SchemaMod, RetRows),
                     {ok, Count, Loaded};
                 {error, _} = Err ->
                     Err
             end;
         #{} ->
-            case kura_db:query(RepoMod, SQL, Params) of
+            case kura_db:query(RepoMod, SQL, Params, Shown, kura_db:source_name(SchemaMod)) of
                 #{command := insert, num_rows := Count} -> {ok, Count};
                 {error, _} = Err -> Err
             end
@@ -528,10 +596,29 @@ field type is applied. A `jsonb` column arrives as its JSON text, and an
 enum column as a binary. Decode such a column yourself (`json:decode/1`),
 extract the value in SQL (`metadata->>'key'`), or read through a schema
 query, which loads every column through its field type.
+
+`Params` are reported to telemetry and the query log as they are: kura
+cannot tell which of them is sensitive. Use `query/4` when one is.
 """.
 -spec query(module(), iodata(), [term()]) -> {ok, list()} | {error, term()}.
 query(RepoMod, SQL, Params) ->
-    case kura_db:query(RepoMod, SQL, Params) of
+    query(RepoMod, SQL, Params, #{}).
+
+-doc """
+Execute raw SQL as `query/3` does. With `#{sensitive => true}` telemetry
+and the query log get `~"[redacted]"` in place of each parameter, and a
+failure's code and names without its message or detail. The SQL text is
+reported as it is, so keep values out of it.
+""".
+-spec query(module(), iodata(), [term()], #{sensitive => boolean()}) ->
+    {ok, list()} | {error, term()}.
+query(RepoMod, SQL, Params, Opts) ->
+    Shown =
+        case Opts of
+            #{sensitive := true} -> kura_redact:sensitive_params(Params);
+            #{} -> Params
+        end,
+    case kura_db:query(RepoMod, SQL, Params, Shown) of
         #{rows := Rows} -> {ok, Rows};
         {error, _} = Err -> Err
     end.
@@ -541,7 +628,7 @@ query(RepoMod, SQL, Params) ->
 %%----------------------------------------------------------------------
 
 -doc "Preload associations on one or more records (standalone, outside of queries).".
--spec preload(module(), module(), map() | [map()], [atom() | {atom(), list()}]) ->
+-spec preload(module(), module(), map() | [map()], [atom() | {atom(), list() | map()}]) ->
     map() | [map()].
 preload(RepoMod, Schema, Records, Assocs) ->
     kura_preloader:preload(RepoMod, Schema, Records, Assocs).
@@ -595,7 +682,7 @@ insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}, Opts) ->
         {error, ErrCS} ->
             {error, ErrCS#kura_changeset{action = insert}};
         {ok, CS} ->
-            Changes = maybe_apply_tenant_changes(CS#kura_changeset.changes),
+            Changes = maybe_apply_tenant_changes(RepoMod, SchemaMod, CS#kura_changeset.changes),
             Changes0 = maybe_generate_pk(RepoMod, SchemaMod, Changes),
             Changes1 = maybe_add_timestamps(SchemaMod, Changes0, insert),
             case dump_changes(SchemaMod, Changes1) of
@@ -603,9 +690,14 @@ insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}, Opts) ->
                     dump_error_changeset(CS, insert, DumpErr);
                 {ok, DumpedChanges} ->
                     {SQL, Params} = insert_sql(RepoMod, SchemaMod, DumpedChanges, Opts),
-                    case kura_db:query(RepoMod, SQL, Params) of
+                    Shown = kura_redact:write_params(
+                        SchemaMod, inserted_fields(DumpedChanges, Opts), Params
+                    ),
+                    case
+                        kura_db:query(RepoMod, SQL, Params, Shown, kura_db:source_name(SchemaMod))
+                    of
                         #{command := insert, rows := [Row]} ->
-                            Row1 = kura_db:load_row(SchemaMod, Row),
+                            Row1 = kura_db:load_row(RepoMod, SchemaMod, Row),
                             kura_schema:run_after_insert(SchemaMod, Row1);
                         #{command := insert, rows := []} ->
                             {unchanged, kura_changeset:apply_changes(CS)};
@@ -614,6 +706,11 @@ insert_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod}, Opts) ->
                     end
             end
     end.
+
+%% An upsert binds its replacement values after the row's, so only a plain
+%% insert has one parameter per field, in field order.
+inserted_fields(DumpedChanges, Opts) when map_size(Opts) =:= 0 -> maps:keys(DumpedChanges);
+inserted_fields(DumpedChanges, _Opts) -> {touches, maps:keys(DumpedChanges)}.
 
 insert_sql(RepoMod, SchemaMod, DumpedChanges, Opts) when map_size(Opts) =:= 0 ->
     kura_query_compiler:insert(RepoMod, SchemaMod, maps:keys(DumpedChanges), DumpedChanges);
@@ -633,8 +730,10 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
                 0 ->
                     {ok, Data};
                 _ ->
-                    KeyClauses = tenant_key_clauses(SchemaMod, key_pairs(SchemaMod, Data)),
-                    Changes1 = maybe_add_timestamps(SchemaMod, pin_tenant(Changes), update),
+                    KeyClauses = tenant_key_clauses(RepoMod, SchemaMod, key_pairs(SchemaMod, Data)),
+                    Changes1 = maybe_add_timestamps(
+                        SchemaMod, pin_tenant(SchemaMod, Changes), update
+                    ),
                     case dump_changes(SchemaMod, Changes1) of
                         {error, DumpErr} ->
                             dump_error_changeset(CS, update, DumpErr);
@@ -654,11 +753,12 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
             end
     end.
 
-%% With no field to write the key never reaches the database, so under attribute
-%% tenancy the record is looked up before its associations are written.
+%% With no field to write the key never reaches the database, so a record
+%% that is matched on the attribute tenant is looked up before its
+%% associations are written.
 owned_by_tenant(RepoMod, CS = #kura_changeset{schema = SchemaMod}, Data) ->
-    case kura_tenant:get_tenant() of
-        {attribute, _} ->
+    case kura_tenant:attribute(SchemaMod) of
+        {_Field, _Value} ->
             Q0 = apply_clauses(kura_query:from(SchemaMod), key_pairs(SchemaMod, Data)),
             case all(RepoMod, kura_query:limit(Q0#kura_query{include_deleted = true}, 1)) of
                 {ok, [Row]} ->
@@ -671,7 +771,7 @@ owned_by_tenant(RepoMod, CS = #kura_changeset{schema = SchemaMod}, Data) ->
                 {error, _} = Err ->
                     Err
             end;
-        _ ->
+        none ->
             {ok, Data}
     end.
 
@@ -681,9 +781,12 @@ do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, KeyClauses) ->
             {SQL, Params} = kura_query_compiler:update(
                 RepoMod, SchemaMod, Fields, DumpedChanges, KeyClauses
             ),
-            case kura_db:query(RepoMod, SQL, Params) of
+            Shown = kura_redact:write_params(
+                SchemaMod, Fields ++ clause_fields(KeyClauses), Params
+            ),
+            case kura_db:query(RepoMod, SQL, Params, Shown, kura_db:source_name(SchemaMod)) of
                 #{command := update, rows := [Row]} ->
-                    {ok, kura_db:load_row(SchemaMod, Row)};
+                    {ok, kura_db:load_row(RepoMod, SchemaMod, Row)};
                 #{command := update, rows := []} ->
                     {error,
                         kura_changeset:add_error(
@@ -697,18 +800,25 @@ do_update_query(RepoMod, CS, SchemaMod, Fields, DumpedChanges, KeyClauses) ->
         LockField ->
             Data = CS#kura_changeset.data,
             LockValue = maps:get(LockField, Data, 0),
+            LockClauses = KeyClauses ++ [{LockField, LockValue}],
             {SQL, Params} = kura_query_compiler:update(
-                RepoMod, SchemaMod, Fields, DumpedChanges, KeyClauses ++ [{LockField, LockValue}]
+                RepoMod, SchemaMod, Fields, DumpedChanges, LockClauses
             ),
-            case kura_db:query(RepoMod, SQL, Params) of
+            Shown = kura_redact:write_params(
+                SchemaMod, Fields ++ clause_fields(LockClauses), Params
+            ),
+            case kura_db:query(RepoMod, SQL, Params, Shown, kura_db:source_name(SchemaMod)) of
                 #{command := update, rows := [Row]} ->
-                    {ok, kura_db:load_row(SchemaMod, Row)};
+                    {ok, kura_db:load_row(RepoMod, SchemaMod, Row)};
                 #{command := update, rows := []} ->
                     {error, stale};
                 {error, PgError} ->
                     {error, handle_pg_error(CS#kura_changeset{action = update}, PgError)}
             end
     end.
+
+clause_fields(KeyClauses) ->
+    [Field || {Field, _Value} <- KeyClauses].
 
 run_prepare(CS = #kura_changeset{prepare = []}) ->
     CS;
@@ -726,11 +836,13 @@ apply_prepare_funs(CS, [Fun | Rest]) ->
 key_pairs(SchemaMod, Data) ->
     [{K, maps:get(K, Data)} || K <- kura_schema:key(SchemaMod)].
 
+%% An explicit `=`, so a value is always bound: `{Field, is_nil}` would read
+%% the atoms `is_nil` and `is_not_nil` as the NULL tests.
 -spec apply_clauses(#kura_query{}, [{atom(), term()}]) -> #kura_query{}.
 apply_clauses(Q, []) ->
     Q;
 apply_clauses(Q, [{Field, Value} | Rest]) ->
-    apply_clauses(kura_query:where(Q, {Field, Value}), Rest).
+    apply_clauses(kura_query:where(Q, {Field, '=', Value}), Rest).
 
 persist_assoc_changes(RepoMod, CS = #kura_changeset{assoc_changes = AC}, ParentRow) ->
     persist_assocs(RepoMod, CS, ParentRow, maps:to_list(AC)).
@@ -759,15 +871,20 @@ persist_assocs(RepoMod, CS, Row, [{AssocName, ChildCSs} | Rest]) ->
             {error, kura_changeset:add_error(CS, base, child_error(Reason))}
     end.
 
-%% Only a constraint violation says something about the parent's own fields.
-join_error(CS, _AssocName, {pgsql_error, #{code := Code}} = PgError) when
-    Code =:= ~"23505";
-    Code =:= ~"23503";
-    Code =:= ~"23514";
-    Code =:= ~"23P01";
-    Code =:= ~"23502"
+%% The violated constraint is the join table's, so it is the association
+%% that is at fault unless the changeset declares the constraint.
+join_error(CS, AssocName, {pgsql_error, #{code := ~"23502"}}) ->
+    kura_changeset:add_error(CS, AssocName, ~"can't be blank");
+join_error(CS, AssocName, {pgsql_error, #{code := Code} = Error}) when
+    Code =:= ~"23505"; Code =:= ~"23503"; Code =:= ~"23514"; Code =:= ~"23P01"
 ->
-    handle_pg_error(CS, PgError);
+    {_Type, DefaultMsg} = violation(Code),
+    case find_constraint(CS#kura_changeset.constraints, maps:get(constraint, Error, undefined)) of
+        {ok, #kura_constraint{field = Field, message = Msg}} ->
+            kura_changeset:add_error(CS, Field, Msg);
+        error ->
+            kura_changeset:add_error(CS, AssocName, DefaultMsg)
+    end;
 join_error(CS, AssocName, _PgError) ->
     kura_changeset:add_error(CS, AssocName, ~"could not be saved").
 
@@ -922,11 +1039,12 @@ delete_record(RepoMod, SchemaMod, Data) ->
         {error, _} = Err ->
             Err;
         ok ->
-            KeyClauses = tenant_key_clauses(SchemaMod, key_pairs(SchemaMod, Data)),
+            KeyClauses = tenant_key_clauses(RepoMod, SchemaMod, key_pairs(SchemaMod, Data)),
             {SQL, Params} = kura_query_compiler:delete(RepoMod, SchemaMod, KeyClauses),
-            case kura_db:query(RepoMod, SQL, Params) of
+            Shown = kura_redact:write_params(SchemaMod, clause_fields(KeyClauses), Params),
+            case kura_db:query(RepoMod, SQL, Params, Shown, kura_db:source_name(SchemaMod)) of
                 #{command := delete, rows := [Row]} ->
-                    Row1 = kura_db:load_row(SchemaMod, Row),
+                    Row1 = kura_db:load_row(RepoMod, SchemaMod, Row),
                     case kura_schema:run_after_delete(SchemaMod, Row1) of
                         ok -> {ok, Row1};
                         {error, _} = AfterErr -> AfterErr
@@ -1047,22 +1165,17 @@ dump_error_changeset(CS, Action, {Field, Msg}) ->
     {error, kura_changeset:add_error(CS#kura_changeset{action = Action}, Field, Msg)}.
 
 maybe_add_timestamps(SchemaMod, Changes, Action) ->
-    Types = kura_schema:field_types(SchemaMod),
+    {OnInsert, OnUpdate} = kura_schema:timestamp_fields(SchemaMod),
     Now = calendar:universal_time(),
-    Changes1 =
-        case Action of
-            insert ->
-                case maps:is_key(inserted_at, Types) of
-                    true -> Changes#{inserted_at => maps:get(inserted_at, Changes, Now)};
-                    false -> Changes
-                end;
-            update ->
-                Changes
-        end,
-    case maps:is_key(updated_at, Types) of
-        true -> Changes1#{updated_at => maps:get(updated_at, Changes1, Now)};
-        false -> Changes1
+    case Action of
+        insert -> stamp(OnInsert, Changes, Now);
+        update -> stamp(OnUpdate, Changes, Now)
     end.
+
+stamp([], Changes, _Now) ->
+    Changes;
+stamp([Field | Rest], Changes, Now) ->
+    stamp(Rest, Changes#{Field => maps:get(Field, Changes, Now)}, Now).
 
 -spec maybe_generate_pk(module(), module(), map()) -> map().
 maybe_generate_pk(RepoMod, SchemaMod, Changes) ->
@@ -1121,40 +1234,42 @@ handle_pg_error(CS, {pgsql_error, Fields}) when is_map(Fields) ->
     handle_pg_error(CS, Fields);
 handle_pg_error(CS, {pgsql_error, Fields}) when is_list(Fields) ->
     handle_pg_error(CS, maps:from_list(Fields));
-handle_pg_error(CS, #{code := Code, constraint := Constraint}) when
+handle_pg_error(CS, #{code := Code, constraint := Constraint} = Error) when
     Code =:= ~"23505"; Code =:= ~"23503"; Code =:= ~"23514"; Code =:= ~"23P01"
 ->
-    DefaultType =
-        case Code of
-            ~"23505" -> unique;
-            ~"23503" -> foreign_key;
-            ~"23514" -> check;
-            ~"23P01" -> exclusion
-        end,
-    DefaultMsg =
-        case DefaultType of
-            unique -> ~"has already been taken";
-            foreign_key -> ~"does not exist";
-            check -> ~"is invalid";
-            exclusion -> ~"violates an exclusion constraint"
-        end,
+    {Type, DefaultMsg} = violation(Code),
     case find_constraint(CS#kura_changeset.constraints, Constraint) of
         {ok, #kura_constraint{field = Field, message = Msg}} ->
             kura_changeset:add_error(CS, Field, Msg);
         error ->
-            Field = constraint_to_field(Constraint),
+            Field = constraint_field(CS#kura_changeset.schema, Type, Error),
             kura_changeset:add_error(CS, Field, DefaultMsg)
     end;
-handle_pg_error(CS, #{code := ~"23502", column := Column}) ->
+handle_pg_error(CS, #{code := ~"23502", column := Column} = Error) ->
     Field =
-        try
-            binary_to_existing_atom(Column, utf8)
-        catch
-            error:badarg -> base
+        case on_table(CS#kura_changeset.schema, Error) of
+            {true, _Table} -> column_field(CS#kura_changeset.schema, Column);
+            false -> base
         end,
     kura_changeset:add_error(CS, Field, ~"can't be blank");
 handle_pg_error(CS, Reason) ->
-    kura_changeset:add_error(CS, base, format_error(Reason)).
+    kura_changeset:add_error(CS, base, base_message(CS#kura_changeset.schema, Reason)).
+
+%% The server's text can quote a value, so a schema with redacted fields is
+%% given the error's code and not its message.
+base_message(Schema, Reason) ->
+    case Schema =/= undefined andalso kura_schema:redacted_fields(Schema) =/= [] of
+        true -> coded_error(Reason);
+        false -> format_error(Reason)
+    end.
+
+coded_error(#{code := Code}) when is_binary(Code) -> <<"database error ", Code/binary>>;
+coded_error(_Reason) -> ~"database error".
+
+violation(~"23505") -> {unique, ~"has already been taken"};
+violation(~"23503") -> {foreign_key, ~"does not exist"};
+violation(~"23514") -> {check, ~"is invalid"};
+violation(~"23P01") -> {exclusion, ~"violates an exclusion constraint"}.
 
 find_constraint([], _Name) ->
     error;
@@ -1163,19 +1278,75 @@ find_constraint([C = #kura_constraint{constraint = Name} | _], Name) ->
 find_constraint([_ | Rest], Name) ->
     find_constraint(Rest, Name).
 
-constraint_to_field(Constraint) when is_binary(Constraint) ->
-    case binary:split(Constraint, ~"_", [global]) of
-        [_Table, Field | _Rest] ->
-            try
-                binary_to_existing_atom(Field, utf8)
-            catch
-                error:badarg -> base
+-doc """
+The field an undeclared constraint is reported on. Only a name the database
+generates for one column of the changeset's own table is resolved:
+`<table>_<column>_key` and the like, and `<table>_pkey`. Any other name is
+reported on `base`, never guessed from its parts.
+""".
+-spec constraint_field(module() | undefined, unique | foreign_key | check | exclusion, map()) ->
+    atom().
+constraint_field(Schema, Type, #{constraint := Constraint} = Error) when is_binary(Constraint) ->
+    case on_table(Schema, Error) of
+        {true, Table} -> generated_name_field(Schema, Type, Table, Constraint);
+        false -> base
+    end;
+constraint_field(_Schema, _Type, _Error) ->
+    base.
+
+on_table(undefined, _Error) ->
+    false;
+on_table(Schema, Error) ->
+    case kura_schema:is_schema(Schema) of
+        true ->
+            Table = Schema:table(),
+            case Error of
+                #{table := Table} -> {true, Table};
+                #{} -> false
             end;
+        false ->
+            false
+    end.
+
+generated_name_field(Schema, Type, Table, Constraint) ->
+    case Constraint of
+        <<Table:(byte_size(Table))/binary, "_pkey">> when Type =:= unique ->
+            try kura_schema:key(Schema) of
+                [Key] -> Key;
+                _Composite -> base
+            catch
+                error:{no_primary_key, Schema} -> base
+            end;
+        <<Table:(byte_size(Table))/binary, "_", Named/binary>> ->
+            suffixed_column_field(Schema, Named, generated_suffixes(Type));
         _ ->
             base
-    end;
-constraint_to_field(_) ->
-    base.
+    end.
+
+generated_suffixes(unique) -> [~"_key", ~"_index", ~"_idx"];
+generated_suffixes(foreign_key) -> [~"_fkey"];
+generated_suffixes(check) -> [~"_check"];
+generated_suffixes(exclusion) -> [~"_excl"].
+
+suffixed_column_field(_Schema, _Named, []) ->
+    base;
+suffixed_column_field(Schema, Named, [Suffix | Suffixes]) ->
+    ColumnSize = byte_size(Named) - byte_size(Suffix),
+    case Named of
+        <<Column:ColumnSize/binary, Suffix/binary>> when ColumnSize > 0 ->
+            case column_field(Schema, Column) of
+                base -> suffixed_column_field(Schema, Named, Suffixes);
+                Field -> Field
+            end;
+        _ ->
+            suffixed_column_field(Schema, Named, Suffixes)
+    end.
+
+column_field(Schema, Column) ->
+    case [Field || Field := Stored <- kura_schema:column_map(Schema), Stored =:= Column] of
+        [Field] -> Field;
+        _ -> base
+    end.
 
 format_error(#{message := Msg}) when is_binary(Msg) -> Msg;
 format_error(Reason) -> iolist_to_binary(io_lib:format("~p", [Reason])).
@@ -1235,12 +1406,23 @@ maybe_apply_tenant_prefix(Query) ->
             Query
     end.
 
-tenant_key_clauses(SchemaMod, KeyClauses) ->
-    case kura_tenant:get_tenant() of
-        {attribute, {Field, Value}} ->
+%% A write kura_tenant refuses is refused here, before a prepare function
+%% or a hook of the caller's runs and before a transaction is opened. The
+%% step that builds the statement asks again: either can change the
+%% process's tenant.
+permit_write(RepoMod, SchemaMod) ->
+    _ = kura_tenant:write_attribute(RepoMod, SchemaMod),
+    ok.
+
+%% What a write is matched on and stamped with is kura_tenant's to say: a
+%% schema every tenant shares has no tenant column, so none of the steps
+%% below name one.
+tenant_key_clauses(RepoMod, SchemaMod, KeyClauses) ->
+    case kura_tenant:write_attribute(RepoMod, SchemaMod) of
+        {Field, Value} ->
             ok = refuse_encrypted_tenant(SchemaMod, Field),
             KeyClauses ++ [{Field, Value}];
-        _ ->
+        none ->
             KeyClauses
     end.
 
@@ -1255,18 +1437,18 @@ refuse_encrypted_tenant(SchemaMod, Field) ->
         false -> ok
     end.
 
-pin_tenant(Changes) ->
-    case kura_tenant:get_tenant() of
-        {attribute, {Field, Value}} when is_map_key(Field, Changes) -> Changes#{Field => Value};
+pin_tenant(Source, Changes) ->
+    case kura_tenant:attribute(Source) of
+        {Field, Value} when is_map_key(Field, Changes) -> Changes#{Field => Value};
         _ -> Changes
     end.
 
 guard_upsert(SchemaMod, #{on_conflict := OnConflict} = Opts) ->
     ok = refuse_encrypted_conflict_guard(SchemaMod, OnConflict),
-    case kura_tenant:get_tenant() of
-        {attribute, {Field, _Value}} ->
+    case kura_tenant:attribute(SchemaMod) of
+        {Field, _Value} ->
             Opts#{on_conflict => guarded(OnConflict, SchemaMod, Field)};
-        _ ->
+        none ->
             Opts
     end;
 guard_upsert(_SchemaMod, Opts) ->
@@ -1296,10 +1478,16 @@ guarded({Target, Action}, Field) ->
 guarded({Target, Action, Opts}, Field) when is_map(Opts) ->
     {Target, Action, Opts#{guard => lists:usort([Field | maps:get(guard, Opts, [])])}}.
 
-maybe_apply_tenant_changes(Changes) ->
-    case kura_tenant:get_tenant() of
-        {attribute, {Field, Value}} ->
-            Changes#{Field => Value};
-        _ ->
-            Changes
+tenant_entries(_RepoMod, _SchemaMod, []) ->
+    [];
+tenant_entries(RepoMod, SchemaMod, Entries) ->
+    case kura_tenant:write_attribute(RepoMod, SchemaMod) of
+        {Field, Value} -> [Entry#{Field => Value} || Entry <- Entries];
+        none -> Entries
+    end.
+
+maybe_apply_tenant_changes(RepoMod, SchemaMod, Changes) ->
+    case kura_tenant:write_attribute(RepoMod, SchemaMod) of
+        {Field, Value} -> Changes#{Field => Value};
+        none -> Changes
     end.

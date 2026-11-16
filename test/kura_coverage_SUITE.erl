@@ -4,7 +4,63 @@
 -include_lib("stdlib/include/assert.hrl").
 -include("kura.hrl").
 
--compile(export_all).
+-export([
+    all/0,
+    groups/0,
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_group/2,
+    end_per_group/2,
+    init_per_testcase/2,
+    end_per_testcase/2
+]).
+
+-export([
+    config_without_init/1,
+    config_with_init/1,
+    config_missing_env/1,
+    migrate_up/1,
+    migrate_status_after_up/1,
+    migrate_idempotent/1,
+    rollback_one/1,
+    rollback_multiple_steps/1,
+    rollback_all/1,
+    migrate_after_rollback/1,
+    migrate_error_bad_sql/1,
+    migrate_with_safe_callback/1,
+    update_all_counts/1,
+    delete_all_counts/1,
+    delete_not_found/1,
+    insert_with_opts_on_conflict/1,
+    insert_with_opts_on_conflict_columns/1,
+    insert_all_with_returning/1,
+    insert_all_without_returning/1,
+    reload_no_primary_key/1,
+    multi_with_fun_insert/1,
+    multi_with_fun_update/1,
+    multi_with_fun_delete/1,
+    insert_invalid_changeset_with_opts/1,
+    update_invalid_changeset/1,
+    handle_pg_error_not_null/1,
+    handle_pg_error_fk_violation/1,
+    build_log_event_error_result/1,
+    build_log_event_num_rows/1,
+    build_log_event_bare_result/1,
+    build_telemetry_metadata_error/1,
+    build_telemetry_metadata_num_rows/1,
+    build_telemetry_metadata_bare/1,
+    extract_source_update/1,
+    extract_source_into/1,
+    extract_source_nomatch/1,
+    default_logger_fn/1,
+    stream_3_arity/1,
+    stream_custom_batch_size/1,
+    preload_nested_nil/1,
+    preload_nested_single_map/1,
+    legacy_log_true/1,
+    legacy_log_fun/1,
+    legacy_log_mf/1
+]).
 
 %%----------------------------------------------------------------------
 %% CT callbacks

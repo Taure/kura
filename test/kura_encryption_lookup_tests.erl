@@ -188,7 +188,7 @@ t_empty_in() ->
             ?assertMatch({_, _}, binary:match(iolist_to_binary(SQL), Text))
         end
      || {Op, Lookup, Text} <- [
-            {in, encrypted_in, ~"\"ssn\" IN ()"}, {not_in, encrypted_not_in, ~"\"ssn\" NOT IN ()"}
+            {in, encrypted_in, ~"WHERE 1 = 0"}, {not_in, encrypted_not_in, ~"WHERE 1 = 1"}
         ]
     ].
 

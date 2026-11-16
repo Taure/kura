@@ -27,6 +27,14 @@ Both limits count the bytes of every off-heap binary an entry holds,
 such as its SQL text. A term's flat size leaves those bytes out, and so
 does `ets:info(Tab, memory)`.
 
+An entry is served only by the release of kura that stored it. Each one
+carries a format version, and an entry with another version, with none, or
+whose parts are not what the compiler stores, is dropped when it is read
+and compiled again. The version covers what an entry holds; it does not
+notice a schema module whose code changed. After a hot code upgrade of
+kura or of a schema, call `flush/0`, and `kura_schema:forget/1` for each
+schema that changed.
+
 An `in` list is one shape per list length, so a caller-supplied array
 of arbitrary length still interns an entry per length. The per-entry
 ceiling keeps those entries small.
@@ -40,8 +48,11 @@ The ETS table is owned by `kura_query_cache_owner` (a gen_server under
 -export([start_link/0, init/1, handle_call/3, handle_cast/2]).
 -export_type([entry/0]).
 
--doc "A compiled shape's SQL and parameter template, or a shape that cannot be cached.".
--type entry() :: {binary(), [term()]} | uncacheable.
+-doc """
+A compiled shape's SQL, its parameter template and what the compiler worked
+out about the shape, or a shape that cannot be cached.
+""".
+-type entry() :: {binary(), [term()], kura_query_compiler:facts()} | uncacheable.
 
 -define(TABLE, kura_query_cache).
 -define(DEFAULT_MAX_MEMORY_WORDS, 8000000).
@@ -51,6 +62,12 @@ The ETS table is owned by `kura_query_cache_owner` (a gen_server under
 %% tuple, never this atom.
 -define(BINARY_WORDS, '$kura_binary_words').
 -define(HEAP_BINARY_LIMIT, 64).
+%% Every entry is stored with this number, and one stored with another, or
+%% with none, is dropped when it is read: it was stored by another release
+%% of kura. Raise it whenever an entry changes: in what it holds, or in how
+%% the compiler works out the SQL, the template or the facts.
+-define(FORMAT, 1).
+-define(NO_ENTRY, '$kura_no_entry').
 
 -doc """
 Initialize the query cache ETS table. No-op when the cache owner is
@@ -74,18 +91,46 @@ init() ->
 -spec get(term()) -> {ok, entry()} | miss.
 get(Key) ->
     case ets:whereis(?TABLE) of
-        undefined ->
-            miss;
-        _ ->
-            case ets:lookup(?TABLE, Key) of
-                [{_, uncacheable}] ->
-                    {ok, uncacheable};
-                [{_, {SQL, Template}}] when is_binary(SQL), is_list(Template) ->
-                    {ok, {SQL, Template}};
-                _ ->
-                    miss
-            end
+        undefined -> miss;
+        _ -> stored(Key)
     end.
+
+%% Only the entry is read out of the table: the key is the whole shape, and
+%% ets:lookup/2 would copy it to the caller on every hit.
+stored(Key) ->
+    try ets:lookup_element(?TABLE, Key, 2, ?NO_ENTRY) of
+        ?NO_ENTRY ->
+            miss;
+        {?FORMAT, uncacheable} ->
+            {ok, uncacheable};
+        {?FORMAT, {SQL, Template, Facts} = Entry} when is_binary(SQL), is_list(Template) ->
+            case readable(Facts) of
+                true -> {ok, Entry};
+                false -> dropped(Key)
+            end;
+        _Unreadable ->
+            dropped(Key)
+    catch
+        error:badarg -> dropped(Key)
+    end.
+
+%% put/2 does not replace an entry, so one that cannot be served is deleted
+%% and the shape's next compile takes its place.
+dropped(Key) ->
+    _ = ets:delete(?TABLE, Key),
+    miss.
+
+-spec readable(term()) -> boolean().
+readable(#{shown := Shown, source := Source, tenant_scoped := Scoped}) ->
+    (Shown =:= plain orelse Shown =:= redacted orelse Shown =:= hidden) andalso
+        (Source =:= undefined orelse is_binary(Source)) andalso
+        sources(Scoped);
+readable(_Facts) ->
+    false.
+
+-spec sources(term()) -> boolean().
+sources([Source | Sources]) when is_atom(Source); is_binary(Source) -> sources(Sources);
+sources(Sources) -> Sources =:= [].
 
 -doc false.
 -spec put(term(), entry()) -> ok.
@@ -109,7 +154,7 @@ maybe_insert(Key, Result) ->
                     true -> drop_all();
                     false -> ok
                 end,
-            count_new(ets:insert_new(?TABLE, {Key, Result}), BinaryWords)
+            count_new(ets:insert_new(?TABLE, {Key, {?FORMAT, Result}}), BinaryWords)
     end.
 
 %% Two processes that miss on the same key both put it; only the one whose

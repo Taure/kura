@@ -133,6 +133,19 @@ There are three ways to declare constraints:
 2. **`constraints/0`** - auto-registers constraints for composite unique and check constraints
 3. **Manual** - `unique_constraint/2`, `foreign_key_constraint/2`, `check_constraint/3` on the changeset
 
+A violated constraint that is not declared is reported on a field only when
+its name is one the database generates for a single column of the
+changeset's own table: `<table>_<column>_key`, `_index`, `_idx`, `_fkey`,
+`_check` or `_excl`, and `<table>_pkey` for a single-field key. The column
+is matched against the schema's columns and reported on the field stored
+there. Every other undeclared constraint (a custom name, several columns,
+another table's) is reported on `base` with the default message: declare it
+to name its field.
+
+For a field with a `column` of its own, `unique_constraint/2`,
+`foreign_key_constraint/2` and `exclusion_constraint/2` declare the name
+generated from the column as well as the one built from the field name.
+
 ### Unique Constraints
 
 For single-column unique constraints, use `indexes/0` (shown above). The constraint is registered automatically.

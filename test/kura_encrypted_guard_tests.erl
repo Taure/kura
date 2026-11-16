@@ -163,7 +163,7 @@ tenant_attribute_on_an_encrypted_field_test() ->
 
 tenant_attribute_on_an_encrypted_field_in_a_subquery_test() ->
     Sub = kura_query:from(?ENC),
-    Q = kura_query:where(kura_query:from(kura_test_schema), {exists, {subquery, Sub}}),
+    Q = kura_query:where(kura_query:from(kura_test_plain_ssn_schema), {exists, {subquery, Sub}}),
     ?assertError(
         {kura, {encrypted_field_in_where, ssn}},
         kura_tenant:scope_query({attribute, {ssn, ?PLAIN}}, Q)
@@ -690,7 +690,7 @@ uncacheable_miss_returns_the_query_sql_test() ->
             kura_query_compiler:to_sql(?REPO, Q(~"a")),
             kura_query_compiler:to_sql_cached(?REPO, Q(~"a"))
         ),
-        ?assertMatch([{_, uncacheable}], ets:tab2list(kura_query_cache)),
+        ?assertMatch([{_, {_, uncacheable}}], ets:tab2list(kura_query_cache)),
         {SQL, []} = kura_query_compiler:to_sql_cached(?REPO, Q(~"b")),
         ?assertNotEqual(nomatch, binary:match(iolist_to_binary(SQL), ~"<<\"b\">>"))
     after

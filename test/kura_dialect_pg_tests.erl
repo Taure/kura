@@ -2,6 +2,8 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("kura.hrl").
 
+-export([log/2]).
+
 %%----------------------------------------------------------------------
 %% SELECT compilation
 %%----------------------------------------------------------------------
@@ -52,6 +54,185 @@ composite_in_where_test() ->
     ?assertNotEqual(nomatch, binary:match(SQL, ~"(\"org_id\", \"user_id\") IN ((")),
     ?assertNotEqual(nomatch, binary:match(SQL, ~"$1, $2), ($3, $4)")),
     ?assertEqual([<<"o1">>, <<"u1">>, <<"o2">>, <<"u2">>], Params).
+
+text_match_escapes_the_value_in_sql_test() ->
+    Escaped = ~"replace(replace(replace($1, '!', '!!'), '%', '!%'), '_', '!_')",
+    [
+        ?assertEqual(
+            {
+                iolist_to_binary([
+                    ~"SELECT * FROM \"users\" WHERE \"name\" ",
+                    Keyword,
+                    ~" (",
+                    Before,
+                    Escaped,
+                    After,
+                    ~") ESCAPE '!'"
+                ]),
+                [~"50%_off"]
+            },
+            kura_dialect_pg:to_sql(
+                kura_query:where(kura_query:from(kura_test_schema), {name, Op, ~"50%_off"})
+            )
+        )
+     || {Op, Keyword, Before, After} <- [
+            {contains, ~"LIKE", ~"'%' || ", ~" || '%'"},
+            {starts_with, ~"LIKE", ~"", ~" || '%'"},
+            {ends_with, ~"LIKE", ~"'%' || ", ~""},
+            {icontains, ~"ILIKE", ~"'%' || ", ~" || '%'"},
+            {istarts_with, ~"ILIKE", ~"", ~" || '%'"},
+            {iends_with, ~"ILIKE", ~"'%' || ", ~""}
+        ]
+    ].
+
+text_match_keeps_placeholder_numbering_test() ->
+    Q = kura_query:where(
+        kura_query:from(kura_test_schema),
+        {'and', [{age, 3}, {name, contains, ~"a"}, {email, ends_with, ~"b"}, {role, ~"c"}]}
+    ),
+    {SQL, Params} = kura_dialect_pg:to_sql(Q),
+    ?assertEqual([3, ~"a", ~"b", ~"c"], Params),
+    [
+        ?assertMatch({_, _}, binary:match(iolist_to_binary(SQL), Part))
+     || Part <- [~"\"age\" = $1", ~"replace($2,", ~"replace($3,", ~"\"role\" = $4"]
+    ].
+
+text_match_is_refused_on_an_encrypted_field_test() ->
+    [
+        ?assertError(
+            {kura, {encrypted_field_in_where, ssn}},
+            kura_query:where(kura_query:from(kura_test_encrypted_schema), {ssn, Op, ~"1"})
+        )
+     || Op <- [contains, starts_with, ends_with, icontains, istarts_with, iends_with]
+    ].
+
+escape_like_test() ->
+    ?assertEqual(~"50\\%\\_off\\\\x", kura_query:escape_like(~"50%_off\\x")),
+    ?assertEqual(~"plain", kura_query:escape_like(~"plain")),
+    ?assertEqual(<<>>, kura_query:escape_like(<<>>)),
+    ?assertEqual(~"日本\\%", kura_query:escape_like(~"日本%")),
+    ?assertError(function_clause, kura_query:escape_like(kura_test_typing:ill_typed("list"))).
+
+fragment_sql(SQL, Params) ->
+    Q = kura_query:where(
+        kura_query:where(kura_query:from(kura_test_schema), {id, 7}), {fragment, SQL, Params}
+    ),
+    {SQL1, [7 | Bound]} = kura_dialect_pg:to_sql(Q),
+    Compiled = iolist_to_binary(SQL1),
+    {Prefix, Bound} = {~"SELECT * FROM \"users\" WHERE \"id\" = $1 AND (", Params},
+    Size = byte_size(Prefix),
+    Inner = byte_size(Compiled) - Size - 2,
+    <<Prefix:Size/binary, Rewritten:Inner/binary, "\n)">> = Compiled,
+    Rewritten.
+
+fragment_question_mark_in_text_is_not_a_placeholder_test() ->
+    [
+        ?assertEqual(Expected, fragment_sql(SQL, Params))
+     || {SQL, Params, Expected} <- [
+            {~"a = 'why?' AND b = ?", [1], ~"a = 'why?' AND b = $2"},
+            {~"a = 'it''s?' AND b = ?", [1], ~"a = 'it''s?' AND b = $2"},
+            {~"a = '\\' AND b = ?", [1], ~"a = '\\' AND b = $2"},
+            {~"a = E'\\'?' AND b = ?", [1], ~"a = E'\\'?' AND b = $2"},
+            {~"a = e'x\\\\' AND b = ?", [1], ~"a = e'x\\\\' AND b = $2"},
+            {~"type'?' = ?", [1], ~"type'?' = $2"},
+            {~"\"odd?\" = ?", [1], ~"\"odd?\" = $2"},
+            {~"\"a\"\"?\" = ?", [1], ~"\"a\"\"?\" = $2"},
+            {~"a = ? -- why?\nAND b = ?", [1, 2], ~"a = $2 -- why?\nAND b = $3"},
+            {~"a = ? -- trailing?", [1], ~"a = $2 -- trailing?"},
+            {
+                ~"a = ? /* is /* nested? */ ok? */ AND b = ?",
+                [1, 2],
+                ~"a = $2 /* is /* nested? */ ok? */ AND b = $3"
+            },
+            {~"a = $$?$$ AND b = ?", [1], ~"a = $$?$$ AND b = $2"},
+            {~"a = $q$ $$ ? $q$ AND b = ?", [1], ~"a = $q$ $$ ? $q$ AND b = $2"},
+            {~"a - b = ? AND c / d = ?", [1, 2], ~"a - b = $2 AND c / d = $3"},
+            {~"a = 'x' || ? || 'y?'", [1], ~"a = 'x' || $2 || 'y?'"},
+            {~"1 = 1", [], ~"1 = 1"}
+        ]
+    ].
+
+fragment_placeholder_count_must_match_test() ->
+    [
+        ?assertError(
+            {kura, {fragment_placeholder_mismatch, Found, Given}},
+            kura_dialect_pg:to_sql(
+                kura_query:where(kura_query:from(kura_test_schema), {fragment, SQL, Params})
+            )
+        )
+     || {SQL, Params, Found, Given} <- [
+            {~"a = 'why?'", [1], 0, 1},
+            {~"a = ? AND b = ?", [1], 2, 1},
+            {~"a = ?", [], 1, 0},
+            {~"a = $1", [1], 0, 1},
+            {~"data ? 'key' AND b = ?", [1], 2, 1}
+        ]
+    ].
+
+select_fragment_question_mark_in_text_test() ->
+    Q = kura_query:select_expr(kura_query:from(kura_test_schema), [
+        {label, {fragment, ~"CASE WHEN age > ? THEN 'old?' ELSE 'young?' END", [50]}}
+    ]),
+    ?assertEqual(
+        {
+            ~"SELECT CASE WHEN age > $1 THEN 'old?' ELSE 'young?' END AS \"label\" FROM \"users\"",
+            [50]
+        },
+        kura_dialect_pg:to_sql(Q)
+    ),
+    ?assertError(
+        {kura, {fragment_placeholder_mismatch, 0, 1}},
+        kura_dialect_pg:to_sql(
+            kura_query:select_expr(kura_query:from(kura_test_schema), [
+                {label, {fragment, ~"'?'", [50]}}
+            ])
+        )
+    ).
+
+fragment_mismatch_is_raised_through_the_cache_test() ->
+    application:set_env(kura, repos, #{fragment_repo => #{dialect => kura_dialect_pg}}),
+    try
+        Q = kura_query:where(kura_query:from(kura_test_schema), {fragment, ~"a = '?'", [1]}),
+        [
+            ?assertError(
+                {kura, {fragment_placeholder_mismatch, 0, 1}},
+                kura_query_compiler:to_sql_cached(fragment_repo, Q)
+            )
+         || _ <- [first, second]
+        ]
+    after
+        application:unset_env(kura, repos)
+    end.
+
+empty_in_matches_no_row_test() ->
+    [
+        ?assertEqual(
+            {~"SELECT * FROM \"users\" WHERE 1 = 0", []},
+            kura_dialect_pg:to_sql(kura_query:where(kura_query:from(kura_test_schema), Cond))
+        )
+     || Cond <- [{id, in, []}, {[id], in, []}, {[id, name], in, []}]
+    ].
+
+empty_not_in_matches_every_row_test() ->
+    Q = kura_query:where(kura_query:from(kura_test_schema), {id, not_in, []}),
+    ?assertEqual({~"SELECT * FROM \"users\" WHERE 1 = 1", []}, kura_dialect_pg:to_sql(Q)).
+
+empty_in_keeps_placeholder_numbering_test() ->
+    Q = kura_query:where(
+        kura_query:from(kura_test_schema),
+        {'or', [{name, ~"a"}, {'not', {id, in, []}}, {id, not_in, []}, {age, '>', 3}]}
+    ),
+    ?assertEqual(
+        {
+            ~"SELECT * FROM \"users\" WHERE (\"name\" = $1 OR NOT (1 = 0) OR 1 = 1 OR \"age\" > $2)",
+            [~"a", 3]
+        },
+        kura_dialect_pg:to_sql(Q)
+    ).
+
+empty_in_bulk_write_test() ->
+    Q = kura_query:where(kura_query:from(kura_test_schema), {id, in, []}),
+    ?assertEqual({~"DELETE FROM \"users\" WHERE 1 = 0", []}, kura_dialect_pg:delete_all(Q)).
 
 single_col_composite_in_unwraps_test() ->
     Q = kura_query:where(kura_query:from(kura_test_schema), {[id], in, [{1}, {2}]}),
@@ -231,8 +412,125 @@ where_fragment_test() ->
         {fragment, <<"lower(name) = ?">>, [<<"alice">>]}
     ),
     {SQL, Params} = kura_dialect_pg:to_sql(Q),
-    ?assertEqual(<<"SELECT * FROM \"user\" WHERE lower(name) = $1">>, SQL),
+    ?assertEqual(<<"SELECT * FROM \"user\" WHERE (lower(name) = $1\n)">>, SQL),
     ?assertEqual([<<"alice">>], Params).
+
+%% Each fragment is one condition among those joined with AND, whatever
+%% operators its own text holds, and wherever it stands.
+a_fragment_is_compiled_as_one_group_test_() ->
+    Or = {fragment, ~"name = ? OR email = ?", [~"a", ~"b"]},
+    From = kura_query:from(user),
+    Grouped = ~"(name = $1 OR email = $2\n)",
+    [
+        {"before a condition",
+            ?_assertEqual(
+                {<<"SELECT * FROM \"user\" WHERE ", Grouped/binary, " AND \"age\" = $3">>, [
+                    ~"a", ~"b", 7
+                ]},
+                kura_dialect_pg:to_sql(kura_query:where(kura_query:where(From, Or), {age, 7}))
+            )},
+        {"after a condition",
+            ?_assertEqual(
+                {
+                    ~"SELECT * FROM \"user\" WHERE \"age\" = $1 AND (name = $2 OR email = $3\n)",
+                    [7, ~"a", ~"b"]
+                },
+                kura_dialect_pg:to_sql(kura_query:where(kura_query:where(From, {age, 7}), Or))
+            )},
+        {"inside and, or and not",
+            ?_assertEqual(
+                {
+                    <<
+                        "SELECT * FROM \"user\" WHERE (",
+                        Grouped/binary,
+                        " AND \"age\" = $3) AND (\"age\" = $4 OR (name = $5 OR email = $6\n))"
+                        " AND NOT ((name = $7 OR email = $8\n))"
+                    >>,
+                    [~"a", ~"b", 7, 8, ~"a", ~"b", ~"a", ~"b"]
+                },
+                kura_dialect_pg:to_sql(
+                    kura_query:where(
+                        kura_query:where(
+                            kura_query:where(From, {'and', [Or, {age, 7}]}),
+                            {'or', [{age, 8}, Or]}
+                        ),
+                        {'not', Or}
+                    )
+                )
+            )},
+        {"in having",
+            ?_assertEqual(
+                {
+                    <<
+                        "SELECT \"age\" FROM \"user\" GROUP BY \"age\" HAVING "
+                        "(count(*) > $1 OR max(score) > $2\n) AND (min(score) > $3\n)"
+                    >>,
+                    [1, 2, 3]
+                },
+                kura_dialect_pg:to_sql(
+                    kura_query:having(
+                        kura_query:having(
+                            kura_query:group_by(kura_query:select(From, [age]), [age]),
+                            {fragment, ~"count(*) > ? OR max(score) > ?", [1, 2]}
+                        ),
+                        {fragment, ~"min(score) > ?", [3]}
+                    )
+                )
+            )},
+        {"in a subquery, a CTE and a union branch", fun() ->
+            Sub = kura_query:select(kura_query:where(kura_query:where(From, Or), {age, 7}), [id]),
+            Q = kura_query:union(
+                kura_query:with_cte(
+                    kura_query:where(kura_query:from(~"picked"), {id, in, {subquery, Sub}}),
+                    ~"picked",
+                    Sub
+                ),
+                Sub
+            ),
+            ?assertEqual(
+                {
+                    <<
+                        "WITH \"picked\" AS (SELECT \"id\" FROM \"user\""
+                        " WHERE (name = $1 OR email = $2\n) AND \"age\" = $3)"
+                        " SELECT * FROM \"picked\" WHERE \"id\" IN (SELECT \"id\" FROM \"user\""
+                        " WHERE (name = $4 OR email = $5\n) AND \"age\" = $6)"
+                        " UNION SELECT \"id\" FROM \"user\""
+                        " WHERE (name = $7 OR email = $8\n) AND \"age\" = $9"
+                    >>,
+                    [~"a", ~"b", 7, ~"a", ~"b", 7, ~"a", ~"b", 7]
+                },
+                kura_dialect_pg:to_sql(Q)
+            )
+        end},
+        {"a line comment at its end does not take what follows",
+            ?_assertEqual(
+                {~"SELECT * FROM \"user\" WHERE (name = $1 -- by name\n) AND \"age\" = $2", [
+                    ~"a", 7
+                ]},
+                kura_dialect_pg:to_sql(
+                    kura_query:where(
+                        kura_query:where(From, {fragment, ~"name = ? -- by name", [~"a"]}),
+                        {age, 7}
+                    )
+                )
+            )},
+        {"in update_all and delete_all", fun() ->
+            Q = kura_query:where(kura_query:where(From, Or), {age, 7}),
+            ?assertEqual(
+                {
+                    <<"UPDATE \"user\" SET \"age\" = $1 WHERE (name = $2 OR email = $3\n) AND \"age\" = $4">>,
+                    [9, ~"a", ~"b", 7]
+                },
+                kura_dialect_pg:update_all(Q, #{age => 9})
+            ),
+            ?assertEqual(
+                {<<"DELETE FROM \"user\" WHERE ", Grouped/binary, " AND \"age\" = $3">>, [
+                    ~"a", ~"b", 7
+                ]},
+                kura_dialect_pg:delete_all(Q)
+            )
+        end}
+    ].
 
 where_matches_test() ->
     Q = kura_query:where(kura_query:from(article), {body, matches, <<"erlang database">>}),
@@ -279,6 +577,35 @@ join_schema_module_test() ->
     ),
     {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assert(binary:match(SQL, <<"INNER JOIN \"posts\"">>) =/= nomatch).
+
+placeholder_test_() ->
+    [
+        ?_assertEqual(~"$1", iolist_to_binary(kura_dialect_pg:placeholder(1))),
+        ?_assertEqual(~"$65535", iolist_to_binary(kura_dialect_pg:placeholder(65535)))
+    ].
+
+join_selects_only_the_from_table_test() ->
+    Joined = kura_query:join(kura_query:from(user), inner, post, {id, user_id}),
+    ?assertMatch(
+        {<<"SELECT \"user\".* FROM \"user\" ", _/binary>>, []}, kura_dialect_pg:to_sql(Joined)
+    ),
+    Distinct = kura_query:distinct(Joined),
+    ?assertMatch(
+        {<<"SELECT DISTINCT \"user\".* FROM \"user\" ", _/binary>>, []},
+        kura_dialect_pg:to_sql(Distinct)
+    ),
+    Prefixed = kura_query:prefix(Joined, ~"acme"),
+    ?assertMatch(
+        {
+            <<"SELECT \"user\".* FROM \"acme\".\"user\" INNER JOIN \"acme\".\"post\" ", _/binary>>,
+            []
+        },
+        kura_dialect_pg:to_sql(Prefixed)
+    ),
+    Selected = kura_query:select(Joined, [id, title]),
+    ?assertMatch(
+        {<<"SELECT \"id\", \"title\" FROM ", _/binary>>, []}, kura_dialect_pg:to_sql(Selected)
+    ).
 
 %%----------------------------------------------------------------------
 %% ORDER BY
@@ -348,6 +675,272 @@ lock_test() ->
     Q = kura_query:lock(kura_query:from(user), <<"FOR UPDATE">>),
     {<<SQL/binary>>, _} = kura_dialect_pg:to_sql(Q),
     ?assert(binary:match(SQL, <<"FOR UPDATE">>) =/= nomatch).
+
+lock_clause_test_() ->
+    Cases = [
+        {for_update, ~"FOR UPDATE"},
+        {for_no_key_update, ~"FOR NO KEY UPDATE"},
+        {for_share, ~"FOR SHARE"},
+        {for_key_share, ~"FOR KEY SHARE"},
+        {{for_update, nowait}, ~"FOR UPDATE NOWAIT"},
+        {{for_update, skip_locked}, ~"FOR UPDATE SKIP LOCKED"},
+        {{for_no_key_update, skip_locked}, ~"FOR NO KEY UPDATE SKIP LOCKED"},
+        {{for_share, nowait}, ~"FOR SHARE NOWAIT"},
+        {{for_key_share, skip_locked}, ~"FOR KEY SHARE SKIP LOCKED"},
+        {~"for update", ~"FOR UPDATE"},
+        {~"  For\tUpdate \n skip   locked ", ~"FOR UPDATE SKIP LOCKED"},
+        {~"FOR NO KEY UPDATE NOWAIT", ~"FOR NO KEY UPDATE NOWAIT"},
+        {~"FOR KEY SHARE", ~"FOR KEY SHARE"},
+        {{fragment, ~"FOR UPDATE OF \"user\""}, ~"FOR UPDATE OF \"user\""}
+    ],
+    [
+        {lists:flatten(io_lib:format("~0p", [Lock])), fun() ->
+            Q = kura_query:lock(kura_query:from(user), Lock),
+            ?assertEqual(
+                {<<"SELECT * FROM \"user\" ", Clause/binary>>, []},
+                kura_dialect_pg:to_sql(Q)
+            )
+        end}
+     || {Lock, Clause} <- Cases
+    ].
+
+lock_text_is_stored_as_its_term_test() ->
+    Q = kura_query:lock(kura_query:from(user), ~"for share skip locked"),
+    ?assertEqual({for_share, skip_locked}, Q#kura_query.lock).
+
+%% PostgreSQL's locking clause in full: tables after OF, and more than one
+%% clause. A table is quoted by the dialect, whichever way it was named.
+lock_of_tables_test_() ->
+    Cases = [
+        {{for_update, #{tables => [posts]}}, ~"FOR UPDATE OF \"posts\""},
+        {{for_update, #{tables => [~"posts", comments]}}, ~"FOR UPDATE OF \"posts\", \"comments\""},
+        {{for_share, #{tables => [posts], wait => nowait}}, ~"FOR SHARE OF \"posts\" NOWAIT"},
+        {
+            {for_no_key_update, #{tables => [posts], wait => skip_locked}},
+            ~"FOR NO KEY UPDATE OF \"posts\" SKIP LOCKED"
+        },
+        {{for_update, #{tables => [kura_test_schema]}}, ~"FOR UPDATE OF \"users\""},
+        {
+            {for_update, #{tables => [~"a\"; DROP TABLE x; --"]}},
+            ~"FOR UPDATE OF \"a\"\"; DROP TABLE x; --\""
+        },
+        {{for_update, #{}}, ~"FOR UPDATE"},
+        {{for_update, #{wait => nowait}}, ~"FOR UPDATE NOWAIT"},
+        {[for_update], ~"FOR UPDATE"},
+        {
+            [{for_update, #{tables => [posts]}}, {for_share, #{tables => [users], wait => nowait}}],
+            ~"FOR UPDATE OF \"posts\" FOR SHARE OF \"users\" NOWAIT"
+        },
+        {[for_key_share, {for_update, skip_locked}], ~"FOR KEY SHARE FOR UPDATE SKIP LOCKED"},
+        {~"FOR UPDATE OF posts", ~"FOR UPDATE OF \"posts\""},
+        {
+            ~"for update of Posts, \"My Table\" nowait",
+            ~"FOR UPDATE OF \"posts\", \"My Table\" NOWAIT"
+        },
+        {~"FOR UPDATE OF \"a\"\"b\"", ~"FOR UPDATE OF \"a\"\"b\""},
+        {~"FOR NO KEY UPDATE OF key SKIP LOCKED", ~"FOR NO KEY UPDATE OF \"key\" SKIP LOCKED"},
+        {
+            ~"FOR UPDATE OF posts FOR SHARE OF users SKIP LOCKED",
+            ~"FOR UPDATE OF \"posts\" FOR SHARE OF \"users\" SKIP LOCKED"
+        },
+        {~"FOR UPDATE\nFOR KEY SHARE", ~"FOR UPDATE FOR KEY SHARE"}
+    ],
+    [
+        {lists:flatten(io_lib:format("~0p", [Lock])), fun() ->
+            Q = kura_query:lock(kura_query:from(user), Lock),
+            ?assertEqual(
+                {<<"SELECT * FROM \"user\" ", Clause/binary>>, []},
+                kura_dialect_pg:to_sql(Q)
+            )
+        end}
+     || {Lock, Clause} <- Cases
+    ].
+
+lock_text_with_tables_is_stored_as_its_term_test_() ->
+    [
+        ?_assertEqual(
+            {for_update, #{tables => [~"posts"]}},
+            kura_query:lock_clause(~"FOR UPDATE OF posts")
+        ),
+        ?_assertEqual(
+            [{for_update, #{tables => [~"posts"]}}, {for_share, nowait}],
+            kura_query:lock_clause(~"FOR UPDATE OF posts FOR SHARE NOWAIT")
+        ),
+        ?_assertEqual(
+            {for_update, #{tables => [~"users", ~"posts"], wait => skip_locked}},
+            kura_query:lock_clause(
+                {for_update, #{tables => [kura_test_schema, posts], wait => skip_locked}}
+            )
+        ),
+        ?_assertEqual(for_update, kura_query:lock_clause([{for_update, #{}}]))
+    ].
+
+%% What is not a lock at all is refused whatever strict_locks says.
+lock_that_is_no_lock_is_refused_test_() ->
+    Locks = [
+        for_delete,
+        {for_update, wait},
+        {for_update, skip_locked, nowait},
+        {fragment, for_update},
+        "FOR UPDATE",
+        42,
+        [],
+        [for_update, for_delete],
+        {for_update, #{tables => []}},
+        {for_update, #{tables => posts}},
+        {for_update, #{tables => [~""]}},
+        {for_update, #{tables => [<<"a", 0, "b">>]}},
+        {for_update, #{tables => [<<"a", 255>>]}},
+        {for_update, #{tables => [42]}},
+        {for_update, #{tables => [posts], wait => later}},
+        {for_update, #{tables => [posts], 'of' => [users]}},
+        {for_update, #{wait => undefined}}
+    ],
+    [
+        {lists:flatten(io_lib:format("~0p", [Lock])), fun() ->
+            ?assertError(
+                {kura, {invalid_lock, Lock}},
+                kura_query:lock(kura_query:from(user), kura_test_typing:ill_typed(Lock))
+            )
+        end}
+     || Lock <- Locks
+    ].
+
+unread_lock_texts() ->
+    [
+        ~"FOR UPDATE; DROP TABLE \"user\"",
+        ~"FOR UPDATE NOWAIT SKIP LOCKED",
+        ~"FOR UPDATE SKIP",
+        ~"FOR UPDATE OF",
+        ~"FOR UPDATE OF posts,",
+        ~"FOR UPDATE OF public.posts",
+        ~"FOR UPDATE OF \"posts",
+        ~"FOR UPDATE OF \"\"",
+        ~"UPDATE",
+        ~"FOR",
+        ~"",
+        <<"FOR UPDATE", 255>>,
+        ~"FOR UPDATE -- ",
+        ~"LOCK IN SHARE MODE"
+    ].
+
+%% 2.30 wrote any text into the statement. Text that is not a locking clause
+%% still goes there, with a warning, until strict_locks refuses it.
+lock_text_kura_cannot_read_is_passed_through_test_() ->
+    [
+        {lists:flatten(io_lib:format("~0p", [Text])), fun() ->
+            {Q, Warnings} = lock_warnings(unset, fun() ->
+                kura_query:lock(kura_query:from(user), Text)
+            end),
+            ?assertEqual({fragment, Text}, Q#kura_query.lock),
+            ?assertEqual(
+                {<<"SELECT * FROM \"user\" ", Text/binary>>, []}, kura_dialect_pg:to_sql(Q)
+            ),
+            ?assertMatch([#{lock := Text}], Warnings)
+        end}
+     || Text <- unread_lock_texts()
+    ].
+
+lock_text_warning_is_logged_once_test() ->
+    {_, Warnings} = lock_warnings(unset, fun() ->
+        _ = kura_query:lock(kura_query:from(user), ~"FOR UPDATE SKIP"),
+        _ = kura_query:lock(kura_query:from(user), ~"LOCK IN SHARE MODE"),
+        kura_dialect_pg:to_sql((kura_query:from(user))#kura_query{lock = ~"FOR UPDATE SKIP"})
+    end),
+    ?assertMatch([#{lock := ~"FOR UPDATE SKIP"}], Warnings).
+
+lock_text_allowed_on_purpose_logs_no_warning_test_() ->
+    [
+        {lists:flatten(io_lib:format("~0p", [Text])), fun() ->
+            {Q, Warnings} = lock_warnings(false, fun() ->
+                kura_query:lock(kura_query:from(user), Text)
+            end),
+            ?assertEqual({fragment, Text}, Q#kura_query.lock),
+            ?assertEqual([], Warnings)
+        end}
+     || Text <- unread_lock_texts()
+    ].
+
+lock_kura_reads_logs_no_warning_test_() ->
+    [
+        {lists:flatten(io_lib:format("~0p", [Lock])), fun() ->
+            {_, Warnings} = lock_warnings(unset, fun() ->
+                kura_dialect_pg:to_sql(kura_query:lock(kura_query:from(user), Lock))
+            end),
+            ?assertEqual([], Warnings)
+        end}
+     || Lock <- [
+            for_update,
+            ~"FOR UPDATE",
+            ~"FOR UPDATE OF posts",
+            {fragment, ~"FOR UPDATE OF \"user\""}
+        ]
+    ].
+
+lock_outside_the_set_is_refused_test_() ->
+    [
+        {lists:flatten(io_lib:format("~0p", [Text])), fun() ->
+            {ok, Warnings} = lock_warnings(true, fun() ->
+                ?assertError(
+                    {kura, {invalid_lock, Text}}, kura_query:lock(kura_query:from(user), Text)
+                )
+            end),
+            ?assertEqual([], Warnings)
+        end}
+     || Text <- unread_lock_texts()
+    ].
+
+strict_locks_reads_what_kura_reads_test() ->
+    {Stored, []} = lock_warnings(true, fun() ->
+        [
+            (kura_query:lock(kura_query:from(user), Lock))#kura_query.lock
+         || Lock <- [~"FOR UPDATE OF posts", for_share, {fragment, ~"FOR UPDATE OF ONLY x"}]
+        ]
+    end),
+    ?assertEqual(
+        [{for_update, #{tables => [~"posts"]}}, for_share, {fragment, ~"FOR UPDATE OF ONLY x"}],
+        Stored
+    ).
+
+lock_set_on_the_record_is_checked_at_compile_test() ->
+    Q = (kura_query:from(user))#kura_query{lock = ~"FOR UPDATE; DELETE FROM \"user\""},
+    {ok, []} = lock_warnings(true, fun() ->
+        ?assertError({kura, {invalid_lock, _}}, kura_dialect_pg:to_sql(Q))
+    end),
+    {Lenient, []} = lock_warnings(false, fun() -> kura_dialect_pg:to_sql(Q) end),
+    ?assertEqual({~"SELECT * FROM \"user\" FOR UPDATE; DELETE FROM \"user\"", []}, Lenient),
+    Known = (kura_query:from(user))#kura_query{lock = ~"FOR SHARE"},
+    ?assertEqual({~"SELECT * FROM \"user\" FOR SHARE", []}, kura_dialect_pg:to_sql(Known)).
+
+lock_warnings(Strict, Run) ->
+    strict_locks(Strict),
+    kura_boot_warning:forget(lock_text),
+    _ = logger:remove_handler(?MODULE),
+    ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
+    try
+        Result = Run(),
+        {Result, lock_warnings()}
+    after
+        logger:remove_handler(?MODULE),
+        strict_locks(unset),
+        kura_boot_warning:forget(lock_text)
+    end.
+
+strict_locks(unset) -> application:unset_env(kura, strict_locks);
+strict_locks(Strict) -> application:set_env(kura, strict_locks, Strict).
+
+lock_warnings() ->
+    receive
+        {logged, #{lock := _} = Report} -> [Report | lock_warnings()];
+        {logged, _} -> lock_warnings()
+    after 50 -> []
+    end.
+
+log(#{msg := {report, Report}}, #{config := Pid}) ->
+    Pid ! {logged, Report},
+    ok;
+log(_Event, _Config) ->
+    ok.
 
 %%----------------------------------------------------------------------
 %% PREFIX (schema)
@@ -1023,6 +1616,85 @@ chained_union_test() ->
     ),
     ?assertEqual([<<"a">>, <<"b">>, <<"c">>], Params).
 
+combination_order_limit_and_offset_follow_the_branches_test() ->
+    Q1 = kura_query:where(kura_query:from(user), {role, ~"a"}),
+    Q2 = kura_query:where(kura_query:from(user), {role, ~"b"}),
+    Q = kura_query:offset(
+        kura_query:limit(kura_query:order_by(kura_query:union(Q1, Q2), [{name, desc}]), 10), 5
+    ),
+    ?assertEqual(
+        {
+            <<
+                "SELECT * FROM \"user\" WHERE \"role\" = $1 "
+                "UNION SELECT * FROM \"user\" WHERE \"role\" = $2 "
+                "ORDER BY \"name\" DESC LIMIT $3 OFFSET $4"
+            >>,
+            [~"a", ~"b", 10, 5]
+        },
+        kura_dialect_pg:to_sql(Q)
+    ).
+
+combination_branch_with_its_own_clauses_is_parenthesised_test() ->
+    Q1 = kura_query:from(user),
+    Limited = kura_query:limit(kura_query:order_by(kura_query:from(admin), [{id, asc}]), 3),
+    Nested = kura_query:union(kura_query:from(staff), kura_query:from(guest)),
+    WithCte = kura_query:with_cte(kura_query:from(recent), ~"recent", kura_query:from(user)),
+    ?assertEqual(
+        {
+            <<
+                "SELECT * FROM \"user\" "
+                "UNION ALL (SELECT * FROM \"admin\" ORDER BY \"id\" ASC LIMIT $1) "
+                "LIMIT $2"
+            >>,
+            [3, 7]
+        },
+        kura_dialect_pg:to_sql(kura_query:limit(kura_query:union_all(Q1, Limited), 7))
+    ),
+    ?assertEqual(
+        {
+            <<
+                "SELECT * FROM \"user\" "
+                "EXCEPT (SELECT * FROM \"staff\" UNION SELECT * FROM \"guest\")"
+            >>,
+            []
+        },
+        kura_dialect_pg:to_sql(kura_query:except(Q1, Nested))
+    ),
+    ?assertEqual(
+        {
+            <<
+                "SELECT * FROM \"user\" "
+                "INTERSECT (WITH \"recent\" AS (SELECT * FROM \"user\") SELECT * FROM \"recent\")"
+            >>,
+            []
+        },
+        kura_dialect_pg:to_sql(kura_query:intersect(Q1, WithCte))
+    ).
+
+combination_order_names_result_columns_test() ->
+    Joined = kura_query:join(kura_query:from(kura_test_post_schema), inner, kura_test_schema, {
+        author_id, id
+    }),
+    Q = kura_query:order_by(
+        kura_query:union(
+            kura_query:select(Joined, [title]),
+            kura_query:select(kura_query:from(kura_test_post_schema), [title])
+        ),
+        [{title, asc}]
+    ),
+    ?assertEqual(
+        {
+            <<
+                "SELECT \"posts\".\"title\" FROM \"posts\" "
+                "INNER JOIN \"users\" ON \"posts\".\"author_id\" = \"users\".\"id\" "
+                "UNION SELECT \"title\" FROM \"posts\" "
+                "ORDER BY \"title\" ASC"
+            >>,
+            []
+        },
+        kura_dialect_pg:to_sql(Q)
+    ).
+
 %%----------------------------------------------------------------------
 %% Query Scopes
 %%----------------------------------------------------------------------
@@ -1159,8 +1831,8 @@ distance_params_are_numbered_between_having_and_limit_test() ->
         {
             <<
                 "SELECT \"content\" AS \"content\", \"embedding\" <-> $1 AS \"dist\" "
-                "FROM \"kura_vector_items\" WHERE \"content\" LIKE $2 AND id BETWEEN $3 AND $4 "
-                "GROUP BY \"content\", \"embedding\" HAVING count(*) > $5 "
+                "FROM \"kura_vector_items\" WHERE \"content\" LIKE $2 AND (id BETWEEN $3 AND $4\n) "
+                "GROUP BY \"content\", \"embedding\" HAVING (count(*) > $5\n) "
                 "ORDER BY \"any_embedding\" <#> $6 ASC, \"embedding\" <-> $7 DESC "
                 "LIMIT $8 OFFSET $9"
             >>,
@@ -1273,7 +1945,8 @@ join_from_bare_table_leaves_columns_bare_test() ->
     {SQL, _} = kura_dialect_pg:to_sql(Q),
     ?assertEqual(
         <<
-            "SELECT * FROM \"user\" INNER JOIN \"post\" ON \"user\".\"id\" = \"post\".\"user_id\" "
+            "SELECT \"user\".* FROM \"user\" "
+            "INNER JOIN \"post\" ON \"user\".\"id\" = \"post\".\"user_id\" "
             "WHERE \"id\" = $1"
         >>,
         SQL
@@ -1289,7 +1962,7 @@ join_leaves_the_attribute_tenant_field_bare_test() ->
     end),
     ?assertEqual(
         <<
-            "SELECT * FROM \"posts\" "
+            "SELECT \"posts\".* FROM \"posts\" "
             "INNER JOIN \"users\" ON \"posts\".\"author_id\" = \"users\".\"id\" "
             "WHERE \"author_id\" = $1"
         >>,
@@ -1442,7 +2115,7 @@ distance_threshold_under_a_join_qualifies_the_vector_column_test() ->
     {SQL, Params} = kura_dialect_pg:to_sql(Q1),
     ?assertEqual(
         <<
-            "SELECT * FROM \"kura_vector_items\" "
+            "SELECT \"kura_vector_items\".* FROM \"kura_vector_items\" "
             "INNER JOIN \"users\" ON \"kura_vector_items\".\"id\" = \"users\".\"id\" "
             "WHERE \"kura_vector_items\".\"embedding\" <-> $1 < $2 "
             "ORDER BY \"kura_vector_items\".\"embedding\" <-> $3 ASC"
@@ -1484,3 +2157,27 @@ join_qualifies_having_and_window_spec_test() ->
         >>,
         iolist_to_binary(WindowSQL)
     ).
+
+insert_all_parameter_limit_test_() ->
+    Rows = fun(Count) -> [#{name => ~"n"} || _ <- lists:seq(1, Count)] end,
+    [
+        {"the limit itself compiles", fun() ->
+            {_SQL, Params} = kura_dialect_pg:insert_all(kura_test_schema, [name], Rows(65535)),
+            ?assertEqual(65535, length(Params))
+        end},
+        {"one over the limit is refused", fun() ->
+            ?assertError(
+                {kura, {too_many_parameters, 65536, 65535}},
+                kura_dialect_pg:insert_all(kura_test_schema, [name], Rows(65536))
+            )
+        end},
+        {"the limit counts every field", fun() ->
+            ?assertError(
+                {kura, {too_many_parameters, 65536, 65535}},
+                kura_dialect_pg:insert_all(kura_test_schema, [name, email], [
+                    #{name => ~"n", email => ~"e"}
+                 || _ <- lists:seq(1, 32768)
+                ])
+            )
+        end}
+    ].

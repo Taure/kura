@@ -32,6 +32,42 @@ the wrong moment to change what `avg/1` returns for everybody.
 A repo that wants the exact form says `numeric_format => binary` in its driver
 options, and should, for anything that is money.
 
+## Transaction control in user SQL
+
+A `COMMIT`, `END` or `ROLLBACK` run through `query/5` inside `transaction/4`
+ends the transaction behind kura's back. Every statement there goes to the
+transaction's holder, which reads the transaction status the server sends in
+`ReadyForQuery` after it, and the statement's command tag. A statement that
+leaves the connection `idle`, or answers with the tag `COMMIT`, raises
+`error({kura_driver_minato, transaction_ended_by_statement})`. Whatever it
+committed stays committed. From then on the holder refuses every statement meant
+for the transaction without sending it to the server: a statement run by a
+function that caught the error raises the same, so do the `COMMIT`, `SAVEPOINT`
+and `RELEASE` that `transaction/4` would send, and the `ROLLBACK` and
+`ROLLBACK TO SAVEPOINT` it would clean up with are skipped. No work meant for
+the transaction runs outside it.
+
+The status and the tag are read rather than the SQL text, so a statement is
+caught however it is spelled. The tag is what catches `COMMIT AND CHAIN`, which
+leaves a new transaction open, so the connection never reads as `idle`; that
+transaction is rolled back when the connection is checked in.
+`ROLLBACK AND CHAIN` and `ABORT AND CHAIN` answer with the tag `ROLLBACK`, as
+`ROLLBACK TO SAVEPOINT` does. `transaction/4` begins with a transaction-local
+setting sent in the same round trip as its `BEGIN`, and only a statement tagged
+`ROLLBACK` that leaves the connection in a transaction is followed by one more
+query to read it back, under the statement's `timeout`: a savepoint rollback
+keeps the setting, a chained rollback has replaced the transaction and lost it,
+and raises the same error. A `RESET ALL` inside the transaction clears the
+setting too, so a later `ROLLBACK TO SAVEPOINT`, including the one a nested
+`transaction/4` cleans up with, raises `transaction_ended_by_statement` while the
+transaction is still open. Avoid `RESET ALL` inside `transaction/4`.
+
+This covers transactions `transaction/4` opens, and a sandboxed test's: kura's
+sandbox begins its transaction with `query_on/4` and `transaction => starts`,
+which this driver opens and marks the way `transaction/4` does, and runs every
+statement in it with `transaction => inside`, which goes through the same
+check. The `RESET ALL` caveat above applies there too.
+
 ## Timeouts
 
 `timeout` in the driver options is a deadline on the statement rather than on
@@ -52,18 +88,40 @@ connection goes back to the pool rather than being closed.
 
 -define(DEFAULT_DECODE_OPTS, [return_rows_as_maps, column_name_as_atom]).
 
--doc "Run a statement on a pool, or on the transaction this process is inside.".
+-doc """
+Run a statement on a pool, or on the transaction this process is inside.
+
+Inside a transaction, a statement that ends it, or one run after it has ended,
+raises `error({kura_driver_minato, transaction_ended_by_statement})`.
+""".
 -spec query(module(), kura_pool:name(), iodata(), [term()], map()) -> dynamic().
 query(_PoolMod, Pool, SQL, Params, Opts) ->
     case kura_pool_minato:transaction_conn(Pool) of
-        undefined -> answered(minato:query(Pool, SQL, Params, decoding(Opts)));
-        Holder -> kura_pool_minato:run(Holder, SQL, Params, decoding(Opts))
+        undefined ->
+            answered(minato:query(Pool, SQL, Params, decoding(Opts)));
+        Holder ->
+            still_open(kura_pool_minato:run_in_transaction(Holder, SQL, Params, decoding(Opts)))
     end.
 
--doc "Run a statement on a connection the caller checked out.".
+-doc """
+Run a statement on a connection the caller checked out.
+
+With `transaction => starts`, `SQL` is a plain `BEGIN`: the driver opens the
+transaction with its own, marked as `transaction/4` marks its own, and does not
+send `SQL`. With `transaction => inside`, a statement that
+ends that transaction, or one run after it has ended, raises
+`error({kura_driver_minato, transaction_ended_by_statement})`.
+""".
 -spec query_on(kura_pool:conn(), iodata(), [term()], map()) -> dynamic().
 query_on(Holder, SQL, Params, Opts) when is_pid(Holder) ->
-    kura_pool_minato:run(Holder, SQL, Params, decoding(Opts)).
+    case maps:get(transaction, Opts, none) of
+        starts ->
+            kura_pool_minato:open_transaction(Holder);
+        inside ->
+            still_open(kura_pool_minato:run_in_transaction(Holder, SQL, Params, decoding(Opts)));
+        _None ->
+            kura_pool_minato:run(Holder, SQL, Params, decoding(Opts))
+    end.
 
 -doc """
 Run `Fun` inside a transaction.
@@ -94,7 +152,18 @@ Other failures raise `error({kura_driver_minato, {Failure, Reason}})`:
   that transaction or savepoint was kept.
 - `commit_unknown`: no answer came back, for example on a timeout or a lost
   connection, so the server may or may not have committed.
+- `rollback_to_failed`: a nested `Fun` raised and the server refused the
+  `ROLLBACK TO SAVEPOINT`, for example because `Fun` released the savepoint
+  itself. The whole transaction is rolled back rather than keep work the nested
+  call was meant to undo, and anything run in it afterwards raises
+  `transaction_ended_by_statement`.
 - `no_connection`: no connection could be checked out, and `Fun` did not run.
+
+`error({kura_driver_minato, transaction_ended_by_statement})` when a statement
+run inside `Fun`, such as a raw `COMMIT`, `END` or `ROLLBACK`, ended the
+transaction. Whatever it committed stays committed and nothing after it runs.
+Nested, it is raised the same way: the statement ended the outermost
+transaction, not just the savepoint.
 
 A server error is reduced to its `code`, `constraint`, `severity` and
 `severity_non_localised`, since its message and detail can carry row values.
@@ -109,9 +178,9 @@ transaction(_PoolMod, Pool, Fun, _Opts) ->
 -doc "Create the database named in `Config` if it is not there.".
 -spec ensure_database(map()) -> ok | {error, term()}.
 ensure_database(Config) ->
-    case maps:find(database, Config) of
-        error -> ok;
-        {ok, Database} -> ensured(Config, binary(Database))
+    case Config of
+        #{database := Database} -> ensured(Config, binary(Database));
+        #{} -> ok
     end.
 
 -doc "Round trip a trivial statement against `Pool`.".
@@ -134,12 +203,12 @@ outermost(Pool, Fun) ->
 inside(Pool, Holder, Fun) ->
     ok = kura_pool_minato:in_transaction(Pool, Holder),
     try
-        ok = expect(statement(Holder, ~"BEGIN"), 'begin', begin_failed),
+        ok = expect(opened(Holder), 'begin', begin_failed),
         Value = Fun(),
         committed(Holder, Value)
     catch
         Class:Reason:Stacktrace ->
-            _ = statement(Holder, ~"ROLLBACK"),
+            _ = within(Holder, ~"ROLLBACK"),
             erlang:raise(Class, Reason, Stacktrace)
     after
         ok = kura_pool_minato:in_transaction(Pool, undefined),
@@ -148,7 +217,7 @@ inside(Pool, Holder, Fun) ->
 
 -spec committed(pid(), term()) -> term().
 committed(Holder, Value) ->
-    case statement(Holder, ~"COMMIT") of
+    case checked(Holder, ~"COMMIT") of
         #{command := commit} ->
             Value;
         #{command := rollback} ->
@@ -162,20 +231,34 @@ committed(Holder, Value) ->
 -spec nested(pid(), fun(() -> term())) -> term().
 nested(Holder, Fun) ->
     Savepoint = savepoint_name(),
-    ok = expect(statement(Holder, [~"SAVEPOINT ", Savepoint]), savepoint, savepoint_failed),
+    ok = expect(checked(Holder, [~"SAVEPOINT ", Savepoint]), savepoint, savepoint_failed),
     try
         Value = Fun(),
         released(Holder, Savepoint, Value)
     catch
         Class:Reason:Stacktrace ->
-            _ = statement(Holder, [~"ROLLBACK TO SAVEPOINT ", Savepoint]),
-            _ = statement(Holder, [~"RELEASE SAVEPOINT ", Savepoint]),
+            ok = rolled_back_to(Holder, Savepoint),
             erlang:raise(Class, Reason, Stacktrace)
+    end.
+
+%% A transaction that has ended, or a connection that is gone, leaves nothing to
+%% roll back to, and the exception being cleaned up after says more.
+-spec rolled_back_to(pid(), binary()) -> ok.
+rolled_back_to(Holder, Savepoint) ->
+    case within(Holder, [~"ROLLBACK TO SAVEPOINT ", Savepoint]) of
+        #{command := rollback} ->
+            _ = within(Holder, [~"RELEASE SAVEPOINT ", Savepoint]),
+            ok;
+        {error, {pgsql_error, _}} = Refused ->
+            _ = within(Holder, ~"ROLLBACK"),
+            failed(rollback_to_failed, Refused);
+        _EndedOrGone ->
+            ok
     end.
 
 -spec released(pid(), binary(), term()) -> term().
 released(Holder, Savepoint, Value) ->
-    case statement(Holder, [~"RELEASE SAVEPOINT ", Savepoint]) of
+    case checked(Holder, [~"RELEASE SAVEPOINT ", Savepoint]) of
         #{command := release} -> Value;
         {error, {pgsql_error, #{code := ~"25P02"}}} -> error(transaction_rolled_back);
         Failed -> failed(release_failed, Failed)
@@ -204,12 +287,37 @@ failed(Failure, #{command := Command}) ->
 failed(Failure, Answer) ->
     error({kura_driver_minato, {Failure, Answer}}).
 
--spec statement(pid(), iodata()) -> dynamic().
+-spec still_open(ended | {dynamic(), kura_pool_minato:transaction_status()}) -> dynamic().
+still_open({_Answer, ended}) -> ended();
+still_open({Answer, _Open}) -> Answer;
+still_open(ended) -> ended().
+
+-spec ended() -> no_return().
+ended() ->
+    error({kura_driver_minato, transaction_ended_by_statement}).
+
+-spec checked(pid(), iodata()) -> dynamic().
+checked(Holder, SQL) ->
+    case within(Holder, SQL) of
+        ended -> ended();
+        Answer -> Answer
+    end.
+
 %% A raise here would replace the exception being cleaned up after, so it becomes
 %% an answer that the caller names like any other failure.
-statement(Holder, SQL) ->
+-spec within(pid(), iodata()) -> dynamic().
+within(Holder, SQL) ->
+    try kura_pool_minato:run_in_transaction(Holder, SQL, [], #{}) of
+        ended -> ended;
+        {Answer, _Status} -> Answer
+    catch
+        Class:_ -> {raised, Class}
+    end.
+
+-spec opened(pid()) -> dynamic().
+opened(Holder) ->
     try
-        kura_pool_minato:run(Holder, SQL, [], #{})
+        kura_pool_minato:open_transaction(Holder)
     catch
         Class:_ -> {raised, Class}
     end.
@@ -266,9 +374,9 @@ connection(Config, Database) ->
 
 -spec passworded(map(), map()) -> map().
 passworded(Base, Config) ->
-    case maps:find(password, Config) of
-        {ok, Password} -> Base#{password => binary(Password)};
-        error -> Base
+    case Config of
+        #{password := Password} -> Base#{password => binary(Password)};
+        #{} -> Base
     end.
 
 -spec secured(map()) -> map().

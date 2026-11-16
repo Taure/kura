@@ -445,6 +445,109 @@ dump_error_test() ->
 load_null_test() ->
     ?assertEqual({ok, undefined}, kura_types:load(integer, null)).
 
+%% The forms a backend without a native type stores a value in: SQLite keeps
+%% a boolean as 0 or 1 and a date or a time as ISO 8601 text. Its dialect
+%% turns them into the Erlang form before load/2 sees them, here through the
+%% in-tree stand-in for that dialect.
+stored(Type, Value) ->
+    kura_types:load(Type, kura_test_sqlite_dialect:load_stored(Type, Value)).
+
+load_stored_forms_test_() ->
+    [
+        ?_assertEqual({ok, true}, stored(boolean, 1)),
+        ?_assertEqual({ok, false}, stored(boolean, 0)),
+        ?_assertEqual({ok, true}, stored(boolean, true)),
+        ?_assertMatch({error, _}, stored(boolean, 2)),
+        ?_assertMatch({error, _}, stored(boolean, ~"true")),
+        ?_assertEqual({ok, {1990, 1, 2}}, stored(date, ~"1990-01-02")),
+        ?_assertEqual({ok, {1990, 1, 2}}, stored(date, {1990, 1, 2})),
+        ?_assertMatch({error, _}, stored(date, ~"1990-02-30")),
+        ?_assertMatch({error, _}, stored(date, ~"yesterday")),
+        ?_assertEqual({ok, {7, 30, 0}}, stored(time, ~"07:30:00")),
+        ?_assertEqual({ok, {7, 30, 15}}, stored(time, ~"07:30:15.250")),
+        ?_assertMatch({error, _}, stored(time, ~"25:00:00")),
+        ?_assertEqual(
+            {ok, {{2024, 1, 15}, {10, 30, 0}}}, stored(utc_datetime, ~"2024-01-15 10:30:00")
+        ),
+        ?_assertEqual(
+            {ok, {{2024, 1, 15}, {10, 30, 0}}}, stored(utc_datetime, ~"2024-01-15T10:30:00Z")
+        ),
+        ?_assertEqual(
+            {ok, {{2024, 1, 15}, {8, 30, 0}}},
+            stored(utc_datetime, ~"2024-01-15T10:30:00.123+02:00")
+        ),
+        ?_assertEqual(
+            {ok, {{2024, 1, 15}, {10, 30, 0}}}, stored(naive_datetime, ~"2024-01-15 10:30:00")
+        ),
+        ?_assertMatch({error, _}, stored(utc_datetime, ~"2024-01-15")),
+        ?_assertMatch({error, _}, stored(naive_datetime, ~"")),
+        ?_assertEqual({ok, undefined}, stored(boolean, null)),
+        ?_assertEqual({ok, ~"text"}, stored(string, ~"text")),
+        ?_assertEqual({ok, 1}, stored(integer, 1)),
+        ?_assertEqual({ok, #{~"a" => 1}}, stored(jsonb, ~"{\"a\":1}")),
+        ?_assertEqual({ok, [1, 2]}, stored(jsonb, ~"[1,2]"))
+    ].
+
+%% load/2 itself reads the Erlang form only, as it did in 2.30: reading a
+%% stored form there would apply to every backend, also one whose driver
+%% returns the native term and where 1 in a boolean column is a mistake.
+load_reads_no_stored_form_itself_test_() ->
+    [
+        ?_assertMatch({error, _}, kura_types:load(boolean, 1)),
+        ?_assertMatch({error, _}, kura_types:load(boolean, 0)),
+        ?_assertMatch({error, _}, kura_types:load(date, ~"1990-01-02")),
+        ?_assertMatch({error, _}, kura_types:load(time, ~"07:30:00")),
+        ?_assertMatch({error, _}, kura_types:load(utc_datetime, ~"2024-01-15 10:30:00")),
+        ?_assertMatch({error, _}, kura_types:load(naive_datetime, ~"2024-01-15 10:30:00")),
+        ?_assertMatch({error, _}, kura_types:load({array, integer}, ~"[1,2,3]")),
+        ?_assertMatch({error, _}, kura_types:load({array, string}, ~"[\"a\",\"b\"]")),
+        ?_assertMatch({error, _}, kura_types:load({array, integer}, ~"{1,2,3}")),
+        ?_assertError(
+            {kura_crypto, malformed_frame},
+            kura_types:load({array, {encrypted, string}}, ~"[1]")
+        )
+    ].
+
+load_decimal_text_test_() ->
+    [
+        ?_assertEqual({ok, ~"12"}, kura_types:load(decimal, ~"12")),
+        ?_assertEqual({ok, ~"-12.50"}, kura_types:load(decimal, ~"-12.50")),
+        ?_assertEqual({ok, ~"123.4500"}, kura_types:load(decimal, ~"123.4500")),
+        ?_assertEqual({ok, ~"1e3"}, kura_types:load(decimal, ~"1e3")),
+        ?_assertEqual(
+            {ok, ~"12345678901234567.89"}, kura_types:load(decimal, ~"12345678901234567.89")
+        ),
+        ?_assertEqual({ok, ~"+0.10E-2"}, kura_types:load(decimal, ~"+0.10E-2")),
+        ?_assertMatch({error, _}, kura_types:load(decimal, ~"NaN")),
+        ?_assertMatch({error, _}, kura_types:load(decimal, ~"12.")),
+        ?_assertMatch({error, _}, kura_types:load(decimal, ~".5")),
+        ?_assertMatch({error, _}, kura_types:load(decimal, ~"1e+")),
+        ?_assertMatch({error, _}, kura_types:load(decimal, ~"12 "))
+    ].
+
+load_stored_text_is_total_test_() ->
+    [
+        ?_assertMatch({error, _}, stored(Type, Text))
+     || Type <- [date, time, utc_datetime, naive_datetime, decimal, {array, integer}],
+        Text <- [
+            ~"1.2.3",
+            ~"1e",
+            ~"e3",
+            ~"0x10",
+            <<>>,
+            ~" ",
+            ~"T",
+            ~"::",
+            ~"----",
+            ~"0000-00-00",
+            ~"2024-01-15T",
+            ~"2024-01-15T+",
+            ~"99999-01-01 00:00:00",
+            <<255, 254>>,
+            binary:copy(~"9.", 200)
+        ]
+    ].
+
 load_id_test() ->
     ?assertEqual({ok, 42}, kura_types:load(id, 42)).
 

@@ -112,6 +112,83 @@ adopting_a_running_pool_kura_did_not_start_is_logged_test() ->
     ?assertEqual([action, msg, pool, pool_module, repo], lists:sort(maps:keys(Report))),
     ?assertEqual(nomatch, string:find(io_lib:format("~p", [Report]), "s3cret")).
 
+%% Before the pool module is asked to start anything, and so before the
+%% first query is compiled against it.
+a_pool_module_with_an_unknown_capability_model_does_not_start_test() ->
+    kura_db:forget_pools(),
+    application:set_env(kura, repos, #{
+        kura_db_failing_repo => #{pool_module => kura_test_misdated_pool}
+    }),
+    Invalid = {invalid_capability_model, kura_test_misdated_pool, 2},
+    try
+        Events = with_captured_logs(fun() ->
+            ?assertEqual({error, Invalid}, kura_repo_worker:start(kura_db_failing_repo))
+        end),
+        ?assertMatch(
+            [
+                #{
+                    level := error,
+                    msg := {report, #{msg := ~"kura: pool did not start", reason := Invalid}}
+                }
+            ],
+            Events
+        )
+    after
+        application:unset_env(kura, repos),
+        kura_db:forget_pools()
+    end.
+
+a_repo_with_a_require_tenant_that_is_not_a_boolean_does_not_start_test() ->
+    Invalid = {invalid_setting, require_tenant, yes},
+    {Result, Events} = with_captured_logs_and_result(fun() ->
+        with_pool_answer({ok, self()}, #{require_tenant => yes}, fun() ->
+            {kura_repo_worker:start(kura_db_failing_repo), get({?MODULE, pool_config})}
+        end)
+    end),
+    ?assertEqual({{error, Invalid}, undefined}, Result),
+    ?assertMatch(
+        [#{msg := {report, #{msg := ~"kura: pool did not start", reason := Invalid}}}],
+        Events
+    ).
+
+a_started_repo_takes_require_tenant_from_the_application_environment_test() ->
+    Settings = fun() ->
+        maps:get(require_tenant, kura_repo:settings(kura_db_failing_repo), unset)
+    end,
+    try
+        Seen = with_pool_answer({ok, self()}, #{}, fun() ->
+            ok = kura_repo_worker:start(kura_db_failing_repo),
+            Unset = Settings(),
+            application:set_env(kura, require_tenant, true),
+            Before = Settings(),
+            ok = kura_db:start_pool(kura_db_failing_repo),
+            Restarted = Settings(),
+            application:set_env(kura, require_tenant, sometimes),
+            Refused = with_captured_logs_result(fun() ->
+                kura_db:start_pool(kura_db_failing_repo)
+            end),
+            {Unset, Before, Restarted, Refused, Settings()}
+        end),
+        ?assertEqual(
+            {unset, unset, true, {error, {invalid_setting, require_tenant, sometimes}}, true},
+            Seen
+        )
+    after
+        application:unset_env(kura, require_tenant)
+    end.
+
+a_started_repo_takes_a_false_from_the_application_environment_test() ->
+    application:set_env(kura, require_tenant, false),
+    try
+        Seen = with_pool_answer({ok, self()}, #{}, fun() ->
+            ok = kura_repo_worker:start(kura_db_failing_repo),
+            maps:get(require_tenant, kura_repo:settings(kura_db_failing_repo), unset)
+        end),
+        ?assertEqual(false, Seen)
+    after
+        application:unset_env(kura, require_tenant)
+    end.
+
 %%----------------------------------------------------------------------
 %% kura_repo_worker:start/1 reports a pool that did not start
 %%----------------------------------------------------------------------
@@ -323,6 +400,7 @@ repo_worker_start_keeps_the_repo_settings_from_the_pool_module_test() ->
         read_only => true,
         replicas => [other_repo],
         uuid_version => 7,
+        require_tenant => true,
         encryption => #{keys => [{1, ~"S0VZ"}]},
         keyring => kura_keyring_env
     },
@@ -517,11 +595,15 @@ with_flat_env(Flat, Run) ->
         erase({?MODULE, pool_config})
     end.
 
+%% Called as a caller that has not moved to kura_repo:config/1 calls it.
+deprecated_pool_config(Args) ->
+    apply(kura_app, pool_config, Args).
+
 deprecated_pool_config_returns_the_resolved_config_test() ->
     with_pool_answer({ok, self()}, kura_db_init_repo, #{database => ~"db"}, fun() ->
         ?assertEqual(
             #{database => ~"from_init", pool => kura_db_init_pool, pool_module => ?MODULE},
-            kura_app:pool_config(kura_db_init_repo)
+            deprecated_pool_config([kura_db_init_repo])
         )
     end).
 
@@ -529,7 +611,7 @@ deprecated_pool_config_raises_a_raising_init_redacted_test() ->
     Config = #{password => ~"s3cret"},
     {Raised, _Events} = with_captured_logs_and_result(fun() ->
         with_pool_answer({ok, self()}, kura_db_raising_init_repo, Config, fun() ->
-            try kura_app:pool_config(kura_db_raising_init_repo) of
+            try deprecated_pool_config([kura_db_raising_init_repo]) of
                 Returned -> {returned, Returned}
             catch
                 error:Reason -> Reason
@@ -543,7 +625,7 @@ deprecated_pool_config_logs_nothing_on_a_raising_init_test() ->
         with_pool_answer(
             {ok, self()}, kura_db_raising_init_repo, #{password => ~"s3cret"}, fun() ->
                 try
-                    kura_app:pool_config(kura_db_raising_init_repo)
+                    deprecated_pool_config([kura_db_raising_init_repo])
                 catch
                     error:Reason -> Reason
                 end
@@ -554,18 +636,18 @@ deprecated_pool_config_logs_nothing_on_a_raising_init_test() ->
 
 deprecated_pool_config_without_a_repo_is_empty_test() ->
     with_flat_env([{pool_module, ?MODULE}], fun() ->
-        ?assertEqual(#{}, kura_app:pool_config())
+        ?assertEqual(#{}, deprecated_pool_config([]))
     end).
 
 deprecated_pool_config_of_an_unknown_repo_is_empty_test() ->
     with_flat_env([{repo, kura_db_failing_repo}, {database, ~"flat_db"}], fun() ->
-        ?assertEqual(#{}, kura_app:pool_config(kura_db_no_such_repo))
+        ?assertEqual(#{}, deprecated_pool_config([kura_db_no_such_repo]))
     end).
 
 deprecated_pool_config_reads_the_legacy_flat_repo_test() ->
     Flat = [{repo, kura_db_failing_repo}, {pool_module, ?MODULE}, {database, ~"flat_db"}],
     with_flat_env(Flat, fun() ->
-        ?assertEqual(#{database => ~"flat_db", pool_module => ?MODULE}, kura_app:pool_config())
+        ?assertEqual(#{database => ~"flat_db", pool_module => ?MODULE}, deprecated_pool_config([]))
     end).
 
 boot_logs_a_raising_init_and_carries_on_test() ->

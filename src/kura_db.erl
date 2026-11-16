@@ -10,6 +10,8 @@ for pool lookup, sandbox support, telemetry, and type loading.
 
 -export([
     query/3,
+    query/4,
+    query/5,
     query_on/4,
     query_on/5,
     transaction/2,
@@ -23,9 +25,13 @@ for pool lookup, sandbox support, telemetry, and type loading.
     resolve/1,
     get_driver_module/1,
     load_row/2,
+    load_row/3,
+    load_rows/3,
     build_log_event/5,
     build_telemetry_metadata/4,
+    build_telemetry_metadata/5,
     extract_source/1,
+    source_name/1,
     default_logger/0
 ]).
 
@@ -36,7 +42,7 @@ for pool lookup, sandbox support, telemetry, and type loading.
     held/1,
     extract_result_status/1,
     extract_num_rows/1,
-    emit_telemetry/6
+    emit_telemetry/7
 ]).
 -endif.
 
@@ -59,6 +65,7 @@ for pool lookup, sandbox support, telemetry, and type loading.
     read_only,
     replicas,
     uuid_version,
+    require_tenant,
     encryption,
     keyring
 ]).
@@ -69,6 +76,23 @@ for pool lookup, sandbox support, telemetry, and type loading.
 
 -spec query(module(), iodata(), [term()]) -> map() | {error, term()}.
 query(RepoMod, SQL, Params) ->
+    query(RepoMod, SQL, Params, Params).
+
+%% Runs `SQL` with `Params`, and reports the statement to telemetry and the
+%% query log as `Shown` says. With {redacted, ShownParams} those are reported
+%% in place of `Params`, and the error of a failed statement is cut down with
+%% kura_redact:error_reason/1 whatever telemetry_error_detail says. The
+%% caller gets the result as it is either way. kura_repo_worker:query/4 is
+%% the public face of this.
+-doc false.
+-spec query(module(), iodata(), [term()], shown()) -> map() | {error, term()}.
+query(RepoMod, SQL, Params, Shown) ->
+    query(RepoMod, SQL, Params, Shown, from_sql).
+
+-doc false.
+-spec query(module(), iodata(), [term()], shown(), source()) ->
+    map() | {error, term()}.
+query(RepoMod, SQL, Params, Shown, Source) ->
     Pool = get_pool(RepoMod),
     DriverMod = get_driver_module(RepoMod),
     T0 = erlang:monotonic_time(),
@@ -80,7 +104,16 @@ query(RepoMod, SQL, Params) ->
                 PoolMod = get_pool_module(RepoMod),
                 DriverMod:query(PoolMod, Pool, SQL, Params, #{decode_opts => ?DECODE_OPTS})
         end,
-    observed(RepoMod, SQL, Params, T0, Result).
+    case Shown of
+        {redacted, ShownParams} ->
+            _ = observed(RepoMod, SQL, ShownParams, T0, shown_result(Result), Source),
+            Result;
+        _ ->
+            observed(RepoMod, SQL, Params, T0, Result, Source)
+    end.
+
+shown_result({error, Reason}) -> {error, kura_redact:error_reason(Reason)};
+shown_result(Result) -> Result.
 
 -doc """
 Run `SQL` on `Conn`, a connection the caller checked out of `RepoMod`'s
@@ -112,14 +145,33 @@ query_on(RepoMod, Conn, SQL, Params, Opts) ->
     DriverMod = get_driver_module(RepoMod),
     T0 = erlang:monotonic_time(),
     Result = DriverMod:query_on(Conn, SQL, Params, Opts#{decode_opts => ?DECODE_OPTS}),
-    observed(RepoMod, SQL, Params, T0, Result).
+    observed(RepoMod, SQL, Params, T0, Result, from_sql).
 
--spec observed(module(), iodata(), [term()], integer(), Result) -> Result.
-observed(RepoMod, SQL, Params, T0, Result) ->
+-spec observed(module(), iodata(), [term()], integer(), Result, source()) -> Result.
+observed(RepoMod, SQL, Params, T0, Result, Source) ->
     DurationNative = erlang:monotonic_time() - T0,
     DurationUs = erlang:convert_time_unit(DurationNative, native, microsecond),
-    emit_telemetry(RepoMod, SQL, Params, Result, DurationNative, DurationUs),
+    emit_telemetry(RepoMod, SQL, Params, Result, DurationNative, DurationUs, Source),
     Result.
+
+-type shown() :: [term()] | {redacted, [term()]}.
+
+%% What a statement reads or writes, as telemetry names it: the table kura
+%% compiled the statement for, or `from_sql` for SQL kura did not build,
+%% whose text is read for it.
+-type source() :: binary() | undefined | from_sql.
+
+-doc false.
+-spec source_name(kura_dialect:table() | undefined) -> binary() | undefined.
+source_name(undefined) ->
+    undefined;
+source_name(Table) when is_binary(Table) ->
+    Table;
+source_name(Source) when is_atom(Source) ->
+    case kura_schema:is_schema(Source) of
+        true -> Source:table();
+        false -> atom_to_binary(Source)
+    end.
 
 %%----------------------------------------------------------------------
 %% Transaction
@@ -335,7 +387,11 @@ before the pool module is called, so the answer does not depend on how the
 pool module reports a name that is already running. The refusal is logged as a
 pool that did not start, and the refused repo's queries raise
 `{pool_owned_by, Owner}` instead of running on that pool. The owner starting
-its pool again gets `ok`. A pool already running that kura did not start goes
+its pool again gets `ok`. A pool module whose `capability_model/0` returns
+something this kura has no model for (see `m:kura_capabilities`) is not asked
+to start a pool either: the start returns
+`{error, {invalid_capability_model, PoolModule, Value}}` and is logged as a
+pool that did not start. A pool already running that kura did not start goes
 to the first repo that starts it, with a warning that names the repo, the pool
 and the pool module: that pool keeps the connection settings it was started
 with. A pool stopped outside kura stays owned;
@@ -429,10 +485,23 @@ legacy_defaults_filled(Repo, Filled) ->
 -spec start_pool(module(), atom(), map()) -> ok | {error, term()}.
 start_pool(Repo, Pool, Config) ->
     PoolMod = pool_module(Repo, Config),
-    case locked(Pool, fun() -> claimed(Repo, Pool, PoolMod, Config) end) of
-        ok -> ok;
-        {error, Reason} -> {error, Reason};
-        {moved_from, Previous, PreviousMod} -> retire(Repo, Previous, PreviousMod)
+    case valid_start(PoolMod, Config) of
+        ok ->
+            case locked(Pool, fun() -> claimed(Repo, Pool, PoolMod, Config) end) of
+                ok -> ok;
+                {error, Reason} -> {error, Reason};
+                {moved_from, Previous, PreviousMod} -> retire(Repo, Previous, PreviousMod)
+            end;
+        {error, Invalid} ->
+            ok = not_started(Repo, PoolMod, #{reason => Invalid, pool => Pool}),
+            {error, Invalid}
+    end.
+
+-spec valid_start(module(), map()) -> ok | {error, term()}.
+valid_start(PoolMod, Config) ->
+    case kura_capabilities:validate(PoolMod) of
+        ok -> kura_settings:validate_repo(Config);
+        {error, _} = Invalid -> Invalid
     end.
 
 -type claim() :: ok | {error, term()} | {moved_from, atom(), module()}.
@@ -817,39 +886,91 @@ get_driver_module(RepoMod) ->
 %% Row loading
 %%----------------------------------------------------------------------
 
+-doc """
+Load `Row`, as a driver returned it, into the fields of `SchemaMod`. A
+value `kura_types:load/2` cannot read is kept as it is. No dialect is
+consulted, so a backend's stored forms are not read; kura itself loads
+through the repo.
+""".
 -spec load_row(kura_dialect:table(), map()) -> map().
 load_row(Table, Row) when is_binary(Table) ->
     Row;
 load_row(SchemaMod, Row) when is_atom(SchemaMod) ->
-    case code:ensure_loaded(SchemaMod) of
-        {module, SchemaMod} ->
-            case erlang:function_exported(SchemaMod, fields, 0) of
-                true ->
-                    {Types, Specs} = kura_schema:field_specs(SchemaMod),
-                    load_fields(Row, Types, Specs);
-                false ->
-                    Row
-            end;
-        _ ->
-            Row
+    case kura_schema:load_plan(SchemaMod) of
+        undefined -> Row;
+        Plan -> load_planned(Plan, undefined, Row)
     end.
 
-load_fields(Row, Types, Specs) ->
-    maps:fold(
-        fun(K, V, Acc) ->
-            case Types of
-                #{K := Type} ->
-                    case load_field(Type, V, Specs, K) of
-                        {ok, Loaded} -> Acc#{K => Loaded};
-                        {error, _} -> Acc#{K => V}
-                    end;
-                #{} ->
-                    Acc#{K => V}
-            end
-        end,
-        #{},
-        Row
-    ).
+-doc false.
+-spec load_row(module(), kura_dialect:table(), map()) -> map().
+load_row(RepoMod, Schema, Row) ->
+    case load_rows(RepoMod, Schema, [Row]) of
+        [Loaded] -> Loaded
+    end.
+
+%% The schema's plan and the dialect's load_stored/2 are looked up once for
+%% the result set.
+-doc false.
+-spec load_rows(module(), kura_dialect:table(), [map()]) -> [map()].
+load_rows(_RepoMod, _Schema, []) ->
+    [];
+load_rows(_RepoMod, Table, Rows) when is_binary(Table) ->
+    Rows;
+load_rows(RepoMod, SchemaMod, Rows) when is_atom(SchemaMod) ->
+    case kura_schema:load_plan(SchemaMod) of
+        undefined ->
+            Rows;
+        Plan ->
+            Stored = stored_loader(RepoMod),
+            [load_planned(Plan, Stored, Row) || Row <- Rows]
+    end.
+
+-spec stored_loader(module()) -> module() | undefined.
+stored_loader(RepoMod) ->
+    Dialect = kura_dialect:of_repo(RepoMod),
+    case kura_dialect:loads_stored(Dialect) of
+        true -> Dialect;
+        false -> undefined
+    end.
+
+load_planned({Types, Specs, Renamed}, Stored, Row) ->
+    load_fields(keyed_by_field(Row, Renamed), Types, Specs, Stored).
+
+keyed_by_field(Row, ByColumn) when map_size(ByColumn) =:= 0 -> Row;
+keyed_by_field(Row, ByColumn) -> #{field_key(Key, ByColumn) => V || Key := V <- Row}.
+
+field_key(Key, ByColumn) when is_atom(Key) -> maps:get(atom_to_binary(Key, utf8), ByColumn, Key);
+field_key(Key, _ByColumn) -> Key.
+
+load_fields(Row, Types, Specs, undefined) ->
+    #{K => loaded(K, V, Types, Specs) || K := V <- Row};
+load_fields(Row, Types, Specs, Dialect) ->
+    #{K => loaded_stored(K, V, Types, Specs, Dialect) || K := V <- Row}.
+
+loaded(K, V, Types, Specs) ->
+    case Types of
+        #{K := Type} ->
+            case load_field(Type, V, Specs, K) of
+                {ok, Loaded} -> Loaded;
+                {error, _} -> V
+            end;
+        #{} ->
+            V
+    end.
+
+loaded_stored(K, V, Types, Specs, Dialect) ->
+    case Types of
+        #{K := Type} ->
+            case load_field(Type, erlang_form(Dialect, Type, V), Specs, K) of
+                {ok, Loaded} -> Loaded;
+                {error, _} -> V
+            end;
+        #{} ->
+            V
+    end.
+
+erlang_form(_Dialect, _Type, null) -> null;
+erlang_form(Dialect, Type, V) -> Dialect:load_stored(Type, V).
 
 load_field(Type, V, Specs, K) ->
     case Specs of
@@ -861,13 +982,13 @@ load_field(Type, V, Specs, K) ->
 %% Telemetry
 %%----------------------------------------------------------------------
 
-emit_telemetry(RepoMod, SQL, Params, Result, DurationNative, DurationUs) ->
+emit_telemetry(RepoMod, SQL, Params, Result, DurationNative, DurationUs, Source) ->
     try
         Measurements = #{
             duration => DurationNative,
             duration_us => DurationUs
         },
-        Metadata = build_telemetry_metadata(RepoMod, SQL, Params, Result),
+        Metadata = build_telemetry_metadata(RepoMod, SQL, Params, Result, Source),
         telemetry:execute([kura, repo, query], Measurements, Metadata),
         emit_legacy_log(RepoMod, SQL, Params, Result, DurationUs)
     catch
@@ -890,15 +1011,23 @@ emit_legacy_log(RepoMod, SQL, Params, Result, DurationUs) ->
     end.
 
 build_telemetry_metadata(RepoMod, SQL, Params, Result) ->
+    build_telemetry_metadata(RepoMod, SQL, Params, Result, from_sql).
+
+-doc false.
+build_telemetry_metadata(RepoMod, SQL, Params, Result, Named) ->
     SQLBin = iolist_to_binary(SQL),
     {ResultStatus, NumRows, ErrorReason} =
         case Result of
-            #{rows := Rows} -> {ok, length(Rows), undefined};
-            #{num_rows := N} -> {ok, N, undefined};
-            {error, Reason} -> {error, 0, Reason};
+            #{num_rows := N} when is_integer(N) -> {ok, N, undefined};
+            #{rows := Rows} when is_list(Rows) -> {ok, length(Rows), undefined};
+            {error, Reason} -> {error, 0, shown_error(Reason)};
             _ -> {ok, 0, undefined}
         end,
-    Source = extract_source(SQLBin),
+    Source =
+        case Named of
+            from_sql -> extract_source(SQLBin);
+            _ -> Named
+        end,
     #{
         query => SQLBin,
         params => Params,
@@ -910,15 +1039,266 @@ build_telemetry_metadata(RepoMod, SQL, Params, Result) ->
         error_reason => ErrorReason
     }.
 
-extract_source(SQL) ->
-    case
-        re:run(SQL, ~"(?:FROM|INTO|UPDATE|TABLE)\\s+\"?(\\w+)\"?", [
-            {capture, [1], binary}, caseless
-        ])
-    of
-        {match, [Table]} -> Table;
-        nomatch -> undefined
+shown_error(Reason) ->
+    case kura_settings:read(telemetry_error_detail) of
+        {ok, true} -> Reason;
+        _ -> kura_redact:error_reason(Reason)
     end.
+
+-define(IS_LETTER(C, Upper), (C =:= Upper orelse C =:= Upper + 32)).
+-define(IS_SPACE(C), (C =:= $\s orelse (C >= $\t andalso C =< $\r))).
+-define(IS_WORD(C),
+    ((C >= $a andalso C =< $z) orelse (C >= $A andalso C =< $Z) orelse
+        (C >= $0 andalso C =< $9) orelse C =:= $_)
+).
+%% What PostgreSQL takes as part of an identifier or keyword.
+-define(IS_IDENTIFIER(C), (?IS_WORD(C) orelse C =:= $$ orelse C >= 128)).
+%% How much of a statement is read for the table it names.
+-define(SOURCE_WINDOW, 8192).
+
+-doc """
+The table a statement names first: the name after its first `FROM`, `INTO`,
+`UPDATE` or `TABLE`, without quotes and without a schema qualifier, past an
+`IF EXISTS` or `IF NOT EXISTS` after `TABLE` and an `ONLY` after `FROM`,
+`UPDATE` or `TABLE`. `undefined` when there is none.
+
+The text of a string literal, a quoted identifier, a comment and a
+dollar-quoted string is not read for a keyword. Only the first 8192 bytes
+of the statement are read. A name that is not made of ASCII letters,
+digits and underscores, or that the 8192 bytes cut short, is `undefined`
+too. Never raises.
+""".
+-spec extract_source(iodata()) -> binary() | undefined.
+extract_source(<<Window:?SOURCE_WINDOW/binary, _, _/binary>>) ->
+    source(Window, cut);
+extract_source(SQL) when is_binary(SQL) ->
+    source(SQL, whole);
+extract_source(SQL) ->
+    try iolist_to_binary(SQL) of
+        Text -> extract_source(Text)
+    catch
+        error:badarg -> undefined
+    end.
+
+%% A `$` goes on an identifier and does not start one.
+source(<<C, _/binary>> = Text, Cut) when ?IS_WORD(C); C >= 128 ->
+    Size = identifier_size(Text, 0),
+    <<Word:Size/binary, Rest/binary>> = Text,
+    case Rest of
+        <<$', Quoted/binary>> when Word =:= ~"E"; Word =:= ~"e" ->
+            source(after_quoted(Quoted, $', escapes), Cut);
+        _ ->
+            case named_after(Word, Rest, Cut) of
+                none -> source(Rest, Cut);
+                Source -> Source
+            end
+    end;
+source(<<$., Rest/binary>>, Cut) ->
+    source(after_identifier(gap(Rest)), Cut);
+source(<<$', Rest/binary>>, Cut) ->
+    source(after_quoted(Rest, $', plain), Cut);
+source(<<$", Rest/binary>>, Cut) ->
+    source(after_quoted(Rest, $", plain), Cut);
+source(<<"--", Rest/binary>>, Cut) ->
+    source(after_line(Rest), Cut);
+source(<<"/*", Rest/binary>>, Cut) ->
+    source(after_block_comment(Rest, 1), Cut);
+source(<<$$, Rest/binary>>, Cut) ->
+    source(after_dollar(Rest), Cut);
+source(<<_, Rest/binary>>, Cut) ->
+    source(Rest, Cut);
+source(<<>>, _Cut) ->
+    undefined.
+
+%% A doubled quote stays inside. In an escape string (E'...') a backslash
+%% escapes the byte after it, a quote included.
+after_quoted(<<Quote, Quote, Rest/binary>>, Quote, Escapes) ->
+    after_quoted(Rest, Quote, Escapes);
+after_quoted(<<Quote, Rest/binary>>, Quote, _Escapes) ->
+    Rest;
+after_quoted(<<$\\, _, Rest/binary>>, Quote, escapes) ->
+    after_quoted(Rest, Quote, escapes);
+after_quoted(<<_, Rest/binary>>, Quote, Escapes) ->
+    after_quoted(Rest, Quote, Escapes);
+after_quoted(<<>>, _Quote, _Escapes) ->
+    <<>>.
+
+after_line(<<$\n, Rest/binary>>) -> Rest;
+after_line(<<_, Rest/binary>>) -> after_line(Rest);
+after_line(<<>>) -> <<>>.
+
+%% PostgreSQL nests block comments.
+after_block_comment(<<"*/", Rest/binary>>, 1) -> Rest;
+after_block_comment(<<"*/", Rest/binary>>, Depth) -> after_block_comment(Rest, Depth - 1);
+after_block_comment(<<"/*", Rest/binary>>, Depth) -> after_block_comment(Rest, Depth + 1);
+after_block_comment(<<_, Rest/binary>>, Depth) -> after_block_comment(Rest, Depth);
+after_block_comment(<<>>, _Depth) -> <<>>.
+
+%% What follows a `$`. `$$` or `$tag$` opens a dollar-quoted string that
+%% the same tag closes. `$1` is a parameter: a tag does not start with a
+%% digit.
+after_dollar(<<C, _/binary>> = Rest) when C >= $0, C =< $9 ->
+    Rest;
+after_dollar(Rest) ->
+    Size = tag_size(Rest, 0),
+    case Rest of
+        <<Tag:Size/binary, $$, Body/binary>> ->
+            case binary:split(Body, <<$$, Tag/binary, $$>>) of
+                [_Body, After] -> After;
+                [_Unterminated] -> <<>>
+            end;
+        _ ->
+            Rest
+    end.
+
+tag_size(<<C, Rest/binary>>, Size) when ?IS_WORD(C); C >= 128 -> tag_size(Rest, Size + 1);
+tag_size(_Rest, Size) -> Size.
+
+identifier_size(<<C, Rest/binary>>, Size) when ?IS_IDENTIFIER(C) ->
+    identifier_size(Rest, Size + 1);
+identifier_size(_Rest, Size) ->
+    Size.
+
+after_identifier(<<C, Rest/binary>>) when ?IS_IDENTIFIER(C) -> after_identifier(Rest);
+after_identifier(Rest) -> Rest.
+
+%% The table named after `Word`, when it is one of the keywords and a name
+%% follows it. `none` when it is another word or no name follows, so that
+%% the statement is read on.
+named_after(<<F, R, O, M>>, Rest, Cut) when
+    ?IS_LETTER(F, $F), ?IS_LETTER(R, $R), ?IS_LETTER(O, $O), ?IS_LETTER(M, $M)
+->
+    table_name(after_only(gap(Rest)), Cut);
+named_after(<<I, N, T, O>>, Rest, Cut) when
+    ?IS_LETTER(I, $I), ?IS_LETTER(N, $N), ?IS_LETTER(T, $T), ?IS_LETTER(O, $O)
+->
+    table_name(gap(Rest), Cut);
+named_after(<<U, P, D, A, T, E>>, Rest, Cut) when
+    ?IS_LETTER(U, $U),
+    ?IS_LETTER(P, $P),
+    ?IS_LETTER(D, $D),
+    ?IS_LETTER(A, $A),
+    ?IS_LETTER(T, $T),
+    ?IS_LETTER(E, $E)
+->
+    table_name(after_only(gap(Rest)), Cut);
+named_after(<<T, A, B, L, E>>, Rest, Cut) when
+    ?IS_LETTER(T, $T),
+    ?IS_LETTER(A, $A),
+    ?IS_LETTER(B, $B),
+    ?IS_LETTER(L, $L),
+    ?IS_LETTER(E, $E)
+->
+    table_name(after_only(after_existence(gap(Rest))), Cut);
+named_after(_Word, _Rest, _Cut) ->
+    none.
+
+%% Spaces and comments, which may stand between any two words.
+gap(<<Space, Rest/binary>>) when ?IS_SPACE(Space) -> gap(Rest);
+gap(<<"--", Rest/binary>>) -> gap(after_line(Rest));
+gap(<<"/*", Rest/binary>>) -> gap(after_block_comment(Rest, 1));
+gap(Rest) -> Rest.
+
+%% `IF EXISTS` and `IF NOT EXISTS` stand between `TABLE` and the name. `IF`
+%% alone is a name: PostgreSQL does not reserve it.
+after_existence(Named) ->
+    case keyword(Named) of
+        {<<I, F>>, Rest} when ?IS_LETTER(I, $I), ?IS_LETTER(F, $F) ->
+            case after_exists(after_not(gap(Rest))) of
+                none -> Named;
+                Name -> Name
+            end;
+        _ ->
+            Named
+    end.
+
+after_not(Text) ->
+    case keyword(Text) of
+        {<<N, O, T>>, Rest} when ?IS_LETTER(N, $N), ?IS_LETTER(O, $O), ?IS_LETTER(T, $T) ->
+            gap(Rest);
+        _ ->
+            Text
+    end.
+
+after_exists(Text) ->
+    case keyword(Text) of
+        {<<E, X, I, S, T, S2>>, Rest} when
+            ?IS_LETTER(E, $E),
+            ?IS_LETTER(X, $X),
+            ?IS_LETTER(I, $I),
+            ?IS_LETTER(S, $S),
+            ?IS_LETTER(T, $T),
+            ?IS_LETTER(S2, $S)
+        ->
+            gap(Rest);
+        _ ->
+            none
+    end.
+
+%% `ONLY` stands between the keyword and the name. PostgreSQL reserves it,
+%% so it is never the name.
+after_only(Named) ->
+    case keyword(Named) of
+        {<<O, N, L, Y>>, Rest} when
+            ?IS_LETTER(O, $O), ?IS_LETTER(N, $N), ?IS_LETTER(L, $L), ?IS_LETTER(Y, $Y)
+        ->
+            gap(Rest);
+        _ ->
+            Named
+    end.
+
+keyword(Text) ->
+    Size = identifier_size(Text, 0),
+    <<Word:Size/binary, Rest/binary>> = Text,
+    {Word, Rest}.
+
+%% The last part of a possibly qualified name: `undefined` when it cannot
+%% be read or the window may have cut it short, rather than a part of it.
+%% `none` when no name starts here.
+table_name(Named, Cut) ->
+    case name(Named) of
+        none -> none;
+        {Name, Rest} -> qualified(Name, Rest, Cut)
+    end.
+
+qualified(Name, Rest, Cut) ->
+    case gap(Rest) of
+        <<$., After/binary>> ->
+            case name(gap(After)) of
+                none -> whole_name(Name, After, Cut);
+                {Table, AfterTable} -> qualified(Table, AfterTable, Cut)
+            end;
+        After ->
+            whole_name(Name, After, Cut)
+    end.
+
+whole_name(_Name, <<>>, cut) -> undefined;
+whole_name(Name, _Rest, _Cut) -> Name.
+
+%% One part of a name, bare or in double quotes, and what follows it. The
+%% part is `undefined` when it is not made of word characters only, as when
+%% a doubled quote goes on with it. `none` when no name starts here.
+name(<<$", Rest/binary>>) ->
+    Size = word_size(Rest, 0),
+    case Rest of
+        <<_:Size/binary, $", $", Inside/binary>> -> {undefined, after_quoted(Inside, $", plain)};
+        <<Name:Size/binary, $", After/binary>> when Size > 0 -> {Name, After};
+        <<$", _/binary>> -> none;
+        <<>> -> none;
+        _ -> {undefined, after_quoted(Rest, $", plain)}
+    end;
+name(Text) ->
+    Size = word_size(Text, 0),
+    case Text of
+        <<_:Size/binary, C, _/binary>> when ?IS_IDENTIFIER(C) ->
+            {undefined, after_identifier(Text)};
+        <<Name:Size/binary, After/binary>> when Size > 0 -> {Name, After};
+        _ ->
+            none
+    end.
+
+word_size(<<C, Rest/binary>>, Size) when ?IS_WORD(C) -> word_size(Rest, Size + 1);
+word_size(_Rest, Size) -> Size.
 
 build_log_event(Repo, SQL, Params, Result, DurationUs) ->
     ResultStatus = extract_result_status(Result),

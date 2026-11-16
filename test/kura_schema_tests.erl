@@ -252,7 +252,10 @@ forget_leaves_other_modules_cached_test() ->
 
 forget_flushes_compiled_queries_test() ->
     kura_query_cache:init(),
-    kura_query_cache:put({kura_schema_forget_repo, q}, {~"SELECT 1", []}),
+    kura_query_cache:put(
+        {kura_schema_forget_repo, q},
+        {~"SELECT 1", [], #{shown => plain, source => undefined, tenant_scoped => []}}
+    ),
     ok = kura_schema:forget(kura_schema_forget_unrelated),
     ?assertEqual(miss, kura_query_cache:get({kura_schema_forget_repo, q})).
 

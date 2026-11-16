@@ -1,7 +1,6 @@
 -module(kura_resilience_tests).
 
 -include_lib("eunit/include/eunit.hrl").
--include("kura.hrl").
 
 %%----------------------------------------------------------------------
 %% Test fixtures - non-docker tests run first, docker tests last

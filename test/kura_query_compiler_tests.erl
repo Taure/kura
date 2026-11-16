@@ -22,6 +22,7 @@
 ]).
 
 -define(REPO, my_test_repo).
+-define(FACTS, #{shown => plain, source => undefined, tenant_scoped => []}).
 
 set_repo_dialect(Dialect) ->
     application:set_env(kura, repos, #{?REPO => #{dialect => Dialect}}).
@@ -77,8 +78,132 @@ to_sql_cached_miss_compiles_and_stores_test() ->
         Result = kura_query_compiler:to_sql_cached(?REPO, Q),
         ?assertEqual(kura_query_compiler:to_sql(?REPO, Q), Result),
         Key = {?REPO, kura_tenant:get_tenant(), Q},
-        ?assertEqual({ok, Result}, kura_query_cache:get(Key))
+        {SQL, Template} = Result,
+        ?assertEqual(
+            {ok, {SQL, Template, kura_query_compiler:facts(Q)}}, kura_query_cache:get(Key)
+        )
     after
+        unset_repo()
+    end.
+
+%% An entry from a release that stored no facts, still in the table after a
+%% hot upgrade, is not served, and the shape's next compile takes its place.
+to_sql_cached_entry_without_facts_is_a_miss_test() ->
+    set_repo_dialect(kura_dialect_pg),
+    kura_query_cache:init(),
+    try
+        Q = #kura_query{from = cache_old_entry_schema},
+        Key = {?REPO, kura_tenant:get_tenant(), Q},
+        true = ets:insert(kura_query_cache, {Key, {~"PRE_BAKED_SQL", [pre_baked_param]}}),
+        ?assertEqual(miss, kura_query_cache:get(Key)),
+        {SQL, Template} = kura_query_compiler:to_sql(?REPO, Q),
+        ?assertEqual({SQL, Template}, kura_query_compiler:to_sql_cached(?REPO, Q)),
+        ?assertEqual(
+            {ok, {SQL, Template, kura_query_compiler:facts(Q)}}, kura_query_cache:get(Key)
+        )
+    after
+        unset_repo()
+    end.
+
+%% A row another release of kura wrote holds no version, or another one.
+to_sql_cached_replaces_a_row_of_another_version_test_() ->
+    Entry = {~"PRE_BAKED_SQL", [], ?FACTS},
+    [
+        {Title, fun() ->
+            replaced(fun(Key) -> true = ets:insert(kura_query_cache, Row(Key)) end)
+        end}
+     || {Title, Row} <- [
+            {"no version", fun(Key) -> {Key, Entry} end},
+            {"no version, an uncacheable shape", fun(Key) -> {Key, uncacheable} end},
+            {"an older version", fun(Key) -> {Key, {0, Entry}} end},
+            {"a version that is not a number", fun(Key) -> {Key, {old, Entry}} end},
+            {"an older version of an uncacheable shape", fun(Key) -> {Key, {0, uncacheable}} end},
+            {"a version beside the entry", fun(Key) -> {Key, 1, Entry} end},
+            {"a key alone", fun(Key) -> {Key} end}
+        ]
+    ].
+
+%% An entry is served only when every part of it is what the compiler stores.
+to_sql_cached_replaces_an_entry_it_cannot_read_test_() ->
+    [
+        {Title, fun() ->
+            replaced(fun(Key) ->
+                ok = kura_query_cache:put(Key, kura_test_typing:ill_typed(Entry))
+            end)
+        end}
+     || {Title, Entry} <- [
+            {"facts that are not a map", {~"PRE_BAKED_SQL", [], [plain]}},
+            {"no shown", {~"PRE_BAKED_SQL", [], maps:remove(shown, ?FACTS)}},
+            {"no source", {~"PRE_BAKED_SQL", [], maps:remove(source, ?FACTS)}},
+            {"no tenant_scoped", {~"PRE_BAKED_SQL", [], maps:remove(tenant_scoped, ?FACTS)}},
+            {"an unknown shown", {~"PRE_BAKED_SQL", [], maps:put(shown, loud, ?FACTS)}},
+            {"a source that is not a name", {~"PRE_BAKED_SQL", [], maps:put(source, users, ?FACTS)}},
+            {"tenant_scoped that is not a list", {
+                ~"PRE_BAKED_SQL", [], maps:put(tenant_scoped, users, ?FACTS)
+            }},
+            {"tenant_scoped holding no source", {
+                ~"PRE_BAKED_SQL", [], maps:put(tenant_scoped, [users, 7], ?FACTS)
+            }},
+            {"tenant_scoped that does not end", {
+                ~"PRE_BAKED_SQL",
+                [],
+                maps:put(tenant_scoped, [users | kura_test_typing:ill_typed(orders)], ?FACTS)
+            }},
+            {"SQL that is not a binary", {"PRE_BAKED_SQL", [], ?FACTS}},
+            {"a template that is not a list", {~"PRE_BAKED_SQL", {}, ?FACTS}},
+            {"no facts", {~"PRE_BAKED_SQL", []}},
+            {"an atom", cached}
+        ]
+    ].
+
+every_shown_and_source_is_read_back_test_() ->
+    [
+        fun() ->
+            kura_query_cache:init(),
+            Key = {?REPO, undefined, {read_back, Facts}},
+            try
+                ok = kura_query_cache:put(Key, {~"SELECT 1", [1], Facts}),
+                ?assertEqual({ok, {~"SELECT 1", [1], Facts}}, kura_query_cache:get(Key))
+            after
+                kura_query_cache:flush()
+            end
+        end
+     || Facts <- [
+            #{shown => plain, source => undefined, tenant_scoped => []},
+            #{shown => redacted, source => ~"users", tenant_scoped => [users]},
+            #{shown => hidden, source => ~"users", tenant_scoped => [users, ~"orders"]}
+        ]
+    ].
+
+an_uncacheable_shape_is_read_back_test() ->
+    kura_query_cache:init(),
+    Key = {?REPO, undefined, uncacheable_shape},
+    try
+        ok = kura_query_cache:put(Key, uncacheable),
+        ?assertEqual({ok, uncacheable}, kura_query_cache:get(Key)),
+        ?assertEqual(1, kura_query_cache:entry_count())
+    after
+        kura_query_cache:flush()
+    end.
+
+replaced(Store) ->
+    set_repo_dialect(kura_dialect_pg),
+    kura_query_cache:init(),
+    kura_query_cache:flush(),
+    try
+        Q = #kura_query{from = cache_unreadable_schema},
+        Key = {?REPO, kura_tenant:get_tenant(), Q},
+        _ = Store(Key),
+        ?assertEqual(miss, kura_query_cache:get(Key)),
+        ?assertEqual(0, kura_query_cache:entry_count()),
+        _ = Store(Key),
+        {SQL, Params} = kura_query_compiler:to_sql(?REPO, Q),
+        Facts = kura_query_compiler:facts(Q),
+        ?assertEqual({SQL, Params, Facts}, kura_query_compiler:statement(?REPO, Q)),
+        ?assertEqual({ok, {SQL, Params, Facts}}, kura_query_cache:get(Key)),
+        ?assertEqual(1, kura_query_cache:entry_count())
+    after
+        kura_query_cache:flush(),
         unset_repo()
     end.
 
@@ -88,9 +213,11 @@ to_sql_cached_hit_returns_stored_result_test() ->
     try
         Q = #kura_query{from = cache_hit_schema},
         Stored = {~"PRE_BAKED_SQL", [pre_baked_param]},
+        {SQL, Template} = Stored,
         Key = {?REPO, kura_tenant:get_tenant(), Q},
-        kura_query_cache:put(Key, Stored),
-        ?assertEqual(Stored, kura_query_compiler:to_sql_cached(?REPO, Q))
+        kura_query_cache:put(Key, {SQL, Template, ?FACTS}),
+        ?assertEqual(Stored, kura_query_compiler:to_sql_cached(?REPO, Q)),
+        ?assertEqual({SQL, Template, ?FACTS}, kura_query_compiler:statement(?REPO, Q))
     after
         unset_repo()
     end.
@@ -178,13 +305,13 @@ scan_candidates([], _Accept, Seen) ->
     {ok, Seen};
 scan_candidates([Q | Rest], Accept, Seen) ->
     Hash = shape_hash(Q),
-    case maps:find(Hash, Seen) of
-        {ok, Other} ->
+    case Seen of
+        #{Hash := Other} ->
             case Accept(Other, Q) of
                 true -> {collision, {Other, Q}};
                 false -> scan_candidates(Rest, Accept, Seen)
             end;
-        error ->
+        #{} ->
             scan_candidates(Rest, Accept, Seen#{Hash => Q})
     end.
 
@@ -265,7 +392,7 @@ oversized_entries_are_never_interned_test() ->
 facade_delegates_all_callbacks_to_dialect_test_() ->
     set_repo_dialect(?MODULE),
     Q = #kura_query{from = my_schema},
-    Cleanup = fun() -> unset_repo() end,
+    Cleanup = fun unset_repo/0,
     {setup, fun() -> ok end, fun(_) -> Cleanup() end, [
         ?_assertEqual(
             {~"FAKE_SQL", [fake_param], 2},
@@ -391,7 +518,7 @@ entry_holding_a_large_binary_is_never_interned_test() ->
     kura_query_cache:flush(),
     try
         Key = {?REPO, undefined, binary:copy(~"x", 64 * 1024)},
-        ok = kura_query_cache:put(Key, {~"SELECT 1", []}),
+        ok = kura_query_cache:put(Key, {~"SELECT 1", [], ?FACTS}),
         ?assertEqual(miss, kura_query_cache:get(Key))
     after
         kura_query_cache:flush()
@@ -403,7 +530,7 @@ memory_cap_counts_off_heap_binaries_test() ->
     application:set_env(kura, query_cache_max_memory, 5000),
     try
         Keys = [{?REPO, undefined, binary:copy(<<N>>, 16 * 1024)} || N <- lists:seq(1, 10)],
-        _ = [ok = kura_query_cache:put(K, {~"SELECT 1", []}) || K <- Keys],
+        _ = [ok = kura_query_cache:put(K, {~"SELECT 1", [], ?FACTS}) || K <- Keys],
         ?assert(kura_query_cache:entry_count() < 10)
     after
         application:unset_env(kura, query_cache_max_memory),
@@ -416,11 +543,11 @@ flush_resets_the_off_heap_count_test() ->
     application:set_env(kura, query_cache_max_memory, 6000),
     try
         Key = fun(N) -> {?REPO, undefined, binary:copy(<<N>>, 16 * 1024)} end,
-        ok = kura_query_cache:put(Key(1), {~"SELECT 1", []}),
-        ok = kura_query_cache:put(Key(2), {~"SELECT 1", []}),
+        ok = kura_query_cache:put(Key(1), {~"SELECT 1", [], ?FACTS}),
+        ok = kura_query_cache:put(Key(2), {~"SELECT 1", [], ?FACTS}),
         kura_query_cache:flush(),
-        ok = kura_query_cache:put(Key(3), {~"SELECT 1", []}),
-        ok = kura_query_cache:put(Key(4), {~"SELECT 1", []}),
+        ok = kura_query_cache:put(Key(3), {~"SELECT 1", [], ?FACTS}),
+        ok = kura_query_cache:put(Key(4), {~"SELECT 1", [], ?FACTS}),
         ?assertEqual(2, kura_query_cache:entry_count())
     after
         application:unset_env(kura, query_cache_max_memory),
@@ -435,8 +562,8 @@ repeated_put_of_one_key_counts_it_once_test() ->
     application:set_env(kura, query_cache_max_memory, 6000),
     try
         Key = fun(N) -> {?REPO, undefined, binary:copy(<<N>>, 16 * 1024)} end,
-        _ = [ok = kura_query_cache:put(Key(1), {~"SELECT 1", []}) || _ <- [1, 2, 3]],
-        ok = kura_query_cache:put(Key(2), {~"SELECT 1", []}),
+        _ = [ok = kura_query_cache:put(Key(1), {~"SELECT 1", [], ?FACTS}) || _ <- [1, 2, 3]],
+        ok = kura_query_cache:put(Key(2), {~"SELECT 1", [], ?FACTS}),
         ?assertEqual(2, kura_query_cache:entry_count())
     after
         application:unset_env(kura, query_cache_max_memory),
@@ -449,10 +576,10 @@ count_lives_in_the_cache_table_test() ->
     kura_query_cache:flush(),
     try
         Key = {?REPO, undefined, binary:copy(~"k", 1024)},
-        ok = kura_query_cache:put(Key, {~"SELECT 1", []}),
+        ok = kura_query_cache:put(Key, {~"SELECT 1", [], ?FACTS}),
         ?assertEqual(2, ets:info(kura_query_cache, size)),
         ?assertEqual(1, kura_query_cache:entry_count()),
-        ?assertEqual({ok, {~"SELECT 1", []}}, kura_query_cache:get(Key)),
+        ?assertEqual({ok, {~"SELECT 1", [], ?FACTS}}, kura_query_cache:get(Key)),
         ok = kura_query_cache:flush(),
         ?assertEqual(0, ets:info(kura_query_cache, size))
     after
@@ -465,11 +592,11 @@ table_without_a_count_row_still_caches_test() ->
     kura_query_cache:init(),
     kura_query_cache:flush(),
     try
-        ets:insert(kura_query_cache, {{?REPO, undefined, old_entry}, {~"SELECT 1", []}}),
+        ets:insert(kura_query_cache, {{?REPO, undefined, old_entry}, {~"SELECT 1", [], ?FACTS}}),
         Key = {?REPO, undefined, binary:copy(~"k", 1024)},
-        ok = kura_query_cache:put(Key, {~"SELECT 2", []}),
+        ok = kura_query_cache:put(Key, {~"SELECT 2", [], ?FACTS}),
         ?assertEqual(2, kura_query_cache:entry_count()),
-        ?assertEqual({ok, {~"SELECT 2", []}}, kura_query_cache:get(Key))
+        ?assertEqual({ok, {~"SELECT 2", [], ?FACTS}}, kura_query_cache:get(Key))
     after
         kura_query_cache:flush()
     end.
@@ -627,10 +754,10 @@ binary_count_is_exact_for_key_result_and_maps_test() ->
         JustOver = binary:copy(~"o", 65),
         Sql = binary:copy(~"q", 200),
         Key = {?REPO, Big, #{m => Big}, [AtLimit, 7, JustOver]},
-        ok = kura_query_cache:put(Key, {Sql, []}),
+        ok = kura_query_cache:put(Key, {Sql, [], ?FACTS}),
         Expected = 2 * (1024 div W + 1) + (65 div W + 1) + (200 div W + 1),
         ?assertEqual(Expected, binary_count()),
-        ok = kura_query_cache:put({?REPO, undefined, small}, {~"SELECT 1", [a, 1]}),
+        ok = kura_query_cache:put({?REPO, undefined, small}, {~"SELECT 1", [a, 1], ?FACTS}),
         ?assertEqual(Expected, binary_count())
     after
         kura_query_cache:flush()
@@ -646,7 +773,7 @@ large_result_is_never_interned_test() ->
     kura_query_cache:flush(),
     try
         Key = {?REPO, undefined, small_key},
-        ok = kura_query_cache:put(Key, {~"SELECT 1", lists:seq(1, 5000)}),
+        ok = kura_query_cache:put(Key, {~"SELECT 1", lists:seq(1, 5000), ?FACTS}),
         ?assertEqual(miss, kura_query_cache:get(Key))
     after
         kura_query_cache:flush()
@@ -694,6 +821,48 @@ sqlite_dialect_leaves_where_values_unconverted_test() ->
         kura_query_cache:flush(),
         unset_repo()
     end.
+
+%% The stand-in must do what the dialect it stands for does: a `$` that is
+%% not a placeholder is text.
+sqlite_stand_in_rewrites_only_placeholders_test_() ->
+    Q0 = kura_query:where(kura_query:from(user), {name, ~"a"}),
+    Fragment = fun(SQL) ->
+        {Text, _} = kura_test_sqlite_dialect:to_sql(kura_query:where(Q0, {fragment, SQL, []})),
+        Text
+    end,
+    Where = ~"SELECT * FROM \"user\" WHERE \"name\" = ?1 AND ",
+    [
+        ?_assertEqual(
+            <<Where/binary, "(price = '$5'\n)">>, Fragment(~"price = '$5'")
+        ),
+        ?_assertEqual(
+            <<Where/binary, "(\"cost$1\" > 0\n)">>, Fragment(~"\"cost$1\" > 0")
+        ),
+        ?_assertEqual(
+            <<Where/binary, "(total$1 > 0\n)">>, Fragment(~"total$1 > 0")
+        ),
+        ?_assertEqual(
+            <<Where/binary, "(note = 'it''s $2' -- $3\n AND a /* $4 */ = 1\n)">>,
+            Fragment(~"note = 'it''s $2' -- $3\n AND a /* $4 */ = 1")
+        ),
+        ?_assertEqual(
+            <<Where/binary, "(tag = $ || 'x'\n)">>, Fragment(~"tag = $ || 'x'")
+        ),
+        ?_assertEqual(
+            {~"SELECT * FROM \"user\" WHERE \"a\" = ?1 AND \"b\" IN (?2, ?3) LIMIT ?4", [
+                1, 2, 3, 10
+            ]},
+            kura_test_sqlite_dialect:to_sql(
+                kura_query:limit(
+                    kura_query:where(
+                        kura_query:where(kura_query:from(user), {a, 1}), {b, in, [2, 3]}
+                    ),
+                    10
+                )
+            )
+        ),
+        ?_assertEqual(~"?12", iolist_to_binary(kura_test_sqlite_dialect:placeholder(12)))
+    ].
 
 cached_compile_refuses_an_encrypted_field_after_converting_test() ->
     set_repo_dialect(kura_dialect_pg),

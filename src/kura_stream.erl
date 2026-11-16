@@ -1,6 +1,8 @@
 -module(kura_stream).
 -moduledoc """
 Server-side cursor streaming for processing large result sets in batches.
+It needs a backend with cursors (`DECLARE`, `FETCH`), which PostgreSQL has
+and SQLite does not.
 
 ```erlang
 Q = kura_query:where(kura_query:from(my_user), {active, true}),
@@ -30,9 +32,14 @@ Stream query results with options. Opts: `#{batch_size => pos_integer()}`.
 The query is scoped as `kura_repo_worker:all/2` scopes it: soft-deleted rows
 are left out unless the query asks for them with `kura_query:with_deleted/1`,
 and a prefix tenant applies.
+
+Raises `{kura, {unsupported_capability, cursors, PoolModule}}` on a backend
+that declares a capability model and no `cursors` (see
+`m:kura_capabilities`), before any statement runs.
 """.
 -spec stream(module(), #kura_query{}, fun(([map()]) -> ok), map()) -> ok | {error, term()}.
 stream(RepoMod, Query, Fun, Opts) ->
+    ok = check_cursors(RepoMod),
     BatchSize = maps:get(batch_size, Opts, 500),
     {SQL, Params} = kura_query_compiler:to_sql(RepoMod, kura_repo_worker:scope_read(Query)),
     Schema = Query#kura_query.from,
@@ -51,7 +58,13 @@ stream(RepoMod, Query, Fun, Opts) ->
     ]),
     CloseSQL = iolist_to_binary([~"CLOSE ", CursorName]),
     Result = kura_db:transaction(RepoMod, fun() ->
-        _ = kura_db:query(RepoMod, DeclareSQL, Params),
+        _ = kura_db:query(
+            RepoMod,
+            DeclareSQL,
+            Params,
+            kura_redact:query_params(Query, Params),
+            kura_db:source_name(Schema)
+        ),
         try
             fetch_loop(RepoMod, FetchSQL, Schema, Fun)
         after
@@ -59,6 +72,15 @@ stream(RepoMod, Query, Fun, Opts) ->
         end
     end),
     narrow_transaction_result(Result).
+
+-spec check_cursors(module()) -> ok.
+check_cursors(RepoMod) ->
+    case kura_repo:settings(RepoMod) of
+        #{pool_module := PoolMod} when is_atom(PoolMod) ->
+            kura_capabilities:check(PoolMod, cursors);
+        _ ->
+            ok
+    end.
 
 -spec narrow_transaction_result(term()) -> ok | {error, term()}.
 narrow_transaction_result(ok) -> ok;
@@ -69,7 +91,7 @@ fetch_loop(RepoMod, FetchSQL, Schema, Fun) ->
         #{rows := []} ->
             ok;
         #{rows := Rows} ->
-            Loaded = [kura_db:load_row(Schema, Row) || Row <- Rows],
+            Loaded = kura_db:load_rows(RepoMod, Schema, Rows),
             Fun(Loaded),
             fetch_loop(RepoMod, FetchSQL, Schema, Fun);
         {error, _} = Err ->

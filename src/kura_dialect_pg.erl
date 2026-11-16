@@ -12,7 +12,24 @@ configured for the running app.
 
 -include("kura.hrl").
 
--type column_context() :: undefined | {binary(), #{atom() => kura_types:kura_type()}}.
+-type renames() :: #{atom() => binary() | {ambiguous, [binary()]}}.
+-type qualified_columns() :: undefined | {binary(), #{atom() => kura_types:kura_type()}}.
+-type column_context() :: qualified_columns() | {renamed, renames(), qualified_columns()}.
+
+%% `x IN ()` is not SQL. An empty list matches no row, NULL included, and
+%% its negation every row, so each compiles to a constant predicate.
+%% A text match escapes its value in SQL, so the value is bound untouched and
+%% the statement is the same for every value. The escape character is `!`
+%% rather than a backslash, whose reading inside a string literal depends on
+%% the server's standard_conforming_strings.
+-define(ESCAPED_TEXT_OPEN, ~"replace(replace(replace($").
+-define(ESCAPED_TEXT_CLOSE, ~", '!', '!!'), '%', '!%'), '_', '!_')").
+-define(LIKE_ESCAPE, ~") ESCAPE '!'").
+
+-define(MAX_BIND_PARAMETERS, 65535).
+
+-define(NO_ROWS, ~"1 = 0").
+-define(EVERY_ROW, ~"1 = 1").
 
 -export([
     to_sql/1,
@@ -27,7 +44,8 @@ configured for the running app.
     insert_all/3,
     insert_all/4,
     column_type/1,
-    format_default/1
+    format_default/1,
+    placeholder/1
 ]).
 
 -doc "Compile a query record into `{SQL, Params}`.".
@@ -43,24 +61,31 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
     {CteSQL, CteParams, Counter00} = compile_ctes(Q#kura_query.ctes, StartCounter),
 
     Table = resolve_table(From),
-    Ctx = column_context(Q),
-    {SelectSQL, Params0, Counter0} = compile_select(Q, Ctx, Counter00),
+    Joined = joined_renames(Q),
+    Ctx = column_context(Q, Joined),
+    {SelectSQL, Params0, Counter0} = compile_select(Q, {Table, Joined}, Ctx, Counter00),
     {WhereSQL, Params1, Counter1} = compile_wheres(Q#kura_query.wheres, Ctx, Counter0),
     Prefix = resolve_prefix(Q#kura_query.prefix),
-    {JoinSQL, Params2, Counter2} = compile_joins(Q#kura_query.joins, Table, Prefix, Counter1),
+    {JoinSQL, Params2, Counter2} = compile_joins(
+        Q#kura_query.joins, Table, renames(From), Prefix, Counter1
+    ),
     {GroupSQL, _, Counter3} = compile_group_by(Q#kura_query.group_bys, Ctx, Counter2),
     {HavingSQL, Params3, Counter4} = compile_havings(Q#kura_query.havings, Ctx, Counter3),
-    {OrderSQL, OrderParams, Counter5} = compile_order_by(
-        Q#kura_query.order_bys, order_context(Q, Ctx), Counter4
+    Combinations = Q#kura_query.combinations,
+    {CombinationSQL, CombinationParams, Counter5} = compile_combinations(Combinations, Counter4),
+    {OrderSQL, OrderParams, Counter6} = compile_order_by(
+        Q#kura_query.order_bys, combined_context(Combinations, order_context(Q, Ctx)), Counter5
     ),
-    {LimitSQL, Params4, Counter6} = compile_limit(Q#kura_query.limit, Counter5),
-    {OffsetSQL, Params5, Counter7} = compile_offset(Q#kura_query.offset, Counter6),
+    {LimitSQL, Params4, Counter7} = compile_limit(Q#kura_query.limit, Counter6),
+    {OffsetSQL, Params5, Counter8} = compile_offset(Q#kura_query.offset, Counter7),
     LockSQL = compile_lock(Q#kura_query.lock),
     DistinctSQL = compile_distinct(Q#kura_query.distinct, Ctx),
 
     FromClause = [~"FROM ", qualified_table(Table, Prefix)],
 
-    MainSQL = iolist_to_binary([
+    %% An ORDER BY, a LIMIT or an OFFSET of a combined query belongs to the
+    %% combination, so it follows the last branch.
+    SQL = iolist_to_binary([
         CteSQL,
         ~"SELECT ",
         DistinctSQL,
@@ -71,19 +96,20 @@ to_sql_from(#kura_query{from = From} = Q, StartCounter) when From =/= undefined 
         WhereSQL,
         GroupSQL,
         HavingSQL,
+        CombinationSQL,
         OrderSQL,
         LimitSQL,
         OffsetSQL,
         LockSQL
     ]),
-    MainParams =
-        CteParams ++ Params0 ++ Params2 ++ Params1 ++ Params3 ++ OrderParams ++ Params4 ++ Params5,
+    Params =
+        CteParams ++ Params0 ++ Params2 ++ Params1 ++ Params3 ++ CombinationParams ++
+            OrderParams ++ Params4 ++ Params5,
+    {SQL, Params, Counter8}.
 
-    %% Combinations (UNION, INTERSECT, EXCEPT)
-    {FinalSQL, FinalParams, FinalCounter} = compile_combinations(
-        Q#kura_query.combinations, MainSQL, MainParams, Counter7
-    ),
-    {FinalSQL, FinalParams, FinalCounter}.
+-spec placeholder(pos_integer()) -> iodata().
+placeholder(N) ->
+    [~"$", integer_to_binary(N)].
 
 %%----------------------------------------------------------------------
 %% Where values
@@ -301,7 +327,9 @@ cast_or_keep(Type, Value) ->
 -spec insert(kura_dialect:table(), [atom()], map()) -> {iodata(), [term()]}.
 insert(SchemaOrTable, Fields, Data) ->
     Table = resolve_table(SchemaOrTable),
-    {Cols, Placeholders, Params, _} = build_insert_parts(Fields, Data, 1),
+    {Cols, Placeholders, Params, _} = build_insert_parts(
+        Fields, Data, renames(SchemaOrTable), 1
+    ),
     SQL = iolist_to_binary([
         ~"INSERT INTO ",
         qualified_table(Table, resolve_prefix(undefined)),
@@ -316,10 +344,13 @@ insert(SchemaOrTable, Fields, Data) ->
 -spec insert(kura_dialect:table(), [atom()], map(), map()) -> {iodata(), [term()]}.
 insert(SchemaOrTable, Fields, Data, #{on_conflict := OnConflict0}) ->
     Table = resolve_table(SchemaOrTable),
+    Renames = renames(SchemaOrTable),
     {OnConflict, Guard} = conflict_guard(OnConflict0),
-    {Cols, Placeholders, Params, Counter} = build_insert_parts(Fields, Data, 1),
-    {ConflictSQL0, ConflictParams} = compile_on_conflict(OnConflict, Fields, Data, Counter),
-    ConflictSQL = [ConflictSQL0, guard_sql(Table, OnConflict, Guard)],
+    {Cols, Placeholders, Params, Counter} = build_insert_parts(Fields, Data, Renames, 1),
+    {ConflictSQL0, ConflictParams} = compile_on_conflict(
+        OnConflict, Fields, Data, Renames, Counter
+    ),
+    ConflictSQL = [ConflictSQL0, guard_sql(Table, OnConflict, Guard, Renames)],
     SQL = iolist_to_binary([
         ~"INSERT INTO ",
         qualified_table(Table, resolve_prefix(undefined)),
@@ -342,8 +373,9 @@ insert(SchemaOrTable, Fields, Data, _Opts) ->
 -spec update(kura_dialect:table(), [atom()], map(), [{atom(), term()}]) -> {iodata(), [term()]}.
 update(SchemaOrTable, Fields, Changes, KeyClauses) ->
     Table = resolve_table(SchemaOrTable),
-    {Sets, Params, Counter} = build_set_parts(Fields, Changes, 1),
-    {KeyConds, KeyParams, _} = key_where(KeyClauses, Counter),
+    Renames = renames(SchemaOrTable),
+    {Sets, Params, Counter} = build_set_parts(Fields, Changes, Renames, 1),
+    {KeyConds, KeyParams, _} = key_where(KeyClauses, Renames, Counter),
     SQL = iolist_to_binary([
         ~"UPDATE ",
         qualified_table(Table, resolve_prefix(undefined)),
@@ -356,14 +388,14 @@ update(SchemaOrTable, Fields, Changes, KeyClauses) ->
     {SQL, Params ++ KeyParams}.
 
 %% One `col = $n` condition per key column, params in key order.
-key_where(KeyClauses, Start) ->
-    key_where(KeyClauses, Start, [], []).
+key_where(KeyClauses, Renames, Start) ->
+    key_where(KeyClauses, Renames, Start, [], []).
 
-key_where([], Counter, Conds, Params) ->
+key_where([], _Renames, Counter, Conds, Params) ->
     {lists:reverse(Conds), lists:reverse(Params), Counter};
-key_where([{Field, Value} | Rest], Counter, Conds, Params) ->
-    Cond = [quote_ident(atom_to_binary(Field, utf8)), ~" = $", integer_to_binary(Counter)],
-    key_where(Rest, Counter + 1, [Cond | Conds], [Value | Params]).
+key_where([{Field, Value} | Rest], Renames, Counter, Conds, Params) ->
+    Cond = [column_ident(Field, Renames), ~" = $", integer_to_binary(Counter)],
+    key_where(Rest, Renames, Counter + 1, [Cond | Conds], [Value | Params]).
 
 %% Render one `($n, ...)` group per value-tuple for a row-value IN, params
 %% flattened in row-then-column order.
@@ -377,6 +409,17 @@ compile_row_tuples([Tuple | Rest], Arity, Counter, SQLs, Params) when tuple_size
     );
 compile_row_tuples([Tuple | _], Arity, _Counter, _SQLs, _Params) ->
     error({row_arity_mismatch, Arity, Tuple}).
+
+text_match_keyword(Op) when Op =:= contains; Op =:= starts_with; Op =:= ends_with ->
+    ~" LIKE (";
+text_match_keyword(Op) when Op =:= icontains; Op =:= istarts_with; Op =:= iends_with ->
+    ~" ILIKE (".
+
+text_match_prefix(Op) when Op =:= starts_with; Op =:= istarts_with -> <<>>;
+text_match_prefix(_Op) -> ~"'%' || ".
+
+text_match_suffix(Op) when Op =:= ends_with; Op =:= iends_with -> <<>>;
+text_match_suffix(_Op) -> ~" || '%'".
 
 unary_sql(is_nil) -> ~" IS NULL";
 unary_sql(is_not_nil) -> ~" IS NOT NULL".
@@ -399,7 +442,7 @@ row_placeholders(N, Counter, Acc) ->
 -spec delete(kura_dialect:table(), [{atom(), term()}]) -> {iodata(), [term()]}.
 delete(SchemaOrTable, KeyClauses) ->
     Table = resolve_table(SchemaOrTable),
-    {KeyConds, Params, _} = key_where(KeyClauses, 1),
+    {KeyConds, Params, _} = key_where(KeyClauses, renames(SchemaOrTable), 1),
     SQL = iolist_to_binary([
         ~"DELETE FROM ",
         qualified_table(Table, resolve_prefix(undefined)),
@@ -418,8 +461,11 @@ update_all(#kura_query{from = From, wheres = Wheres, prefix = QPrefix}, SetMap) 
     Table = resolve_table(From),
     Prefix = resolve_prefix(QPrefix),
     Fields = maps:keys(SetMap),
-    {Sets, Params, Counter} = build_set_parts(Fields, SetMap, 1),
-    {WhereSQL, WhereParams, _} = compile_wheres(Wheres, undefined, Counter),
+    Renames = renames(From),
+    {Sets, Params, Counter} = build_set_parts(Fields, SetMap, Renames, 1),
+    {WhereSQL, WhereParams, _} = compile_wheres(
+        Wheres, renamed_context(Renames, undefined), Counter
+    ),
     SQL = iolist_to_binary([
         ~"UPDATE ",
         qualified_table(Table, Prefix),
@@ -437,7 +483,9 @@ update_all(#kura_query{from = From, wheres = Wheres, prefix = QPrefix}, SetMap) 
 delete_all(#kura_query{from = From, wheres = Wheres, prefix = QPrefix}) ->
     Table = resolve_table(From),
     Prefix = resolve_prefix(QPrefix),
-    {WhereSQL, WhereParams, _} = compile_wheres(Wheres, undefined, 1),
+    {WhereSQL, WhereParams, _} = compile_wheres(
+        Wheres, renamed_context(renames(From), undefined), 1
+    ),
     SQL = iolist_to_binary([
         ~"DELETE FROM ",
         qualified_table(Table, Prefix),
@@ -451,8 +499,10 @@ delete_all(#kura_query{from = From, wheres = Wheres, prefix = QPrefix}) ->
 
 -spec insert_all(kura_dialect:table(), [atom()], [map()]) -> {iodata(), [term()]}.
 insert_all(SchemaOrTable, Fields, Rows) ->
+    ok = check_parameter_count(length(Rows) * length(Fields)),
     Table = resolve_table(SchemaOrTable),
-    Cols = [quote_ident(atom_to_binary(F, utf8)) || F <- Fields],
+    Renames = renames(SchemaOrTable),
+    Cols = [column_ident(F, Renames) || F <- Fields],
     {ValueGroups, AllParams, _} = build_value_groups(Rows, Fields, 1),
     SQL = iolist_to_binary([
         ~"INSERT INTO ",
@@ -464,69 +514,82 @@ insert_all(SchemaOrTable, Fields, Rows) ->
     ]),
     {SQL, AllParams}.
 
+%% The Bind message counts its parameters in an unsigned 16-bit field.
+check_parameter_count(Count) when Count =< ?MAX_BIND_PARAMETERS -> ok;
+check_parameter_count(Count) ->
+    erlang:error({kura, {too_many_parameters, Count, ?MAX_BIND_PARAMETERS}}).
+
 -spec insert_all(kura_dialect:table(), [atom()], [map()], map()) -> {iodata(), [term()]}.
 insert_all(SchemaOrTable, Fields, Rows, Opts) ->
     {BaseSQL, Params} = insert_all(SchemaOrTable, Fields, Rows),
+    Renames = renames(SchemaOrTable),
     SQL = [
         BaseSQL,
-        guarded_bulk_on_conflict(resolve_table(SchemaOrTable), Opts, Fields),
-        bulk_returning(Opts)
+        guarded_bulk_on_conflict(resolve_table(SchemaOrTable), Opts, Fields, Renames),
+        bulk_returning(Opts, Renames)
     ],
     {iolist_to_binary(SQL), Params}.
 
-guarded_bulk_on_conflict(Table, #{on_conflict := OnConflict0} = Opts, Fields) ->
+guarded_bulk_on_conflict(Table, #{on_conflict := OnConflict0} = Opts, Fields, Renames) ->
     {OnConflict, Guard} = conflict_guard(OnConflict0),
     [
-        bulk_on_conflict(Opts#{on_conflict => OnConflict}, Fields),
-        guard_sql(Table, OnConflict, Guard)
+        bulk_on_conflict(Opts#{on_conflict => OnConflict}, Fields, Renames),
+        guard_sql(Table, OnConflict, Guard, Renames)
     ];
-guarded_bulk_on_conflict(_Table, Opts, Fields) ->
-    bulk_on_conflict(Opts, Fields).
+guarded_bulk_on_conflict(_Table, Opts, Fields, Renames) ->
+    bulk_on_conflict(Opts, Fields, Renames).
 
 %% A bulk upsert applies one DO UPDATE clause to every row, so the SET values
 %% cannot come from any single row's parameters the way the single-row form
 %% builds them. EXCLUDED names the row that failed to insert, which is what
 %% makes one clause correct for all of them - and it binds no parameters.
-bulk_on_conflict(#{on_conflict := {Target, nothing}}, _Fields) ->
-    [conflict_target(Target), ~" DO NOTHING"];
-bulk_on_conflict(#{on_conflict := {Target, replace_all}}, Fields) ->
-    bulk_on_conflict(#{on_conflict => {Target, {replace, replaceable(Target, Fields)}}}, Fields);
-bulk_on_conflict(#{on_conflict := {Target, {replace, UpdateFields}}}, _Fields) ->
+bulk_on_conflict(#{on_conflict := {Target, nothing}}, _Fields, Renames) ->
+    [conflict_target(Target, Renames), ~" DO NOTHING"];
+bulk_on_conflict(#{on_conflict := {Target, replace_all}}, Fields, Renames) ->
+    bulk_on_conflict(
+        #{on_conflict => {Target, {replace, replaceable(Target, Fields)}}}, Fields, Renames
+    );
+bulk_on_conflict(#{on_conflict := {Target, {replace, UpdateFields}}}, _Fields, Renames) ->
     [
-        conflict_target(Target),
+        conflict_target(Target, Renames),
         ~" DO UPDATE SET ",
-        join_comma([excluded_set(F) || F <- UpdateFields])
+        join_comma([excluded_set(F, Renames) || F <- UpdateFields])
     ];
-bulk_on_conflict(#{}, _Fields) ->
+bulk_on_conflict(#{}, _Fields, _Renames) ->
     [].
 
-excluded_set(Field) ->
-    Col = quote_ident(atom_to_binary(Field, utf8)),
+excluded_set(Field, Renames) ->
+    Col = column_ident(Field, Renames),
     [Col, ~" = EXCLUDED.", Col].
 
-bulk_returning(#{returning := true}) ->
+bulk_returning(#{returning := true}, _Renames) ->
     ~" RETURNING *";
-bulk_returning(#{returning := RetFields}) when is_list(RetFields) ->
-    [~" RETURNING ", join_comma([quote_ident(atom_to_binary(F, utf8)) || F <- RetFields])];
-bulk_returning(#{}) ->
+bulk_returning(#{returning := RetFields}, Renames) when is_list(RetFields) ->
+    [~" RETURNING ", join_comma([column_ident(F, Renames) || F <- RetFields])];
+bulk_returning(#{}, _Renames) ->
     [].
 
 %%----------------------------------------------------------------------
 %% Internal: SELECT clause
 %%----------------------------------------------------------------------
 
-compile_select(#kura_query{select = []}, _Ctx, Counter) ->
+%% A bare `*` after a join would also return the joined tables' columns,
+%% and a row holds one value per name: the joined table's `id` would
+%% replace the from table's.
+compile_select(#kura_query{select = [], joins = []}, _From, _Ctx, Counter) ->
     {~"*", [], Counter};
-compile_select(#kura_query{select = {exprs, Exprs}}, Ctx, Counter) ->
+compile_select(#kura_query{select = []}, {Table, _Joined}, _Ctx, Counter) ->
+    {[quote_ident(Table), ~".*"], [], Counter};
+compile_select(#kura_query{select = {exprs, Exprs}}, _From, Ctx, Counter) ->
     {Parts, AllParams, NewCounter} = compile_select_exprs(Exprs, Ctx, Counter),
     {join_comma(Parts), AllParams, NewCounter};
-compile_select(#kura_query{select = Fields}, Ctx, Counter) ->
-    Parts = [compile_select_field(F, Ctx) || F <- Fields],
+compile_select(#kura_query{select = Fields}, {_Table, Joined}, Ctx, Counter) ->
+    Parts = [compile_select_field(F, Joined, Ctx) || F <- Fields],
     {join_comma(Parts), [], Counter}.
 
-compile_select_field({Agg, '*'}, _Ctx) when Agg =:= count ->
+compile_select_field({Agg, '*'}, _Joined, _Ctx) when Agg =:= count ->
     [atom_to_binary(Agg, utf8), ~"(*)", ~" AS ", quote_ident(atom_to_binary(Agg, utf8))];
-compile_select_field({Agg, Field}, Ctx) when
+compile_select_field({Agg, Field}, _Joined, Ctx) when
     Agg =:= count; Agg =:= sum; Agg =:= avg; Agg =:= min; Agg =:= max
 ->
     [
@@ -537,7 +600,9 @@ compile_select_field({Agg, Field}, Ctx) when
         ~" AS ",
         quote_ident(atom_to_binary(Agg, utf8))
     ];
-compile_select_field(Field, Ctx) when is_atom(Field) ->
+compile_select_field(Field, Joined, Ctx) when is_map_key(Field, Joined) ->
+    [column(Field, Ctx), ~" AS ", quote_ident(atom_to_binary(Field, utf8))];
+compile_select_field(Field, _Joined, Ctx) when is_atom(Field) ->
     column(Field, Ctx).
 
 %%----------------------------------------------------------------------
@@ -567,9 +632,13 @@ compile_condition({'or', Conditions}, Ctx, Counter) ->
 compile_condition({'not', Condition}, Ctx, Counter) ->
     {Part, Params, NewCounter} = compile_condition(Condition, Ctx, Counter),
     {[~"NOT (", Part, ~")"], Params, NewCounter};
+%% A fragment is one condition, whatever operators its text holds: without
+%% the parentheses an OR in it would take the conditions joined after it
+%% with AND as part of its last branch. The newline ends a line comment the
+%% text may end in, which would otherwise take the closing parenthesis.
 compile_condition({fragment, SQL, Params}, _Ctx, Counter) ->
-    {RewrittenSQL, NewCounter} = rewrite_fragment_placeholders(SQL, Counter),
-    {RewrittenSQL, Params, NewCounter};
+    {RewrittenSQL, NewCounter} = rewrite_fragment_placeholders(SQL, Params, Counter),
+    {[~"(", RewrittenSQL, ~"\n)"], Params, NewCounter};
 compile_condition({{distance, _, _, _} = Distance, Op, Threshold}, Ctx, Counter) when
     ?KURA_IS_THRESHOLD_OP(Op)
 ->
@@ -629,6 +698,23 @@ compile_condition({Field, ilike, Value}, Ctx, Counter) when is_atom(Field) ->
         [Value],
         Counter + 1
     };
+compile_condition({Field, Op, Value}, Ctx, Counter) when
+    is_atom(Field), ?KURA_IS_TEXT_MATCH_OP(Op)
+->
+    {
+        [
+            column(Field, Ctx),
+            text_match_keyword(Op),
+            text_match_prefix(Op),
+            ?ESCAPED_TEXT_OPEN,
+            integer_to_binary(Counter),
+            ?ESCAPED_TEXT_CLOSE,
+            text_match_suffix(Op),
+            ?LIKE_ESCAPE
+        ],
+        [Value],
+        Counter + 1
+    };
 compile_condition({Field, matches, Value}, Ctx, Counter) when is_atom(Field) ->
     {
         [
@@ -650,6 +736,10 @@ compile_condition({exists, {subquery, SubQ}}, _Ctx, Counter) ->
 compile_condition({not_exists, {subquery, SubQ}}, _Ctx, Counter) ->
     {SubSQL, SubParams, Counter2} = to_sql_from(SubQ, Counter),
     {[~"NOT EXISTS (", SubSQL, ~")"], SubParams, Counter2};
+compile_condition({Columns, in, []}, _Ctx, Counter) when is_atom(Columns); is_list(Columns) ->
+    {?NO_ROWS, [], Counter};
+compile_condition({Field, not_in, []}, _Ctx, Counter) when is_atom(Field) ->
+    {?EVERY_ROW, [], Counter};
 compile_condition({[Col], in, Tuples}, Ctx, Counter) when is_atom(Col), is_list(Tuples) ->
     compile_condition({Col, in, [single_value(T) || T <- Tuples]}, Ctx, Counter);
 compile_condition({Cols, in, Tuples}, Ctx, Counter) when is_list(Cols), is_list(Tuples) ->
@@ -712,10 +802,10 @@ compile_condition({Field, Value}, Ctx, Counter) when is_atom(Field) ->
 %% Internal: JOIN clause
 %%----------------------------------------------------------------------
 
-compile_joins([], _Table, _Prefix, Counter) ->
+compile_joins([], _Table, _Renames, _Prefix, Counter) ->
     {<<>>, [], Counter};
-compile_joins(Joins, FromTable, Prefix, Counter) ->
-    Parts = compile_joins_loop(Joins, FromTable, Prefix),
+compile_joins(Joins, FromTable, Renames, Prefix, Counter) ->
+    Parts = compile_joins_loop(Joins, FromTable, Renames, Prefix),
     {iolist_to_binary(Parts), [], Counter}.
 
 join_type(inner) -> ~"INNER JOIN";
@@ -806,7 +896,33 @@ compile_offset(N, Counter) ->
 %%----------------------------------------------------------------------
 
 compile_lock(undefined) -> <<>>;
-compile_lock(Lock) -> <<" ", Lock/binary>>.
+compile_lock(Lock) -> [~" ", lock_sql(kura_query:lock_clause(Lock))].
+
+lock_sql({fragment, SQL}) ->
+    SQL;
+lock_sql([_ | _] = Clauses) ->
+    lists:join(~" ", [lock_sql(Clause) || Clause <- Clauses]);
+lock_sql({Strength, #{tables := Tables} = Spec}) ->
+    [
+        lock_sql(Strength),
+        ~" OF ",
+        join_comma([quote_ident(Table) || Table <- Tables]),
+        lock_wait_sql(maps:get(wait, Spec, undefined))
+    ];
+lock_sql({Strength, Wait}) ->
+    [lock_sql(Strength), lock_wait_sql(Wait)];
+lock_sql(for_update) ->
+    ~"FOR UPDATE";
+lock_sql(for_no_key_update) ->
+    ~"FOR NO KEY UPDATE";
+lock_sql(for_share) ->
+    ~"FOR SHARE";
+lock_sql(for_key_share) ->
+    ~"FOR KEY SHARE".
+
+lock_wait_sql(undefined) -> <<>>;
+lock_wait_sql(nowait) -> ~" NOWAIT";
+lock_wait_sql(skip_locked) -> ~" SKIP LOCKED".
 
 compile_distinct(false, _Ctx) ->
     <<>>;
@@ -834,12 +950,35 @@ compile_ctes(CTEs, Counter) ->
 %% Internal: UNION / INTERSECT / EXCEPT compilation
 %%----------------------------------------------------------------------
 
-compile_combinations([], MainSQL, MainParams, Counter) ->
-    {MainSQL, MainParams, Counter};
-compile_combinations(Combinations, MainSQL, MainParams, Counter) ->
-    {CombParts, AllParams, NewCounter} = compile_combinations_loop(Combinations, Counter),
-    FinalSQL = iolist_to_binary([MainSQL | CombParts]),
-    {FinalSQL, MainParams ++ AllParams, NewCounter}.
+compile_combinations([], Counter) ->
+    {[], [], Counter};
+compile_combinations(Combinations, Counter) ->
+    compile_combinations_loop(Combinations, Counter).
+
+%% The ORDER BY of a combination names its result columns, which have no
+%% table to be qualified with.
+-spec combined_context([term()], column_context()) -> column_context().
+combined_context([], Ctx) -> Ctx;
+combined_context(_Combinations, {renamed, Renames, _Qualified}) -> {renamed, Renames, undefined};
+combined_context(_Combinations, _Qualified) -> undefined.
+
+%% A branch with a clause of its own that would otherwise be read as the
+%% combination's, or with CTEs or combinations of its own, is parenthesised.
+-spec branch_sql(#kura_query{}, iodata()) -> iodata().
+branch_sql(
+    #kura_query{
+        order_bys = [],
+        limit = undefined,
+        offset = undefined,
+        lock = undefined,
+        ctes = [],
+        combinations = []
+    },
+    SQL
+) ->
+    SQL;
+branch_sql(#kura_query{}, SQL) ->
+    [~"(", SQL, ~")"].
 
 combination_type(union) -> ~"UNION";
 combination_type(union_all) -> ~"UNION ALL";
@@ -850,12 +989,15 @@ combination_type(except) -> ~"EXCEPT".
 %% Internal: ON CONFLICT
 %%----------------------------------------------------------------------
 
-compile_on_conflict({Target, nothing}, _Fields, _Data, _Counter) ->
-    {[conflict_target(Target), ~" DO NOTHING"], []};
-compile_on_conflict({Target, replace_all}, Fields, Data, Counter) ->
-    compile_on_conflict({Target, {replace, replaceable(Target, Fields)}}, Fields, Data, Counter);
-compile_on_conflict({Target, {replace, UpdateFields}}, _Fields, Data, Counter) ->
-    compile_on_conflict_update(conflict_target(Target), UpdateFields, Data, Counter).
+compile_on_conflict({Target, nothing}, _Fields, _Data, Renames, _Counter) ->
+    {[conflict_target(Target, Renames), ~" DO NOTHING"], []};
+compile_on_conflict({Target, replace_all}, Fields, Data, Renames, Counter) ->
+    compile_on_conflict(
+        {Target, {replace, replaceable(Target, Fields)}}, Fields, Data, Renames, Counter
+    );
+compile_on_conflict({Target, {replace, UpdateFields}}, _Fields, Data, Renames, Counter) ->
+    {Sets, Params, _} = build_set_parts(UpdateFields, Data, Renames, Counter),
+    {[conflict_target(Target, Renames), ~" DO UPDATE SET ", join_comma(Sets)], Params}.
 
 %% A row the guard refuses is left as it is and not returned, as with DO NOTHING.
 conflict_guard({Target, Action, #{guard := Fields} = Opts}) when
@@ -867,24 +1009,24 @@ conflict_guard({_Target, _Action, Opts}) ->
 conflict_guard(OnConflict) ->
     {OnConflict, []}.
 
-guard_sql(_Table, {_Target, nothing}, _Fields) ->
+guard_sql(_Table, {_Target, nothing}, _Fields, _Renames) ->
     [];
-guard_sql(_Table, _OnConflict, []) ->
+guard_sql(_Table, _OnConflict, [], _Renames) ->
     [];
-guard_sql(Table, _OnConflict, Fields) ->
-    [~" WHERE ", lists:join(~" AND ", [guard_condition(Table, F) || F <- Fields])].
+guard_sql(Table, _OnConflict, Fields, Renames) ->
+    [~" WHERE ", lists:join(~" AND ", [guard_condition(Table, F, Renames) || F <- Fields])].
 
-guard_condition(Table, Field) ->
-    Column = quote_ident(atom_to_binary(Field, utf8)),
+guard_condition(Table, Field, Renames) ->
+    Column = column_ident(Field, Renames),
     [quote_ident(Table), ~".", Column, ~" = EXCLUDED.", Column].
 
-conflict_target(Field) when is_atom(Field) ->
-    [~" ON CONFLICT (", quote_ident(atom_to_binary(Field, utf8)), ~")"];
-conflict_target({columns, Columns}) when is_list(Columns) ->
-    [~" ON CONFLICT (", columns_target(Columns), ~")"];
-conflict_target({columns, Columns, Opts}) when is_list(Columns), is_map(Opts) ->
-    [~" ON CONFLICT (", columns_target(Columns), ~")", index_predicate(Opts)];
-conflict_target({constraint, Name}) when is_binary(Name) ->
+conflict_target(Field, Renames) when is_atom(Field) ->
+    [~" ON CONFLICT (", column_ident(Field, Renames), ~")"];
+conflict_target({columns, Columns}, Renames) when is_list(Columns) ->
+    [~" ON CONFLICT (", columns_target(Columns, Renames), ~")"];
+conflict_target({columns, Columns, Opts}, Renames) when is_list(Columns), is_map(Opts) ->
+    [~" ON CONFLICT (", columns_target(Columns, Renames), ~")", index_predicate(Opts)];
+conflict_target({constraint, Name}, _Renames) when is_binary(Name) ->
     [~" ON CONFLICT ON CONSTRAINT ", quote_ident(Name)].
 
 %% The columns the conflict target already pins cannot be in the SET list.
@@ -897,8 +1039,8 @@ replaceable({columns, Columns, _Opts}, Fields) when is_list(Columns) ->
 replaceable({constraint, _Name}, Fields) ->
     Fields.
 
-columns_target(Columns) ->
-    join_comma([quote_ident(atom_to_binary(C, utf8)) || C <- Columns]).
+columns_target(Columns, Renames) ->
+    join_comma([column_ident(C, Renames) || C <- Columns]).
 
 index_predicate(#{where := Expr}) when is_binary(Expr) ->
     [~" WHERE ", Expr];
@@ -906,11 +1048,6 @@ index_predicate(Opts) when map_size(Opts) =:= 0 ->
     [];
 index_predicate(Opts) ->
     erlang:error({kura, {invalid_on_conflict_opts, Opts}}).
-
-compile_on_conflict_update(ConflictTarget, UpdateFields, Data, Counter) ->
-    {Sets, Params, _} = build_set_parts(UpdateFields, Data, Counter),
-    SQL = [ConflictTarget, ~" DO UPDATE SET ", join_comma(Sets)],
-    {SQL, Params}.
 
 resolve_table(Table) when is_binary(Table) ->
     Table;
@@ -927,26 +1064,89 @@ resolve_table(Mod) when is_atom(Mod) ->
 
 %% Which columns to qualify is decided by
 %% `kura_dialect:qualified_columns/1`; the dialect only renders it.
--spec column_context(#kura_query{}) -> column_context().
-column_context(Q) ->
-    case kura_dialect:qualified_columns(Q) of
-        undefined -> undefined;
-        {Table, Fields} -> {quote_ident(Table), Fields}
+-spec column_context(#kura_query{}, renames()) -> column_context().
+column_context(#kura_query{from = From} = Q, Joined) ->
+    Qualified =
+        case kura_dialect:qualified_columns(Q) of
+            undefined -> undefined;
+            {Table, Fields} -> {quote_ident(Table), Fields}
+        end,
+    renamed_context(maps:merge(Joined, renames(From)), Qualified).
+
+%% A bare field that the `from` schema does not have is a column of a joined
+%% table. Where a joined schema stores it under another name, that name is
+%% the column. Two joined schemas that store it under different names leave
+%% no way to tell which is meant.
+-spec joined_renames(#kura_query{}) -> renames().
+joined_renames(#kura_query{joins = []}) ->
+    #{};
+joined_renames(#kura_query{from = From, joins = Joins}) ->
+    Schemas = lists:usort([S || {_Type, S, _On, _As} <- Joins, is_atom(S)]),
+    case [F || S <- Schemas, F <- maps:keys(renames(S))] of
+        [] ->
+            #{};
+        Renamed ->
+            FromTypes = from_types(From),
+            #{F => joined_column(F, Schemas) || F <- Renamed, not is_map_key(F, FromTypes)}
+    end.
+
+-spec joined_column(atom(), [module()]) -> binary() | {ambiguous, [binary()]}.
+joined_column(Field, Schemas) ->
+    Declared = [
+        Column
+     || S <- Schemas, kura_schema:is_schema(S), #{Field := Column} <- [kura_schema:column_map(S)]
+    ],
+    case lists:usort(Declared) of
+        [Column] -> Column;
+        Columns -> {ambiguous, Columns}
+    end.
+
+%% Only a schema that names a column differently from its field pays for
+%% the lookup in column/2.
+-spec renamed_context(renames(), qualified_columns()) -> column_context().
+renamed_context(Renames, Qualified) when map_size(Renames) =:= 0 -> Qualified;
+renamed_context(Renames, Qualified) -> {renamed, Renames, Qualified}.
+
+-spec renames(term()) -> renames().
+renames(Mod) when is_atom(Mod) -> kura_schema:renamed_columns(Mod);
+renames(_Table) -> #{}.
+
+-spec column_ident(atom(), renames()) -> iodata().
+column_ident(Field, Renames) ->
+    case Renames of
+        #{Field := {ambiguous, Columns}} ->
+            erlang:error({kura, {ambiguous_field, Field, Columns}});
+        #{Field := Column} ->
+            quote_ident(Column);
+        #{} ->
+            quote_ident(atom_to_binary(Field, utf8))
     end.
 
 %% ORDER BY resolves a name to a select_expr output column before an input
 %% column, so an alias is left bare to keep naming the expression.
 -spec order_context(#kura_query{}, column_context()) -> column_context().
+order_context(#kura_query{select = {exprs, Exprs}}, {renamed, Renames, Qualified}) ->
+    Aliases = [Alias || {Alias, _} <- Exprs],
+    renamed_context(maps:without(Aliases, Renames), unaliased(Aliases, Qualified));
 order_context(#kura_query{select = {exprs, Exprs}}, {Qualifier, Fields}) ->
-    {Qualifier, maps:without([Alias || {Alias, _} <- Exprs], Fields)};
+    unaliased([Alias || {Alias, _} <- Exprs], {Qualifier, Fields});
 order_context(_Q, Ctx) ->
     Ctx.
 
+-spec unaliased([term()], qualified_columns()) -> qualified_columns().
+unaliased(_Aliases, undefined) -> undefined;
+unaliased(Aliases, {Qualifier, Fields}) -> {Qualifier, maps:without(Aliases, Fields)}.
+
 -spec column(atom(), column_context()) -> iodata().
-column(Field, {Qualifier, Fields}) when is_map_key(Field, Fields) ->
-    [Qualifier, ~".", quote_ident(atom_to_binary(Field, utf8))];
-column(Field, _Ctx) ->
-    quote_ident(atom_to_binary(Field, utf8)).
+column(Field, {renamed, Renames, Qualified}) ->
+    qualified(Field, column_ident(Field, Renames), Qualified);
+column(Field, Qualified) ->
+    qualified(Field, quote_ident(atom_to_binary(Field, utf8)), Qualified).
+
+qualified(Field, Ident, {Qualifier, Fields}) when is_map_key(Field, Fields) ->
+    [Qualifier, ~".", Ident];
+qualified(_Field, Ident, _Qualified) ->
+    Ident.
 
 quote_ident(Name) when is_binary(Name) ->
     Escaped = binary:replace(Name, ~"\"", ~"\"\"", [global]),
@@ -961,16 +1161,117 @@ join_and(Parts) ->
 join_or(Parts) ->
     lists:join(~" OR ", Parts).
 
-rewrite_fragment_placeholders(SQL, StartCounter) when is_binary(SQL) ->
-    rewrite_fragment(SQL, StartCounter, <<>>).
+%% Each `?` of a fragment becomes the next `$N`. A `?` inside a string
+%% literal, a quoted identifier, a dollar-quoted string or a comment is text,
+%% not a placeholder, and is left as it is. The count has to match the
+%% parameters: a fragment that binds more or fewer than it names would shift
+%% every parameter after it.
+rewrite_fragment_placeholders(SQL, Params, StartCounter) when is_binary(SQL), is_list(Params) ->
+    {Rewritten, NextCounter} = fragment_text(SQL, StartCounter, <<>>),
+    case NextCounter - StartCounter =:= length(Params) of
+        true ->
+            {Rewritten, NextCounter};
+        false ->
+            erlang:error(
+                {kura, {fragment_placeholder_mismatch, NextCounter - StartCounter, length(Params)}}
+            )
+    end.
 
-rewrite_fragment(<<>>, Counter, Acc) ->
+fragment_text(<<>>, Counter, Acc) ->
     {Acc, Counter};
-rewrite_fragment(<<"?", Rest/binary>>, Counter, Acc) ->
-    Placeholder = [~"$", integer_to_binary(Counter)],
-    rewrite_fragment(Rest, Counter + 1, <<Acc/binary, (iolist_to_binary(Placeholder))/binary>>);
-rewrite_fragment(<<C, Rest/binary>>, Counter, Acc) ->
-    rewrite_fragment(Rest, Counter, <<Acc/binary, C>>).
+fragment_text(<<"?", Rest/binary>>, Counter, Acc) ->
+    fragment_text(Rest, Counter + 1, <<Acc/binary, "$", (integer_to_binary(Counter))/binary>>);
+fragment_text(<<"'", Rest/binary>>, Counter, Acc) ->
+    Escapes = escape_string_prefix(Acc),
+    fragment_quoted(Rest, $', Escapes, Counter, <<Acc/binary, "'">>);
+fragment_text(<<"\"", Rest/binary>>, Counter, Acc) ->
+    fragment_quoted(Rest, $", false, Counter, <<Acc/binary, "\"">>);
+fragment_text(<<"--", Rest/binary>>, Counter, Acc) ->
+    fragment_line_comment(Rest, Counter, <<Acc/binary, "--">>);
+fragment_text(<<"/*", Rest/binary>>, Counter, Acc) ->
+    fragment_block_comment(Rest, 1, Counter, <<Acc/binary, "/*">>);
+fragment_text(<<"$", Rest/binary>>, Counter, Acc) ->
+    case dollar_quote_tag(Rest, Acc) of
+        {ok, Tag, AfterTag} ->
+            fragment_dollar_quoted(AfterTag, Tag, Counter, <<Acc/binary, Tag/binary>>);
+        none ->
+            fragment_text(Rest, Counter, <<Acc/binary, "$">>)
+    end;
+fragment_text(<<Byte, Rest/binary>>, Counter, Acc) ->
+    fragment_text(Rest, Counter, <<Acc/binary, Byte>>).
+
+%% A doubled quote stays inside the literal. In an escape string (`E'...'`)
+%% a backslash escapes the byte after it, a quote included.
+fragment_quoted(<<Quote, Quote, Rest/binary>>, Quote, Escapes, Counter, Acc) ->
+    fragment_quoted(Rest, Quote, Escapes, Counter, <<Acc/binary, Quote, Quote>>);
+fragment_quoted(<<Quote, Rest/binary>>, Quote, _Escapes, Counter, Acc) ->
+    fragment_text(Rest, Counter, <<Acc/binary, Quote>>);
+fragment_quoted(<<"\\", Byte, Rest/binary>>, Quote, true, Counter, Acc) ->
+    fragment_quoted(Rest, Quote, true, Counter, <<Acc/binary, "\\", Byte>>);
+fragment_quoted(<<Byte, Rest/binary>>, Quote, Escapes, Counter, Acc) ->
+    fragment_quoted(Rest, Quote, Escapes, Counter, <<Acc/binary, Byte>>);
+fragment_quoted(<<>>, _Quote, _Escapes, Counter, Acc) ->
+    {Acc, Counter}.
+
+fragment_line_comment(<<"\n", Rest/binary>>, Counter, Acc) ->
+    fragment_text(Rest, Counter, <<Acc/binary, "\n">>);
+fragment_line_comment(<<Byte, Rest/binary>>, Counter, Acc) ->
+    fragment_line_comment(Rest, Counter, <<Acc/binary, Byte>>);
+fragment_line_comment(<<>>, Counter, Acc) ->
+    {Acc, Counter}.
+
+%% PostgreSQL nests block comments.
+fragment_block_comment(<<"*/", Rest/binary>>, 1, Counter, Acc) ->
+    fragment_text(Rest, Counter, <<Acc/binary, "*/">>);
+fragment_block_comment(<<"*/", Rest/binary>>, Depth, Counter, Acc) ->
+    fragment_block_comment(Rest, Depth - 1, Counter, <<Acc/binary, "*/">>);
+fragment_block_comment(<<"/*", Rest/binary>>, Depth, Counter, Acc) ->
+    fragment_block_comment(Rest, Depth + 1, Counter, <<Acc/binary, "/*">>);
+fragment_block_comment(<<Byte, Rest/binary>>, Depth, Counter, Acc) ->
+    fragment_block_comment(Rest, Depth, Counter, <<Acc/binary, Byte>>);
+fragment_block_comment(<<>>, _Depth, Counter, Acc) ->
+    {Acc, Counter}.
+
+fragment_dollar_quoted(Text, Tag, Counter, Acc) ->
+    case binary:split(Text, Tag) of
+        [Body, Rest] -> fragment_text(Rest, Counter, <<Acc/binary, Body/binary, Tag/binary>>);
+        [Unterminated] -> {<<Acc/binary, Unterminated/binary>>, Counter}
+    end.
+
+%% `$$` or `$tag$` opens a dollar-quoted string, unless the `$` continues an
+%% identifier. `$1` is a parameter, not a tag.
+dollar_quote_tag(Rest, Before) ->
+    case identifier_byte(last_byte(Before)) of
+        true -> none;
+        false -> dollar_quote_tag(Rest, ~"$", first)
+    end.
+
+dollar_quote_tag(<<"$", Rest/binary>>, Tag, _Position) ->
+    {ok, <<Tag/binary, "$">>, Rest};
+dollar_quote_tag(<<Byte, _/binary>>, _Tag, first) when Byte >= $0, Byte =< $9 ->
+    none;
+dollar_quote_tag(<<Byte, Rest/binary>>, Tag, _Position) ->
+    case identifier_byte(Byte) of
+        true -> dollar_quote_tag(Rest, <<Tag/binary, Byte>>, rest);
+        false -> none
+    end;
+dollar_quote_tag(<<>>, _Tag, _Position) ->
+    none.
+
+escape_string_prefix(Before) ->
+    case Before of
+        <<Head:(byte_size(Before) - 1)/binary, E>> when E =:= $E; E =:= $e ->
+            not identifier_byte(last_byte(Head));
+        _ ->
+            false
+    end.
+
+last_byte(<<>>) -> $\s;
+last_byte(Binary) -> binary:last(Binary).
+
+identifier_byte(Byte) ->
+    (Byte >= $a andalso Byte =< $z) orelse (Byte >= $A andalso Byte =< $Z) orelse
+        (Byte >= $0 andalso Byte =< $9) orelse Byte =:= $_ orelse Byte >= 128.
 
 qualified_table(Table, undefined) ->
     quote_ident(Table);
@@ -990,25 +1291,25 @@ resolve_prefix(Prefix) ->
 %% accumulator types for eqWAlizer)
 %%----------------------------------------------------------------------
 
--spec build_insert_parts([atom()], map(), pos_integer()) ->
+-spec build_insert_parts([atom()], map(), renames(), pos_integer()) ->
     {[iodata()], [iodata()], [term()], pos_integer()}.
-build_insert_parts([], _Data, N) ->
+build_insert_parts([], _Data, _Renames, N) ->
     {[], [], [], N};
-build_insert_parts([Field | Rest], Data, N) ->
+build_insert_parts([Field | Rest], Data, Renames, N) ->
     Value = maps:get(Field, Data),
-    Col = quote_ident(atom_to_binary(Field, utf8)),
+    Col = column_ident(Field, Renames),
     Placeholder = [~"$", integer_to_binary(N)],
-    {Cols, Placeholders, Params, N2} = build_insert_parts(Rest, Data, N + 1),
+    {Cols, Placeholders, Params, N2} = build_insert_parts(Rest, Data, Renames, N + 1),
     {[Col | Cols], [Placeholder | Placeholders], [Value | Params], N2}.
 
--spec build_set_parts([atom()], map(), pos_integer()) ->
+-spec build_set_parts([atom()], map(), renames(), pos_integer()) ->
     {[iodata()], [term()], pos_integer()}.
-build_set_parts([], _Data, N) ->
+build_set_parts([], _Data, _Renames, N) ->
     {[], [], N};
-build_set_parts([Field | Rest], Data, N) ->
+build_set_parts([Field | Rest], Data, Renames, N) ->
     Value = maps:get(Field, Data),
-    Set = [quote_ident(atom_to_binary(Field, utf8)), ~" = $", integer_to_binary(N)],
-    {Sets, Params, N2} = build_set_parts(Rest, Data, N + 1),
+    Set = [column_ident(Field, Renames), ~" = $", integer_to_binary(N)],
+    {Sets, Params, N2} = build_set_parts(Rest, Data, Renames, N + 1),
     {[Set | Sets], [Value | Params], N2}.
 
 -spec build_value_groups([map()], [atom()], pos_integer()) ->
@@ -1048,7 +1349,7 @@ build_row_placeholders([Field | Rest], Row, N) ->
 compile_select_exprs([], _Ctx, Counter) ->
     {[], [], Counter};
 compile_select_exprs([{Alias, {fragment, SQL, Params}} | Rest], Ctx, Counter) ->
-    {RewrittenSQL, C2} = rewrite_fragment_placeholders(SQL, Counter),
+    {RewrittenSQL, C2} = rewrite_fragment_placeholders(SQL, Params, Counter),
     Part = [RewrittenSQL, ~" AS ", quote_ident(atom_to_binary(Alias, utf8))],
     {Parts, MoreParams, C3} = compile_select_exprs(Rest, Ctx, C2),
     {[Part | Parts], Params ++ MoreParams, C3};
@@ -1120,12 +1421,16 @@ compile_over_clause(Spec, Ctx) ->
 -spec compile_joins_loop(
     [{atom(), module() | binary(), {atom(), atom()}, atom() | undefined}],
     binary(),
+    renames(),
     binary() | undefined
 ) -> [iodata()].
-compile_joins_loop([], _PrevTable, _Prefix) ->
+compile_joins_loop([], _PrevTable, _PrevRenames, _Prefix) ->
     [];
-compile_joins_loop([{Type, JoinTable, {LeftCol, RightCol}, As} | Rest], PrevTable, Prefix) ->
+compile_joins_loop(
+    [{Type, JoinTable, {LeftCol, RightCol}, As} | Rest], PrevTable, PrevRenames, Prefix
+) ->
     JoinTableBin = resolve_table(JoinTable),
+    JoinRenames = renames(JoinTable),
     TableRef =
         case As of
             undefined ->
@@ -1151,13 +1456,13 @@ compile_joins_loop([{Type, JoinTable, {LeftCol, RightCol}, As} | Rest], PrevTabl
         ~" ON ",
         quote_ident(PrevTable),
         ~".",
-        quote_ident(atom_to_binary(LeftCol, utf8)),
+        column_ident(LeftCol, PrevRenames),
         ~" = ",
         quote_ident(JoinRef),
         ~".",
-        quote_ident(atom_to_binary(RightCol, utf8))
+        column_ident(RightCol, JoinRenames)
     ],
-    [Part | compile_joins_loop(Rest, JoinRef, Prefix)].
+    [Part | compile_joins_loop(Rest, JoinRef, JoinRenames, Prefix)].
 
 -spec compile_ctes_loop([{binary(), #kura_query{}}], pos_integer()) ->
     {[iodata()], [term()], pos_integer()}.
@@ -1178,7 +1483,7 @@ compile_combinations_loop([], Counter) ->
 compile_combinations_loop([{Type, Q2} | Rest], Counter) ->
     {SQL2, Params2, C2} = to_sql_from(Q2, Counter),
     TypeBin = combination_type(Type),
-    Part = [~" ", TypeBin, ~" ", SQL2],
+    Part = [~" ", TypeBin, ~" ", branch_sql(Q2, SQL2)],
     {Parts, MoreParams, C3} = compile_combinations_loop(Rest, C2),
     {[Part | Parts], Params2 ++ MoreParams, C3}.
 

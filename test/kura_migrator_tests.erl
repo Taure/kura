@@ -1053,6 +1053,44 @@ cleanup_pool_repos({ok, Previous}) ->
 cleanup_pool_repos(undefined) ->
     application:unset_env(kura, repos).
 
+version_statements_use_the_dialect_placeholder_test_() ->
+    Other = kura_migrator_tests_other_dialect_repo,
+    {setup,
+        fun() ->
+            Previous = setup_pool_repos(),
+            {ok, Repos} = application:get_env(kura, repos),
+            application:set_env(kura, repos, Repos#{
+                Other => #{pool_module => ?MODULE, dialect => kura_test_sqlite_dialect}
+            }),
+            Previous
+        end,
+        fun cleanup_pool_repos/1, [
+            ?_assertEqual(
+                ~"INSERT INTO schema_migrations (version) VALUES ($1)",
+                iolist_to_binary(kura_migrator:record_sql(up, ?PG_POOL_REPO))
+            ),
+            ?_assertEqual(
+                ~"DELETE FROM schema_migrations WHERE version = $1",
+                iolist_to_binary(kura_migrator:record_sql(down, ?PG_POOL_REPO))
+            ),
+            ?_assertEqual(
+                ~"INSERT INTO schema_migrations (version) VALUES ($1)",
+                iolist_to_binary(kura_migrator:record_sql(up, ?NO_DIALECT_POOL_REPO))
+            ),
+            ?_assertEqual(
+                ~"INSERT INTO schema_migrations (version) VALUES ($1)",
+                iolist_to_binary(kura_migrator:record_sql(up, ?LITE_POOL_REPO))
+            ),
+            ?_assertEqual(
+                ~"INSERT INTO schema_migrations (version) VALUES (?1)",
+                iolist_to_binary(kura_migrator:record_sql(up, Other))
+            ),
+            ?_assertEqual(
+                ~"DELETE FROM schema_migrations WHERE version = ?1",
+                iolist_to_binary(kura_migrator:record_sql(down, Other))
+            )
+        ]}.
+
 concurrently_map_form_on_a_capable_pool() ->
     ?assertEqual(
         ~"CREATE UNIQUE INDEX CONCURRENTLY \"users_email_index\" ON \"users\" (\"email\") WHERE email IS NOT NULL",
@@ -1262,3 +1300,134 @@ without_row_values_test() ->
     ),
     ?assertEqual({error, timeout}, kura_migrator:without_row_values({error, timeout})),
     ?assertEqual(#{rows => []}, kura_migrator:without_row_values(#{rows => []})).
+
+%%----------------------------------------------------------------------
+%% A column named by a binary
+%%----------------------------------------------------------------------
+
+binary_column_names_compile_as_atoms_do_test_() ->
+    Compile = fun(Op) -> kura_migrator:compile_operation(?REPO, Op) end,
+    Same = fun(ByAtom, ByBinary) -> ?_assertEqual(Compile(ByAtom), Compile(ByBinary)) end,
+    [
+        {"create_table",
+            Same(
+                {create_table, ~"posts",
+                    [
+                        #kura_column{name = id, type = id, primary_key = true},
+                        #kura_column{
+                            name = author_id,
+                            type = integer,
+                            nullable = false,
+                            references = {~"users", id},
+                            on_delete = cascade
+                        }
+                    ],
+                    [{unique, [author_id, id]}, {primary_key, [id]}]},
+                {create_table, ~"posts",
+                    [
+                        #kura_column{name = ~"id", type = id, primary_key = true},
+                        #kura_column{
+                            name = ~"author_id",
+                            type = integer,
+                            nullable = false,
+                            references = {~"users", ~"id"},
+                            on_delete = cascade
+                        }
+                    ],
+                    [{unique, [~"author_id", id]}, {primary_key, [~"id"]}]}
+            )},
+        {"alter_table",
+            Same(
+                {alter_table, ~"posts", [
+                    {add_column, #kura_column{name = title, type = string}},
+                    {drop_column, body},
+                    {rename_column, old_title, new_title},
+                    {modify_column, score, bigint}
+                ]},
+                {alter_table, ~"posts", [
+                    {add_column, #kura_column{name = ~"title", type = string}},
+                    {drop_column, ~"body"},
+                    {rename_column, ~"old_title", ~"new_title"},
+                    {modify_column, ~"score", bigint}
+                ]}
+            )},
+        {"create_index with options",
+            Same(
+                {create_index, ~"posts", [author_id, title], #{unique => true}},
+                {create_index, ~"posts", [~"author_id", ~"title"], #{unique => true}}
+            )},
+        {"create_index with an operator class",
+            Same(
+                {create_index, ~"posts", [embedding], #{using => hnsw, opclass => vector_l2_ops}},
+                {create_index, ~"posts", [~"embedding"], #{
+                    using => hnsw, opclass => vector_l2_ops
+                }}
+            )},
+        {"named create_index",
+            Same(
+                {create_index, ~"posts_title_index", ~"posts", [title], [unique]},
+                {create_index, ~"posts_title_index", ~"posts", [~"title"], [unique]}
+            )}
+    ].
+
+binary_column_name_is_quoted_as_it_is_test_() ->
+    Compile = fun(Op) -> kura_migrator:compile_operation(?REPO, Op) end,
+    [
+        ?_assertEqual(
+            ~"CREATE TABLE \"items\" (\n  \"Item Title\" VARCHAR(255) NOT NULL\n)",
+            Compile(
+                {create_table, ~"items", [
+                    #kura_column{name = ~"Item Title", type = string, nullable = false}
+                ]}
+            )
+        ),
+        ?_assertEqual(
+            ~"ALTER TABLE \"items\" DROP COLUMN \"a\"\"b\"",
+            Compile({alter_table, ~"items", [{drop_column, ~"a\"b"}]})
+        )
+    ].
+
+index_name_of_binary_columns_test_() ->
+    [
+        ?_assertEqual(
+            kura_migration:index_name(~"posts", [author_id, title]),
+            kura_migration:index_name(~"posts", [~"author_id", title])
+        ),
+        ?_assertEqual(
+            ~"posts_item_title_index", kura_migration:index_name(~"posts", [~"item_title"], #{})
+        ),
+        ?_assertEqual(~"a", kura_migration:column_text(a)),
+        ?_assertEqual(~"a", kura_migration:column_text(~"a"))
+    ].
+
+unsafe_operations_on_binary_columns_test_() ->
+    Ops = [
+        {alter_table, ~"users", [
+            {drop_column, ~"legacy"},
+            {rename_column, ~"name", ~"full_name"},
+            {modify_column, ~"age", bigint},
+            {add_column, #kura_column{name = ~"role", type = string, nullable = false}}
+        ]}
+    ],
+    Safe = [{drop_column, legacy}, {rename_column, ~"name"}, {modify_column, age}],
+    [
+        ?_assertEqual(
+            [drop_column, rename_column, modify_column, add_column_not_null],
+            [Op || #{op := Op} <- kura_migrator:check_unsafe_operations(Ops, [])]
+        ),
+        {"a safe entry covers the column whichever form names it",
+            ?_assertMatch(
+                [#{op := add_column_not_null, target := ~"role"}],
+                kura_migrator:check_unsafe_operations(Ops, Safe)
+            )},
+        ?_assertEqual(
+            [], kura_migrator:check_unsafe_operations(Ops, [{add_column, role}, drop_table | Safe])
+        ),
+        {"a safe entry of another kind does not cover it",
+            ?_assertMatch(
+                [#{op := drop_column}],
+                kura_migrator:check_unsafe_operations(
+                    [{alter_table, ~"users", [{drop_column, ~"legacy"}]}], [{rename_column, legacy}]
+                )
+            )}
+    ].

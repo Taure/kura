@@ -4,6 +4,7 @@
 
 -define(S, kura_tenant_test_schema).
 -define(REPO, kura_tenant_test_repo).
+-define(STRICT_REPO, kura_tenant_strict_test_repo).
 -define(T, {org_id, 7}).
 
 setup() ->
@@ -40,6 +41,71 @@ put_tenant_refuses_what_would_scope_nothing_test() ->
     ],
     ?assertEqual(undefined, kura_tenant:get_tenant()).
 
+an_attribute_tenant_with_no_value_is_refused_everywhere_test_() ->
+    [
+        {atom_to_list(Missing), fun() ->
+            kura_tenant:clear_tenant(),
+            Bad = {attribute, {org_id, Missing}},
+            Refused = {invalid_tenant, Bad},
+            ?assertError(Refused, kura_tenant:put_tenant(Bad)),
+            ?assertError(Refused, kura_tenant:with_tenant(Bad, fun() -> ran end)),
+            ?assertError(Refused, kura_tenant:with_tenant(Bad, {erlang, self, []})),
+            ?assertError(Refused, kura_tenant:adopt({Bad, false})),
+            ?assertEqual(undefined, kura_tenant:get_tenant()),
+            ?assertEqual({undefined, false}, kura_tenant:current_scope())
+        end}
+     || Missing <- [undefined, null, nil]
+    ].
+
+an_attribute_tenant_whose_field_heads_a_condition_is_refused_everywhere_test_() ->
+    Sub = {subquery, kura_query:from(?S)},
+    [
+        {atom_to_list(Head), fun() ->
+            kura_tenant:clear_tenant(),
+            Bad = kura_test_typing:ill_typed({attribute, {Head, Rest}}),
+            Refused = {invalid_tenant, Bad},
+            ?assertError(Refused, kura_tenant:put_tenant(Bad)),
+            ?assertError(Refused, kura_tenant:with_tenant(Bad, fun() -> ran end)),
+            ?assertError(Refused, kura_tenant:with_tenant(Bad, {erlang, self, []})),
+            ?assertError(Refused, kura_tenant:adopt({Bad, false})),
+            ?assertEqual(undefined, kura_tenant:get_tenant()),
+            _ = erlang:put(kura_tenant, Bad),
+            ?assertError(Refused, kura_tenant:get_tenant()),
+            ?assertError(Refused, kura_tenant:current_scope()),
+            _ = erlang:erase(kura_tenant)
+        end}
+     || {Head, Rest} <- [
+            {'or', [{org_id, 7}, {org_id, is_not_nil}]},
+            {'and', []},
+            {'not', {org_id, 7}},
+            {exists, Sub},
+            {not_exists, Sub},
+            {fragment, ~"1 = 1"}
+        ]
+    ].
+
+an_attribute_tenant_on_a_plain_field_is_taken_as_it_is_test_() ->
+    [
+        fun() ->
+            kura_tenant:clear_tenant(),
+            Tenant = {attribute, {Field, Value}},
+            ?assertEqual(undefined, kura_tenant:put_tenant(Tenant)),
+            ?assertEqual(Tenant, kura_tenant:get_tenant()),
+            ?assertEqual(Tenant, kura_tenant:with_tenant(Tenant, fun kura_tenant:get_tenant/0)),
+            ?assertEqual(Tenant, kura_tenant:clear_tenant())
+        end
+     || {Field, Value} <- [
+            {org_id, 7},
+            {org_id, ~"acme"},
+            {org_id, [1, 2]},
+            {org_id, #{id => 7}},
+            {org_id, true},
+            {in, 7},
+            {between, {1, 2}},
+            {'or_id', 7}
+        ]
+    ].
+
 put_tenant_accepts_undefined_as_no_tenant_test() ->
     kura_tenant:clear_tenant(),
     ?assertEqual(undefined, kura_tenant:put_tenant(undefined)),
@@ -55,10 +121,8 @@ get_tenant_refuses_a_malformed_stored_tenant_test() ->
 
 with_tenant_test() ->
     kura_tenant:clear_tenant(),
-    Result = kura_tenant:with_tenant({prefix, <<"tmp">>}, fun() ->
-        kura_tenant:get_tenant()
-    end),
-    ?assertEqual({prefix, <<"tmp">>}, Result),
+    Result = kura_tenant:with_tenant({prefix, ~"tmp"}, fun kura_tenant:get_tenant/0),
+    ?assertEqual({prefix, ~"tmp"}, Result),
     ?assertEqual(undefined, kura_tenant:get_tenant()).
 
 with_tenant_restores_previous_test() ->
@@ -68,6 +132,96 @@ with_tenant_restores_previous_test() ->
     end),
     ?assertEqual({prefix, <<"original">>}, kura_tenant:get_tenant()),
     kura_tenant:clear_tenant().
+
+with_tenant_ends_on_every_exit_test_() ->
+    Tenant = {prefix, ~"scoped"},
+    [
+        {Label, fun() ->
+            kura_tenant:clear_tenant(),
+            ?assertException(Class, boom, kura_tenant:with_tenant(Tenant, Raise)),
+            ?assertEqual(undefined, kura_tenant:get_tenant())
+        end}
+     || {Label, Class, Raise} <- [
+            {"error", error, fun() -> error(boom) end},
+            {"throw", throw, fun() -> throw(boom) end},
+            {"exit", exit, fun() -> exit(boom) end}
+        ]
+    ].
+
+with_tenant_that_is_refused_leaves_the_process_as_it_was_test() ->
+    kura_tenant:put_tenant({prefix, ~"original"}),
+    try
+        ?assertError(
+            {invalid_tenant, {prefix, "list"}},
+            kura_tenant:with_tenant(kura_test_typing:ill_typed({prefix, "list"}), fun() -> ok end)
+        ),
+        ?assertEqual({prefix, ~"original"}, kura_tenant:get_tenant())
+    after
+        kura_tenant:clear_tenant()
+    end.
+
+%% A value put in the process dictionary by hand must not make the scope's
+%% own tenant outlive it.
+with_tenant_over_an_invalid_stored_value_test() ->
+    erlang:put(kura_tenant, not_a_tenant),
+    try
+        ?assertEqual(
+            {prefix, ~"scoped"},
+            kura_tenant:with_tenant({prefix, ~"scoped"}, fun kura_tenant:get_tenant/0)
+        ),
+        ?assertEqual(not_a_tenant, erlang:get(kura_tenant)),
+        ?assertEqual(ok, kura_tenant:without_tenant(fun() -> ok end)),
+        ?assertEqual(not_a_tenant, erlang:get(kura_tenant))
+    after
+        erlang:erase(kura_tenant)
+    end.
+
+a_tenant_put_inside_a_scope_ends_with_it_test() ->
+    kura_tenant:clear_tenant(),
+    kura_tenant:with_tenant({prefix, ~"outer"}, fun() ->
+        kura_tenant:put_tenant({prefix, ~"inner"})
+    end),
+    ?assertEqual(undefined, kura_tenant:get_tenant()),
+    kura_tenant:without_tenant(fun() -> kura_tenant:put_tenant({prefix, ~"inner"}) end),
+    ?assertEqual(undefined, kura_tenant:get_tenant()).
+
+scopes_take_a_module_function_and_arguments_test() ->
+    kura_tenant:clear_tenant(),
+    ?assertEqual(
+        {prefix, ~"mfa"},
+        kura_tenant:with_tenant({prefix, ~"mfa"}, {kura_tenant, get_tenant, []})
+    ),
+    ?assertEqual(undefined, kura_tenant:get_tenant()),
+    kura_tenant:put_tenant({prefix, ~"original"}),
+    try
+        ?assertEqual(undefined, kura_tenant:without_tenant({kura_tenant, get_tenant, []})),
+        ?assertEqual([3, 2, 1], kura_tenant:without_tenant({lists, reverse, [[1, 2, 3]]})),
+        ?assertEqual({prefix, ~"original"}, kura_tenant:get_tenant())
+    after
+        kura_tenant:clear_tenant()
+    end.
+
+a_scope_is_handed_to_another_process_test() ->
+    kura_tenant:clear_tenant(),
+    Adopted = fun(Scope) ->
+        Caller = self(),
+        Pid = spawn(fun() ->
+            ok = kura_tenant:adopt(Scope),
+            Caller ! {self(), kura_tenant:get_tenant(), kura_tenant:current_scope()}
+        end),
+        receive
+            {Pid, Tenant, Seen} -> {Tenant, Seen}
+        end
+    end,
+    Tenant = {attribute, {org_id, 1}},
+    ?assertEqual({undefined, kura_tenant:current_scope()}, Adopted(kura_tenant:current_scope())),
+    ?assertMatch(
+        {Tenant, _},
+        kura_tenant:with_tenant(Tenant, fun() -> Adopted(kura_tenant:current_scope()) end)
+    ),
+    Unscoped = kura_tenant:without_tenant(fun kura_tenant:current_scope/0),
+    ?assertEqual({undefined, Unscoped}, Adopted(Unscoped)),
+    ?assertNotEqual(Unscoped, kura_tenant:current_scope()).
 
 attribute_tenant_test() ->
     kura_tenant:clear_tenant(),
@@ -215,6 +369,154 @@ scope_query_appends_after_existing_conditions_test() ->
     Q = kura_query:where(kura_query:from(?S), {title, ~"a"}),
     #kura_query{wheres = Wheres} = kura_tenant:scope_query({attribute, ?T}, Q),
     ?assertEqual([{title, ~"a"}, ?T], Wheres).
+
+a_tenant_field_the_schema_does_not_declare_test_() ->
+    NoColumn = {attribute, {no_such_field, 7}},
+    From = kura_query:from(?S),
+    Edge = kura_query:from(kura_test_edge_schema),
+    Undeclared = [
+        {"a query", NoColumn, From},
+        {"a query with conditions", NoColumn, kura_query:where(From, {title, ~"a"})},
+        {"a branch of a union", {attribute, ?T}, kura_query:union(From, Edge)},
+        {"the second of two branches", {attribute, ?T},
+            kura_query:union(kura_query:union(From, From), Edge)},
+        {"a branch of a branch", {attribute, ?T},
+            kura_query:union_all(From, kura_query:except(From, Edge))},
+        {"a virtual field is no column", {attribute, {full_name, 7}},
+            kura_query:from(kura_test_schema)}
+    ],
+    Unjudged = [
+        {"a join can bring the column in",
+            kura_query:join(From, inner, kura_test_edge_schema, {id, id})},
+        {"a CTE can bring the column in",
+            kura_query:with_cte(From, ~"posts", kura_query:from(~"other"))},
+        {"a table that is no schema", kura_query:from(~"posts")},
+        {"a name that is no schema", kura_query:from(posts)},
+        {"a subquery reads the outer query's column",
+            kura_query:where(
+                kura_query:from(~"posts"), {id, in, {subquery, kura_query:from(?S)}}
+            )}
+    ],
+    Scoped = fun(Tenant, Q) ->
+        #kura_query{wheres = Wheres} = Compiled = kura_tenant:scope_query(Tenant, Q),
+        {attribute, Condition} = Tenant,
+        ?assertEqual(Condition, lists:last(Wheres)),
+        ?assertEqual(Compiled, kura_tenant:scope_query(?REPO, Tenant, Q)),
+        Compiled
+    end,
+    {setup,
+        fun() ->
+            application:set_env(kura, repos, #{
+                ?REPO => #{dialect => kura_dialect_pg},
+                ?STRICT_REPO => #{dialect => kura_dialect_pg, require_tenant => true}
+            })
+        end,
+        fun(_) -> cleanup() end, [
+            [
+                {Name ++ ": scoped, and refused for a repo that requires a tenant", fun() ->
+                    _ = Scoped(Tenant, Q),
+                    ?assertError(
+                        {invalid_tenant, Tenant}, kura_tenant:scope_query(?STRICT_REPO, Tenant, Q)
+                    )
+                end}
+             || {Name, Tenant, Q} <- Undeclared
+            ],
+            [
+                {Name, fun() ->
+                    Compiled = Scoped(NoColumn, Q),
+                    ?assertEqual(Compiled, kura_tenant:scope_query(?STRICT_REPO, NoColumn, Q))
+                end}
+             || {Name, Q} <- Unjudged
+            ],
+            {"a field of the schema scopes it, whatever the repo requires", fun() ->
+                [
+                    ?assertMatch(#kura_query{wheres = [?T]}, Compiled)
+                 || Compiled <- [
+                        kura_tenant:scope_query({attribute, ?T}, From),
+                        kura_tenant:scope_query(?REPO, {attribute, ?T}, From),
+                        kura_tenant:scope_query(?STRICT_REPO, {attribute, ?T}, From)
+                    ]
+                ],
+                ?assertMatch(
+                    #kura_query{wheres = [{title, 7}]},
+                    kura_tenant:scope_query(?STRICT_REPO, {attribute, {title, 7}}, From)
+                )
+            end},
+            {"a tenant put_tenant/1 refuses is refused, whatever the repo requires", fun() ->
+                Bad = kura_test_typing:ill_typed({attribute, {'or', [{org_id, 7}]}}),
+                NoValue = {attribute, {org_id, undefined}},
+                [
+                    ?assertError({invalid_tenant, Tenant}, Scope(Tenant))
+                 || Tenant <- [Bad, NoValue],
+                    Scope <- [
+                        fun(T) -> kura_tenant:scope_query(T, From) end,
+                        fun(T) -> kura_tenant:scope_query(?REPO, T, From) end,
+                        fun(T) -> kura_tenant:scope_query(?STRICT_REPO, T, From) end
+                    ]
+                ]
+            end},
+            {"no tenant and a prefix leave the query as it is", fun() ->
+                [
+                    ?assertEqual(From, kura_tenant:scope_query(Repo, Tenant, From))
+                 || Repo <- [?REPO, ?STRICT_REPO], Tenant <- [undefined, {prefix, ~"acme"}]
+                ]
+            end}
+        ]}.
+
+%% What a write is matched on and stamped with, in each state of a schema.
+write_attribute_test_() ->
+    Shared = kura_test_shared_schema,
+    Repos = [?REPO, ?STRICT_REPO],
+    Under = fun(Tenant, Repo, Source) ->
+        kura_tenant:with_tenant(Tenant, {kura_tenant, write_attribute, [Repo, Source]})
+    end,
+    Unchecked = fun(Tenant, Source) ->
+        kura_tenant:with_tenant(Tenant, {kura_tenant, attribute, [Source]})
+    end,
+    {setup,
+        fun() ->
+            application:set_env(kura, repos, #{
+                ?REPO => #{dialect => kura_dialect_pg, require_tenant => false},
+                ?STRICT_REPO => #{dialect => kura_dialect_pg, require_tenant => true}
+            })
+        end,
+        fun(_) -> cleanup() end, [
+            {"a schema that declares the field is written under the tenant", fun() ->
+                [?assertEqual(?T, Under({attribute, ?T}, Repo, ?S)) || Repo <- Repos],
+                ?assertEqual(?T, Unchecked({attribute, ?T}, ?S))
+            end},
+            {"so is one that declares it and says every tenant shares it", fun() ->
+                Named = {name, ~"acme"},
+                [?assertEqual(Named, Under({attribute, Named}, Repo, Shared)) || Repo <- Repos],
+                ?assertEqual(Named, Unchecked({attribute, Named}, Shared))
+            end},
+            {"a shared schema without the field is written without it", fun() ->
+                [?assertEqual(none, Under({attribute, ?T}, Repo, Shared)) || Repo <- Repos],
+                ?assertEqual(none, Unchecked({attribute, ?T}, Shared))
+            end},
+            {"a schema that does not declare it is refused where a tenant is required", fun() ->
+                Tenant = {attribute, {no_such_field, 7}},
+                ?assertEqual({no_such_field, 7}, Under(Tenant, ?REPO, ?S)),
+                ?assertError({invalid_tenant, Tenant}, Under(Tenant, ?STRICT_REPO, ?S)),
+                ?assertEqual({no_such_field, 7}, Unchecked(Tenant, ?S)),
+                Virtual = {attribute, {full_name, 7}},
+                ?assertError(
+                    {invalid_tenant, Virtual}, Under(Virtual, ?STRICT_REPO, kura_test_schema)
+                )
+            end},
+            {"a table that is no schema is left to the database", fun() ->
+                [
+                    ?assertEqual(?T, Under({attribute, ?T}, Repo, Table))
+                 || Repo <- Repos, Table <- [~"posts", posts]
+                ]
+            end},
+            {"no tenant and a prefix name no field", fun() ->
+                ?assertEqual(none, kura_tenant:write_attribute(?REPO, ?S)),
+                ?assertEqual(none, kura_tenant:attribute(?S)),
+                [?assertEqual(none, Under({prefix, ~"acme"}, Repo, ?S)) || Repo <- Repos],
+                ?assertEqual(none, Unchecked({prefix, ~"acme"}, ?S))
+            end}
+        ]}.
 
 compiled_sql_without_tenant_is_unchanged_test() ->
     setup(),

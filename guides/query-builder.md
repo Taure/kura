@@ -74,6 +74,10 @@ kura_query:where(Q, {role, in, [~"admin", ~"moderator"]}).
 kura_query:where(Q, {status, not_in, [~"banned", ~"deleted"]}).
 ```
 
+An empty list is valid: `{role, in, []}` matches no row and
+`{role, not_in, []}` matches every row, a `NULL` one included. They compile
+to `1 = 0` and `1 = 1`, since `IN ()` is not SQL.
+
 ### BETWEEN
 
 ```erlang
@@ -87,12 +91,50 @@ kura_query:where(Q, {name, like, ~"A%"}).
 kura_query:where(Q, {email, ilike, ~"%@example.com"}).
 ```
 
+In a pattern `%` matches any run of characters and `_` any one character,
+so a pattern built from outside input lets the caller choose the wildcards:
+a search for `%` matches every row.
+
+### Matching text as it is
+
+`contains`, `starts_with` and `ends_with` match their value literally. The
+value is bound as a parameter and its `%`, `_` and escape character are
+escaped in SQL, with an explicit `ESCAPE` clause:
+
+```erlang
+kura_query:where(Q, {name, contains, Input}).
+kura_query:where(Q, {name, starts_with, Input}).
+kura_query:where(Q, {email, ends_with, ~"@example.com"}).
+%% WHERE "name" LIKE ('%' || replace(...) || '%') ESCAPE '!'
+```
+
+`icontains`, `istarts_with` and `iends_with` ignore case (`ILIKE`).
+
+To build a pattern of your own around outside input, escape the input with
+`kura_query:escape_like/1`:
+
+```erlang
+Pattern = <<(kura_query:escape_like(Input))/binary, "%@example.com">>,
+kura_query:where(Q, {email, like, Pattern}).
+```
+
+`escape_like/1` escapes with a backslash, the escape character of `like`
+and `ilike` on both backends: PostgreSQL's default, and named in the
+statement by kura_sqlite.
+
 ### NULL Checks
 
 ```erlang
 kura_query:where(Q, {deleted_at, is_nil}).
 kura_query:where(Q, {email, is_not_nil}).
 ```
+
+In the two-element form `is_nil` and `is_not_nil` are operators, never
+values. When the value is an atom that comes from outside, such as an enum
+filter read from a request, write `{status, '=', Status}`: the
+three-element form always binds its value, so `is_not_nil` cannot turn the
+filter into `IS NOT NULL`. `kura_repo_worker:get/3`, `get_by/3` and
+`reload/3` bind every value this way.
 
 ### Boolean Combinators
 
@@ -118,6 +160,37 @@ Raw SQL fragments with `?` placeholders:
 ```erlang
 kura_query:where(Q, {fragment, ~"lower(?) = ?", [~"Email", ~"alice@example.com"]}).
 ```
+
+Each `?` binds the next parameter. A `?` inside a string literal, a quoted
+identifier, a dollar-quoted string or a comment is text and binds nothing:
+
+```erlang
+kura_query:where(Q, {fragment, ~"title <> 'why?' AND author = ?", [~"alice"]}).
+```
+
+The number of `?` placeholders has to equal the number of parameters;
+otherwise compiling the query raises
+`{kura, {fragment_placeholder_mismatch, Placeholders, Params}}`. A fragment
+cannot use the `?` operators of PostgreSQL's `jsonb` for that reason: use
+`jsonb_exists/2`, `jsonb_exists_any/2` or `jsonb_exists_all/2`.
+
+A fragment is one condition. kura writes it inside parentheses, so an `OR`
+in its text stays within it and the conditions beside it, kura's own
+included (the tenant's, the soft-delete filter), apply to every row it
+matches:
+
+```erlang
+Q1 = kura_query:where(Q, {fragment, ~"title ILIKE ? OR body ILIKE ?", [S, S]}),
+kura_query:where(Q1, {published, true}).
+%% WHERE (title ILIKE $1 OR body ILIKE $2
+%% ) AND "published" = $3
+```
+
+The closing parenthesis is on a line of its own, so a fragment may end in a
+`--` comment.
+
+The SQL text of a fragment is trusted. Never build it from outside input;
+pass values as parameters.
 
 ### Encrypted Fields
 
@@ -198,9 +271,48 @@ kura_query:distinct(Q, [email]).
 ## LOCK
 
 ```erlang
-kura_query:lock(Q, ~"FOR UPDATE").
-kura_query:lock(Q, ~"FOR SHARE").
+kura_query:lock(Q, for_update).
+kura_query:lock(Q, for_share).
+kura_query:lock(Q, {for_update, skip_locked}).
+kura_query:lock(Q, {for_no_key_update, nowait}).
 ```
+
+The strengths are `for_update`, `for_no_key_update`, `for_share` and
+`for_key_share`, each alone or with `nowait` or `skip_locked`. To lock only
+some of the tables of a join, name them, and give a list for more than one
+clause:
+
+```erlang
+kura_query:lock(Q, {for_update, #{tables => [posts], wait => skip_locked}}).
+kura_query:lock(Q, [{for_update, #{tables => [posts]}}, {for_share, #{tables => [users]}}]).
+```
+
+A table is a schema module, or a table or alias name as an atom or a
+binary. An atom that is a schema module always means that schema's table;
+give an alias of the same name as a binary. The dialect quotes it, so a
+lock term never puts caller text into the statement.
+
+The same clauses written as SQL text are read into those terms:
+`~"FOR UPDATE"`, `~"FOR SHARE NOWAIT"`, `~"FOR UPDATE OF posts, comments"`.
+
+Text that is not a PostgreSQL locking clause is written into the statement
+as it is, as in 2.30. While `strict_locks` is unset that logs one warning
+per boot; `{strict_locks, false}` allows the text without the warning. Set
+
+```erlang
+{kura, [{strict_locks, true}]}
+```
+
+to make it raise `{kura, {invalid_lock, Lock}}` instead. That is the
+default in kura 3.0. For SQL kura should not read, be explicit that it is
+raw:
+
+```erlang
+kura_query:lock(Q, {fragment, ~"FOR UPDATE OF ONLY \"users\""}).
+```
+
+A lock fragment is written into the statement as it is under either
+setting. Never build it from outside input.
 
 ## Schema Prefix
 
@@ -236,12 +348,20 @@ Q2 = kura_query:join(Q1, inner, my_comment, {id, post_id}).
 
 Join types: `inner`, `left`, `right`, `full`.
 
+A join without a `select` returns the `from` table's columns only
+(`SELECT "my_user".*`), so each row is a row of the `from` schema. Name a
+joined table's columns with `select/2` or `select_expr/2` to read them.
+
 Once a query has a join, a bare field of the `from` schema is qualified
 with the `from` table in `select`, `where`, `having`, `order_by`,
 `group_by` and `distinct`, so a column both tables have (`id`,
 `inserted_at`) names the `from` table's column. A name the `from` schema
 does not declare is left bare, for the database to find in the joined
-tables; it must be unique among them. Under attribute tenancy the tenant
+tables; it must be unique among them. Where a joined schema stores that
+field under another `column`, the column is what the statement names, and a
+selected one comes back under the field's name. Two joined schemas that
+store the field under different columns raise
+`{kura, {ambiguous_field, Field, Columns}}`. Under attribute tenancy the tenant
 field stays bare too, so a join of two tables that both carry it is still
 refused (see the [Multitenancy](multitenancy.md) guide). An `order_by`
 name that is a `select_expr/2` alias stays bare, so it keeps naming the
@@ -260,6 +380,22 @@ Q2 = kura_query:where(Q1, {id, PostId}).
 %%      FROM "posts" INNER JOIN "users" ON "posts"."author_id" = "users"."id"
 %%      WHERE "posts"."id" = $1
 ```
+
+## UNION / INTERSECT / EXCEPT
+
+```erlang
+Q = kura_query:union(Admins, Moderators),
+Q1 = kura_query:limit(kura_query:order_by(Q, [{name, asc}]), 10).
+%% => SELECT ... UNION SELECT ... ORDER BY "name" ASC LIMIT $n
+```
+
+`union/2`, `union_all/2`, `intersect/2` and `except/2` combine two queries.
+An `order_by`, `limit` or `offset` on the first query applies to the
+combination, whether it was added before or after the second query, and an
+`order_by` names result columns. To order or limit one side on its own, put
+the clause on the second query: it is then parenthesised, as is a second
+query with CTEs or combinations of its own. PostgreSQL runs a parenthesised
+branch; SQLite does not.
 
 ## Aggregates
 

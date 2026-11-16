@@ -144,14 +144,9 @@ t_telemetry() ->
         Metadata = drain([]),
         ?assert(length(Metadata) >= 3),
         ?assertEqual(nomatch, binary:match(term_to_binary(Metadata), Plain)),
-        ?assert(
-            lists:any(
-                fun(#{params := Params}) ->
-                    lists:any(fun kura_crypto:is_deterministic_frame/1, Params)
-                end,
-                Metadata
-            )
-        )
+        Shown = lists:append([Params || #{params := Params} <- Metadata]),
+        ?assertNot(lists:any(fun kura_crypto:is_deterministic_frame/1, Shown)),
+        ?assert(lists:member(~"[redacted]", Shown))
     after
         telemetry:detach(?TELEMETRY)
     end.

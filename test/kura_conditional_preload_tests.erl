@@ -2,7 +2,6 @@
 -moduledoc "Integration tests for conditional preloading.".
 
 -include_lib("eunit/include/eunit.hrl").
--include("kura.hrl").
 
 %%----------------------------------------------------------------------
 %% Test fixture - reuses kura_test_schema (users) + kura_test_post_simple_schema
@@ -16,7 +15,8 @@ conditional_preload_test_() ->
             {"preload with limit", fun t_limit/0},
             {"preload with combined opts", fun t_combined/0},
             {"preload where filters to empty", fun t_where_empty/0},
-            {"regular preload unaffected", fun t_regular_unaffected/0}
+            {"regular preload unaffected", fun t_regular_unaffected/0},
+            {"a query's preload takes the conditions", fun t_in_a_query/0}
         ]
     end}.
 
@@ -117,6 +117,13 @@ t_where_empty() ->
         {posts, #{where => {title, ~"nonexistent"}}}
     ]),
     ?assertEqual([], maps:get(posts, Loaded)).
+
+t_in_a_query() ->
+    Q = kura_query:preload(kura_query:from(kura_test_cond_user), [
+        {posts, #{where => {published, true}, order_by => [{title, desc}]}}
+    ]),
+    {ok, [#{posts := Posts}]} = kura_repo_worker:all(kura_test_repo, Q),
+    ?assertEqual([~"Published B", ~"Published A"], [maps:get(title, P) || P <- Posts]).
 
 t_regular_unaffected() ->
     {ok, [User]} = kura_repo_worker:all(kura_test_repo, kura_query:from(kura_test_cond_user)),

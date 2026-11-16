@@ -1,0 +1,315 @@
+# Upgrading
+
+What a release changes for an application that already runs on kura:
+behaviour, settings and their defaults, and new API. `CHANGELOG.md` lists
+a release's changes by commit subject, as git-cliff groups them; this
+guide is written by hand and says what to do about them. For the move
+from 1.x see [MIGRATION-2.0](../MIGRATION-2.0.md).
+
+## After 2.30.0
+
+Nothing here needs a code change to keep a 2.30 application running, with
+the exceptions under [Behaviour that changes](#behaviour-that-changes).
+Several checks are new and off until asked for; see
+[Settings](#settings).
+
+### Sibling packages
+
+kura_postgres, kura_sqlite and rebar3_kura are released on their own. The
+releases that exist today keep working with this kura; three things wait
+for their next release:
+
+- the text-match operators on SQLite (`contains`, `starts_with`,
+  `ends_with` and their case-insensitive forms) need the next kura_sqlite;
+- so do the optional backend callbacks under
+  [For a backend](#for-a-backend), which no released kura_sqlite
+  implements yet;
+- until the next rebar3_kura, a migration that writes a column's name as a
+  binary makes the generator propose dropping that column and adding it
+  again. Keep column names atoms in migrations for now.
+
+### Settings
+
+All are optional and live in the `kura` application environment.
+
+| Setting | Left unset | Values | kura 3.0 |
+| --- | --- | --- | --- |
+| `max_page_size` | not capped; warns once | a positive integer, or `infinity` | `1000` |
+| `strict_assoc_cast` | a nested cast with no allow-list is allowed; warns once | `true`, `false` | `true` |
+| `require_tenant` | a missing tenant is not an error; warns once | `true`, `false` | planned: `true` on a repo that declares a tenancy strategy |
+| `strict_locks` | lock text kura cannot read is written as it is; warns once | `true`, `false` | `true` |
+| `encryption_write_format` | writes `v1`; warns once | `v1`, `v2` | `v2` |
+| `telemetry_error_detail` | as `false`; no warning | `true`, `false` | `false` |
+
+Unset is not the same as `false`. An unset setting keeps what 2.30 did and
+logs one warning per boot, the first time what it governs happens: a page
+of more than 1000 rows, a nested cast with no allow-list, a statement under
+a tenant, lock text kura cannot read, an encrypted write. A setting given
+any value, the permissive one included, is a decision and logs nothing.
+`telemetry_error_detail` never warns.
+
+- `require_tenant` is also a repo setting, in the repo's own config, which
+  wins over the application environment. See
+  [Multitenancy](multitenancy.md#requiring-a-tenant). kura 2.x has nothing
+  a repo declares a tenancy strategy with, so the 3.0 default is a plan.
+  Set to `true` it also refuses a query from, and a write to, a schema
+  that neither declares the attribute tenant's field nor is shared, which
+  is otherwise a warning; see [Tenancy](#tenancy).
+- `max_page_size` is also an option of `kura_paginator:paginate/3` and
+  `kura_paginator:cursor_paginate/3`, which wins.
+- kura does not start with a value it cannot read:
+  `{invalid_setting, Setting, Value}`. A repo's pool does not start with a
+  `require_tenant` that is not a boolean.
+
+### Behaviour that changes
+
+#### Queries
+
+- A join without `select` returns the `from` schema's columns only. It
+  used to return every joined table's columns, and a joined column of the
+  same name replaced the `from` row's value.
+- A field of a joined schema that has a `column` of its own is read and
+  filtered by that column. A field two joined schemas store under
+  different columns raises `{kura, {ambiguous_field, Field, Columns}}`.
+- A combined query (`union`, `intersect`, `except`) puts its `ORDER BY`,
+  `LIMIT` and `OFFSET` after the last branch, and parenthesises a branch
+  that has its own. The statement was a syntax error on PostgreSQL before.
+- `{Field, in, []}` compiles to `1 = 0` and `{Field, not_in, []}` to
+  `1 = 1`, where it was invalid SQL.
+- `get`, `get_by` and `reload` bind every value: the atoms `is_nil` and
+  `is_not_nil` as values are no longer read as operators.
+- A `?` inside a string, a quoted identifier, a dollar-quoted string or a
+  comment of a fragment is left alone. A fragment whose placeholders do
+  not match its parameters raises
+  `{kura, {fragment_placeholder_mismatch, Placeholders, Params}}`.
+- A `{fragment, SQL, Params}` condition is compiled inside parentheses:
+  `WHERE (SQL) AND ...`, with the closing parenthesis on a line of its own.
+  The SQL text of every query with a fragment condition changes. Results
+  change only for a fragment with an `OR` outside any parentheses of its
+  own, one that ends in a `--` comment, or one whose text is not a single
+  condition. A fragment is combined with the other conditions, kura's own
+  included (the tenant's, the soft-delete filter), as one unit: an `OR`
+  in it stays inside the fragment, a `--` comment ends with the fragment,
+  and text that is not a single condition, such as `a = 1 ORDER BY b`, is
+  a syntax error. Check your fragments for those three. To match on a
+  fragment or on another condition, write
+  `{'or', [{fragment, SQL, Params}, Condition]}`.
+- `kura_query:lock/2` reads a lock given as text into a lock term: `FOR`
+  with a strength, `OF` tables, `NOWAIT` or `SKIP LOCKED`, one clause or
+  several. Text it cannot read is written into the statement as before;
+  `strict_locks` decides whether that warns, passes or raises
+  `{kura, {invalid_lock, Text}}`. A term that is not a lock raises
+  `{kura, {invalid_lock, Lock}}`.
+- A query that uses full-text search, a window function, a vector
+  distance, a lock or `DISTINCT ON` raises
+  `{kura, {unsupported_capability, Capability, PoolModule}}` when the
+  repo's pool module declares a capability model and not that capability.
+  `kura_stream:stream/4` raises it for `cursors`. A pool module without
+  `capability_model/0`, as every backend released for 2.30 is, is not
+  checked.
+
+#### Schemas and rows
+
+- `#kura_field.column` is honoured in every statement and in loaded rows.
+- The `timestamps/0` callback is read; 2.30 declared it and never called
+  it. The fields it lists are stamped. The fields named `inserted_at` and
+  `updated_at` are stamped as well, as 2.30 stamped them, until kura 3.0:
+  where that differs from the declaration (a field of that name the
+  declaration leaves out, a declaration kura cannot use, or `[]` on a
+  schema that has them) the schema logs one warning each time it is
+  loaded. See `m:kura_schema`.
+- `kura_types:load(decimal, Text)` returns the text, exact, for a decimal
+  a driver hands over as text. A loaded row is as it was.
+- A schema module loaded after kura was first asked about its name is a
+  schema from then on, whichever function is asked first. kura used to
+  remember for the life of the VM that the name was not a schema, which
+  left it a bare table: no redaction and no encrypted-field guard.
+- A compiled query and a schema's load plan are kept with a format
+  version, and one kept by another release of kura, or one kura cannot
+  read, is dropped and worked out again where it used to be served or to
+  raise on every use. That covers the format, not a module whose code
+  changed: after a hot code upgrade of kura or of a schema module, call
+  `kura_query_cache:flush/0`, and `kura_schema:forget/1` for each schema
+  that changed.
+
+#### Changesets and writes
+
+- `validate_confirmation/2,3` reports a mismatch on `<Field>_confirmation`,
+  as 2.30 did, wherever an atom of that name exists: in any application
+  whose loaded code names the confirmation, in a schema, a view or the
+  params. kura no longer creates the atom, so where there is none the
+  mismatch is reported on `Field`. A confirmation declared as a field,
+  virtual or not, is always reported on. The confirmation is read from an
+  atom or a binary key of the params.
+- A database constraint error the changeset does not declare is reported
+  on a field only when its name is one the database generates for a
+  single column of the changeset's table, or `<table>_pkey`. Any other
+  name is reported on `base`; the field used to be guessed from the second
+  word of the name. A failed many-to-many join row is reported on the
+  association.
+- A changeset of a schema with redacted fields no longer carries the
+  database's message on `base`, which can quote a value: the error is
+  `database error <code>`.
+- `insert_all` of `[]` returns `{ok, 0}`; entries that do not set the same
+  fields return `{error, {entries_differ, Fields, EntryFields}}`; a
+  statement over PostgreSQL's bind limit raises
+  `{kura, {too_many_parameters, Count, 65535}}`.
+- `kura_paginator` returns `{error, {invalid_page, Page}}`,
+  `{error, {invalid_page_size, Size}}` or `{error, {invalid_limit, Limit}}`
+  for one that is not a positive integer.
+
+#### Tenancy
+
+- An attribute tenant whose value is `undefined`, `null` or `nil` raises
+  `{invalid_tenant, Tenant}`. It used to count as a tenant, compare the
+  field with `NULL` and stamp inserts with no owner.
+- The field of an attribute tenant has to be a field. A name
+  `kura_query` reads as the head of a condition (`and`, `or`, `not`,
+  `exists`, `not_exists`, `fragment`) raises `{invalid_tenant, Tenant}`
+  where the tenant is set, as a field that is not an atom already did.
+- Under an attribute tenant a schema is scoped, shared or undeclared, for
+  its reads and its writes alike; see
+  [The three states of a schema](multitenancy.md#the-three-states-of-a-schema).
+  Scoped: it declares the tenant's field as a stored field. It is matched
+  on the field and its inserts are stamped with the tenant, also when it
+  exports `tenant_scoped() -> false`; all tenants' rows are read inside
+  `kura_tenant:without_tenant/1`. Shared: it exports
+  `tenant_scoped() -> false` and does not declare the field. Nothing of it
+  names the tenant. Undeclared: neither.
+- A statement on an undeclared schema runs as it did in 2.30: the tenant
+  condition is added to a query, `update_all`, `delete_all`, `update`,
+  `delete` and an upsert and the database decides, so the statement is
+  scoped when the table has the column and refused there when it has not,
+  and an `insert` or `insert_all` writes the row without the tenant. New
+  is one warning per boot for each such schema, naming the schema and the
+  field. On a repo whose `require_tenant` is `true` each of them, an
+  insert included, raises `{invalid_tenant, Tenant}` instead, before
+  anything is sent and, for a write of a changeset, before its
+  `prepare_changes` functions and `before_*` hooks run. What sends no
+  statement returns as before: an `update` with nothing to change, a
+  changeset that is not valid, an `insert_all` of no entries. kura 3.0
+  raises on every repo: declare the tenant's field in each schema used
+  under the tenant, or export `tenant_scoped() -> false` from a schema
+  every tenant shares. kura judges a query only where it can tell: the
+  query, or a query combined with it, is from a schema and has no join
+  and no CTE. A write is always judged.
+- `kura_tenant:with_tenant/2` checks the tenant before changing anything
+  and restores the previous one however the function ends. Parallel
+  preloads run in the caller's tenant scope.
+
+#### Telemetry
+
+- The `error_reason` of the `[kura, repo, query]` event keeps the error's
+  code and the names in it, and drops its message and detail, for every
+  statement. `{telemetry_error_detail, true}` restores the whole error for
+  statements on schemas without redacted fields.
+- The same event's `source` is the table kura compiled the statement for,
+  where kura built the statement: for a query with a CTE, the table the
+  query is from, not the first one in the CTE's body. For raw SQL it is
+  still read from the text, where it is now the table, not the schema, of
+  a schema-qualified table, a keyword inside a longer word is not taken
+  for one, and `IF EXISTS` or `IF NOT EXISTS` after `TABLE` is passed
+  over: the source of `DROP TABLE IF EXISTS t` was `IF`. `ONLY` after
+  `FROM`, `UPDATE` or `TABLE` is passed over too.
+- For raw SQL, a keyword inside a string literal, a quoted identifier, a
+  comment or a dollar-quoted string is not read, so a table named only
+  there is never the `source`. Only the first 8192 bytes of the statement
+  are read. A table name that is not made of ASCII letters, digits and
+  underscores, or that those bytes cut short, gives `undefined`; such a
+  name used to be reported as it was written.
+- The same event's `num_rows` is the number of rows a write affected. It
+  was `0` for a write that returns no rows: `insert_all`, `update_all` and
+  `delete_all` without `returning`, and raw SQL.
+- The same event's `params` hold `~"[redacted]"` in place of a redacted
+  field's value. Only a schema that implements `redact/0` or has encrypted
+  fields is affected; see `m:kura_redact`.
+
+### New API
+
+- `where` and `having` operators `contains`, `starts_with`, `ends_with`,
+  `icontains`, `istarts_with`, `iends_with`; `kura_query:escape_like/1`.
+  On SQLite they need the next kura_sqlite release.
+- Lock terms `{Strength, #{tables => Tables, wait => Wait}}` and a list of
+  locks; `kura_query:lock_clause/1`, the lock a term or text is stored as.
+- `kura_query:sources/1`: every schema and table a query reads, through
+  joins, CTEs, combinations, subqueries and preloads, each with its role
+  (`from`, `join`, `cte`, `preload`). A later release may add a role.
+- `cast_assoc/3`, `cast_embed/3` and `kura_changeset:put_assoc/4` take
+  `cast`, the child fields params may set, and `with` as
+  `{Module, Function}`. See [Nested Changesets](cast_assoc.md).
+- Schema callbacks `redact/0` and `tenant_scoped/0`;
+  `kura_schema:redacted_fields/1` and `kura_schema:renamed_columns/1`.
+  An embed whose schema has a `redact/0` that lists a field, or embeds a
+  schema that does at any depth, is redacted whole with its parent.
+- `kura_redact:record/2` and `kura_redact:changeset/1`. Both are for
+  logging and never raise. For a schema with redacted fields or with
+  associations, what they cannot read (an error that is not
+  `{Field, Message}`, a message that is not text, a value under a key that
+  is not a field name) is replaced by `~"[redacted]"`, not passed through,
+  and a message that is a string or an atom comes back as a binary. In
+  the `params` of a changeset whose schema has redacted fields or
+  associations, a value is shown only under a key that names a field, an
+  embed or an association of the schema: the value under a confirmation or
+  a mistyped key is replaced, the key is kept, and an error message that
+  quotes the value is replaced with it. A schema with neither redacted
+  fields nor associations has nothing to hide: its record or changeset is
+  returned as it is. A term that is not a changeset, and a module that is
+  not a schema, give `~"[redacted]"` under `base`.
+- `kura_repo_worker:query/4` with `#{sensitive => true}` redacts a raw
+  statement's parameters in telemetry and the query log.
+- `kura_tenant:without_tenant/1`, `kura_tenant:current_scope/0` and
+  `kura_tenant:adopt/1`; `with_tenant/2` and `without_tenant/1` also take
+  `{Module, Function, Args}`.
+- `require_tenant`: a query or changeset write in a process with no
+  tenant raises `{kura, {tenant_required, Source}}`. It judges a query by
+  everything it reads, joins, CTEs and subqueries included.
+- A schema whose `tenant_scoped/0` returns `false` is shared by every
+  tenant: `require_tenant` does not ask a tenant for it, and under an
+  attribute tenant a query, `update_all` or `delete_all` that reads only
+  such schemas gets no tenant condition, and a write of its records
+  (`insert`, `update`, `delete`, an upsert, `insert_all`, the records of
+  an association) is neither matched on the tenant nor stamped with it.
+  Under an attribute tenant a schema without the callback is scoped when
+  it declares the tenant's field and undeclared when it does not, and one
+  that declares the field is scoped whatever the callback returns: it is
+  matched on the field, and all tenants' rows are read inside
+  `kura_tenant:without_tenant/1`. An undeclared schema is refused on a
+  repo whose `require_tenant` is `true`; see [Tenancy](#tenancy). A
+  process without a tenant names no field to judge by, so there
+  `require_tenant` exempts a schema that returns `false` whatever fields
+  it declares. See
+  [Multitenancy](multitenancy.md#the-three-states-of-a-schema).
+- `t:kura_migration:column_name/0`: a column in a `#kura_column{}`, a table
+  constraint, an `alter_table` operation, an index or a `safe/0` entry is
+  an atom or a binary. `kura_migration:column_text/1` gives either as
+  text.
+
+### For a backend
+
+- Capabilities `row_locks`, `distinct_on` and `cursors`, the optional
+  callback `capability_model/0`, and `kura_capabilities:check/2`,
+  `kura_capabilities:check_query/2` and `kura_capabilities:model/1`. A
+  backend's queries are checked once it declares model `1`; a model kura
+  does not know keeps the repo's pool from starting. See
+  `m:kura_capabilities`.
+- Optional `kura_dialect` callback `load_stored/2`: a backend without
+  native types turns what it stores (`1`/`0` for a boolean, ISO 8601 text
+  for a date or time) into the value kura loads. Core reads no backend's
+  stored forms itself.
+- Optional `kura_dialect` callback `placeholder/1`, and
+  `kura_dialect:placeholder/2`, which calls it or writes `$N`. The
+  migrator writes its version statements with it.
+- `#kura_query.lock` is a term for every lock `kura_query:lock/2` takes,
+  text included: `~"FOR UPDATE"` is stored as `for_update`, and text kura
+  cannot read as `{fragment, Text}`. 2.30 stored the binary. A dialect that
+  writes the field into the statement as it is has to render the term
+  instead: call `kura_query:lock_clause/1` on it, which also reads a binary
+  in a record built by hand, and write what comes back. See
+  [Locks](`m:kura_dialect#module-locks`).
+- The text-match operators (`contains`, `starts_with`, `ends_with`,
+  `icontains`, `istarts_with`, `iends_with`) are compiled by
+  `kura_dialect_pg` with `LIKE` and `ILIKE`. A backend whose database has
+  no `ILIKE`, or whose `LIKE` ignores case, has to compile them itself.
+  On SQLite they need the next kura_sqlite release: with kura_sqlite 1.3
+  the case-insensitive three are written as `ILIKE`, which SQLite refuses,
+  and the other three ignore the case of ASCII letters.

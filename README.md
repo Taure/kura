@@ -129,7 +129,11 @@ Supported conditions: `=`, `!=`, `<`, `>`, `<=`, `>=`, `like`, `ilike`, `matches
 to `to_tsvector(Field) @@ plainto_tsquery($n)`, with the query text bound
 as a parameter (`plainto_tsquery` treats it as plain words, so no query
 syntax is needed or trusted). Requires a backend declaring the
-`full_text_search` capability.
+`full_text_search` capability; on a backend that declares a capability
+model and not that capability the query raises
+`{kura, {unsupported_capability, full_text_search, PoolModule}}` when it is
+compiled. Window functions, vector distances, row locks and `DISTINCT ON`
+are checked the same way (see `kura_capabilities`).
 
 ```erlang
 Q = kura_query:where(kura_query:from(article), {body, matches, ~"erlang database"}),
@@ -297,11 +301,9 @@ What v2 does not cover yet:
 - **Only the repo read path decrypts v2**: rows loaded for a schema
   (`kura_db:load_row/2`, which every repo read, stream and preload uses).
   An encrypted column of a joined schema is loaded by the `from` schema's
-  types, so it comes back undecrypted. A join without a `select` reads
-  `SELECT *`, so when a joined column shares its name with an encrypted
-  field of the `from` schema, the joined value may be read under that
-  field: it raises for a v2 value; a v1 value decrypts and is returned
-  under the `from` field. Use an explicit `select` on joins.
+  types, so it comes back undecrypted. A join without a `select` returns
+  the `from` table's columns only, so a joined column that shares its name
+  with a field of the `from` schema is never read under that field.
 
 **Write format:** kura writes v1 by default and reads both. Opt in to v2
 with:
@@ -311,8 +313,13 @@ with:
 ```
 
 Any other value fails `kura` application start. Turn it on only once every
-node runs a kura that reads v2, since an older node cannot read a v2 value
-(see the rolling deployments guide). A later release makes v2 the default.
+node runs a kura that reads v2 (2.28.0 or later), since an older node
+cannot read a v2 value (see the rolling deployments guide). While the
+setting is absent, kura logs one warning per boot at the first encrypted
+write: a v1 value is not bound to its column, so someone who can write to
+the database can copy it into another encrypted column and have it
+decrypted there. Set `v1` explicitly to keep v1 without the warning. kura
+3.0 makes v2 the default.
 An existing v1 value stays v1 until that field is written again; there is
 no in-place re-encryption yet.
 
@@ -423,7 +430,7 @@ What deterministic mode gives away, compared with randomized:
 |---|---|---|
 | Which rows hold equal values | hidden | **revealed** (frequency analysis) |
 | Equal values across tenants | hidden | **revealed** in both tenancy modes: the context is the unprefixed table |
-| A looked-up value in telemetry and logged query parameters | never bound | its ciphertext, a stable pseudonym |
+| A looked-up value in telemetry and logged query parameters | never bound | `[redacted]` in kura's telemetry and query log; its ciphertext, a stable pseudonym, in the database's own statement log |
 | Length of a value, and whether it is `NULL` | revealed | revealed |
 | Personal data under the GDPR | yes | yes (pseudonymised, not anonymised) |
 | Unique index | never violated | works within one key generation |
@@ -617,6 +624,52 @@ Optional telemetry/logging config:
 ]}].
 ```
 
+### Redacting sensitive fields
+
+A schema lists the fields whose values must stay out of telemetry, the
+query log and the audit log with the optional `redact/0` callback.
+Encrypted fields are redacted without being listed.
+
+```erlang
+redact() -> [password_hash, reset_token].
+```
+
+`kura_redact:record/2` and `kura_redact:changeset/1` give you a copy that
+is safe to log. See `kura_redact` and the
+[telemetry guide](guides/telemetry.md#redacted-fields) for what is
+replaced where.
+
+Raw SQL is reported as written. Pass `#{sensitive => true}` to
+`kura_repo_worker:query/4` to redact its parameters. A failed statement's
+error is reported to telemetry without its message and detail, which can
+quote row values; `{telemetry_error_detail, true}` reports the whole error
+for statements on schemas without redacted fields. A changeset of a schema
+with redacted fields gets `database error <code>` on `base` in place of
+the database's message. An `{error, Reason}` returned by a query or a bulk
+write is the driver's error, message included: log its `code`.
+
+### Defaults that change in 3.0
+
+These settings are unset by default. Unset, each keeps its 2.x behaviour
+and logs one warning per boot, the first time what it governs is used. A
+setting given either value is a decision and logs nothing. Set them now.
+
+| Setting | Unset in 2.x | 3.0 default | Effect |
+| --- | --- | --- | --- |
+| `max_page_size` | not capped | `1000` | largest `page_size` / `limit` `kura_paginator` accepts; see the [pagination guide](guides/pagination.md) |
+| `encryption_write_format` | writes `v1` | `v2` | frame version new encrypted values are written in; v2 binds a value to its column. See [Encryption at rest](#encryption-at-rest) |
+| `require_tenant` | as `false` | planned: `true` on a repo that declares a tenancy strategy, which 2.x has no way to declare, and `false` on any other | a query or changeset write in a process with no tenant raises instead of running unscoped; set it for a repo in the repo's config, or here for every repo that sets none. See [Multitenancy](guides/multitenancy.md#requiring-a-tenant) |
+| `strict_assoc_cast` | as `false` | `true` | `cast_assoc`, `cast_embed` and `put_assoc` of a raw map must name the child fields params may set (`cast` or `with`); see [Nested Changesets](guides/cast_assoc.md) |
+| `strict_locks` | as `false` | `true` | `kura_query:lock/2` refuses lock text it cannot read instead of writing it into the statement; see the [query builder guide](guides/query-builder.md) |
+
+kura reads these, and `telemetry_error_detail`, when it starts, and does
+not start with a value it cannot read: the error names the setting.
+
+## Security
+
+Report a vulnerability privately through the repository's Security tab.
+[SECURITY.md](SECURITY.md) has the supported versions and what is in scope.
+
 ## Plugins
 
 - [rebar3_kura](https://github.com/Taure/rebar3_kura) - Rebar3 plugin that auto-generates migration files from schema changes. Add a field to your schema, run `rebar3 compile`, and the migration is created for you.
@@ -629,4 +682,4 @@ Optional telemetry/logging config:
 ## Requirements
 
 - Erlang/OTP 28+
-- One backend: PostgreSQL 14+ (via [kura_postgres](https://github.com/Taure/kura_postgres)) or SQLite 3.35+ (via [kura_sqlite](https://github.com/Taure/kura_sqlite))
+- One backend: PostgreSQL 14 to 18, each tested in CI (via [kura_postgres](https://github.com/Taure/kura_postgres)) or SQLite 3.35+ (via [kura_sqlite](https://github.com/Taure/kura_sqlite))

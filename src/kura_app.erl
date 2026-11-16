@@ -14,7 +14,7 @@
 -endif.
 
 start(_StartType, _StartArgs) ->
-    _ = kura_crypto:write_format(),
+    ok = valid_settings(),
     resolve_backends(),
     maybe_configure_pg_types(),
     ok = ensure_pools(),
@@ -22,6 +22,19 @@ start(_StartType, _StartArgs) ->
 
 stop(_State) ->
     ok.
+
+%% 2.30 refused an encryption_write_format it could not read with this
+%% reason, so that one keeps it.
+-spec valid_settings() -> ok.
+valid_settings() ->
+    case kura_settings:validate() of
+        ok ->
+            ok;
+        {error, {invalid_setting, encryption_write_format, _}} ->
+            error({kura_crypto, invalid_write_format});
+        {error, Invalid} ->
+            error({kura, Invalid})
+    end.
 
 %% Resolve backend aggregator(s) into concrete `dialect` / `pool_module`
 %% / `driver_module` keys. Two paths:

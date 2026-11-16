@@ -434,9 +434,11 @@ validate_confirmation_match_test() ->
     CS2 = kura_changeset:validate_confirmation(CS, password),
     ?assert(CS2#kura_changeset.valid).
 
+-define(CONFIRMED, #{password => string, password_confirmation => string}).
+
 validate_confirmation_mismatch_test() ->
     CS = kura_changeset:cast(
-        #{password => string},
+        ?CONFIRMED,
         #{},
         #{password => <<"secret">>, password_confirmation => <<"other">>},
         [password]
@@ -447,7 +449,7 @@ validate_confirmation_mismatch_test() ->
 
 validate_confirmation_missing_test() ->
     CS = kura_changeset:cast(
-        #{password => string},
+        ?CONFIRMED,
         #{},
         #{password => <<"secret">>},
         [password]
@@ -468,7 +470,7 @@ validate_confirmation_no_change_test() ->
 
 validate_confirmation_custom_message_test() ->
     CS = kura_changeset:cast(
-        #{password => string},
+        ?CONFIRMED,
         #{},
         #{password => <<"secret">>, password_confirmation => <<"other">>},
         [password]
@@ -478,6 +480,87 @@ validate_confirmation_custom_message_test() ->
     }),
     ?assertNot(CS2#kura_changeset.valid),
     ?assertMatch([{password_confirmation, <<"passwords don't match">>}], CS2#kura_changeset.errors).
+
+%% The error is on the confirmation's name wherever that atom exists, as a
+%% field of the changeset or not, and on the field itself where it does
+%% not, whichever key the params use. The name is never made into an atom.
+validate_confirmation_error_field_test_() ->
+    Errors = fun(Types, Field, Params) ->
+        CS = kura_changeset:validate_confirmation(
+            kura_changeset:cast(Types, #{}, Params, [Field]), Field
+        ),
+        CS#kura_changeset.errors
+    end,
+    Unseen = ~"kura_unseen_secret_confirmation",
+    [
+        {"no such field, the atom exists: " ++ Label, fun() ->
+            ?assertEqual(password_confirmation, binary_to_existing_atom(~"password_confirmation")),
+            ?assertEqual(
+                [{password_confirmation, ~"does not match"}],
+                Errors(#{password => string}, password, Params#{password => ~"s"})
+            )
+        end}
+     || {Label, Params} <- [
+            {"an atom key", #{password_confirmation => ~"other"}},
+            {"a binary key", #{~"password_confirmation" => ~"other"}},
+            {"no key", #{}}
+        ]
+    ] ++
+        [
+            {"no such field, no such atom: " ++ Label, fun() ->
+                ?assertEqual(
+                    [{kura_unseen_secret, ~"does not match"}],
+                    Errors(
+                        #{kura_unseen_secret => string},
+                        kura_unseen_secret,
+                        Params#{kura_unseen_secret => ~"s"}
+                    )
+                ),
+                ?assertError(badarg, binary_to_existing_atom(Unseen, utf8))
+            end}
+         || {Label, Params} <- [{"a binary key", #{Unseen => ~"other"}}, {"no key", #{}}]
+        ] ++
+        [
+            {"a field of the changeset: " ++ Label, fun() ->
+                ?assertEqual(
+                    [{password_confirmation, ~"does not match"}],
+                    Errors(?CONFIRMED, password, Params#{password => ~"s"})
+                )
+            end}
+         || {Label, Params} <- [
+                {"an atom key", #{password_confirmation => ~"other"}},
+                {"a binary key", #{~"password_confirmation" => ~"other"}},
+                {"no key", #{}}
+            ]
+        ].
+
+validate_confirmation_reads_either_key_test_() ->
+    Valid = fun(Types, Field, Params) ->
+        CS = kura_changeset:validate_confirmation(
+            kura_changeset:cast(Types, #{}, Params, [Field]), Field
+        ),
+        CS#kura_changeset.valid
+    end,
+    Unseen = ~"kura_unseen_secret_confirmation",
+    [
+        ?_assert(
+            Valid(#{password => string}, password, #{
+                password => ~"s", ~"password_confirmation" => ~"s"
+            })
+        ),
+        ?_assert(
+            Valid(#{password => string}, password, #{
+                ~"password" => ~"s", password_confirmation => ~"s"
+            })
+        ),
+        ?_assert(Valid(?CONFIRMED, password, #{password => ~"s", password_confirmation => ~"s"})),
+        ?_assert(
+            Valid(#{kura_unseen_secret => string}, kura_unseen_secret, #{
+                kura_unseen_secret => ~"s", Unseen => ~"s"
+            })
+        ),
+        ?_assertError(badarg, binary_to_existing_atom(Unseen, utf8))
+    ].
 
 validate_confirmation_schemaless_test() ->
     Types = #{email => string},

@@ -2,7 +2,6 @@
 -moduledoc "Integration tests for soft delete functionality.".
 
 -include_lib("eunit/include/eunit.hrl").
--include("kura.hrl").
 
 %%----------------------------------------------------------------------
 %% Test fixture

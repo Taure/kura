@@ -55,6 +55,29 @@ that should fail would instead return rows in a meaningless order. A
 dialect that delegates to `kura_dialect_pg` has to catch the node before
 it does.
 
+## Text matches
+
+`{Field, Op, Text}` with `Op` one of `contains`, `starts_with`, `ends_with`,
+`icontains`, `istarts_with` and `iends_with` (`?KURA_IS_TEXT_MATCH_OP`)
+matches `Text` literally. `Text` is a bound value, so an implementation
+cannot escape it in Erlang: it escapes the wildcards in SQL and names the
+escape character in an `ESCAPE` clause, as `kura_dialect_pg` does with
+`replace/3`. The `i` forms ignore case; `kura_dialect_pg` emits `ILIKE`,
+which a dialect for a backend without it has to replace.
+
+## Patterns
+
+`{Field, like, Pattern}` and `{Field, ilike, Pattern}` take a pattern whose
+escape character is the backslash, which is what `kura_query:escape_like/1`
+writes. `kura_dialect_pg` relies on PostgreSQL's default. A dialect for a
+backend whose `LIKE` has no default escape character has to name it:
+`LIKE ? ESCAPE '\'`.
+
+## Empty lists
+
+`{Field, in, []}` matches no row and `{Field, not_in, []}` every row.
+`kura_dialect_pg` emits `1 = 0` and `1 = 1`, never `IN ()`.
+
 ## Deterministic lookups
 
 `kura_query:where/2` and `kura_query:having/2` rewrite a comparison on a
@@ -69,6 +92,34 @@ are kura's own and must never appear in the SQL. A dialect that delegates
 to `kura_dialect_pg` but binds binaries as text, as SQLite does, has to
 catch the node before it delegates and cast each placeholder to bytes.
 
+## Locks
+
+The `lock` of a query is whatever the caller put there: a term from
+`kura_query:lock/2`, or in a record built by hand a binary. Read it through
+`kura_query:lock_clause/1`, never as it is. That returns a strength,
+`{Strength, Wait}`, `{Strength, #{tables := Names}}` with an optional
+`wait`, a list of those for several clauses, or `{fragment, SQL}`, and
+raises for anything else. Quote each of `Names` as an identifier; only a
+fragment's `SQL` goes into the statement unquoted.
+
+A dialect may take a stronger lock than the one asked for, never a weaker
+one: a backend without `FOR NO KEY UPDATE` takes `FOR UPDATE`.
+
+## Stored values
+
+A driver with a native type for every kura type returns each value in the
+Erlang form `kura_types:load/2` reads, and its dialect has nothing to do.
+A backend that stores a type in another form implements `load_stored/2`,
+which kura calls on each non-null value of a row read through a schema,
+with the field's type, before `kura_types:load/2`. It returns the Erlang
+form, or the value as it is when it has nothing to do or cannot read it;
+the row then keeps what the driver returned, as it does for any value
+`load/2` refuses.
+
+It must never make a float of a `decimal` held as text:
+`kura_types:load/2` keeps that text exact. JSON text for `jsonb` and embeds
+needs nothing either, `load/2` decodes it.
+
 ## Public API entry point
 
 Consumers go through `kura_query_compiler`, which delegates to the
@@ -78,7 +129,7 @@ callbacks directly.
 
 -include("kura.hrl").
 
--export([qualified_columns/1]).
+-export([qualified_columns/1, placeholder/2, of_repo/1, loads_stored/1]).
 
 -export_type([sql/0, params/0, counter/0, table/0]).
 
@@ -165,7 +216,25 @@ not raise on a value or log one.
 """.
 -callback convert_values(#kura_query{}) -> #kura_query{}.
 
--optional_callbacks([column_type/1, format_default/1, convert_values/1]).
+-doc """
+Optional. The text of the `N`th bind parameter in a statement: `$N` for
+PostgreSQL, `?N` for SQLite. kura writes the few statements it does not
+build from a query, such as the migrator's version bookkeeping, with it.
+Without it they are written with `$N`.
+""".
+-callback placeholder(counter()) -> iodata().
+
+-doc """
+Optional. Turn `Value`, as the driver returned it for a field of `Type`,
+into the Erlang form `kura_types:load/2` reads. See "Stored values" in the
+moduledoc. Called once for each non-null value of a row read through a
+schema; never for raw SQL. Return `Value` unchanged for anything else.
+""".
+-callback load_stored(Type :: kura_types:kura_type(), Value :: term()) -> term().
+
+-optional_callbacks([
+    column_type/1, format_default/1, convert_values/1, placeholder/1, load_stored/2
+]).
 
 -doc """
 Which bare fields of a query name a column of its `from` table.
@@ -194,6 +263,43 @@ qualified_columns(#kura_query{from = From}) when is_atom(From), From =/= undefin
     end;
 qualified_columns(#kura_query{}) ->
     undefined.
+
+-doc """
+The text of the `N`th bind parameter under `Dialect`: its `placeholder/1`
+when it has one, and `$N` otherwise, or when `Dialect` is `undefined`.
+""".
+-spec placeholder(module() | undefined, counter()) -> iodata().
+placeholder(undefined, N) ->
+    kura_dialect_pg:placeholder(N);
+placeholder(Dialect, N) ->
+    _ = code:ensure_loaded(Dialect),
+    case erlang:function_exported(Dialect, placeholder, 1) of
+        true -> Dialect:placeholder(N);
+        false -> kura_dialect_pg:placeholder(N)
+    end.
+
+-doc false.
+-spec of_repo(module()) -> module() | undefined.
+of_repo(RepoMod) ->
+    case maps:get(dialect, kura_repo:settings(RepoMod), undefined) of
+        Dialect when is_atom(Dialect), Dialect =/= undefined ->
+            Dialect;
+        _ ->
+            case application:get_env(kura, dialect) of
+                {ok, Global} when is_atom(Global) -> Global;
+                _ -> undefined
+            end
+    end.
+
+-doc false.
+-spec loads_stored(module() | undefined) -> boolean().
+loads_stored(undefined) ->
+    false;
+loads_stored(Dialect) ->
+    erlang:function_exported(Dialect, load_stored, 2) orelse
+        (not erlang:module_loaded(Dialect) andalso
+            code:ensure_loaded(Dialect) =:= {module, Dialect} andalso
+            erlang:function_exported(Dialect, load_stored, 2)).
 
 -spec unqualified_tenant(#{atom() => kura_types:kura_type()}) ->
     #{atom() => kura_types:kura_type()}.

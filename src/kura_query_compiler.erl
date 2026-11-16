@@ -15,6 +15,8 @@ This module is internal. Use `kura_repo_worker` for executing queries.
 -export([
     to_sql/2,
     to_sql_cached/2,
+    statement/2,
+    facts/1,
     to_sql_from/3,
     insert/4,
     insert/5,
@@ -27,6 +29,19 @@ This module is internal. Use `kura_repo_worker` for executing queries.
     dialect/1
 ]).
 
+-export_type([facts/0]).
+
+-doc """
+What holds for every query of one shape, so that a cached shape is not
+walked again: how its parameters are shown to telemetry, the table telemetry
+names as its source, and what it reads that needs a tenant.
+""".
+-type facts() :: #{
+    shown := plain | redacted | hidden,
+    source := binary() | undefined,
+    tenant_scoped := [atom() | binary()]
+}.
+
 -doc """
 Return the dialect module configured for `RepoMod`.
 
@@ -37,15 +52,9 @@ Resolution order:
 """.
 -spec dialect(module()) -> module().
 dialect(RepoMod) ->
-    Cfg = kura_repo:settings(RepoMod),
-    case maps:get(dialect, Cfg, undefined) of
-        M when is_atom(M), M =/= undefined ->
-            M;
-        _ ->
-            case application:get_env(kura, dialect) of
-                {ok, GD} when is_atom(GD) -> GD;
-                _ -> error({no_dialect_configured, RepoMod})
-            end
+    case kura_dialect:of_repo(RepoMod) of
+        undefined -> error({no_dialect_configured, RepoMod});
+        Dialect -> Dialect
     end.
 
 -doc """
@@ -68,14 +77,24 @@ plaintext either.
 to_sql(RepoMod, Query) ->
     ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
+    ok = check_capabilities(RepoMod, Query),
     compile_query(RepoMod, Query).
+
+-spec check_capabilities(module(), #kura_query{}) -> ok.
+check_capabilities(RepoMod, Query) ->
+    case kura_repo:settings(RepoMod) of
+        #{pool_module := PoolMod} when is_atom(PoolMod) ->
+            kura_capabilities:check_query(PoolMod, Query);
+        _ ->
+            ok
+    end.
 
 %% Compiles without the distance and encrypted checks; every caller has
 %% run them on the query.
 -spec compile_query(module(), #kura_query{}) -> {iodata(), [term()]}.
 compile_query(RepoMod, Query) ->
     Dialect = dialect(RepoMod),
-    Dialect:to_sql(convert(Dialect, scope(Query))).
+    Dialect:to_sql(convert(Dialect, scope(RepoMod, Query))).
 
 -doc """
 Cached `to_sql/2`. The cache key includes `RepoMod` so two repos with
@@ -112,16 +131,45 @@ before anything is stored, and on every call that compiles directly. A hit
 skips it: the guard reads the sources, joins, selects, CTEs, combinations and
 the structure of every condition and subquery, all of which the shape keeps,
 and never a bound value, which is all the shape replaces. A hit therefore
-means a query of the same shape already passed. A query the shape split
+means a query of the same shape already passed. The capability check
+(`kura_capabilities:check_query/2`) runs at the same points for the same
+reason. A query the shape split
 cannot take apart, such as one with an improper condition list, goes through
 `to_sql/2`, so it is checked and never cached.
+
+An entry also holds what else is the same for every query of its shape
+(`t:facts/0`): what it reads that needs a tenant, how telemetry may show its
+parameters, and the table telemetry names. A hit judges the tenant
+requirement by the first and hands the rest to the caller, so nothing walks
+the query again.
 """.
 -spec to_sql_cached(module(), #kura_query{}) -> {iodata(), [term()]}.
 to_sql_cached(RepoMod, Query) ->
+    {SQL, Params, _Facts} = statement(RepoMod, Query),
+    {SQL, Params}.
+
+-doc false.
+-spec statement(module(), #kura_query{}) -> {iodata(), [term()], facts()}.
+statement(RepoMod, Query) ->
     case split(convert(dialect(RepoMod), Query)) of
         {ok, Shape, Values} -> cached(RepoMod, Query, Shape, Values);
-        malformed -> to_sql(RepoMod, Query)
+        malformed -> compiled(RepoMod, Query)
     end.
+
+-spec compiled(module(), #kura_query{}) -> {iodata(), [term()], facts()}.
+compiled(RepoMod, Query) ->
+    {SQL, Params} = to_sql(RepoMod, Query),
+    {SQL, Params, facts(Query)}.
+
+-doc false.
+-spec facts(#kura_query{}) -> facts().
+facts(Query) ->
+    Sources = kura_query:sources(Query),
+    #{
+        shown => kura_redact:mode(Query, Sources),
+        source => kura_db:source_name(Query#kura_query.from),
+        tenant_scoped => kura_tenant:scoped_in(Sources)
+    }.
 
 %% A split crash would carry the query's values in its stacktrace.
 -spec split(#kura_query{}) -> {ok, #kura_query{}, tuple()} | malformed.
@@ -132,25 +180,33 @@ split(Query) ->
         error:_ -> malformed
     end.
 
--spec cached(module(), #kura_query{}, #kura_query{}, tuple()) -> {iodata(), [term()]}.
+%% A hit reads the query's facts from the entry: the tenant requirement is
+%% judged by the sources the shape was stored with, without a walk.
+-spec cached(module(), #kura_query{}, #kura_query{}, tuple()) ->
+    {iodata(), [term()], facts()}.
 cached(RepoMod, Query, Shape, Values) ->
     ok = kura_query:check_distances(Query),
-    Key = {RepoMod, kura_tenant:get_tenant(), Shape},
+    Tenant = kura_tenant:get_tenant(),
+    Key = {RepoMod, Tenant, Shape},
     case kura_query_cache:get(Key) of
-        {ok, {SQL, Template}} ->
-            {SQL, kura_query_shape:bind(Template, Values)};
+        {ok, {SQL, Template, #{tenant_scoped := Scoped} = Facts}} ->
+            ok = kura_tenant:permit(RepoMod, Tenant, Scoped),
+            {SQL, kura_query_shape:bind(Template, Values), Facts};
         {ok, uncacheable} ->
-            ok = kura_query:check_encrypted(Query),
-            compile_query(RepoMod, Query);
+            compiled(RepoMod, Query);
         miss ->
             ok = kura_query:check_encrypted(Query),
+            ok = check_capabilities(RepoMod, Query),
+            #{tenant_scoped := Scoped} = Facts = facts(Query),
+            ok = kura_tenant:permit(RepoMod, Tenant, Scoped),
             case compile_shape(RepoMod, Shape, tuple_size(Values)) of
-                {ok, {SQL, Template} = Entry} ->
-                    kura_query_cache:put(Key, Entry),
-                    {SQL, kura_query_shape:bind(Template, Values)};
+                {ok, {SQL, Template}} ->
+                    kura_query_cache:put(Key, {SQL, Template, Facts}),
+                    {SQL, kura_query_shape:bind(Template, Values), Facts};
                 uncacheable ->
                     kura_query_cache:put(Key, uncacheable),
-                    compile_query(RepoMod, Query)
+                    {SQL, Params} = compile_query(RepoMod, Query),
+                    {SQL, Params, Facts}
             end
     end.
 
@@ -175,8 +231,9 @@ compile_shape(RepoMod, Shape, Arity) ->
 to_sql_from(RepoMod, Query, StartCounter) ->
     ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
+    ok = check_capabilities(RepoMod, Query),
     Dialect = dialect(RepoMod),
-    Dialect:to_sql_from(convert(Dialect, scope(Query)), StartCounter).
+    Dialect:to_sql_from(convert(Dialect, scope(RepoMod, Query)), StartCounter).
 
 -spec insert(module(), atom() | module(), [atom()], map()) -> {iodata(), [term()]}.
 insert(RepoMod, SchemaOrTable, Fields, Data) ->
@@ -200,16 +257,18 @@ update_all(RepoMod, Query, SetMap) ->
     ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
     ok = check_bulk_write(Query),
+    ok = check_capabilities(RepoMod, Query),
     Dialect = dialect(RepoMod),
-    Dialect:update_all(convert(Dialect, scope(Query)), SetMap).
+    Dialect:update_all(convert(Dialect, scope(RepoMod, Query)), SetMap).
 
 -spec delete_all(module(), #kura_query{}) -> {iodata(), [term()]}.
 delete_all(RepoMod, Query) ->
     ok = kura_query:check_distances(Query),
     ok = kura_query:check_encrypted(Query),
     ok = check_bulk_write(Query),
+    ok = check_capabilities(RepoMod, Query),
     Dialect = dialect(RepoMod),
-    Dialect:delete_all(convert(Dialect, scope(Query))).
+    Dialect:delete_all(convert(Dialect, scope(RepoMod, Query))).
 
 -spec insert_all(module(), atom() | module(), [atom()], [map()]) -> {iodata(), [term()]}.
 insert_all(RepoMod, SchemaOrTable, Fields, Rows) ->
@@ -260,6 +319,6 @@ check_bulk_write(#kura_query{} = Q) ->
         [Clause | _] -> erlang:error({kura, {unsupported_in_bulk_write, Clause}})
     end.
 
--spec scope(#kura_query{}) -> #kura_query{}.
-scope(Query) ->
-    kura_tenant:scope_query(kura_tenant:get_tenant(), Query).
+-spec scope(module(), #kura_query{}) -> #kura_query{}.
+scope(RepoMod, Query) ->
+    kura_tenant:scope_query(RepoMod, kura_tenant:tenant_for(RepoMod, Query), Query).

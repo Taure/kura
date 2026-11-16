@@ -59,6 +59,12 @@ so it supports none of the standard SQL feature flags. Consumers that
 require any capability via `kura_capabilities:require/2` will refuse
 to start when configured against this pool, which is the correct
 behavior for a fake test pool.
+
+The module declares no `capability_model/0` on purpose, so kura does not
+check a query against this list. The pool stands in under a driver of the
+test's own, and in 2.30 a query with a lock, a window function or
+`DISTINCT ON` compiled against it; under model 1 the empty list would
+refuse each of them. kura 3.0 checks every pool module, this one included.
 """.
 -spec capabilities() -> kura_capabilities:capability_set().
 capabilities() -> [].

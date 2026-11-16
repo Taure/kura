@@ -65,7 +65,12 @@ column under 2^32 distinct values per key (a collision probability of about
 
 The write format of `encrypt/1` and `encrypt/2` comes from the `kura`
 application environment, `{encryption_write_format, v1 | v2}` (default
-`v1`). `encrypt/3` always writes v2.
+`v1`). `encrypt/3` always writes v2. While the setting is absent, the first
+value written logs one warning per boot: a v1 frame is not bound to its
+column, so someone who can write to the database can move a ciphertext to
+another encrypted column and have it decrypted there. Setting `v1`
+explicitly keeps v1 without the warning. The default becomes `v2` in kura
+3.0.
 
 A column reads with a `t:policy/0`: its mode and its `legacy` setting.
 With `legacy => accept`, a v1 frame and a v2 frame of the other mode are
@@ -146,7 +151,7 @@ context (`encrypt/2`).
 """.
 -spec encrypt(binary()) -> binary().
 encrypt(Plain) when is_binary(Plain) ->
-    case write_format() of
+    case format_to_write() of
         v1 -> encrypt_v1(Plain);
         v2 -> erlang:error({kura_crypto, no_context})
     end;
@@ -161,7 +166,7 @@ Schema-aware callers reach it through `kura_types:dump/3`.
 -spec encrypt(binary(), context()) -> binary().
 encrypt(Plain, Context) when is_binary(Plain) ->
     Ctx = context_bytes(Context),
-    case write_format() of
+    case format_to_write() of
         v1 -> encrypt_v1(Plain);
         v2 -> encrypt_v2(Plain, Ctx)
     end;
@@ -255,10 +260,31 @@ other value raises `invalid_write_format`.
 """.
 -spec write_format() -> write_format().
 write_format() ->
-    case application:get_env(kura, encryption_write_format, v1) of
-        v1 -> v1;
-        v2 -> v2;
-        _ -> erlang:error({kura_crypto, invalid_write_format})
+    {Format, _Source} = configured_write_format(),
+    Format.
+
+configured_write_format() ->
+    case kura_settings:read(encryption_write_format) of
+        unset -> {v1, default};
+        {ok, v2} -> {v2, chosen};
+        {ok, _V1} -> {v1, chosen};
+        {invalid, _} -> erlang:error({kura_crypto, invalid_write_format})
+    end.
+
+%% v1 by default is kept for nodes that cannot read v2 yet. A v1 frame is
+%% not bound to its column, so the default is worth one warning per boot.
+format_to_write() ->
+    case configured_write_format() of
+        {Format, chosen} ->
+            Format;
+        {Format, default} ->
+            ok = kura_boot_warning:once(encryption_write_format, #{
+                msg =>
+                    ~"kura: encrypted fields are written as v1 frames, which are not bound to their column, because encryption_write_format is not set",
+                fix =>
+                    ~"once every node runs kura 2.28 or later, set {kura, [{encryption_write_format, v2}]}; v2 is the default in 3.0"
+            }),
+            Format
     end.
 
 encrypt_v1(Plain) ->

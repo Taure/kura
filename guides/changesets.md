@@ -188,6 +188,13 @@ The bulk paths have no changeset to carry the error, so they return it directly:
     my_repo:update_all(Query, #{metadata => {not_json, encodable}}).
 ```
 
+`insert_all` writes one statement, so its entries must all set the same fields:
+an entry that differs returns `{error, {entries_differ, Fields, EntryFields}}`
+and nothing is written. An empty list returns `{ok, 0}` without a statement. A
+statement binds a limited number of values, 65535 on PostgreSQL, one per field
+of each entry; a longer list raises `{kura, {too_many_parameters, Count, Max}}`,
+so split it and insert the parts inside one transaction.
+
 `update_all/2` dumps its SET map through the schema's field types whenever the query's
 source is a schema module, so a `jsonb` map or any other non-primitive reaches the
 driver already serialised.

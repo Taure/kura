@@ -477,8 +477,9 @@ schema_migrations_bootstrap_failure_is_returned(_Config) ->
     %% The statement's result used to be discarded, so a database that
     %% would not let kura create schema_migrations produced `ok` here
     %% and `relation "schema_migrations" does not exist` from every
-    %% query after it. The role has USAGE but not CREATE on `public`,
-    %% which is the default for a non-owner role since Postgres 15.
+    %% query after it. The role has USAGE but not CREATE on `public`:
+    %% the default for a non-owner role since PostgreSQL 15, and what
+    %% ensure_denied_role/0 revokes on 14.
     ensure_denied_role(),
     ensure_denied_pool(),
     _ = query(~"DROP TABLE IF EXISTS schema_migrations CASCADE", []),
@@ -504,6 +505,7 @@ ensure_denied_role() ->
     %% CREATE ROLE has no IF NOT EXISTS, and the role outlives the
     %% suite, so a duplicate is the normal case on a re-run.
     _ = query(~"CREATE ROLE kura_ma_nocreate LOGIN PASSWORD 'nocreate'", []),
+    #{} = query(~"REVOKE CREATE ON SCHEMA public FROM PUBLIC", []),
     ok.
 
 ensure_denied_pool() ->

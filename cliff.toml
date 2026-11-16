@@ -2,6 +2,9 @@
 header = """
 # Changelog\n
 All notable changes to this project will be documented in this file.\n
+git-cliff writes this file from the commit subjects. What a release
+changes for an application that runs on kura, and each setting with its
+default, is in [Upgrading](guides/upgrading.md).\n
 """
 body = """
 {% if version %}\

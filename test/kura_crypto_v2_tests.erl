@@ -1,6 +1,8 @@
 -module(kura_crypto_v2_tests).
 -include_lib("eunit/include/eunit.hrl").
 
+-export([log/2]).
+
 -define(CTX, {~"secrets", ~"ssn"}).
 
 %% Computed with an independent HKDF-SHA256 and AES-256-GCM implementation
@@ -40,7 +42,9 @@ v2_test_() ->
         {"unknown versions raise", fun t_unknown_version/0},
         {"rotation reads old v2 frames", fun t_rotation/0},
         {"a keyring key that is not 32 bytes raises", fun t_bad_keyring/0},
-        {"errors carry no key material or plaintext", fun t_no_secrets_in_errors/0}
+        {"errors carry no key material or plaintext", fun t_no_secrets_in_errors/0},
+        {"an unset write format warns once per boot", fun t_unset_write_format_warns_once/0},
+        {"a chosen write format does not warn", fun t_chosen_write_format_is_quiet/0}
     ]}.
 
 setup() ->
@@ -325,3 +329,54 @@ ill_typed(Term) ->
 
 hex(Hex) ->
     binary:decode_hex(Hex).
+
+t_unset_write_format_warns_once() ->
+    ?assertMatch(
+        [_],
+        write_format_warnings(fun() ->
+            <<1, _/binary>> = kura_crypto:encrypt(~"a", ?CTX),
+            <<1, _/binary>> = kura_crypto:encrypt(~"b", ?CTX),
+            <<1, _/binary>> = kura_crypto:encrypt(~"c"),
+            v1 = kura_crypto:write_format()
+        end)
+    ).
+
+t_chosen_write_format_is_quiet() ->
+    ?assertEqual(
+        [],
+        write_format_warnings(fun() ->
+            v1 = kura_crypto:write_format(),
+            <<2, _/binary>> = kura_crypto:encrypt(~"a", ?CTX, randomized),
+            application:set_env(kura, encryption_write_format, v1),
+            <<1, _/binary>> = kura_crypto:encrypt(~"a", ?CTX),
+            application:set_env(kura, encryption_write_format, v2),
+            <<2, _/binary>> = kura_crypto:encrypt(~"a", ?CTX)
+        end)
+    ).
+
+write_format_warnings(Run) ->
+    kura_boot_warning:forget(encryption_write_format),
+    _ = logger:remove_handler(?MODULE),
+    ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
+    try
+        _ = Run(),
+        logged_write_format_warnings()
+    after
+        logger:remove_handler(?MODULE),
+        kura_boot_warning:forget(encryption_write_format)
+    end.
+
+logged_write_format_warnings() ->
+    receive
+        {logged, #{fix := <<"once every node runs kura 2.28", _/binary>>} = Report} ->
+            [Report | logged_write_format_warnings()];
+        {logged, _} ->
+            logged_write_format_warnings()
+    after 100 -> []
+    end.
+
+log(#{msg := {report, Report}}, #{config := Pid}) ->
+    Pid ! {logged, Report},
+    ok;
+log(_Event, _Config) ->
+    ok.

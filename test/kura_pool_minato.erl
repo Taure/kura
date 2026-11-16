@@ -25,6 +25,10 @@ that times out ends it too, so a request still queued behind it cannot run
 later. `give_away/3` moves the watch rather than the socket, because the
 socket never left the holder.
 
+`run_in_transaction/4` is `run/4` for a statement meant for an open
+transaction: the holder refuses it once that transaction has ended, and answers
+with what became of the transaction after it.
+
 A `checkin/2` hands the connection to minato, which rolls back an open
 transaction and resets the session before it lends the connection again.
 """.
@@ -41,9 +45,34 @@ transaction and resets the session before it lends the connection again.
     capabilities/0
 ]).
 
--export([run/4, transaction_conn/1, in_transaction/2]).
+-export([open_transaction/1, run/4, run_in_transaction/4, transaction_conn/1, in_transaction/2]).
+
+-ifdef(TEST).
+-export([marked/2]).
+-endif.
+
+-export_type([transaction_status/0]).
+
+-doc """
+What became of the transaction a statement was run in. Used by
+`m:kura_driver_minato`.
+
+`transaction` and `failed` are the status byte of the `ReadyForQuery` after it:
+still open, or open with a statement already failed in it. `ended` is a
+transaction the statement ended: the connection went back to `idle`, the
+statement's tag was `COMMIT`, which `COMMIT AND CHAIN` answers, or its tag was
+`ROLLBACK` and the transaction left open is not the one `open_transaction/1`
+began, as after `ROLLBACK AND CHAIN`. `unknown` when no answer came back to read
+it from.
+""".
+-type transaction_status() :: transaction | failed | ended | unknown.
+
+-type within() :: opening | anywhere | transaction.
 
 -define(CALL_TIMEOUT, 30000).
+
+-define(OPEN_TRANSACTION, ~"BEGIN; SET LOCAL kura.txn = '1'").
+-define(MARKER, ~"SELECT current_setting('kura.txn', true)").
 
 -doc "What this backend supports. Read by `kura_capabilities`.".
 -spec capabilities() -> kura_capabilities:capability_set().
@@ -78,20 +107,28 @@ connection settings are gathered under `connection`. `host`, `user`, `password`
 and `database` are accepted as strings or binaries, because kura configuration
 in the wild is written both ways.
 
+A pool needs `user` (or `username`). Without it `start_pool/2` returns
+`{error, {missing_option, user}}` and starts nothing, where minato would
+start a pool whose connections cannot log in.
+
 `transport` is passed through. minato chooses one by default and documents the
 other as the way back from that choice, which is only true from here if the
 option survives the translation.
 
-A name that is already running returns `{error, {already_started, Pid}}`, as
-the `kura_pool` contract says.
+A name that is already running returns `{error, {already_started, Pid}}` with
+the running pool's pid, and that pool keeps the options it was started with.
+kura tells a fresh start from a running pool by this answer, so a second repo
+naming the same pool is not told the pool was started for it.
 """.
 -spec start_pool(kura_pool:name(), kura_pool:opts()) -> {ok, pid()} | {error, term()}.
-start_pool(Name, Opts) ->
+start_pool(Name, Opts) when is_map_key(user, Opts); is_map_key(username, Opts) ->
     {ok, _Started} = application:ensure_all_started(minato),
     case minato:start_pool(Name, translate(Opts)) of
         {ok, Pid} when is_pid(Pid) -> {ok, Pid};
         {error, Reason} -> {error, Reason}
-    end.
+    end;
+start_pool(_Name, _Opts) ->
+    {error, {missing_option, user}}.
 
 -doc "Stop a pool. A pool that is not running is not an error.".
 -spec stop_pool(kura_pool:name()) -> ok.
@@ -170,15 +207,52 @@ comes back as its error rather than the caller giving up first. A pool whose
 """.
 -spec run(pid(), iodata(), [term()], map()) -> dynamic().
 run(Holder, Sql, Params, Opts) ->
-    case call(Holder, {run, Sql, Params, Opts}, infinity) of
-        {raised, Class, Reason, Stack} -> erlang:raise(Class, Reason, Stack);
-        Answer -> Answer
+    reraised(call(Holder, {run, Sql, Params, Opts}, infinity)).
+
+-doc """
+Begin a transaction on a held connection. Used by `m:kura_driver_minato`.
+
+Answers what the `BEGIN` answered. It goes as one simple query together with
+`SET LOCAL kura.txn = '1'`, so it costs one round trip. `SET` takes no snapshot,
+so the transaction's first statement may still be `SET TRANSACTION`. The setting
+is what tells a statement tagged `ROLLBACK` that left the connection in a
+transaction apart: `ROLLBACK TO SAVEPOINT` keeps it, while `ROLLBACK AND CHAIN`
+and `ABORT AND CHAIN` start a new transaction without it. So does `RESET ALL`,
+after which a savepoint rollback reads as a replaced transaction.
+""".
+-spec open_transaction(pid()) -> dynamic().
+open_transaction(Holder) ->
+    reraised(call(Holder, {run, opening, ?OPEN_TRANSACTION, [], #{}}, infinity)).
+
+-doc """
+Run a statement on a held connection that is inside a transaction, and say what
+became of the transaction after it. Used by `m:kura_driver_minato`.
+
+Answers `ended` without running the statement when the connection is idle, or
+once a call to this function has found the transaction ended, so a statement
+meant for that transaction never runs outside it. The transaction is expected to
+have been begun by `open_transaction/1`: a statement tagged `ROLLBACK` that
+leaves the connection in a transaction without its setting has replaced it, and
+counts as having ended it. Otherwise
+`{Answer, Status}`, where `Answer` is what `run/4` would answer and `Status` lets
+the caller see a statement that ended the transaction itself.
+""".
+-spec run_in_transaction(pid(), iodata(), [term()], map()) ->
+    ended | {dynamic(), transaction_status()}.
+run_in_transaction(Holder, Sql, Params, Opts) ->
+    case reraised(call(Holder, {run_in_transaction, Sql, Params, Opts}, infinity)) of
+        {reported, Answer, Status} -> {Answer, Status};
+        ended -> ended;
+        Unanswered -> {Unanswered, unknown}
     end.
 
 -doc "The holder of the transaction this process is inside, or `undefined`.".
 -spec transaction_conn(kura_pool:name()) -> pid() | undefined.
 transaction_conn(Pool) ->
-    erlang:get({?MODULE, Pool}).
+    case erlang:get({?MODULE, Pool}) of
+        Holder when is_pid(Holder) -> Holder;
+        undefined -> undefined
+    end.
 
 -doc """
 Note that this process is inside a transaction on `Pool`, held by `Holder`.
@@ -204,29 +278,28 @@ hold(Pool, Owner, Timeout) ->
     case minato_pool:checkout(Pool, Timeout) of
         {ok, Conn} ->
             Owner ! {holding, self()},
-            held(Pool, Conn, erlang:monitor(process, Owner));
+            held(Pool, Conn, erlang:monitor(process, Owner), open);
         {error, Reason} ->
             Owner ! {failed, self(), Reason},
             ok
     end.
 
--spec held(kura_pool:name(), minato_conn:conn(), reference()) -> ok.
-held(Pool, Conn, Monitor) ->
+-spec held(kura_pool:name(), minato_conn:conn(), reference(), open | ended) -> ok.
+held(Pool, Conn, Monitor, Transaction) ->
     receive
+        {call, Alias, {run, opening, Sql, Params, Opts}} ->
+            answered(Pool, {Conn, Monitor, Transaction}, Alias, {opening, Sql, Params, Opts});
         {call, Alias, {run, Sql, Params, Opts}} ->
-            try ran(Conn, Sql, Params, Opts) of
-                {lost, Answer} ->
-                    minato_pool:discard(Pool, Conn),
-                    Alias ! {Alias, Answer},
-                    ok;
-                {continue, Answer, Next} ->
-                    Alias ! {Alias, Answer},
-                    held(Pool, Next, Monitor)
-            catch
-                Class:Reason:Stack ->
-                    minato_pool:discard(Pool, Conn),
-                    Alias ! {Alias, {raised, Class, Reason, Stack}},
-                    ok
+            answered(Pool, {Conn, Monitor, Transaction}, Alias, {anywhere, Sql, Params, Opts});
+        {call, Alias, {run_in_transaction, Sql, Params, Opts}} ->
+            case {Transaction, minato_conn:transaction_status(Conn)} of
+                {open, Status} when Status =/= idle ->
+                    answered(
+                        Pool, {Conn, Monitor, Transaction}, Alias, {transaction, Sql, Params, Opts}
+                    );
+                _Ended ->
+                    Alias ! {Alias, ended},
+                    held(Pool, Conn, Monitor, ended)
             end;
         {call, Alias, checkin} ->
             ok = minato_pool:checkin(Pool, Conn),
@@ -236,19 +309,91 @@ held(Pool, Conn, Monitor) ->
         {call, Alias, {give_away, NewOwner}} ->
             true = erlang:demonitor(Monitor, [flush]),
             Alias ! {Alias, ok},
-            held(Pool, Conn, erlang:monitor(process, NewOwner));
+            held(Pool, Conn, erlang:monitor(process, NewOwner), Transaction);
         {'DOWN', Monitor, process, _Owner, _Reason} ->
             minato_pool:discard(Pool, Conn)
     end.
 
--spec ran(minato_conn:conn(), iodata(), [term()], map()) ->
+-spec answered(
+    kura_pool:name(),
+    {minato_conn:conn(), reference(), open | ended},
+    reference(),
+    {within(), iodata(), [term()], map()}
+) -> ok.
+answered(Pool, {Conn, Monitor, Transaction}, Alias, {Within, Sql, Params, Opts}) ->
+    try ran(Within, Conn, Sql, Params, Opts) of
+        {lost, Answer} ->
+            minato_pool:discard(Pool, Conn),
+            Alias ! {Alias, reported(Within, Answer, unknown)},
+            ok;
+        {continue, Answer, Next} ->
+            case became(Within, Answer, Next, Opts) of
+                {lost, Lost} ->
+                    minato_pool:discard(Pool, Next),
+                    Alias ! {Alias, reported(Within, Lost, unknown)},
+                    ok;
+                {Status, Checked} ->
+                    Alias ! {Alias, reported(Within, Answer, Status)},
+                    held(Pool, Checked, Monitor, still(Within, Status, Transaction))
+            end
+    catch
+        Class:Reason:Stack ->
+            minato_pool:discard(Pool, Conn),
+            Alias ! {Alias, {raised, Class, Reason, Stack}},
+            ok
+    end.
+
+-spec became(within(), dynamic(), minato_conn:conn(), map()) ->
+    {transaction_status(), minato_conn:conn()} | {lost, {error, term()}}.
+became(_Within, #{command := commit}, Conn, _Opts) ->
+    {ended, Conn};
+became(transaction, #{command := rollback}, Conn, Opts) ->
+    case minato_conn:transaction_status(Conn) of
+        idle -> {ended, Conn};
+        _Chained -> marked(Conn, Opts)
+    end;
+became(_Within, _Answer, Conn, _Opts) ->
+    case minato_conn:transaction_status(Conn) of
+        idle -> {ended, Conn};
+        Status -> {Status, Conn}
+    end.
+
+-spec marked(minato_conn:conn(), map()) ->
+    {transaction_status(), minato_conn:conn()} | {lost, {error, term()}}.
+marked(Conn, Opts) ->
+    case minato_query:simple(Conn, ?MARKER, maps:with([timeout], Opts)) of
+        {ok, [#{rows := [{~"1"}]}], Next} -> {transaction, Next};
+        {ok, _Replaced, Next} -> {ended, Next};
+        {error, _Reason, Next} -> {ended, Next};
+        {error, Reason} -> {lost, {error, Reason}}
+    end.
+
+-spec still(within(), transaction_status(), open | ended) -> open | ended.
+still(transaction, ended, _Transaction) -> ended;
+still(_Within, _Status, Transaction) -> Transaction.
+
+-spec reported(within(), dynamic(), transaction_status()) -> dynamic().
+reported(transaction, Answer, Status) -> {reported, Answer, Status};
+reported(_Within, Answer, _Status) -> Answer.
+
+-spec ran(within(), minato_conn:conn(), iodata(), [term()], map()) ->
     {continue, dynamic(), minato_conn:conn()} | {lost, dynamic()}.
-ran(Conn, Sql, Params, Opts) ->
+ran(opening, Conn, Sql, _Params, _Opts) ->
+    case minato_query:simple(Conn, Sql) of
+        {ok, [Began | _Marked], Next} -> {continue, Began, Next};
+        {error, Reason, Next} -> {continue, {error, Reason}, Next};
+        {error, Reason} -> {lost, {error, Reason}}
+    end;
+ran(_Within, Conn, Sql, Params, Opts) ->
     case minato_query:query(Conn, Sql, Params, Opts) of
         {ok, Result, Next} -> {continue, Result, Next};
         {error, Reason, Next} -> {continue, {error, Reason}, Next};
         {error, Reason} -> {lost, {error, Reason}}
     end.
+
+-spec reraised(dynamic()) -> dynamic().
+reraised({raised, Class, Reason, Stack}) -> erlang:raise(Class, Reason, Stack);
+reraised(Answer) -> Answer.
 
 -spec call(pid(), term()) -> dynamic().
 call(Holder, Message) ->

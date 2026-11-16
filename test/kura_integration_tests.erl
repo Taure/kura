@@ -66,6 +66,7 @@ integration_test_() ->
 
             %% Bulk ops
             {"insert_all bulk inserts", fun t_insert_all/0},
+            {"telemetry counts the rows a bulk write affected", fun t_bulk_rows_affected/0},
             {"update_all bulk updates", fun t_update_all/0},
             {"delete_all bulk deletes", fun t_delete_all/0},
             {"insert fails closed on an undumpable field", fun t_insert_dump_fails_closed/0},
@@ -101,6 +102,8 @@ integration_test_() ->
                 fun t_unique_constraint_default/0},
             {"schema constraints auto-register on cast", fun t_schema_constraints/0},
             {"foreign_key_constraint maps DB error", fun t_foreign_key_constraint/0},
+            {"an undeclared generated constraint names its column's field",
+                fun t_undeclared_constraint/0},
             {"check_constraint maps DB error", fun t_check_constraint/0},
             {"exclusion_constraint maps DB error", fun t_exclusion_constraint/0},
             {"full-text search via matches operator", fun t_full_text_search/0},
@@ -873,6 +876,36 @@ t_insert_all() ->
     {ok, Found} = kura_test_repo:get_by(kura_test_schema, [{email, <<"bulk2@example.com">>}]),
     ?assertEqual(<<"Bulk2">>, maps:get(name, Found)).
 
+t_bulk_rows_affected() ->
+    Handler = {?MODULE, rows_affected},
+    ok = telemetry:attach(
+        Handler, [kura, repo, query], fun ?MODULE:forward_telemetry/4, #{pid => self()}
+    ),
+    Counted = fun(Run) ->
+        _ = Run(),
+        [maps:get(num_rows, Event) || Event <- telemetry_events([])]
+    end,
+    Mine = kura_query:where(kura_query:from(kura_test_schema), {name, like, ~"Counted%"}),
+    try
+        ?assertEqual(
+            [3],
+            Counted(fun() ->
+                {ok, 3} = kura_test_repo:insert_all(kura_test_schema, [
+                    #{name => ~"Counted1", email => ~"counted1@example.com"},
+                    #{name => ~"Counted2", email => ~"counted2@example.com"},
+                    #{name => ~"Counted3", email => ~"counted3@example.com"}
+                ])
+            end)
+        ),
+        ?assertEqual(
+            [3], Counted(fun() -> {ok, 3} = kura_test_repo:update_all(Mine, #{age => 30}) end)
+        ),
+        ?assertEqual([3], Counted(fun() -> {ok, 3} = kura_test_repo:delete_all(Mine) end)),
+        ?assertEqual([0], Counted(fun() -> {ok, 0} = kura_test_repo:delete_all(Mine) end))
+    after
+        telemetry:detach(Handler)
+    end.
+
 t_update_all() ->
     {ok, _} = insert_user(<<"UpdAll1">>, <<"updall1@example.com">>),
     {ok, _} = insert_user(<<"UpdAll2">>, <<"updall2@example.com">>),
@@ -1304,6 +1337,16 @@ t_foreign_key_constraint() ->
     ?assert(lists:keymember(author_id, 1, ErrCS#kura_changeset.errors)),
     {author_id, Msg} = lists:keyfind(author_id, 1, ErrCS#kura_changeset.errors),
     ?assertEqual(<<"does not exist">>, Msg).
+
+t_undeclared_constraint() ->
+    CS = kura_changeset:cast(
+        kura_test_post_simple_schema,
+        #{},
+        #{~"title" => ~"Bad Post", ~"author_id" => 999998},
+        [title, author_id]
+    ),
+    {error, ErrCS} = kura_test_repo:insert(CS),
+    ?assertEqual([{author_id, ~"does not exist"}], ErrCS#kura_changeset.errors).
 
 t_check_constraint() ->
     CS = kura_changeset:cast(

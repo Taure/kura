@@ -294,6 +294,24 @@ Q = kura_query:preload(kura_query:from(my_post), [{author, [posts]}]).
 Post1 = kura_repo_worker:preload(my_repo, my_post, Post, [{author, [posts]}]).
 ```
 
+### Conditional Preloads
+
+Give a `has_many` or `has_one` association a map to load only some of its records, in a query or standalone:
+
+```erlang
+Q = kura_query:preload(kura_query:from(my_user), [
+    {posts, #{where => {published, true}, order_by => [{inserted_at, desc}]}}
+]).
+
+Users1 = kura_repo_worker:preload(my_repo, my_user, Users, [
+    {posts, #{where => {published, true}}}
+]).
+```
+
+The map takes `where`, a condition as `kura_query:where/2` takes it, `order_by`, as `kura_query:order_by/2` takes it, and `limit`. They apply to the one query that loads the association for every parent record, so `limit` caps the rows of that query, not the rows of each parent.
+
+Only `has_many` and `has_one` honour the map. A `belongs_to` or `many_to_many` association given one is loaded whole, as if the map were not there, and a `through` association is preloaded by its name only. To filter those, query the related schema yourself.
+
 ## How Preloading Works
 
 Preloading uses separate queries (not JOINs) for efficiency:

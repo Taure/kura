@@ -1,7 +1,8 @@
 -module(kura_bench_tests).
 
 -include_lib("eunit/include/eunit.hrl").
--include("kura.hrl").
+
+-define(RECORDED_REPO, kura_bench_recorded_repo).
 
 %%----------------------------------------------------------------------
 %% Test fixture
@@ -16,9 +17,71 @@ bench_test_() ->
                 {timeout, 60, fun t_read_latency_distribution/0}},
             {"bulk insert_all at 1k/5k/10k rows", {timeout, 120, fun t_insert_all_bulk/0}},
             {"preload batching avoids N+1", {timeout, 60, fun t_preload_batching/0}},
-            {"stream large dataset in batches", {timeout, 120, fun t_stream_large_dataset/0}}
+            {"stream large dataset in batches", {timeout, 120, fun t_stream_large_dataset/0}},
+            {"cost of loading one row", {timeout, 60, fun t_load_row_cost/0}},
+            {"cost of one statement's telemetry metadata",
+                {timeout, 60, fun t_telemetry_metadata_cost/0}},
+            {"insert, update_all and all as a job queue runs them",
+                {timeout, 120, fun t_job_queue_loop/0}}
         ]
     end}.
+
+%% These run kura_repo_worker against a driver that answers at once, so the
+%% time is kura's own: compiling, scoping, redacting, loading and telemetry.
+recorded_bench_test_() ->
+    {setup,
+        fun() ->
+            {ok, _} = application:ensure_all_started(telemetry),
+            ok = kura_query_cache:init(),
+            kura_test_recording_driver:configure(?RECORDED_REPO),
+            kura_query_cache:flush()
+        end,
+        fun(_) ->
+            kura_test_recording_driver:unconfigure(),
+            kura_query_cache:flush()
+        end,
+        fun(_) ->
+            [
+                {"all/2 on a cached shape", {timeout, 120, fun t_cached_all_cost/0}},
+                {"all/2 of a join on a cached shape", {timeout, 120, fun t_cached_join_all_cost/0}},
+                {"insert, update_all and all without a database",
+                    {timeout, 120, fun t_recorded_job_queue_cost/0}}
+            ]
+        end}.
+
+%% The same, on a repo whose settings are stored as kura_db:start_pool/1
+%% stores them. Above they are read from the application environment on
+%% every call, which no running application's repo does.
+started_bench_test_() ->
+    {setup,
+        fun() ->
+            {ok, _} = application:ensure_all_started(telemetry),
+            ok = kura_query_cache:init(),
+            kura_test_recording_driver:configure(?RECORDED_REPO),
+            kura_repo_settings:started(?RECORDED_REPO, kura_repo:config(?RECORDED_REPO)),
+            kura_query_cache:flush()
+        end,
+        fun(_) ->
+            kura_repo_settings:forget(?RECORDED_REPO),
+            kura_test_recording_driver:unconfigure(),
+            kura_query_cache:flush()
+        end,
+        fun(_) ->
+            [
+                {"all/2 on a cached shape, started repo",
+                    {timeout, 120, fun() ->
+                        cached_all_cost("all/2, cached shape, started repo")
+                    end}},
+                {"all/2 of a join on a cached shape, started repo",
+                    {timeout, 120, fun() ->
+                        cached_join_all_cost("all/2 of a join, cached shape, started repo")
+                    end}},
+                {"insert, update_all and all without a database, started repo",
+                    {timeout, 120, fun() ->
+                        recorded_job_queue_cost("job queue loop, no database, started repo")
+                    end}}
+            ]
+        end}.
 
 setup() ->
     application:ensure_all_started(minato),
@@ -251,6 +314,7 @@ t_stream_large_dataset() ->
     RowCount = atomics:new(1, [{signed, false}]),
     BatchCount = atomics:new(1, [{signed, false}]),
     Q = kura_query:from(kura_stress_schema),
+    T0 = erlang:monotonic_time(millisecond),
     ok = kura_stream:stream(
         kura_stress_repo,
         Q,
@@ -263,6 +327,140 @@ t_stream_large_dataset() ->
     ),
     TotalRows = atomics:get(RowCount, 1),
     TotalBatches = atomics:get(BatchCount, 1),
-    ?debugFmt("~nStream: ~p rows in ~p batches", [TotalRows, TotalBatches]),
+    ?debugFmt("~nStream: ~p rows in ~p batches (~p ms)", [
+        TotalRows, TotalBatches, erlang:monotonic_time(millisecond) - T0
+    ]),
     ?assertEqual(5000, TotalRows),
     ?assertEqual(50, TotalBatches).
+
+t_load_row_cost() ->
+    Row = #{
+        id => 1,
+        name => ~"bench",
+        email => ~"bench@bench.com",
+        counter => 0,
+        lock_version => 0,
+        inserted_at => {{2026, 1, 1}, {0, 0, 0}},
+        updated_at => {{2026, 1, 1}, {0, 0, 0}}
+    },
+    N = 300000,
+    _ = kura_db:load_row(kura_stress_schema, Row),
+    {Us, ok} = timer:tc(fun() -> load_row_times(N, Row) end),
+    ?debugFmt("~nload_row: ~p ns/row (~p rows)", [Us * 1000 div N, N]).
+
+load_row_times(0, _Row) ->
+    ok;
+load_row_times(N, Row) ->
+    _ = kura_db:load_row(kura_stress_schema, Row),
+    load_row_times(N - 1, Row).
+
+t_telemetry_metadata_cost() ->
+    SQL = [
+        ~"SELECT \"id\", \"name\", \"email\", \"counter\" FROM \"stress_users\"",
+        ~" WHERE \"email\" = $1 ORDER BY \"id\" LIMIT $2"
+    ],
+    Result = #{command => select, rows => [#{id => 1}], num_rows => 1},
+    N = 300000,
+    {Us, ok} = timer:tc(fun() -> telemetry_metadata_times(N, SQL, Result) end),
+    ?debugFmt("~nbuild_telemetry_metadata: ~p ns/statement (~p statements)", [
+        Us * 1000 div N, N
+    ]).
+
+telemetry_metadata_times(0, _SQL, _Result) ->
+    ok;
+telemetry_metadata_times(N, SQL, Result) ->
+    _ = kura_db:build_telemetry_metadata(kura_stress_repo, SQL, [~"bench@bench.com", 1], Result),
+    telemetry_metadata_times(N - 1, SQL, Result).
+
+t_cached_all_cost() ->
+    cached_all_cost("all/2, cached shape").
+
+cached_all_cost(Label) ->
+    Q = kura_query:limit(
+        kura_query:where(kura_query:from(kura_stress_schema), {email, '=', ~"bench@bench.com"}), 1
+    ),
+    N = 200000,
+    ok = recorded_all_times(1000, Q),
+    {Us, ok} = timer:tc(fun() -> recorded_all_times(N, Q) end),
+    ?debugFmt("~n~s: ~p ns/call (~p calls)", [Label, Us * 1000 div N, N]).
+
+t_cached_join_all_cost() ->
+    cached_join_all_cost("all/2 of a join, cached shape").
+
+cached_join_all_cost(Label) ->
+    Q = kura_query:where(
+        kura_query:join(
+            kura_query:from(kura_stress_schema),
+            inner,
+            kura_stress_post_schema,
+            {id, user_id}
+        ),
+        {email, '=', ~"bench@bench.com"}
+    ),
+    N = 200000,
+    ok = recorded_all_times(1000, Q),
+    {Us, ok} = timer:tc(fun() -> recorded_all_times(N, Q) end),
+    ?debugFmt("~n~s: ~p ns/call (~p calls)", [Label, Us * 1000 div N, N]).
+
+recorded_all_times(0, _Q) ->
+    _ = kura_test_recording_driver:statements(),
+    ok;
+recorded_all_times(N, Q) ->
+    {ok, []} = kura_repo_worker:all(?RECORDED_REPO, Q),
+    _ = drained(N),
+    recorded_all_times(N - 1, Q).
+
+drained(N) when N rem 500 =:= 0 -> kura_test_recording_driver:statements();
+drained(_N) -> [].
+
+t_recorded_job_queue_cost() ->
+    recorded_job_queue_cost("job queue loop, no database").
+
+recorded_job_queue_cost(Label) ->
+    N = 50000,
+    ok = recorded_job_times(500),
+    {Us, ok} = timer:tc(fun() -> recorded_job_times(N) end),
+    ?debugFmt("~n~s: ~p ns/iteration (~p iterations)", [Label, Us * 1000 div N, N]).
+
+recorded_job_times(0) ->
+    _ = kura_test_recording_driver:statements(),
+    ok;
+recorded_job_times(N) ->
+    ok = job_iteration(?RECORDED_REPO, N),
+    _ = drained(N),
+    recorded_job_times(N - 1).
+
+t_job_queue_loop() ->
+    clean_tables(),
+    N = 500,
+    ok = job_times(kura_stress_repo, 50),
+    {Us, ok} = timer:tc(fun() -> job_times(kura_stress_repo, N) end),
+    ?debugFmt("~njob queue loop, PostgreSQL: ~p us/iteration (~p iterations)", [Us div N, N]).
+
+job_times(_Repo, 0) ->
+    ok;
+job_times(Repo, N) ->
+    ok = job_iteration(Repo, N),
+    job_times(Repo, N - 1).
+
+%% Enqueue a row, claim what is available, read the claimed rows back.
+job_iteration(Repo, N) ->
+    Name = <<"job_", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+    CS = kura_changeset:cast(
+        kura_stress_schema,
+        #{},
+        #{~"name" => Name, ~"email" => <<Name/binary, "@bench.com">>},
+        [name, email]
+    ),
+    {ok, _} = kura_repo_worker:insert(Repo, CS),
+    Available = kura_query:where(kura_query:from(kura_stress_schema), {counter, '=', 0}),
+    {ok, _} = kura_repo_worker:update_all(Repo, Available, #{counter => N}),
+    Claimed = kura_query:limit(
+        kura_query:order_by(
+            kura_query:where(kura_query:from(kura_stress_schema), {counter, '=', N}),
+            [{id, asc}]
+        ),
+        10
+    ),
+    {ok, _} = kura_repo_worker:all(Repo, Claimed),
+    ok.

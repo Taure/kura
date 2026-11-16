@@ -2,10 +2,527 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+git-cliff writes this file from the commit subjects. What a release
+changes for an application that runs on kura, and each setting with its
+default, is in [Upgrading](guides/upgrading.md).
 
-## Unreleased
+## [2.31.0] - 2026-11-16
+
+### Bug Fixes
+
+- *(query)* Compile an empty in or not_in list to a constant predicate
+- *(repo)* Bind every value in get, get_by and reload
+- *(dialect)* Leave a ? inside fragment text alone and check the count
+- *(paginator)* Validate page, page_size and limit, add max_page_size
+- *(repo)* Insert_all with no entries, uneven entries or too many values
+- *(schema)* Honour #kura_field.column in statements and loaded rows
+- *(schema)* Read the timestamps/0 callback
+- *(dialect)* A join returns the from row and names a joined schema's columns
+- *(migrator)* Write the version statements with the dialect's placeholder
+- *(dialect)* Put a combined query's ORDER BY, LIMIT and OFFSET after its branches
+- *(tenant)* A scope ends with its work and reaches kura's preload processes
+- *(repo)* Report an undeclared constraint on its column's field or on base
+- *(telemetry)* Drop the error's message and detail, cover every schema a query reads
+- *(schema)* Make no atom from a column name or a confirmation name
+- *(types)* Keep a decimal given as text exact instead of making it a float
+- *(dialect)* Read a backend's stored forms in its dialect, not in kura_types:load
+- *(capabilities)* Check a backend only once it declares a capability model
+- *(query)* Read PostgreSQL's whole locking clause and pass other text through
+- *(tenant)* Require a tenant for what a query joins, not only what it is from
+- *(schema)* Stamp by field name when timestamps/0 cannot be used
+- *(schema)* Do not remember that a module had no load plan
+- *(tenant)* A CTE's body reads a table where it names itself or a later CTE
+- *(redact)* Judge a condition by the redacted fields of every source in the query
+- *(tenant)* Refuse an attribute tenant whose value is undefined, null or nil
+- *(redact)* Keep a redacted value out of a changeset's errors
+- *(schema)* A module loaded after its name was first asked about is a schema
+- *(query)* Warn about lock text only while strict_locks is unset
+- *(schema)* Keep stamping inserted_at and updated_at beside timestamps/0
+- *(schema)* A module loaded later is read whatever is asked of it first
+- *(paginator)* One error for a max_page_size kura cannot use
+- *(telemetry)* Name the table after TABLE IF EXISTS as a raw statement's source
+- *(telemetry)* Report the rows a write affected as num_rows
+- *(redact)* The logging helpers return whatever they are given
+- *(tenant)* An attribute tenant's field is a field, not a condition
+- *(telemetry)* The raw SQL source is read from statement text only
+- *(cache)* A cached plan kura cannot read is compiled again
+- *(redact)* Read a changeset's fields as what they hold
+- *(tenant)* Leave a tenant field a schema does not declare to the database
+- *(changeset)* Report a confirmation mismatch on the confirmation where its atom exists
+- *(query)* Compile a fragment condition as one group
+- *(tenant)* Leave a schema every tenant shares out of the tenant condition and its writes, match one that declares the tenant's field, refuse one that does neither where a tenant is required
+- *(audit)* Write the audit row of a write under an attribute tenant without the tenant
+- *(redact)* Hide a record or changeset of a module that is no schema
+- *(redact)* Redact an embed whose schema lists redacted fields
+- *(redact)* Hide a changeset's params under keys that name no field, embed or association, and the error messages that quote them
+- *(preload)* Give preload/4 a spec that takes a conditional preload
+- *(query)* Give preload/2 and the query record a type that takes a conditional preload
+
+### Documentation
+
+- *(query)* Escape_like/1 patterns match the same text on SQLite
+- Add a security policy
+- *(changelog)* Section the releases since 2.0.0 and list the unreleased changes
+- *(api)* Hide the functions kura's modules call between themselves
+- *(tenant)* Say that adopt/1 lasts for the process's life and where not to use it
+- *(ci)* Say which CI jobs hold a write token and why
+- *(pool)* Say why kura_pool_ets declares no capability model
+- *(tenant)* An explicit prefix is not a tenant check
+- *(capabilities)* List the capabilities with colons, not dashes
+- *(capabilities)* Say which repo's queries are not checked
+- *(tenant)* The 3.0 default is a plan, raw SQL goes through query/3
+- *(query)* An atom that is a schema module names its table in a lock
+- *(readme)* The settings that change in 3.0 are unset, not false
+- *(telemetry)* Link opentelemetry_kura where it lives
+- *(upgrading)* What changes after 2.30.0, each setting with its default, the new API
+- *(upgrading)* What the redaction, tenant, source and cache fixes change
+- *(migrator)* Keep record_sql/2 out of the generated documentation
+- *(query)* Say that sources/1 may list more roles in a later release
+- *(upgrading)* The lock term a dialect receives and text matches on SQLite
+- *(upgrading)* What waits for the next kura_sqlite and rebar3_kura
+- *(changelog)* Describe 2.31.0 as it ships
+- *(upgrading)* Which fragment conditions change their result, and what to check
+- *(multitenancy)* Show the line a fragment's closing parenthesis is written on
+- *(tenant)* A schema every tenant shares is read from the tenant's schema under a prefix tenant
+- *(redact)* An embed is redacted for a redacted field at any depth, and the logging helpers have an entry of their own
+- *(multitenancy)* The scoping list is for a schema that declares the tenant field
+- *(multitenancy)* Without a tenant, tenant_scoped/0 alone exempts a schema from require_tenant
+- *(tenant)* In a process without a tenant a schema that returns false is not asked for one, whatever fields it declares
+
+### Features
+
+- *(query)* Literal text matches and escape_like/1
+- *(capabilities)* Refuse a query the backend does not declare support for
+- *(changeset)* Allow-list for nested casts and strict_assoc_cast
+- *(tenant)* Require_tenant makes a missing tenant an error
+- *(encryption)* Warn once when the v1 write format is only the default
+- *(redact)* Keep sensitive field values out of telemetry and logs
+- *(capabilities)* Check row_locks, distinct_on and cursors
+- *(migration)* Name a column by a binary as well as by an atom
+- *(tenant)* Make require_tenant a repo setting
+
+### Miscellaneous
+
+- *(lint)* Clear the ELP diagnostics
+
+### Refactor
+
+- Satisfy eqwalizer and elp lint on the new code
+- *(query)* Walk a query's sources and nested queries in one place
+- *(settings)* Read kura's settings in one place and check them at boot
+- *(query)* Read a lock map's wait in a typed step
+- *(query)* Drop a clause of cte_names that cannot match
+- *(redact)* Drop a clause of names_field that cannot match
+- *(tenant)* Define the condition words a tenant field cannot be where they are used
+
+### Testing
+
+- *(repo)* Execute the NOT NULL violation mapping against PostgreSQL
+- *(dialect)* The SQLite stand-in rewrites only placeholders
+- *(postgres)* Run against the released kura_postgres modules and fail when they drift
+- *(postgres)* Transactions, sandbox and pool start through the real driver
+- *(migrator)* Deny CREATE on public before the bootstrap-failure case
+- *(bench)* Time all/2 on a cached shape and a job queue's loop
+- *(bench)* Time the cached shapes on a repo whose settings are stored
+- *(settings)* A decided setting logs no warning
+- *(tenant)* Reach the cache hit before asserting a hit is refused
+- Share ill_typed/1 between the test modules that were given a copy
+- *(prop)* Properties for the code that reads caller-written SQL text
+- *(query)* Check escape_like against PostgreSQL's LIKE and ILIKE
+- *(boot_warning)* Cover once/2 and forget/1
+- A killed run leaves no log handler or lock setting behind
+- *(capabilities)* Expressions after the first, lock maps and lists, a pool module not yet loaded
+- *(tenant)* The unset warning from a direct compile and from a cache hit, a write that names no table
+- *(compiler)* An uncacheable shape hands back its facts
+- *(query)* The like-escape suite's repo module
+- *(schema)* Ask about a module with nothing remembered of it
+- *(prop)* Dollar-quote tags of any identifier byte, and what is not a tag
+- *(query)* Sources/1 reads what follows an entry it cannot read
+- *(repo)* A delete shows its key in telemetry
+- *(settings)* A page size of 1, a repo's require_tenant, and what a refused value is told to be
+- *(redact)* Parameters by position and by touch, binary param keys, a later distance, a stream's cursor
+- *(app)* Start with valid settings, and with one that is not
+- *(dialect)* Placeholder/2, of_repo/1 and loads_stored/1, for a dialect that is loaded, unloaded or missing
+- *(repo)* A started repo takes a false require_tenant from the application environment
+- *(telemetry)* The source of raw SQL with keywords in any case, and keywords inside longer words
+- *(redact)* Nested values, a schema with nothing hidden and update_all parameters
+- Kept cache entries, a union's later branch, a statement's result and bytes at the edge of a name
+- Read compiled SQL and a logged report as binaries
+- *(schema)* A record of a module not loaded yet is hidden, not passed through
+
+### Build
+
+- *(mutate)* Run the suites that cover each module's new code
+- *(mutate)* Run the capability and tenant suites against the query compiler
+- *(mutate)* Run the statement suites against the repo worker
+- *(mutate)* Run the suites that cover them against db, dialect, stream, preloader, assoc casts and repo settings
+- *(mutate)* Run the redaction properties against kura_redact
+
+### Perf
+
+- *(db)* Look a schema up once per result set and find the source without a regex
+- *(query)* Work out a query shape's tenant, redaction and source once
+- *(db)* Load a row as before when the dialect reads no stored forms
+- *(compiler)* Walk a query's sources once for its facts
+- *(schema)* A kept schema answer is one read
+
+### Style
+
+- Sigil for two binaries, drop comments that restate the code
+
+## [2.30.0] - 2026-11-05
+
+### Features
+
+- Scope count and stream, run insert/3 hooks, qualify join columns, dump where values (#217)
+
+## [2.29.0] - 2026-11-03
+
+### Features
+
+- *(encryption)* Deterministic mode with equality lookups (#219)
+
+## [2.28.0] - 2026-11-03
+
+### Features
+
+- *(encryption)* V2 column-bound ciphertext frame with HKDF subkeys (#213)
+
+## [2.27.0] - 2026-11-03
+
+### Features
+
+- *(migrator)* Create_index using, opclass and with; honour name (#212)
+
+## [2.26.0] - 2026-11-03
+
+### Features
+
+- *(query)* Pgvector distance threshold in where and having (#211)
+
+## [2.25.1] - 2026-11-03
+
+### Bug Fixes
+
+- *(sandbox)* Detect a statement that ends the sandbox's transaction (#210)
+
+## [2.25.0] - 2026-11-03
+
+### Features
+
+- *(migrator)* Run a migration outside a transaction for CREATE INDEX CONCURRENTLY (#203)
+
+## [2.24.0] - 2026-11-03
+
+### Features
+
+- Release 2.24.0 (#202)
+
+## [2.23.1] - 2026-10-25
+
+### Bug Fixes
+
+- *(verify)* Match declared indexes by structure, not by name (#185)
+
+## [2.23.0] - 2026-10-25
+
+### Features
+
+- *(query)* Cache compiled queries by shape, not bound values (#184)
+
+## [2.22.1] - 2026-10-25
+
+### Bug Fixes
+
+- *(tenant)* Confine attribute tenancy to every query, write and preload (#187)
+
+## [2.22.0] - 2026-10-24
+
+### Features
+
+- *(schema)* Forget/1 drops a module's cached lookups (#183)
+
+## [2.21.0] - 2026-10-24
+
+### Features
+
+- *(migrator)* Baseline up to a version with fake/2 and fake/3 (#182)
+
+## [2.20.12] - 2026-08-28
+
+### Bug Fixes
+
+- Close the quoting gaps and honour on_conflict in bulk inserts (#181)
+
+## [2.20.11] - 2026-08-28
+
+### Bug Fixes
+
+- Quote every identifier and fail closed on dump errors (#180)
+
+## [2.20.10] - 2026-08-26
+
+### Miscellaneous
+
+- Attribute licence to Daniel Widgren (#179)
+
+## [2.20.9] - 2026-08-11
+
+### Testing
+
+- Wire up the CT suites ELP reported as unreachable, and bump erlang-ci (#176)
+
+## [2.20.8] - 2026-08-10
+
+### Miscellaneous
+
+- *(deps)* Test against minato 1.0 (#175)
+
+## [2.20.7] - 2026-08-06
+
+### Testing
+
+- Stop the docker resilience tests poisoning the shared pools (#174)
+
+## [2.20.6] - 2026-08-06
+
+### Miscellaneous
+
+- Take every plugin from hex and drop the sbom fork (#173)
+
+## [2.20.5] - 2026-08-06
+
+### Miscellaneous
+
+- Require minato ~> 0.18 in the test profile (#172)
+
+## [2.20.4] - 2026-08-05
+
+### Documentation
+
+- The behaviour examples name the backend kura selects (#171)
+
+## [2.20.3] - 2026-08-05
+
+### Bug Fixes
+
+- *(query-cache)* Key compiled-query cache on the query, not a phash2 (#164)
+
+## [2.20.2] - 2026-08-05
+
+### Testing
+
+- Cover the minato driver (#170)
+
+## [2.20.1] - 2026-08-04
+
+### Refactor
+
+- *(types)* Point the on_delete unions at kura_schema:on_delete/0 (#168)
+
+## [2.20.0] - 2026-08-04
+
+### Features
+
+- *(migrator)* Multi-application migration discovery (#167)
+
+## [2.19.0] - 2026-08-04
+
+### Features
+
+- *(schema)* On_delete on #kura_assoc (#166)
+
+## [2.18.1] - 2026-07-06
+
+### Documentation
+
+- *(migrations)* Document fake/1 baselining for existing databases (#158)
+
+## [2.18.0] - 2026-07-06
+
+### Features
+
+- *(migrator)* Fake/1 - baseline pending migrations without running DDL (#157)
+
+## [2.17.1] - 2026-07-06
+
+### Documentation
+
+- *(assoc)* Document composite many_to_many join_keys (#155)
+
+## [2.17.0] - 2026-07-06
+
+### Features
+
+- *(assoc)* Composite many_to_many join keys (#154)
+
+## [2.16.0] - 2026-07-06
+
+### Features
+
+- *(repo)* Composite FK write for owned associations (persist side) (#152)
+
+## [2.15.1] - 2026-07-06
+
+### Documentation
+
+- Document composite primary + foreign keys (#149)
+
+## [2.15.0] - 2026-07-06
+
+### Features
+
+- *(changeset)* Composite-safe association casting (#148)
+
+## [2.14.0] - 2026-07-06
+
+### Features
+
+- *(preload)* Composite foreign keys for has_many and has_one (#147)
+
+## [2.13.0] - 2026-07-06
+
+### Features
+
+- *(preload)* Composite foreign keys for belongs_to (#146)
+
+## [2.12.0] - 2026-07-06
+
+### Features
+
+- *(schema)* #kura_ref record + assoc_fields/1 (composite-FK foundation) (#145)
+
+## [2.11.0] - 2026-07-06
+
+### Features
+
+- *(repo)* Write-side addressing by composite key (#144)
+
+## [2.10.0] - 2026-07-06
+
+### Features
+
+- *(migrator)* Composite PRIMARY KEY DDL + composite-safe auto-gen (#143)
+
+## [2.9.0] - 2026-07-06
+
+### Features
+
+- Uniform key accessor + read-side composite-key addressing (#142)
+
+## [2.8.1] - 2026-07-05
+
+### Documentation
+
+- Correct SQLite window over-claim + document json capability variant (#140)
+
+## [2.8.0] - 2026-07-05
+
+### Features
+
+- *(types)* Pgvector support via {vector, N} (#138)
+
+## [2.7.0] - 2026-07-05
+
+### Features
+
+- *(encryption)* At-rest field encryption via {encrypted, Type} (#136)
+
+## [2.6.0] - 2026-07-05
+
+### Features
+
+- *(query)* Full-text search via the matches operator (#133)
+
+## [2.5.0] - 2026-07-05
+
+### Features
+
+- *(types)* From_pg_type/2 - invert to_pg_type for introspection (#134)
+
+## [2.4.0] - 2026-07-05
+
+### Features
+
+- *(repo)* Read_only repos and explicit replica routing (#132)
+
+## [2.3.0] - 2026-07-05
+
+### Features
+
+- *(changeset)* Exclusion_constraint for PG EXCLUDE constraints (#131)
+
+## [2.2.0] - 2026-07-05
+
+### Features
+
+- *(query)* Window functions via over/2 (#130)
+
+## [2.1.0] - 2026-07-05
+
+### Features
+
+- *(uuid)* Configurable v4/v7 primary keys (default v4) (#128)
+
+## [2.0.9] - 2026-07-04
+
+### Bug Fixes
+
+- Quote atom/enum defaults in generated DDL (#124) (#127)
+
+## [2.0.8] - 2026-06-09
+
+### Documentation
+
+- *(ex_doc)* Fix all warnings (#121)
+
+## [2.0.7] - 2026-06-09
+
+### Bug Fixes
+
+- *(types)* Dump jsonb string scalars (#123)
+
+## [2.0.6] - 2026-05-25
+
+### Documentation
+
+- *(pool)* Drop reference to kura_pool_hnc (#120)
+
+## [2.0.5] - 2026-05-25
+
+### Bug Fixes
+
+- *(otp29)* Replace deprecated catch with try/catch + add OTP 29 to CI matrix (#119)
+
+## [2.0.4] - 2026-05-14
+
+### Bug Fixes
+
+- *(types)* Accept scalar values in jsonb cast/dump/load (#118)
+
+## [2.0.3] - 2026-05-10
+
+### Bug Fixes
+
+- *(migrator)* Code:ensure_loaded dialect before function_exported check (#117)
+
+## [2.0.2] - 2026-05-10
+
+### Bug Fixes
+
+- *(migrator)* Portable schema_migrations DDL for non-Postgres backends (#116)
+
+## [2.0.1] - 2026-05-10
+
+### Documentation
+
+- Multi-repo config in getting-started + MIGRATION-2.0 (#114)
+- Lead with {repos, #{...}} map form everywhere (#115)
+
+## Notes on 2.0.1 to 2.30.0
+
+Written while these releases sat under one Unreleased heading. The sections
+above say which release a change shipped in; these say what it does.
 
 ### Added
 
