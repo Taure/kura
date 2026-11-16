@@ -6,8 +6,10 @@ Kura repo operations.
 
 Under the attribute strategy every query kura compiles is passed through
 `scope_query/2`, which adds the tenant condition to the query and to every
-query nested in it. Under the prefix strategy the dialect qualifies each
-table with the schema when it emits SQL.
+query nested in it. A query whose `from` and joins are all schemas that
+export `tenant_scoped() -> false` is the exception: every tenant shares
+its rows, so it gets no condition. Under the prefix strategy the dialect
+qualifies each table with the schema when it emits SQL.
 
 ## Scope and lifetime
 
@@ -443,6 +445,11 @@ tenant field, so reads do too.
 
 A `Field` that `put_tenant/1` refuses raises `{invalid_tenant, Strategy}`.
 
+A query, or a query nested in `Query`, whose `from` and joins are all
+schemas that export `tenant_scoped() -> false` gets no condition: no
+tenant owns its rows. One other source among them, a schema without that
+callback or a table named by a binary or an atom, keeps the condition.
+
 A `Field` the schema the query reads does not declare as a stored field is
 scoped by all the same: the condition is added and the database decides, so
 the query runs when the table has the column and fails there when it has
@@ -511,27 +518,44 @@ undeclared_in(_Field, _Rest) ->
 
 -spec undeclared_by(term(), atom()) -> [module()].
 undeclared_by(From, Field) when is_atom(From), From =/= undefined ->
-    Declared =
-        not kura_schema:is_schema(From) orelse
-            lists:member(Field, kura_schema:non_virtual_fields(From)),
-    [From || not Declared];
+    Lacking =
+        kura_schema:is_schema(From) andalso tenant_scoped(From) andalso
+            not lists:member(Field, kura_schema:non_virtual_fields(From)),
+    [From || Lacking];
 undeclared_by(_From, _Field) ->
     [].
 
 -spec scoped(#kura_query{}, {atom(), term()}) -> #kura_query{}.
 scoped(Query, Condition) ->
-    kura_query:where_unrewritten(
-        Query#kura_query{
-            wheres = conditions(Query#kura_query.wheres, Condition),
-            havings = conditions(Query#kura_query.havings, Condition),
-            ctes = [{Name, scoped(Cte, Condition)} || {Name, Cte} <- Query#kura_query.ctes],
-            combinations = [
-                {Kind, scoped(Combined, Condition)}
-             || {Kind, Combined} <- Query#kura_query.combinations
-            ]
-        },
-        Condition
-    ).
+    Nested = Query#kura_query{
+        wheres = conditions(Query#kura_query.wheres, Condition),
+        havings = conditions(Query#kura_query.havings, Condition),
+        ctes = [{Name, scoped(Cte, Condition)} || {Name, Cte} <- Query#kura_query.ctes],
+        combinations = [
+            {Kind, scoped(Combined, Condition)}
+         || {Kind, Combined} <- Query#kura_query.combinations
+        ]
+    },
+    case reads_tenant_rows(Query) of
+        true -> kura_query:where_unrewritten(Nested, Condition);
+        false -> Nested
+    end.
+
+%% A query whose `from` and joins are all schemas every tenant shares holds
+%% no tenant's rows, and its tables have no tenant column to name. One
+%% tenant-scoped table among them keeps the condition, which names that
+%% table's column. Anything that is not such a schema counts as scoped.
+-spec reads_tenant_rows(#kura_query{}) -> boolean().
+reads_tenant_rows(#kura_query{from = From, joins = Joins}) ->
+    tenant_scoped(From) orelse joins_tenant_rows(Joins).
+
+-spec joins_tenant_rows(term()) -> boolean().
+joins_tenant_rows([]) ->
+    false;
+joins_tenant_rows([{_Type, Table, _On, _As} | Rest]) ->
+    tenant_scoped(Table) orelse joins_tenant_rows(Rest);
+joins_tenant_rows(_Joins) ->
+    true.
 
 -spec conditions([term()], {atom(), term()}) -> [term()].
 conditions(Conditions, Condition) ->

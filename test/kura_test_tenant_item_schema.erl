@@ -25,6 +25,12 @@ associations() ->
             foreign_key = item_id
         },
         #kura_assoc{
+            name = shared_links,
+            type = has_many,
+            schema = kura_test_tenant_shared_link_schema,
+            foreign_key = item_id
+        },
+        #kura_assoc{
             name = links,
             type = many_to_many,
             schema = kura_test_tenant_item_schema,

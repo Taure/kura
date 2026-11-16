@@ -191,7 +191,9 @@ be introduced dialect-aware rather than added to this union.
 -doc """
 Return `false` for a schema every tenant shares, such as a table of plans
 or countries. With `require_tenant` set, its rows may then be read and
-written by a process that has no tenant. See `m:kura_tenant`.
+written by a process that has no tenant, and under an attribute tenant a
+query that reads only such schemas gets no tenant condition. See
+`m:kura_tenant`.
 """.
 -callback tenant_scoped() -> boolean().
 -doc """

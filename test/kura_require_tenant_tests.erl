@@ -9,6 +9,10 @@
 -define(REPO, kura_require_tenant_test_repo).
 -define(SCOPED, kura_test_edge_schema).
 -define(SHARED, kura_test_shared_schema).
+%% Scoped, as ?SCOPED is, and without its qty field.
+-define(POSTS, kura_tenant_test_schema).
+%% Says it is scoped, and points at a shared schema.
+-define(REFS, kura_test_shared_ref_schema).
 -define(TENANT, {attribute, {qty, 7}}).
 %% A tenant on a field the shared schema has too.
 -define(NAMED, {attribute, {name, ~"acme"}}).
@@ -38,6 +42,7 @@ with_setting(Setting, Tests) ->
 
 scoped() -> kura_query:from(?SCOPED).
 shared() -> kura_query:from(?SHARED).
+posts() -> kura_query:from(?POSTS).
 
 changeset(Schema, Data, Params) ->
     kura_changeset:cast(Schema, Data, Params, [name]).
@@ -335,7 +340,7 @@ an_undeclared_tenant_field_is_refused_where_a_tenant_is_required_test_() ->
         ]),
         with_setting(true, [
             {"a branch of a union", fun() ->
-                Q = kura_query:union(scoped(), shared()),
+                Q = kura_query:union(scoped(), posts()),
                 ?assertError(
                     {invalid_tenant, ?TENANT},
                     kura_tenant:with_tenant(?TENANT, {kura_repo_worker, all, [?REPO, Q]})
@@ -415,22 +420,22 @@ an_undeclared_tenant_field_warns_once_for_each_schema_test_() ->
             {"each schema has its own warning", fun() ->
                 ?assertMatch(
                     [
-                        #{schema := ?SHARED, field := qty},
+                        #{schema := ?POSTS, field := qty},
                         #{schema := ?SCOPED, field := no_such_field}
                     ],
                     field_warnings_by(fun() ->
-                        All(?TENANT, shared()),
-                        All(?TENANT, shared()),
+                        All(?TENANT, posts()),
+                        All(?TENANT, posts()),
                         All(undeclared(), scoped()),
-                        All(?TENANT, shared())
+                        All(?TENANT, posts())
                     end)
                 )
             end},
             {"a branch of a union is named", fun() ->
                 ?assertMatch(
-                    [#{schema := ?SHARED, field := qty}],
+                    [#{schema := ?POSTS, field := qty}],
                     field_warnings_by(fun() ->
-                        All(?TENANT, kura_query:union(scoped(), shared()))
+                        All(?TENANT, kura_query:union(scoped(), posts()))
                     end)
                 )
             end},
@@ -451,7 +456,10 @@ an_undeclared_tenant_field_warns_once_for_each_schema_test_() ->
     ].
 
 forget_field_warnings() ->
-    [ok = kura_boot_warning:forget({undeclared_tenant_field, S}) || S <- [?SCOPED, ?SHARED]],
+    [
+        ok = kura_boot_warning:forget({undeclared_tenant_field, S})
+     || S <- [?SCOPED, ?SHARED, ?POSTS]
+    ],
     ok.
 
 field_warnings_by(Run) ->
@@ -472,6 +480,220 @@ field_warnings() ->
         {logged, _} -> field_warnings()
     after 100 -> []
     end.
+
+%%----------------------------------------------------------------------
+%% A schema every tenant shares, read under a tenant
+%%----------------------------------------------------------------------
+
+sql(Run) ->
+    _ = kura_tenant:with_tenant(?TENANT, Run),
+    _ = kura_tenant:with_tenant(?TENANT, Run),
+    [Statement, Statement] = kura_test_recording_driver:statements(),
+    Statement.
+
+a_shared_schema_is_not_scoped_test_() ->
+    [
+        with_setting(Setting, [
+            {"all", fun() ->
+                ?assertEqual(
+                    {~"SELECT * FROM \"shared_items\"", []},
+                    sql({kura_repo_worker, all, [?REPO, shared()]})
+                )
+            end},
+            {"get, get_by and reload", fun() ->
+                ById = {~"SELECT * FROM \"shared_items\" WHERE \"id\" = $1", [1]},
+                ?assertEqual(ById, sql({kura_repo_worker, get, [?REPO, ?SHARED, 1]})),
+                ?assertEqual(
+                    ById, sql({kura_repo_worker, reload, [?REPO, ?SHARED, #{id => 1}]})
+                ),
+                ?assertEqual(
+                    {~"SELECT * FROM \"shared_items\" WHERE \"name\" = $1", [~"a"]},
+                    sql({kura_repo_worker, get_by, [?REPO, ?SHARED, [{name, ~"a"}]]})
+                )
+            end},
+            {"exists and an aggregate", fun() ->
+                {Exists, [1]} = sql({kura_repo_worker, exists, [?REPO, shared()]}),
+                {Count, []} = sql({kura_repo_worker, aggregate, [?REPO, shared(), count]}),
+                [?assertEqual(nomatch, binary:match(SQL, ~"qty")) || SQL <- [Exists, Count]]
+            end},
+            {"update_all", fun() ->
+                ?assertEqual(
+                    {~"UPDATE \"shared_items\" SET \"name\" = $1", [~"b"]},
+                    sql({kura_repo_worker, update_all, [?REPO, shared(), #{name => ~"b"}]})
+                )
+            end},
+            {"delete_all", fun() ->
+                ?assertEqual(
+                    {~"DELETE FROM \"shared_items\"", []},
+                    sql({kura_repo_worker, delete_all, [?REPO, shared()]})
+                )
+            end},
+            {"a preload of a shared schema", fun() ->
+                Refs = [#{id => 1, shared_id => 5, qty => 7}],
+                ?assertEqual(
+                    {~"SELECT * FROM \"shared_items\" WHERE \"id\" IN ($1)", [5]},
+                    sql({kura_repo_worker, preload, [?REPO, ?REFS, Refs, [shared]]})
+                )
+            end},
+            {"a join of shared schemas", fun() ->
+                {SQL, []} = sql({kura_repo_worker, all, [?REPO, joined(shared(), ?SHARED)]}),
+                ?assertEqual(nomatch, binary:match(SQL, ~"qty"))
+            end},
+            {"a shared branch of a union, a shared subquery and a shared CTE body", fun() ->
+                Ids = kura_query:select(shared(), [id]),
+                ?assertEqual(
+                    {
+                        <<
+                            "SELECT * FROM \"edge_items\" WHERE \"qty\" = $1"
+                            " UNION SELECT * FROM \"shared_items\""
+                        >>,
+                        [7]
+                    },
+                    sql({kura_repo_worker, all, [?REPO, kura_query:union(scoped(), shared())]})
+                ),
+                ?assertEqual(
+                    {
+                        <<
+                            "SELECT * FROM \"edge_items\" WHERE \"id\" IN"
+                            " (SELECT \"id\" FROM \"shared_items\") AND \"qty\" = $1"
+                        >>,
+                        [7]
+                    },
+                    sql(
+                        {kura_repo_worker, all, [
+                            ?REPO, kura_query:where(scoped(), {id, in, {subquery, Ids}})
+                        ]}
+                    )
+                ),
+                ?assertEqual(
+                    {
+                        <<
+                            "WITH \"picked\" AS (SELECT \"id\" FROM \"shared_items\")"
+                            " SELECT * FROM \"edge_items\" WHERE \"qty\" = $1"
+                        >>,
+                        [7]
+                    },
+                    sql(
+                        {kura_repo_worker, all, [
+                            ?REPO, kura_query:with_cte(scoped(), ~"picked", Ids)
+                        ]}
+                    )
+                )
+            end},
+            {"a field of its own that the tenant names is not compared", fun() ->
+                {ok, []} = kura_tenant:with_tenant(
+                    ?NAMED, {kura_repo_worker, all, [?REPO, shared()]}
+                ),
+                ?assertEqual(
+                    [{~"SELECT * FROM \"shared_items\"", []}],
+                    kura_test_recording_driver:statements()
+                )
+            end},
+            {"it is neither warned of nor refused for the field it lacks", fun() ->
+                ?assertEqual(
+                    [],
+                    field_warnings_by(fun() ->
+                        {ok, []} = kura_tenant:with_tenant(
+                            ?TENANT, {kura_repo_worker, all, [?REPO, shared()]}
+                        ),
+                        _ = kura_tenant:with_tenant(
+                            ?TENANT, {kura_query_compiler, to_sql, [?REPO, shared()]}
+                        )
+                    end)
+                )
+            end}
+        ])
+     || Setting <- [unset, false, true]
+    ].
+
+%% Only queries leave the tenant out. A write of one record by its key is
+%% matched on the tenant as any other; run it in without_tenant/1.
+a_changeset_write_of_a_shared_schema_is_matched_on_the_tenant_test_() ->
+    with_setting(true, [
+        {"update", fun() ->
+            _ = kura_tenant:with_tenant(
+                ?TENANT,
+                {kura_repo_worker, update, [
+                    ?REPO, changeset(?SHARED, #{id => 1, name => ~"a"}, #{name => ~"b"})
+                ]}
+            ),
+            ?assertMatch(
+                [
+                    {
+                        <<"UPDATE \"shared_items\" SET \"name\" = $1 WHERE \"id\" = $2 AND \"qty\" = $3",
+                            _/binary>>,
+                        [~"b", 1, 7]
+                    }
+                ],
+                kura_test_recording_driver:statements()
+            )
+        end},
+        {"delete", fun() ->
+            _ = kura_tenant:with_tenant(
+                ?TENANT, {kura_repo_worker, delete, [?REPO, changeset(?SHARED, #{id => 1}, #{})]}
+            ),
+            ?assertMatch(
+                [
+                    {
+                        <<"DELETE FROM \"shared_items\" WHERE \"id\" = $1 AND \"qty\" = $2",
+                            _/binary>>,
+                        [1, 7]
+                    }
+                ],
+                kura_test_recording_driver:statements()
+            )
+        end},
+        {"neither inside without_tenant/1", fun() ->
+            Delete = {kura_repo_worker, delete, [?REPO, changeset(?SHARED, #{id => 1}, #{})]},
+            _ = kura_tenant:with_tenant(?TENANT, {kura_tenant, without_tenant, [Delete]}),
+            ?assertMatch(
+                [{<<"DELETE FROM \"shared_items\" WHERE \"id\" = $1", Rest/binary>>, [1]}] when
+                    binary_part(Rest, 0, min(4, byte_size(Rest))) =/= ~" AND",
+                kura_test_recording_driver:statements()
+            )
+        end}
+    ]).
+
+%% The condition names the tenant table's column, wherever that table
+%% stands in the join.
+a_shared_schema_beside_a_tenants_table_keeps_the_condition_test_() ->
+    Condition = ~" WHERE \"qty\" = $1",
+    Scoped = fun(Q) ->
+        {SQL, [7]} = sql({kura_repo_worker, all, [?REPO, Q]}),
+        ?assertEqual(Condition, binary:part(SQL, byte_size(SQL), -byte_size(Condition)))
+    end,
+    with_setting(true, [
+        {"a tenant's table joined to a shared schema", fun() ->
+            Scoped(joined(scoped(), ?SHARED))
+        end},
+        {"a shared schema joined to a tenant's table", fun() ->
+            Scoped(joined(shared(), ?SCOPED))
+        end},
+        {"a shared schema joined to a shared schema and to a tenant's table", fun() ->
+            Scoped(kura_query:join(joined(shared(), ?SHARED), left, ?SCOPED, {id, id}))
+        end},
+        {"a shared schema joined to a table that is no schema", fun() ->
+            Scoped(joined(shared(), ~"audit_rows"))
+        end}
+    ]).
+
+only_a_schema_that_says_false_is_shared_test_() ->
+    Scoped = fun(Q) ->
+        {SQL, Params} = sql({kura_repo_worker, all, [?REPO, Q]}),
+        ?assertMatch({_, _}, binary:match(SQL, ~"\"qty\" = $")),
+        ?assertEqual(7, lists:last(Params))
+    end,
+    with_setting(true, [
+        {"a schema without the callback", fun() -> Scoped(scoped()) end},
+        {"a schema whose callback says true", fun() -> Scoped(kura_query:from(?REFS)) end},
+        {"a table named by a binary", fun() -> Scoped(kura_query:from(~"shared_items")) end},
+        {"a table named by an atom", fun() -> Scoped(kura_query:from(shared_items)) end},
+        {"a CTE named as the shared schema's table is", fun() ->
+            Scoped(
+                kura_query:with_cte(kura_query:from(~"shared_items"), ~"shared_items", scoped())
+            )
+        end}
+    ]).
 
 %%----------------------------------------------------------------------
 %% Joins

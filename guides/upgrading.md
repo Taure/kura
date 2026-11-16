@@ -219,6 +219,12 @@ any value, the permissive one included, is a decision and logs nothing.
 - `require_tenant`: a query or changeset write in a process with no
   tenant raises `{kura, {tenant_required, Source}}`. It judges a query by
   everything it reads, joins, CTEs and subqueries included.
+- A schema whose `tenant_scoped/0` returns `false` is shared by every
+  tenant: `require_tenant` does not ask a tenant for it, and under an
+  attribute tenant a query, `update_all` or `delete_all` that reads only
+  such schemas gets no tenant condition. A schema without the callback is
+  scoped as in 2.30. See
+  [Multitenancy](multitenancy.md#a-schema-every-tenant-shares).
 - `t:kura_migration:column_name/0`: a column in a `#kura_column{}`, a table
   constraint, an `alter_table` operation, an index or a `safe/0` entry is
   an atom or a binary. `kura_migration:column_text/1` gives either as

@@ -118,6 +118,24 @@ On a repo with [`require_tenant => true`](#requiring-a-tenant) the query raises 
 
 kura judges a query only where it can tell: the query, or a query combined with it, is from a schema and has no join and no CTE, either of which can bring the column in. Any other query is left to the database, without a warning.
 
+### A schema every tenant shares
+
+A table of plans or countries has no tenant column and belongs to no tenant. Its schema says so:
+
+```erlang
+-module(plan).
+-behaviour(kura_schema).
+-export([table/0, fields/0, tenant_scoped/0]).
+
+tenant_scoped() -> false.
+```
+
+Under an attribute tenant a query that reads only such schemas gets no tenant condition and no warning, in `all`, `get`, aggregates, a preload of the schema, `update_all` and `delete_all`: every tenant reads the same rows, and a bulk write under a tenant reaches all of them. That is judged for each query on its own, so a shared subquery, CTE body or union branch is left alone inside a query that is scoped.
+
+A query that joins a shared schema to anything else keeps the tenant condition, whichever of the two it is from: the condition names the tenant table's column. Only a schema module counts. A table named by a binary or an atom is scoped, and so is a CTE's name, whatever its body reads.
+
+Writes of one record are not exempt. `update/2`, `delete/2` and an upsert of a shared schema's changeset are still matched on the tenant, which its table does not have, so the database refuses them. A plain insert writes the fields the schema declares. Change shared rows where no tenant is set, or inside `kura_tenant:without_tenant/1`.
+
 Upserts that hit another tenant's row behave like `DO NOTHING`. Under attribute tenancy, unique indexes should include the tenant column; a unique index across tenants still tells one tenant that a value exists in another.
 
 Under a tenant context, writes of a changeset to a table without the tenant field differ: `update/2`, `delete/2` and an upsert fail in the database, and a plain insert succeeds without the tenant. The same goes for a schema that does not declare the field: an insert writes the fields the schema declares, so the row is written without the tenant, with or without `require_tenant`.
@@ -173,15 +191,9 @@ CTE listed after it, are tables.
 
 Two things are exempt.
 
-A schema every tenant shares, such as plans or countries, says so:
-
-```erlang
--module(plan).
--behaviour(kura_schema).
--export([table/0, fields/0, tenant_scoped/0]).
-
-tenant_scoped() -> false.
-```
+A schema every tenant shares, such as plans or countries, says so with
+`tenant_scoped() -> false`; see
+[A schema every tenant shares](#a-schema-every-tenant-shares).
 
 A path that crosses tenants on purpose, such as an admin report or a
 maintenance job, says so where it runs:
