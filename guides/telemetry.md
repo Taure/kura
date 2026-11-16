@@ -45,8 +45,8 @@ redact() -> [password_hash, reset_token].
 ```
 
 Encrypted fields are redacted without being listed. So is an embed whose
-schema has a `redact/0` that lists a field: an embed is one value, so it
-is replaced whole. In `params`, and in the legacy query log, their values
+schema has a `redact/0` that lists a field, or embeds a schema that does
+at any depth: an embed is one value, so it is replaced whole. In `params`, and in the legacy query log, their values
 are replaced by `~"[redacted]"`:
 
 | Statement | What is replaced |

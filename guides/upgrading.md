@@ -236,9 +236,9 @@ any value, the permissive one included, is a decision and logs nothing.
   `{Module, Function}`. See [Nested Changesets](cast_assoc.md).
 - Schema callbacks `redact/0` and `tenant_scoped/0`;
   `kura_schema:redacted_fields/1` and `kura_schema:renamed_columns/1`.
-  An embed whose schema has a `redact/0` that lists a field is redacted
-  whole with its parent;
-  `kura_redact:record/2` and `kura_redact:changeset/1`. Both are for
+  An embed whose schema has a `redact/0` that lists a field, or embeds a
+  schema that does at any depth, is redacted whole with its parent.
+- `kura_redact:record/2` and `kura_redact:changeset/1`. Both are for
   logging and never raise. For a schema with redacted fields or with
   associations, what they cannot read (an error that is not
   `{Field, Message}`, a message that is not text, a value under a key that
@@ -249,8 +249,8 @@ any value, the permissive one included, is a decision and logs nothing.
   the schema: the value under a confirmation or a mistyped key is
   replaced, and the key is kept. A schema with neither redacted fields nor
   associations has nothing to hide: its record or changeset is returned as
-  it is. A term that is not a changeset, and a module that is
-  not a schema, give `~"[redacted]"` under `base`.
+  it is. A term that is not a changeset, and a module that is not a
+  schema, give `~"[redacted]"` under `base`.
 - `kura_repo_worker:query/4` with `#{sensitive => true}` redacts a raw
   statement's parameters in telemetry and the query log.
 - `kura_tenant:without_tenant/1`, `kura_tenant:current_scope/0` and

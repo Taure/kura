@@ -85,6 +85,7 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(upgrading)* Which fragment conditions change their result, and what to check
 - *(multitenancy)* Show the line a fragment's closing parenthesis is written on
 - *(tenant)* A schema every tenant shares is read from the tenant's schema under a prefix tenant
+- *(redact)* An embed is redacted for a redacted field at any depth, and the logging helpers have an entry of their own
 
 ### Features
 
