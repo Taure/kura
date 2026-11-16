@@ -50,12 +50,8 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(tenant)* Leave a tenant field a schema does not declare to the database
 - *(changeset)* Report a confirmation mismatch on the confirmation where its atom exists
 - *(query)* Compile a fragment condition as one group
-- *(tenant)* Leave a schema every tenant shares out of the tenant condition
-- *(tenant)* Match a schema that declares the tenant's field on it, whatever tenant_scoped/0 returns
-- *(tenant)* Write the records of a schema every tenant shares without the tenant
-- *(tenant)* Refuse a write to a schema that does not declare the tenant's field where a tenant is required
+- *(tenant)* Leave a schema every tenant shares out of the tenant condition and its writes, match one that declares the tenant's field, refuse one that does neither where a tenant is required
 - *(audit)* Write the audit row of a write under an attribute tenant without the tenant
-- *(tenant)* Refuse a write before its prepare functions and before hooks run
 - *(redact)* Hide a record or changeset of a module that is no schema
 - *(redact)* Redact an embed whose schema lists redacted fields
 - *(redact)* Hide a changeset's params under keys that name no field, embed or association, and the error messages that quote them
