@@ -1519,6 +1519,9 @@ prefix qualifies the name and a qualified name is a table's.
 A CTE's body sees the CTEs listed before it, as the `WITH` kura writes has
 no `RECURSIVE`: in the body, the CTE's own name and the name of a CTE listed
 after it are tables.
+
+A later release may add a role, so a caller matches the roles it knows and
+passes over any other.
 """.
 -type source() :: {from | join | cte | preload, module() | atom() | binary()}.
 
@@ -1532,6 +1535,10 @@ A preload is resolved from the associations of the `from` schema: the
 associated schema, the join table of a many-to-many, and each step of a
 `through`. Only the preloads of `Query` itself are listed, since those of a
 nested query are never run. A source may be listed more than once.
+
+Each source is `{Role, SchemaOrTable}`, the role being `from`, `join`, `cte`
+or `preload` (`t:source/0`). The set of roles may grow in a later release:
+match the roles you need and tolerate one you do not know.
 
 ```erlang
 Q = kura_query:preload(kura_query:join(kura_query:from(post), inner, author, {author_id, id}), [tags]),
