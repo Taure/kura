@@ -222,10 +222,12 @@ validate_subset(CS, Field, AllowedValues) ->
 Validate that the params repeat the change to `Field` under
 `<Field>_confirmation`, as an atom or a binary key.
 
-A mismatch is reported on `<Field>_confirmation` when the changeset has a
-field of that name, and on `Field` when it has none: kura does not create
-the atom. Declare the confirmation as a virtual field to have the error
-there:
+A mismatch is reported on `<Field>_confirmation` wherever an atom of that
+name exists, and it exists in any application whose loaded code names the
+confirmation: in a schema, in the view that shows the error, in the params.
+kura does not create the atom, so where there is none the mismatch is
+reported on `Field`. A changeset that has the confirmation as a field
+always reports it there; declare it as a virtual field to be sure of it:
 
 ```erlang
 #kura_field{name = password_confirmation, type = string, virtual = true}
@@ -249,14 +251,12 @@ validate_confirmation(CS, Field, Opts) ->
                 _Other ->
                     add_error(
                         CS,
-                        confirmation_field(Name, Field, CS#kura_changeset.types),
+                        confirmation_field(Name, Field),
                         maps:get(message, Opts, ~"does not match")
                     )
             end
     end.
 
-%% An atom key of the params exists as an atom, and so does a field of the
-%% changeset, so neither answer depends on what else has made the atom.
 -spec confirmation(binary(), map()) -> {ok, term()} | error.
 confirmation(Name, Params) when is_map_key(Name, Params) ->
     maps:find(Name, Params);
@@ -267,11 +267,12 @@ confirmation(Name, Params) ->
         error:badarg -> error
     end.
 
--spec confirmation_field(binary(), atom(), map()) -> atom().
-confirmation_field(Name, Field, Types) ->
-    try binary_to_existing_atom(Name, utf8) of
-        Key when is_map_key(Key, Types) -> Key;
-        _Key -> Field
+%% The name is never made into an atom: one that the application's code
+%% names exists already, and one that only the params name must not.
+-spec confirmation_field(binary(), atom()) -> atom().
+confirmation_field(Name, Field) ->
+    try
+        binary_to_existing_atom(Name, utf8)
     catch
         error:badarg -> Field
     end.

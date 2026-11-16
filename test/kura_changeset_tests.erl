@@ -481,9 +481,9 @@ validate_confirmation_custom_message_test() ->
     ?assertNot(CS2#kura_changeset.valid),
     ?assertMatch([{password_confirmation, <<"passwords don't match">>}], CS2#kura_changeset.errors).
 
-%% The error is on the confirmation field when the changeset has one, and
-%% on the field itself when it has none, whether or not an atom of the
-%% confirmation's name exists and whichever key the params use.
+%% The error is on the confirmation's name wherever that atom exists, as a
+%% field of the changeset or not, and on the field itself where it does
+%% not, whichever key the params use. The name is never made into an atom.
 validate_confirmation_error_field_test_() ->
     Errors = fun(Types, Field, Params) ->
         CS = kura_changeset:validate_confirmation(
@@ -496,7 +496,7 @@ validate_confirmation_error_field_test_() ->
         {"no such field, the atom exists: " ++ Label, fun() ->
             ?assertEqual(password_confirmation, binary_to_existing_atom(~"password_confirmation")),
             ?assertEqual(
-                [{password, ~"does not match"}],
+                [{password_confirmation, ~"does not match"}],
                 Errors(#{password => string}, password, Params#{password => ~"s"})
             )
         end}

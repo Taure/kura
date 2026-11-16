@@ -107,11 +107,13 @@ any value, the permissive one included, is a decision and logs nothing.
 
 #### Changesets and writes
 
-- `validate_confirmation/2,3` reports a mismatch on `<Field>_confirmation`
-  when the changeset has a field of that name, and on `Field` when it has
-  none. 2.30 created the atom and always reported on it. Declare the
-  confirmation as a virtual field to keep the error there. The
-  confirmation is read from an atom or a binary key of the params.
+- `validate_confirmation/2,3` reports a mismatch on `<Field>_confirmation`,
+  as 2.30 did, wherever an atom of that name exists: in any application
+  whose loaded code names the confirmation, in a schema, a view or the
+  params. kura no longer creates the atom, so where there is none the
+  mismatch is reported on `Field`. A confirmation declared as a field,
+  virtual or not, is always reported on. The confirmation is read from an
+  atom or a binary key of the params.
 - A database constraint error the changeset does not declare is reported
   on a field only when its name is one the database generates for a
   single column of the changeset's table, or `<table>_pkey`. Any other
