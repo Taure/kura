@@ -121,6 +121,21 @@ in `assoc_changes` are redacted the same way.
 [{base, ~"[redacted]"}] = (kura_redact:changeset(CS))#kura_changeset.errors.
 ```
 
+`params` are what the caller was sent, under the keys it was sent with.
+For a schema with redacted fields, a value in `params` is shown only under
+a key that names a field, an embed or an association of the schema, as an
+atom, a binary or a string. The value under any other key is replaced and
+the key is kept, since a confirmation such as `~"password_confirmation"`
+or a mistyped name can hold what a redacted field holds. A confirmation
+declared as a virtual field is a field: list it in `redact/0` beside the
+field it confirms. The params of an association are read the same way, by
+its schema.
+
+```erlang
+#{~"email" := ~"a@b.c", ~"password" := ~"[redacted]", ~"password_confirmation" := ~"[redacted]"} =
+    (kura_redact:changeset(CS))#kura_changeset.params.
+```
+
 Never raises, whatever the changeset holds. What kura cannot read is
 replaced, never passed through:
 
@@ -172,7 +187,7 @@ shown_changeset(Changeset, Hidden) ->
             Shown#kura_changeset{
                 data = shown_map(Hidden, Data),
                 changes = shown_map(Hidden, Changes),
-                params = shown_map(Hidden, Params),
+                params = shown_params(element(#kura_changeset.schema, Changeset), Hidden, Params),
                 errors = shown_errors(Errors, quotable([Data, Changes, Params], Hidden))
             }
     end.
@@ -263,32 +278,108 @@ all_atoms(Fields) -> Fields =:= [].
 shown_map({[], Nested}, Map) when is_map(Map), map_size(Nested) =:= 0 ->
     Map;
 shown_map({_Redacted, _Nested} = Hidden, Map) when is_map(Map) ->
-    #{Key => shown_value(entry(Key, Hidden), Value) || Key := Value <- Map};
+    #{Key => shown_value(fields, entry(Key, Hidden), Value) || Key := Value <- Map};
 shown_map(_Hidden, _Map) ->
     hidden_map().
+
+%% Params are what a caller was sent, under the keys it was sent with. In
+%% a schema with redacted fields a key that names none of its fields can
+%% hold what a redacted field holds, as a confirmation or a mistyped name
+%% does, so its value is hidden.
+-spec shown_params(term(), hidden() | unknown, term()) -> map().
+shown_params(Schema, {[_ | _], _Nested} = Hidden, Params) when is_atom(Schema), is_map(Params) ->
+    case param_names(Schema, Hidden) of
+        unknown ->
+            hidden_map();
+        Names ->
+            #{
+                Key => shown_value(params, param(Key, Names, Hidden), Value)
+             || Key := Value <- Params
+            }
+    end;
+shown_params(_Schema, {[], Nested}, Params) when is_map(Params), map_size(Nested) =:= 0 ->
+    Params;
+shown_params(_Schema, {[], _Nested} = Hidden, Params) when is_map(Params) ->
+    #{Key => shown_value(params, entry(Key, Hidden), Value) || Key := Value <- Params};
+shown_params(_Schema, _Hidden, _Params) ->
+    hidden_map().
+
+%% Every name a key of a schema's params can be: its fields, virtual ones
+%% included, its embeds and its associations.
+-spec param_names(module(), hidden()) -> [atom()] | unknown.
+param_names(Schema, {Redacted, Nested}) ->
+    try
+        kura_schema:field_names(Schema) ++
+            [Name || #kura_embed{name = Name} <- kura_schema:embeds(Schema)]
+    of
+        Names ->
+            case all_atoms(Names) of
+                true -> Names ++ Redacted ++ maps:keys(Nested);
+                false -> unknown
+            end
+    catch
+        _:_ -> unknown
+    end.
+
+-spec param(term(), [atom()], hidden()) -> hide | show | {nested, module()}.
+param(Key, Names, Hidden) ->
+    case named(Key, Names) of
+        {ok, Name} -> entry(Name, Hidden);
+        error -> hide
+    end.
+
+-spec named(term(), [atom()]) -> {ok, atom()} | error.
+named(Key, Names) when is_atom(Key) ->
+    case lists:member(Key, Names) of
+        true -> {ok, Key};
+        false -> error
+    end;
+named(Key, Names) when is_binary(Key) ->
+    case [Name || Name <- Names, atom_to_binary(Name, utf8) =:= Key] of
+        [Name | _] -> {ok, Name};
+        [] -> error
+    end;
+named(Key, Names) when is_list(Key) ->
+    case text(Key) of
+        {ok, Text} -> named(Text, Names);
+        error -> error
+    end;
+named(_Key, _Names) ->
+    error.
 
 -spec hidden_map() -> map().
 hidden_map() ->
     #{base => ?REDACTED}.
 
--spec shown_value(hide | show | {nested, module()}, term()) -> term().
-shown_value(hide, _Value) -> ?REDACTED;
-shown_value(show, Value) -> Value;
-shown_value({nested, Target}, Value) -> shown_nested(Target, Value).
+%% Whether a map holds a record's fields or a changeset's params, which
+%% decides how the maps nested in it are read.
+-type holds() :: fields | params.
 
--spec shown_nested(module(), term()) -> term().
-shown_nested(Target, Value) when is_map(Value) -> shown_map(hidden_in(Target), Value);
-shown_nested(Target, [Value | Rest]) -> [shown_nested(Target, Value) | nested_rest(Target, Rest)];
-shown_nested(_Target, #kura_changeset{} = Changeset) -> changeset(Changeset);
-shown_nested(_Target, Value) when is_atom(Value); Value =:= [] -> Value;
-shown_nested(_Target, _Value) -> ?REDACTED.
+-spec shown_value(holds(), hide | show | {nested, module()}, term()) -> term().
+shown_value(_Holds, hide, _Value) -> ?REDACTED;
+shown_value(_Holds, show, Value) -> Value;
+shown_value(Holds, {nested, Target}, Value) -> shown_nested(Holds, Target, Value).
 
--spec nested_rest(module(), term()) -> [term()].
-nested_rest(Target, [Value | Rest]) ->
-    [shown_nested(Target, Value) | nested_rest(Target, Rest)];
-nested_rest(_Target, []) ->
+-spec shown_nested(holds(), module(), term()) -> term().
+shown_nested(fields, Target, Value) when is_map(Value) ->
+    shown_map(hidden_in(Target), Value);
+shown_nested(params, Target, Value) when is_map(Value) ->
+    shown_params(Target, hidden_in(Target), Value);
+shown_nested(Holds, Target, [Value | Rest]) ->
+    [shown_nested(Holds, Target, Value) | nested_rest(Holds, Target, Rest)];
+shown_nested(_Holds, _Target, #kura_changeset{} = Changeset) ->
+    changeset(Changeset);
+shown_nested(_Holds, _Target, Value) when is_atom(Value); Value =:= [] ->
+    Value;
+shown_nested(_Holds, _Target, _Value) ->
+    ?REDACTED.
+
+-spec nested_rest(holds(), module(), term()) -> [term()].
+nested_rest(Holds, Target, [Value | Rest]) ->
+    [shown_nested(Holds, Target, Value) | nested_rest(Holds, Target, Rest)];
+nested_rest(_Holds, _Target, []) ->
     [];
-nested_rest(_Target, _Tail) ->
+nested_rest(_Holds, _Target, _Tail) ->
     [?REDACTED].
 
 %% What a key of a map of fields says of its value: a redacted field's is

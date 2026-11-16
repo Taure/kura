@@ -92,7 +92,9 @@ sensitive, is cut down either way.
 
 For your own log lines, `kura_redact:record(Schema, Map)` and
 `kura_redact:changeset(Changeset)` return copies with the same fields
-replaced.
+replaced. In a changeset's `params` the value under a key that names no
+field of the schema, such as a confirmation or a mistyped name, is
+replaced too.
 
 ## Attaching Handlers
 

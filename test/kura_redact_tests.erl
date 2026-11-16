@@ -98,6 +98,101 @@ changeset_params_under_binary_keys_test() ->
         (kura_redact:changeset(CS))#kura_changeset.params
     ).
 
+%% A confirmation and a mistyped name hold what the field they stand for
+%% holds, so in a schema with redacted fields only a field's key shows its
+%% value.
+changeset_params_under_keys_that_name_no_field_test() ->
+    Params = #{
+        ~"email" => ~"a@b.c",
+        ~"token" => ~"tok-SECRET",
+        ~"token_confirmation" => ~"tok-SECRET",
+        ~"tokne" => ~"tok-TYPO",
+        password_hsah => ~"hash-TYPO",
+        "Email" => ~"cased-TYPO",
+        ~"" => ~"empty-TYPO"
+    },
+    Shown = kura_redact:changeset((secret_changeset())#kura_changeset{params = Params}),
+    ?assertEqual(
+        #{
+            ~"email" => ~"a@b.c",
+            ~"token" => ?R,
+            ~"token_confirmation" => ?R,
+            ~"tokne" => ?R,
+            password_hsah => ?R,
+            "Email" => ?R,
+            ~"" => ?R
+        },
+        Shown#kura_changeset.params
+    ),
+    Printed = iolist_to_binary(io_lib:format("~p", [Shown])),
+    ?assertEqual(nomatch, binary:match(Printed, [~"SECRET", ~"TYPO"])).
+
+changeset_params_that_name_a_field_test_() ->
+    Bound = kura_test_enc_bound_schema,
+    Owner = kura_changeset:cast(?OWNER, #{}, #{name => ~"n"}, [name]),
+    [
+        {"a virtual field is a field",
+            ?_assertEqual(
+                #{~"ssn" => ?R, ~"ssn_confirmation" => ~"shown", ~"ssn_confirmed" => ?R},
+                (kura_redact:changeset(
+                    (kura_changeset:cast(Bound, #{}, #{}, []))#kura_changeset{
+                        params = #{
+                            ~"ssn" => ~"1",
+                            ~"ssn_confirmation" => ~"shown",
+                            ~"ssn_confirmed" => ~"1"
+                        }
+                    }
+                ))#kura_changeset.params
+            )},
+        {"an embed is one, and one whose schema redacts nothing is shown",
+            ?_assertEqual(
+                #{name => ~"n", address => #{city => ~"c"}, creds => ?R, adress => ?R},
+                (kura_redact:changeset(
+                    (kura_changeset:cast(kura_test_redact_embed_parent, #{}, #{}, []))#kura_changeset{
+                        params = #{
+                            name => ~"n",
+                            address => #{city => ~"c"},
+                            creds => #{api_secret => ~"emb-SECRET"},
+                            adress => #{city => ~"c"}
+                        }
+                    }
+                ))#kura_changeset.params
+            )},
+        {"the params of an association are read by its schema",
+            ?_assertEqual(
+                #{
+                    ~"nmae" => ~"n",
+                    ~"accounts" => [
+                        #{~"email" => ~"a@b.c", ~"token" => ?R, ~"token_confirmation" => ?R}
+                    ],
+                    account => #{email => ~"a@b.c", tokne => ?R}
+                },
+                (kura_redact:changeset(Owner#kura_changeset{
+                    params = #{
+                        ~"nmae" => ~"n",
+                        ~"accounts" => [
+                            #{
+                                ~"email" => ~"a@b.c",
+                                ~"token" => ~"tok-SECRET",
+                                ~"token_confirmation" => ~"tok-SECRET"
+                            }
+                        ],
+                        account => #{email => ~"a@b.c", tokne => ~"tok-SECRET"}
+                    }
+                }))#kura_changeset.params
+            )},
+        {"data and changes keep the keys that name no field",
+            ?_test(begin
+                CS = (secret_changeset())#kura_changeset{
+                    data = #{id => 1, token => ~"t", total => 3},
+                    changes = #{token => ~"t", rank => 2}
+                },
+                Shown = kura_redact:changeset(CS),
+                ?assertEqual(#{id => 1, token => ?R, total => 3}, Shown#kura_changeset.data),
+                ?assertEqual(#{token => ?R, rank => 2}, Shown#kura_changeset.changes)
+            end)}
+    ].
+
 changeset_with_a_redacted_value_that_is_no_text_test() ->
     CS0 = kura_changeset:cast(?S, #{}, #{email => ~"a@b.c"}, [email]),
     CS = CS0#kura_changeset{

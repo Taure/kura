@@ -56,6 +56,7 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(tenant)* Refuse a write to a schema that does not declare the tenant's field where a tenant is required
 - *(redact)* Hide a record or changeset of a module that is no schema
 - *(redact)* Redact an embed whose schema lists redacted fields
+- *(redact)* Hide a changeset's params under keys that name no field
 - *(preload)* Give preload/4 a spec that takes a conditional preload
 
 ### Documentation
