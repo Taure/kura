@@ -218,7 +218,9 @@ Two things are exempt.
 
 A schema every tenant shares, such as plans or countries, says so with
 `tenant_scoped() -> false`; see
-[A schema every tenant shares](#a-schema-every-tenant-shares).
+[A schema every tenant shares](#a-schema-every-tenant-shares). A process
+without a tenant names no field to judge the schema by, so the callback
+alone decides here, whatever fields the schema declares.
 
 A path that crosses tenants on purpose, such as an admin report or a
 maintenance job, says so where it runs:
