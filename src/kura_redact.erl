@@ -93,9 +93,11 @@ redacted by the association's schema. A key is a field's name as an atom,
 a binary or a string; the value under any other key is replaced, since
 kura cannot tell which field it is.
 
-Never raises. Where `Record` is not a map, or `Schema` is not a module
-whose `redact/0` returns a list of fields, the result is
-`#{base => ~"[redacted]"}`.
+Never raises. Where `Record` is not a map, `Schema` is not a schema, or
+its `redact/0` does not return a list of fields, the result is
+`#{base => ~"[redacted]"}`. A schema with no redacted field and no
+association has nothing to hide, so its record is returned as it is,
+whatever its keys.
 """.
 -spec record(module(), map()) -> map().
 record(Schema, Record) ->
@@ -127,11 +129,13 @@ replaced, never passed through:
 - a `data`, `changes` or `params` that is not a map becomes
   `#{base => ~"[redacted]"}`;
 - an entry of `assoc_changes` that is not a changeset, a term that is not
-  a changeset at all, and a changeset whose schema is not a module with a
-  `redact/0` that returns a list of fields, become an invalid changeset
-  whose only error is `{base, ~"[redacted]"}`.
+  a changeset at all, and a changeset whose schema is not a schema or has
+  a `redact/0` that does not return a list of fields, become an invalid
+  changeset whose only error is `{base, ~"[redacted]"}`.
 
-A changeset without a schema has nothing redacted but its `assoc_changes`.
+That is for a schema with redacted fields or with associations. A
+changeset without a schema, or of a schema that has neither, has nothing
+redacted or replaced but its `assoc_changes`.
 """.
 -spec changeset(#kura_changeset{}) -> #kura_changeset{}.
 changeset(Changeset) ->
@@ -204,12 +208,14 @@ shown_assoc(Changeset) ->
 
 %% What is hidden in a map of a schema's fields: its redacted fields, and
 %% the schema of each association, whose records are redacted by it.
-%% `unknown` when the schema cannot say, so that everything is hidden.
+%% `unknown` when the schema cannot say, or the name is no schema, so that
+%% everything is hidden.
 -type hidden() :: {[atom()], #{atom() => module()}}.
 
 -spec hidden_in(term()) -> hidden() | unknown.
 hidden_in(Schema) when is_atom(Schema) ->
-    case redacted(Schema) of
+    case kura_schema:is_schema(Schema) andalso redacted(Schema) of
+        false -> unknown;
         unknown -> unknown;
         Redacted -> hidden_in(Schema, Redacted)
     end;
@@ -222,8 +228,7 @@ hidden_in(Schema, Redacted) ->
         {Redacted,
             #{
                 Assoc#kura_assoc.name => Target
-             || true <- [kura_schema:is_schema(Schema)],
-                #kura_assoc{} = Assoc <- kura_schema:associations(Schema),
+             || #kura_assoc{} = Assoc <- kura_schema:associations(Schema),
                 Target <- [kura_schema:assoc_target(Assoc)],
                 is_atom(Target),
                 Target =/= undefined
@@ -345,7 +350,8 @@ hidden_nested(_Target, Value) ->
     [Value].
 
 %% Every text and integer in a value, at any depth: an error message can
-%% quote an element of a list as it can quote the whole.
+%% quote an element of a list as it can quote the whole. A list of integers
+%% that reads as text is taken both ways.
 -spec texts(term()) -> [binary()].
 texts(<<>>) ->
     [];
@@ -356,7 +362,7 @@ texts(Value) when is_integer(Value) ->
 texts(Value) when is_list(Value) ->
     case text(Value) of
         {ok, <<>>} -> [];
-        {ok, Text} -> [Text];
+        {ok, Text} -> [Text | element_texts(Value)];
         error -> element_texts(Value)
     end;
 texts(Value) when is_tuple(Value) ->
@@ -469,6 +475,8 @@ mode(Query) ->
 -spec mode(#kura_query{}, [kura_query:source()]) -> mode().
 mode(Query, Sources) ->
     try redacted_read(Sources) of
+        unknown ->
+            hidden;
         [] ->
             plain;
         Redacted ->
@@ -585,14 +593,14 @@ error_reason(_Reason) -> redacted.
 %% condition is judged against all of them and not only those of its own
 %% level: the database resolves a name a subquery's sources lack to the
 %% outer query's column, and a CTE hands its columns to whatever reads it.
--spec redacted_read([kura_query:source()]) -> [atom()].
+%% `unknown` when one of them cannot say what it redacts.
+-spec redacted_read([kura_query:source()]) -> [atom()] | unknown.
 redacted_read(Sources) ->
-    lists:usort(
-        lists:append([readable(redacted_of(Source)) || {Role, Source} <- Sources, Role =/= preload])
-    ).
-
--spec readable([atom()] | unknown) -> [atom()].
-readable(Redacted) when is_list(Redacted) -> Redacted.
+    Read = [redacted_of(Source) || {Role, Source} <- Sources, Role =/= preload],
+    case lists:member(unknown, Read) of
+        true -> unknown;
+        false -> lists:usort([Field || Redacted <- Read, is_list(Redacted), Field <- Redacted])
+    end.
 
 names_anywhere(
     #kura_query{wheres = Wheres, havings = Havings, order_bys = Orders, select = Select} = Query,

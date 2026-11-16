@@ -194,6 +194,9 @@ changeset_errors_quoting_a_redacted_value_that_is_no_binary_test_() ->
             ?_assertEqual(Quoted, Errors(#{~"tok-OTHER" => value}))
         ]},
         {"a number inside a list", ?_assertEqual(Quoted, Errors([42, 7.5]))},
+        {"a list of one number, which reads as a string too", ?_assertEqual(Quoted, Errors([42]))},
+        {"a list of numbers that all read as characters",
+            ?_assertEqual(Quoted, Errors([100, 42, 101]))},
         {"after a list that does not end",
             ?_assertEqual(Quoted, Errors(improper(7.5, ~"tok-OTHER")))},
         {"nothing that can be quoted",
@@ -255,6 +258,10 @@ changeset_of_a_schema_that_cannot_be_read_test_() ->
                 Hidden,
                 kura_redact:changeset(CS#kura_changeset{schema = kura_test_bad_redact_schema})
             )},
+        {"a module that does not exist",
+            ?_assertEqual(Hidden, kura_redact:changeset(CS#kura_changeset{schema = not_a_schema}))},
+        {"a module that is no schema",
+            ?_assertEqual(Hidden, kura_redact:changeset(CS#kura_changeset{schema = lists}))},
         {"no changeset at all", [
             ?_assertEqual(Hidden, kura_redact:changeset(ill_typed(~"tok-SECRET"))),
             ?_assertEqual(
@@ -401,7 +408,16 @@ record_that_cannot_be_read_test_() ->
                 #{base => ?R}, kura_redact:record(kura_test_bad_redact_schema, #{token => ~"t"})
             )},
         {"no map, of a name that is no schema",
-            ?_assertEqual(#{base => ?R}, kura_redact:record(not_a_schema, ill_typed(~"t")))}
+            ?_assertEqual(#{base => ?R}, kura_redact:record(not_a_schema, ill_typed(~"t")))},
+        {"a module that does not exist",
+            ?_assertEqual(#{base => ?R}, kura_redact:record(not_a_schema, #{token => ~"t"}))},
+        {"a module that is no schema",
+            ?_assertEqual(#{base => ?R}, kura_redact:record(lists, #{token => ~"t"}))},
+        {"a record whose association names a module that is no schema",
+            ?_assertEqual(
+                #{id => 1, plain => #{base => ?R}},
+                kura_redact:record(kura_test_stray_assoc_schema, #{id => 1, plain => #{id => 2}})
+            )}
     ].
 
 secret_changeset() ->
@@ -967,6 +983,20 @@ a_mode_or_query_that_cannot_be_read_test_() ->
         ?_assertEqual(
             hidden, kura_redact:mode(kura_query:from(?S), ill_typed(~"t"))
         ),
+        {"a source whose redact/0 is no list of fields", [
+            ?_assertEqual(hidden, kura_redact:mode(kura_query:from(kura_test_bad_redact_schema))),
+            ?_assertEqual(
+                hidden,
+                kura_redact:mode(
+                    kura_query:join(
+                        kura_query:from(kura_test_edge_schema),
+                        inner,
+                        kura_test_bad_redact_schema,
+                        {id, id}
+                    )
+                )
+            )
+        ]},
         ?_assertEqual(
             {redacted, [?R]}, kura_redact:query_params(ill_typed({kura_query, ~"t"}), [~"t"])
         ),

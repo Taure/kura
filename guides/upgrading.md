@@ -206,11 +206,14 @@ any value, the permissive one included, is a decision and logs nothing.
 - Schema callbacks `redact/0` and `tenant_scoped/0`;
   `kura_schema:redacted_fields/1` and `kura_schema:renamed_columns/1`;
   `kura_redact:record/2` and `kura_redact:changeset/1`. Both are for
-  logging and never raise: what they cannot read (an error that is not
+  logging and never raise. For a schema with redacted fields or with
+  associations, what they cannot read (an error that is not
   `{Field, Message}`, a message that is not text, a value under a key that
-  is not a field name, a term that is not a changeset) is replaced by
-  `~"[redacted]"`, not passed through. A message that is a string or an
-  atom comes back as a binary.
+  is not a field name) is replaced by `~"[redacted]"`, not passed through,
+  and a message that is a string or an atom comes back as a binary. A
+  schema with neither has nothing to hide: its record or changeset is
+  returned as it is. A term that is not a changeset, and a module that is
+  not a schema, give `~"[redacted]"` under `base`.
 - `kura_repo_worker:query/4` with `#{sensitive => true}` redacts a raw
   statement's parameters in telemetry and the query log.
 - `kura_tenant:without_tenant/1`, `kura_tenant:current_scope/0` and
