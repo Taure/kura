@@ -161,6 +161,8 @@ A query that joins a shared schema to anything else keeps the tenant condition, 
 
 Writes of one record are the same. `update/2`, `delete/2`, an upsert, `insert`, `insert_all` and the records written through an association of a shared schema run as they do in a process without a tenant: no tenant in the key, no upsert guard, no stamp. kura does not stop a process under a tenant from changing a shared row, so who may change plans is for your application to decide.
 
+All of this is for the attribute strategy. Under the prefix strategy a shared schema's table is still qualified with the tenant's schema, so `kura_query:from(plan)` reads `"tenant_acme"."plans"`. Give the query its own `kura_query:prefix/2`, or run it inside `kura_tenant:without_tenant/1`.
+
 Upserts that hit another tenant's row behave like `DO NOTHING`. Under attribute tenancy, unique indexes should include the tenant column; a unique index across tenants still tells one tenant that a value exists in another.
 
 kura does not check that a foreign key points at a row of the same tenant. A tenant can still set `post_id` to another tenant's post: reads stay scoped, but the insert tells it the id exists, and the row it plants can block the other tenant's delete under `ON DELETE RESTRICT`. Make tenant foreign keys composite, `FOREIGN KEY (org_id, post_id) REFERENCES posts (org_id, id)` over a unique `(org_id, id)`, so the database refuses them.

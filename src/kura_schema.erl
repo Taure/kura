@@ -198,7 +198,9 @@ of its records is neither matched on the tenant nor stamped with it.
 That is for a schema without the tenant's field. A schema that declares
 the field of the attribute tenant holds each tenant's rows, so it is
 matched on the field whatever this callback returns: read all tenants'
-rows inside `kura_tenant:without_tenant/1`. See `m:kura_tenant`.
+rows inside `kura_tenant:without_tenant/1`. Under a prefix tenant the
+schema's table is qualified with the tenant's schema like any other. See
+`m:kura_tenant`.
 """.
 -callback tenant_scoped() -> boolean().
 -doc """
