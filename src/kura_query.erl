@@ -1447,8 +1447,27 @@ invalid_lock(Lock) ->
 prefix(Q, Schema) ->
     Q#kura_query{prefix = Schema}.
 
--doc "Add associations to preload after query execution.".
--spec preload(#kura_query{}, [atom() | {atom(), list()}]) -> #kura_query{}.
+-doc """
+Add associations to preload after query execution.
+
+Each is an association's name, `{Name, Nested}` to preload the `Nested`
+associations on the records it loads, or `{Name, Opts}` to load a
+`has_many` or `has_one` association with conditions: `Opts` is a map of
+`where`, a condition as `where/2` takes it, `order_by`, as `order_by/2`
+takes it, and `limit`. They apply to the one query that loads the
+association for every record, so `limit` caps the rows of that query, not
+the rows of each record.
+
+```erlang
+kura_query:preload(Q, [author, {comments, [author]}]),
+kura_query:preload(Q, [{comments, #{where => {approved, true}, order_by => [{inserted_at, desc}]}}]).
+```
+
+A `belongs_to` or `many_to_many` association given `Opts` is loaded whole:
+the map is not applied to it. A `through` association is preloaded by its
+name only.
+""".
+-spec preload(#kura_query{}, [atom() | {atom(), list() | map()}]) -> #kura_query{}.
 preload(Q = #kura_query{preloads = P}, Assocs) ->
     Q#kura_query{preloads = P ++ Assocs}.
 

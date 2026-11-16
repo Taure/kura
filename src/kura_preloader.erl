@@ -396,7 +396,9 @@ group_m2m_join([JR | Rest], OwnerCols, RelatedCols, RelLookup, Acc) ->
         end,
     group_m2m_join(Rest, OwnerCols, RelatedCols, RelLookup, NewAcc).
 
--spec nest_preload(module(), [map()], atom(), module(), [atom() | {atom(), list()}], [map()]) ->
+-spec nest_preload(
+    module(), [map()], atom(), module(), [atom() | {atom(), list() | map()}], [map()]
+) ->
     [map()].
 nest_preload(_RepoMod, [], _AssocName, _RelSchema, _Nested, Acc) ->
     reverse_maps(Acc, []);

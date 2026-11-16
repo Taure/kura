@@ -58,6 +58,7 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(redact)* Redact an embed whose schema lists redacted fields
 - *(redact)* Hide a changeset's params under keys that name no field
 - *(preload)* Give preload/4 a spec that takes a conditional preload
+- *(query)* Give preload/2 and the query record a type that takes a conditional preload
 
 ### Documentation
 

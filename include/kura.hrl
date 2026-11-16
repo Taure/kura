@@ -94,7 +94,7 @@
     distinct = false :: boolean() | [atom()],
     lock :: kura_query:lock() | binary() | undefined,
     prefix :: binary() | undefined,
-    preloads = [] :: [atom() | {atom(), list()}],
+    preloads = [] :: [atom() | {atom(), list() | map()}],
     ctes = [] :: [{binary(), #kura_query{}}],
     combinations = [] :: [{union | union_all | intersect | except, #kura_query{}}],
     include_deleted = false :: boolean()

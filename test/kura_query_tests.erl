@@ -23,6 +23,13 @@ from_defaults_test() ->
     ?assertEqual([], Q#kura_query.ctes),
     ?assertEqual([], Q#kura_query.combinations).
 
+preload_keeps_each_form_in_order_test() ->
+    Conditional = {posts, #{where => {published, true}, limit => 3}},
+    Q = kura_query:preload(
+        kura_query:preload(kura_query:from(user), [profile, {posts, [comments]}]), [Conditional]
+    ),
+    ?assertEqual([profile, {posts, [comments]}, Conditional], Q#kura_query.preloads).
+
 select_test() ->
     Q = kura_query:select(kura_query:from(user), [name, email]),
     ?assertEqual([name, email], Q#kura_query.select).
