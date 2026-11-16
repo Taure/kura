@@ -58,6 +58,8 @@ tenant_test_() ->
             {"a preload of a shared schema reads its rows", fun shared_schema_is_preloaded/0},
             {"update_all and delete_all of a shared schema reach every row",
                 fun shared_schema_bulk_writes/0},
+            {"a schema that declares the tenant field keeps to the tenant's rows",
+                fun declared_tenant_field_is_scoped_whatever_the_schema_says/0},
             {"preloading several associations stays in the tenant",
                 fun parallel_preload_is_scoped/0},
             {"preloading several associations stays in the prefix schema",
@@ -459,6 +461,24 @@ shared_schema_bulk_writes() ->
     ),
     ?assertEqual({ok, 3}, as(?TWO, fun() -> kura_test_repo:delete_all(Links) end)),
     ?assertEqual({ok, []}, raw("SELECT linked_id FROM tenant_item_links", [])).
+
+declared_tenant_field_is_scoped_whatever_the_schema_says() ->
+    Open = kura_query:from(kura_test_tenant_open_item_schema),
+    {ok, Rows} = as(?ONE, fun() -> kura_test_repo:all(Open) end),
+    ?assertEqual([~"one-a", ~"one-b"], names(Rows)),
+    ?assertEqual({ok, 2}, as(?TWO, fun() -> kura_repo_worker:count(kura_test_repo, Open) end)),
+    {ok, 2} = as(?ONE, fun() -> kura_test_repo:update_all(Open, #{score => 7}) end),
+    ?assertEqual(
+        {ok, [#{score => 7}, #{score => 7}, #{score => 10}, #{score => 20}]},
+        raw("SELECT score FROM tenant_items ORDER BY score", [])
+    ),
+    {ok, 2} = as(?ONE, fun() -> kura_test_repo:delete_all(Open) end),
+    ?assertEqual(
+        {ok, [#{name => ~"two-a"}, #{name => ~"two-only"}]},
+        raw("SELECT name FROM tenant_items ORDER BY name", [])
+    ),
+    {ok, Every} = kura_tenant:without_tenant(fun() -> kura_test_repo:all(Open) end),
+    ?assertEqual([~"two-a", ~"two-only"], names(Every)).
 
 parallel_preload_is_scoped() ->
     Foreign = id_of(~"two-only"),

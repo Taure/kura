@@ -104,9 +104,23 @@ Under the attribute strategy:
 
 The tenant condition names the field unqualified. A query, CTE or union branch over a table without it fails rather than running unscoped. Inside an `in` or `exists` subquery it does not fail: the database resolves the field to the outer query's column, so the inner table is not scoped. Give every tenant table the same tenant column name.
 
+### The three states of a schema
+
+Under an attribute tenant `{attribute, {Field, Value}}` every schema is in one of three states. kura decides which in one place, for whatever reads the schema.
+
+| State | The schema | Under the tenant |
+| --- | --- | --- |
+| Scoped | declares `Field` as a stored field, one that is not virtual | every query, `update_all` and `delete_all` is matched on the field |
+| Shared | says `tenant_scoped() -> false` and does not declare `Field` | no tenant condition and no warning |
+| Undeclared | does not declare `Field` and has not said it is shared | the condition is added and the database decides, with one warning; refused where a tenant is required |
+
+A schema that declares the tenant's field is scoped even when it says `tenant_scoped() -> false`. It holds each tenant's rows, so they are matched on the field, and saying `false` does not open them to every tenant. To read all tenants' rows, run the query inside [`kura_tenant:without_tenant/1`](#requiring-a-tenant).
+
+A table named by a binary, or by an atom that is no schema module, is matched on the field: kura cannot tell what columns it has, and the database decides.
+
 ### A schema that does not declare the tenant field
 
-kura adds the tenant condition whatever the schema declares. A schema that leaves out a tenant column its table has is scoped all the same, in a query, an `update_all` and a `delete_all`. Over a table without the column the database refuses the statement. Either way kura logs one warning per boot for each such schema, naming the schema and the field:
+kura adds the tenant condition to a query from an undeclared schema. A schema that leaves out a tenant column its table has is scoped all the same, in a query, an `update_all` and a `delete_all`. Over a table without the column the database refuses the statement. Either way kura logs one warning per boot for each such schema, naming the schema and the field:
 
 ```
 kura: a query under an attribute tenant reads a schema that does not declare the tenant's field, ...
@@ -114,7 +128,7 @@ kura: a query under an attribute tenant reads a schema that does not declare the
     field: org_id
 ```
 
-On a repo with [`require_tenant => true`](#requiring-a-tenant) the query raises `{invalid_tenant, Tenant}` instead, before it is sent to the database. kura 3.0 raises on every repo, so declare the tenant field in every schema you read under a tenant.
+On a repo with [`require_tenant => true`](#requiring-a-tenant) the query raises `{invalid_tenant, Tenant}` instead, before it is sent to the database. kura 3.0 raises on every repo, so declare the tenant field in every schema you read under a tenant, or say that the schema is [shared](#a-schema-every-tenant-shares).
 
 kura judges a query only where it can tell: the query, or a query combined with it, is from a schema and has no join and no CTE, either of which can bring the column in. Any other query is left to the database, without a warning.
 
@@ -131,6 +145,8 @@ tenant_scoped() -> false.
 ```
 
 Under an attribute tenant a query that reads only such schemas gets no tenant condition and no warning, in `all`, `get`, aggregates, a preload of the schema, `update_all` and `delete_all`: every tenant reads the same rows, and a bulk write under a tenant reaches all of them. That is judged for each query on its own, so a shared subquery, CTE body or union branch is left alone inside a query that is scoped.
+
+The schema is shared only while it does not declare the tenant's field. A `plan` schema with an `org_id` field, read under a tenant on `org_id`, is scoped like any other schema whatever its `tenant_scoped/0` returns: the query gets the tenant condition. Reading every tenant's plans is a query inside `kura_tenant:without_tenant/1`.
 
 A query that joins a shared schema to anything else keeps the tenant condition, whichever of the two it is from: the condition names the tenant table's column. Only a schema module counts. A table named by a binary or an atom is scoped, and so is a CTE's name, whatever its body reads.
 

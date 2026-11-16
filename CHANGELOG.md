@@ -51,6 +51,7 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(changeset)* Report a confirmation mismatch on the confirmation where its atom exists
 - *(query)* Compile a fragment condition as one group
 - *(tenant)* Leave a schema every tenant shares out of the tenant condition
+- *(tenant)* Match a schema that declares the tenant's field on it, whatever tenant_scoped/0 returns
 - *(redact)* Hide a record or changeset of a module that is no schema
 - *(redact)* Redact an embed whose schema lists redacted fields
 - *(preload)* Give preload/4 a spec that takes a conditional preload

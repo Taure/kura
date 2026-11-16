@@ -6,10 +6,11 @@ Kura repo operations.
 
 Under the attribute strategy every query kura compiles is passed through
 `scope_query/2`, which adds the tenant condition to the query and to every
-query nested in it. A query whose `from` and joins are all schemas that
-export `tenant_scoped() -> false` is the exception: every tenant shares
-its rows, so it gets no condition. Under the prefix strategy the dialect
-qualifies each table with the schema when it emits SQL.
+query nested in it. A query whose `from` and joins are all shared schemas
+is the exception: every tenant shares its rows, so it gets no condition
+(see "Scoped, shared and undeclared schemas" below). Under the prefix
+strategy the dialect qualifies each table with the schema when it emits
+SQL.
 
 ## Scope and lifetime
 
@@ -69,23 +70,42 @@ strategy; kura 2.x has no such declaration.
 Raw SQL through `kura_repo_worker:query/3` is never scoped and never
 checked.
 
-## A field a schema does not declare
+## Scoped, shared and undeclared schemas
 
-Under the attribute strategy the tenant condition is added to a query
-whatever the schema it reads declares. A schema that leaves the tenant's
-field out is scoped all the same when its table has the column, and the
-database refuses the query when it has not. `update_all` and `delete_all`
-are scoped as queries are. kura logs one warning per boot for each such
-schema, naming the schema and the field.
+Under an attribute tenant `{attribute, {Field, Value}}` a schema is in one
+of three states. kura decides which in one place, for whatever reads the
+schema.
 
-On a repo whose `require_tenant` is `true` such a query raises
-`{invalid_tenant, Tenant}` instead, before anything is sent. From kura 3.0
-it raises on every repo, so declare the tenant's field in each schema read
-under the tenant.
+**Scoped.** The schema declares `Field` as a stored field, one that is not
+virtual. It is matched on the field in every query, `update_all` and
+`delete_all`, whatever its `tenant_scoped/0` returns: a schema that stores
+the tenant's field holds each tenant's rows, and saying `false` does not
+open them to every tenant. To read all tenants' rows, run the query in
+`without_tenant/1`.
 
-kura can tell only where the query, or a query combined with it, is from a
-schema and has no join and no CTE, either of which can bring the column in.
-Any other query is left to the database, without a warning. An insert
+**Shared.** The schema exports `tenant_scoped() -> false` and does not
+declare `Field`. No tenant owns its rows, so a query, `update_all` or
+`delete_all` that reads only shared schemas gets no tenant condition and
+no warning.
+
+**Undeclared.** The schema does not declare `Field` and has not said it is
+shared. The tenant condition is added all the same, so a query,
+`update_all` or `delete_all` is scoped when the table has the column, and
+the database refuses it when it has not. kura logs one warning per boot
+for each such schema, naming the schema and the field. On a repo whose
+`require_tenant` is `true` such a query raises `{invalid_tenant, Tenant}`
+instead, before anything is sent. From kura 3.0 it raises on every repo,
+so declare the tenant's field in each schema read under the tenant, or
+say that the schema is shared.
+
+A table named by a binary, or by an atom that is no schema module, is
+matched on the field: kura cannot tell what columns it has, and the
+database decides.
+
+kura can tell an undeclared schema only where the query, or a query
+combined with it, is from a schema and has no join and no CTE, either of
+which can bring the column in. Any other query is left to the database,
+without a warning. An insert
 writes the fields its schema declares, so into a schema without the
 tenant's field it writes the row without the tenant, whatever the setting.
 """.
@@ -446,12 +466,15 @@ tenant field, so reads do too.
 A `Field` that `put_tenant/1` refuses raises `{invalid_tenant, Strategy}`.
 
 A query, or a query nested in `Query`, whose `from` and joins are all
-schemas that export `tenant_scoped() -> false` gets no condition: no
-tenant owns its rows. One other source among them, a schema without that
-callback or a table named by a binary or an atom, keeps the condition.
+shared schemas gets no condition: no tenant owns its rows. A shared schema
+exports `tenant_scoped() -> false` and does not declare `Field` as a
+stored field. One other source among them keeps the condition: a schema
+that declares `Field`, whatever its `tenant_scoped/0` returns, a schema
+without that callback, or a table named by a binary or an atom.
 
-A `Field` the schema the query reads does not declare as a stored field is
-scoped by all the same: the condition is added and the database decides, so
+A query from a schema that does not declare `Field` as a stored field
+and is not shared is scoped by `Field` all the same: the condition is
+added and the database decides, so
 the query runs when the table has the column and fails there when it has
 not. kura logs one warning for each such schema, naming the schema and the
 field, where it can tell: the query, or a query combined with it, is from a
@@ -517,16 +540,42 @@ undeclared_in(_Field, _Rest) ->
     [].
 
 -spec undeclared_by(term(), atom()) -> [module()].
-undeclared_by(From, Field) when is_atom(From), From =/= undefined ->
-    Lacking =
-        kura_schema:is_schema(From) andalso tenant_scoped(From) andalso
-            not lists:member(Field, kura_schema:non_virtual_fields(From)),
-    [From || Lacking];
+undeclared_by(From, Field) when is_atom(From) ->
+    [From || standing(Field, From) =:= undeclared];
 undeclared_by(_From, _Field) ->
     [].
 
+%% What a source is under an attribute tenant on `Field`, for every read and
+%% every write:
+%%
+%% - `scoped`: matched on the field and stamped with the tenant. A schema
+%%   that stores the field is, whatever its tenant_scoped/0 says, since
+%%   its rows are told apart by it. So is a table that is no schema: kura
+%%   cannot tell what columns it has, and the database decides.
+%% - `shared`: a schema that says `tenant_scoped() -> false` and does not
+%%   store the field. No tenant owns its rows, and its table has no column
+%%   to name.
+%% - `undeclared`: a schema that does not store the field and has not said
+%%   it is shared.
+-spec standing(atom(), term()) -> scoped | shared | undeclared.
+standing(Field, Schema) when is_atom(Schema), Schema =/= undefined ->
+    case kura_schema:is_schema(Schema) of
+        true -> schema_standing(Field, Schema);
+        false -> scoped
+    end;
+standing(_Field, _Table) ->
+    scoped.
+
+-spec schema_standing(atom(), module()) -> scoped | shared | undeclared.
+schema_standing(Field, Schema) ->
+    case {lists:member(Field, kura_schema:non_virtual_fields(Schema)), tenant_scoped(Schema)} of
+        {true, _} -> scoped;
+        {false, true} -> undeclared;
+        {false, false} -> shared
+    end.
+
 -spec scoped(#kura_query{}, {atom(), term()}) -> #kura_query{}.
-scoped(Query, Condition) ->
+scoped(Query, {Field, _Value} = Condition) ->
     Nested = Query#kura_query{
         wheres = conditions(Query#kura_query.wheres, Condition),
         havings = conditions(Query#kura_query.havings, Condition),
@@ -536,25 +585,24 @@ scoped(Query, Condition) ->
          || {Kind, Combined} <- Query#kura_query.combinations
         ]
     },
-    case reads_tenant_rows(Query) of
+    case reads_tenant_rows(Field, Query) of
         true -> kura_query:where_unrewritten(Nested, Condition);
         false -> Nested
     end.
 
-%% A query whose `from` and joins are all schemas every tenant shares holds
-%% no tenant's rows, and its tables have no tenant column to name. One
-%% tenant-scoped table among them keeps the condition, which names that
-%% table's column. Anything that is not such a schema counts as scoped.
--spec reads_tenant_rows(#kura_query{}) -> boolean().
-reads_tenant_rows(#kura_query{from = From, joins = Joins}) ->
-    tenant_scoped(From) orelse joins_tenant_rows(Joins).
+%% A query whose `from` and joins are all shared holds no tenant's rows, and
+%% its tables have no tenant column to name. One other table among them
+%% keeps the condition, which names that table's column.
+-spec reads_tenant_rows(atom(), #kura_query{}) -> boolean().
+reads_tenant_rows(Field, #kura_query{from = From, joins = Joins}) ->
+    standing(Field, From) =/= shared orelse joins_tenant_rows(Field, Joins).
 
--spec joins_tenant_rows(term()) -> boolean().
-joins_tenant_rows([]) ->
+-spec joins_tenant_rows(atom(), term()) -> boolean().
+joins_tenant_rows(_Field, []) ->
     false;
-joins_tenant_rows([{_Type, Table, _On, _As} | Rest]) ->
-    tenant_scoped(Table) orelse joins_tenant_rows(Rest);
-joins_tenant_rows(_Joins) ->
+joins_tenant_rows(Field, [{_Type, Table, _On, _As} | Rest]) ->
+    standing(Field, Table) =/= shared orelse joins_tenant_rows(Field, Rest);
+joins_tenant_rows(_Field, _Joins) ->
     true.
 
 -spec conditions([term()], {atom(), term()}) -> [term()].

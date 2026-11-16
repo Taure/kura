@@ -243,8 +243,10 @@ any value, the permissive one included, is a decision and logs nothing.
   tenant: `require_tenant` does not ask a tenant for it, and under an
   attribute tenant a query, `update_all` or `delete_all` that reads only
   such schemas gets no tenant condition. A schema without the callback is
-  scoped as in 2.30. See
-  [Multitenancy](multitenancy.md#a-schema-every-tenant-shares).
+  scoped as in 2.30, and so is one that declares the tenant's field,
+  whatever the callback returns: it is matched on the field, and all
+  tenants' rows are read inside `kura_tenant:without_tenant/1`. See
+  [Multitenancy](multitenancy.md#the-three-states-of-a-schema).
 - `t:kura_migration:column_name/0`: a column in a `#kura_column{}`, a table
   constraint, an `alter_table` operation, an index or a `safe/0` entry is
   an atom or a binary. `kura_migration:column_text/1` gives either as

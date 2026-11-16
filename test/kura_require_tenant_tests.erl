@@ -580,15 +580,6 @@ a_shared_schema_is_not_scoped_test_() ->
                     )
                 )
             end},
-            {"a field of its own that the tenant names is not compared", fun() ->
-                {ok, []} = kura_tenant:with_tenant(
-                    ?NAMED, {kura_repo_worker, all, [?REPO, shared()]}
-                ),
-                ?assertEqual(
-                    [{~"SELECT * FROM \"shared_items\"", []}],
-                    kura_test_recording_driver:statements()
-                )
-            end},
             {"it is neither warned of nor refused for the field it lacks", fun() ->
                 ?assertEqual(
                     [],
@@ -600,6 +591,111 @@ a_shared_schema_is_not_scoped_test_() ->
                             ?TENANT, {kura_query_compiler, to_sql, [?REPO, shared()]}
                         )
                     end)
+                )
+            end}
+        ])
+     || Setting <- [unset, false, true]
+    ].
+
+%% Saying false does not take a schema that stores the tenant's field out of
+%% the tenant: its rows are told apart by the field, so they are matched on it.
+a_schema_that_declares_the_tenant_field_is_matched_on_it_test_() ->
+    Named = fun(Run) ->
+        _ = kura_tenant:with_tenant(?NAMED, Run),
+        _ = kura_tenant:with_tenant(?NAMED, Run),
+        [Statement, Statement] = kura_test_recording_driver:statements(),
+        Statement
+    end,
+    [
+        with_setting(Setting, [
+            {"all", fun() ->
+                ?assertEqual(
+                    {~"SELECT * FROM \"shared_items\" WHERE \"name\" = $1", [~"acme"]},
+                    Named({kura_repo_worker, all, [?REPO, shared()]})
+                )
+            end},
+            {"get", fun() ->
+                ?assertEqual(
+                    {
+                        ~"SELECT * FROM \"shared_items\" WHERE \"id\" = $1 AND \"name\" = $2",
+                        [1, ~"acme"]
+                    },
+                    Named({kura_repo_worker, get, [?REPO, ?SHARED, 1]})
+                )
+            end},
+            {"exists and an aggregate", fun() ->
+                {Exists, [~"acme", 1]} = Named({kura_repo_worker, exists, [?REPO, shared()]}),
+                {Count, [~"acme"]} = Named({kura_repo_worker, aggregate, [?REPO, shared(), count]}),
+                [
+                    ?assertMatch({_, _}, binary:match(SQL, ~"WHERE \"name\" = $1"))
+                 || SQL <- [Exists, Count]
+                ]
+            end},
+            {"update_all", fun() ->
+                ?assertEqual(
+                    {~"UPDATE \"shared_items\" SET \"id\" = $1 WHERE \"name\" = $2", [
+                        2, ~"acme"
+                    ]},
+                    Named({kura_repo_worker, update_all, [?REPO, shared(), #{id => 2}]})
+                )
+            end},
+            {"delete_all", fun() ->
+                ?assertEqual(
+                    {~"DELETE FROM \"shared_items\" WHERE \"name\" = $1", [~"acme"]},
+                    Named({kura_repo_worker, delete_all, [?REPO, shared()]})
+                )
+            end},
+            {"a preload", fun() ->
+                Refs = [#{id => 1, shared_id => 5, qty => 7}],
+                ?assertEqual(
+                    {
+                        ~"SELECT * FROM \"shared_items\" WHERE \"id\" IN ($1) AND \"name\" = $2",
+                        [5, ~"acme"]
+                    },
+                    Named({kura_repo_worker, preload, [?REPO, ?REFS, Refs, [shared]]})
+                )
+            end},
+            {"a branch of a union, a subquery and a CTE body", fun() ->
+                Ids = kura_query:select(shared(), [id]),
+                Inner = ~"(SELECT \"id\" FROM \"shared_items\" WHERE \"name\" = $",
+                [
+                    begin
+                        {SQL, Params} = Named({kura_repo_worker, all, [?REPO, Q]}),
+                        ?assertMatch({_, _}, binary:match(SQL, Inner)),
+                        ?assertEqual([~"acme", ~"acme"], Params)
+                    end
+                 || Q <- [
+                        kura_query:where(shared(), {id, in, {subquery, Ids}}),
+                        kura_query:with_cte(shared(), ~"picked", Ids)
+                    ]
+                ],
+                ?assertEqual(
+                    {
+                        <<
+                            "SELECT * FROM \"shared_items\" WHERE \"name\" = $1"
+                            " UNION SELECT * FROM \"shared_items\" WHERE \"name\" = $2"
+                        >>,
+                        [~"acme", ~"acme"]
+                    },
+                    Named({kura_repo_worker, all, [?REPO, kura_query:union(shared(), shared())]})
+                )
+            end},
+            {"it is not warned of", fun() ->
+                ?assertEqual(
+                    [],
+                    field_warnings_by(fun() ->
+                        kura_tenant:with_tenant(?NAMED, {kura_repo_worker, all, [?REPO, shared()]})
+                    end)
+                )
+            end},
+            {"every tenant's rows are read in without_tenant/1", fun() ->
+                {ok, []} = kura_tenant:with_tenant(
+                    ?NAMED,
+                    {kura_tenant, without_tenant, [{kura_repo_worker, all, [?REPO, shared()]}]}
+                ),
+                ?assertEqual(
+                    [{~"SELECT * FROM \"shared_items\"", []}],
+                    kura_test_recording_driver:statements()
                 )
             end}
         ])
