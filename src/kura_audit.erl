@@ -44,6 +44,20 @@ kura_audit:set_actor(<<"user-123">>).
 kura_audit:set_actor(<<"user-123">>, #{ip => <<"1.2.3.4">>}).
 kura_audit:with_actor(<<"admin">>, fun() -> my_repo:delete(CS) end).
 ```
+
+## Under a tenant
+
+The audit table is kura's own. It has no tenant column, and `log/4`
+writes its row without the attribute tenant, so an audited write runs on
+a repo whose `require_tenant` is `true`. The process's tenant is as it
+was once the row is written. Under a prefix tenant the row goes to the
+`audit_log` table of the tenant's schema.
+
+Under an attribute tenant one table holds every tenant's entries, and
+`kura_audit_log` does not declare the tenant's field (see
+`m:kura_tenant`): read it inside `kura_tenant:without_tenant/1`. To have
+the tenant in each entry, put it in the metadata you set with
+`set_actor/2` or `with_actor/3`.
 """.
 
 -include("kura.hrl").
@@ -171,8 +185,17 @@ log(Repo, SchemaMod, Action, Record) ->
         table_name, record_id, action, old_data, new_data, changes, actor, metadata
     ]),
     CS1 = kura_changeset:validate_required(CS, [table_name, record_id, action]),
-    {ok, _} = kura_repo_worker:insert(Repo, CS1),
+    {ok, _} = insert_entry(Repo, CS1),
     ok.
+
+%% The audit table is kura's own and has no tenant column, so its row is
+%% written outside the attribute tenant. A prefix tenant's tables are in
+%% its schema, the audit table among them.
+insert_entry(Repo, CS) ->
+    case kura_tenant:get_tenant() of
+        {prefix, _} -> kura_repo_worker:insert(Repo, CS);
+        _AttributeOrNone -> kura_tenant:without_tenant({kura_repo_worker, insert, [Repo, CS]})
+    end.
 
 %%----------------------------------------------------------------------
 %% Migration helpers

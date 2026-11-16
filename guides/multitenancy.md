@@ -169,6 +169,16 @@ kura does not check that a foreign key points at a row of the same tenant. A ten
 
 Under the schema prefix strategy, the dialect qualifies each table with the tenant's schema. If the query already has an explicit prefix set, the tenant prefix is not overridden. Many-to-many join tables are always qualified with the tenant's schema, whatever prefix the query sets.
 
+### The audit table
+
+The `audit_log` table of [`kura_audit`](audit-trail.md) is kura's own and has no tenant column. Under an attribute tenant `kura_audit:log/4` writes its row without the tenant, so an audited write runs on a repo with `require_tenant => true`, and one table holds every tenant's entries. `kura_audit_log` does not declare the tenant's field and is not shared, so read it inside `kura_tenant:without_tenant/1`:
+
+```erlang
+kura_tenant:without_tenant({my_repo, all, [kura_query:from(kura_audit_log)]}).
+```
+
+An application that wants the tenant in each entry puts it in the metadata it sets with `kura_audit:set_actor/2`. Under the prefix strategy the row goes to the `audit_log` table of the tenant's schema, like any other write.
+
 ### What is not scoped
 
 - `query/3` with raw SQL. kura cannot see into SQL text; add the tenant condition yourself.

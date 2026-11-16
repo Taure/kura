@@ -54,6 +54,7 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(tenant)* Match a schema that declares the tenant's field on it, whatever tenant_scoped/0 returns
 - *(tenant)* Write the records of a schema every tenant shares without the tenant
 - *(tenant)* Refuse a write to a schema that does not declare the tenant's field where a tenant is required
+- *(audit)* Write the audit row of a write under an attribute tenant without the tenant
 - *(redact)* Hide a record or changeset of a module that is no schema
 - *(redact)* Redact an embed whose schema lists redacted fields
 - *(redact)* Hide a changeset's params under keys that name no field

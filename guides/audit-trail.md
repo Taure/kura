@@ -60,6 +60,8 @@ Q1 = kura_query:where(Q, {'and', [{action, ~"delete"},
 {ok, Entries} = my_repo:all(Q1).
 ```
 
+Under an attribute tenant the entries of every tenant are in this one table, written without the tenant, and the schema does not declare a tenant field. Read it inside `kura_tenant:without_tenant/1`; see [Multitenancy](multitenancy.md#the-audit-table).
+
 ## Integrating with Schema Hooks
 
 To audit a schema, export the relevant lifecycle hooks and delegate to `kura_audit`:
