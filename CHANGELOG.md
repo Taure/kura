@@ -6,20 +6,18 @@ git-cliff writes this file from the commit subjects. What a release
 changes for an application that runs on kura, and each setting with its
 default, is in [Upgrading](guides/upgrading.md).
 
-## [unreleased]
+## [2.31.0] - 2026-11-16
 
 ### Bug Fixes
 
 - *(query)* Compile an empty in or not_in list to a constant predicate
 - *(repo)* Bind every value in get, get_by and reload
 - *(dialect)* Leave a ? inside fragment text alone and check the count
-- *(query)* Take the lock clause from a closed set
 - *(paginator)* Validate page, page_size and limit, add max_page_size
 - *(repo)* Insert_all with no entries, uneven entries or too many values
 - *(schema)* Honour #kura_field.column in statements and loaded rows
 - *(schema)* Read the timestamps/0 callback
 - *(dialect)* A join returns the from row and names a joined schema's columns
-- *(types)* Load the forms a backend without native types stores
 - *(migrator)* Write the version statements with the dialect's placeholder
 - *(dialect)* Put a combined query's ORDER BY, LIMIT and OFFSET after its branches
 - *(tenant)* A scope ends with its work and reaches kura's preload processes
@@ -40,9 +38,7 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(schema)* A module loaded after its name was first asked about is a schema
 - *(query)* Warn about lock text only while strict_locks is unset
 - *(schema)* Keep stamping inserted_at and updated_at beside timestamps/0
-- *(changeset)* Report a confirmation mismatch on a field the changeset fixes
 - *(schema)* A module loaded later is read whatever is asked of it first
-- *(cache)* Drop a cache entry kura cannot read
 - *(paginator)* One error for a max_page_size kura cannot use
 - *(telemetry)* Name the table after TABLE IF EXISTS as a raw statement's source
 - *(telemetry)* Report the rows a write affected as num_rows
@@ -51,6 +47,13 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(telemetry)* The raw SQL source is read from statement text only
 - *(cache)* A cached plan kura cannot read is compiled again
 - *(redact)* Read a changeset's fields as what they hold
+- *(tenant)* Leave a tenant field a schema does not declare to the database
+- *(changeset)* Report a confirmation mismatch on the confirmation where its atom exists
+- *(query)* Compile a fragment condition as one group
+- *(tenant)* Leave a schema every tenant shares out of the tenant condition
+- *(redact)* Hide a record or changeset of a module that is no schema
+- *(redact)* Redact an embed whose schema lists redacted fields
+- *(preload)* Give preload/4 a spec that takes a conditional preload
 
 ### Documentation
 
@@ -58,7 +61,6 @@ default, is in [Upgrading](guides/upgrading.md).
 - Add a security policy
 - *(changelog)* Section the releases since 2.0.0 and list the unreleased changes
 - *(api)* Hide the functions kura's modules call between themselves
-- Describe the unreleased changes as they now stand
 - *(tenant)* Say that adopt/1 lasts for the process's life and where not to use it
 - *(ci)* Say which CI jobs hold a write token and why
 - *(pool)* Say why kura_pool_ets declares no capability model
@@ -70,8 +72,12 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(readme)* The settings that change in 3.0 are unset, not false
 - *(telemetry)* Link opentelemetry_kura where it lives
 - *(upgrading)* What changes after 2.30.0, each setting with its default, the new API
-- *(changelog)* Regenerate the unreleased section with git-cliff
 - *(upgrading)* What the redaction, tenant, source and cache fixes change
+- *(migrator)* Keep record_sql/2 out of the generated documentation
+- *(query)* Say that sources/1 may list more roles in a later release
+- *(upgrading)* The lock term a dialect receives and text matches on SQLite
+- *(upgrading)* What waits for the next kura_sqlite and rebar3_kura
+- *(changelog)* Describe 2.31.0 as it ships
 
 ### Features
 
@@ -97,6 +103,7 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(query)* Read a lock map's wait in a typed step
 - *(query)* Drop a clause of cte_names that cannot match
 - *(redact)* Drop a clause of names_field that cannot match
+- *(tenant)* Define the condition words a tenant field cannot be where they are used
 
 ### Testing
 
@@ -130,6 +137,8 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(telemetry)* The source of raw SQL with keywords in any case, and keywords inside longer words
 - *(redact)* Nested values, a schema with nothing hidden and update_all parameters
 - Kept cache entries, a union's later branch, a statement's result and bytes at the edge of a name
+- Read compiled SQL and a logged report as binaries
+- *(schema)* A record of a module not loaded yet is hidden, not passed through
 
 ### Build
 
