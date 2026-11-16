@@ -2181,19 +2181,29 @@ check_alter_ops([AltOp | Rest], Table, SafeEntries) ->
     check_alter_op(AltOp, Table, SafeEntries) ++ check_alter_ops(Rest, Table, SafeEntries).
 
 %%----------------------------------------------------------------------
-%% Topological sort for create_table operations
+%% Order of the operations of a migration
+%%
+%% Operations run as written. A table that an earlier operation needs is
+%% created first, when the migration creates it once and does not drop it.
 %%----------------------------------------------------------------------
 
 -spec topo_sort_ops([kura_migration:operation()]) -> [kura_migration:operation()].
 topo_sort_ops(Ops) ->
-    Creates = [Op || Op <- Ops, is_create_table(Op)],
-    case Creates of
-        [] ->
-            Ops;
-        _ ->
-            Sorted = topo_sort_creates(Creates),
-            replace_creates(Ops, Sorted)
+    Movable = movable_creates(Ops),
+    case map_size(Movable) of
+        0 -> Ops;
+        _ -> in_written_order(Ops, Movable, #{})
     end.
+
+-spec movable_creates([kura_migration:operation()]) ->
+    #{binary() => kura_migration:operation()}.
+movable_creates(Ops) ->
+    Names = [table_name(Op) || Op <- Ops, is_create_table(Op)],
+    Fixed = (Names -- lists:usort(Names)) ++ [Name || {drop_table, Name} <- Ops],
+    #{
+        table_name(Op) => Op
+     || Op <- Ops, is_create_table(Op), not lists:member(table_name(Op), Fixed)
+    }.
 
 is_create_table({create_table, _, _}) -> true;
 is_create_table({create_table, _, _, _}) -> true;
@@ -2202,74 +2212,67 @@ is_create_table(_) -> false.
 table_name({create_table, Name, _}) -> Name;
 table_name({create_table, Name, _, _}) -> Name.
 
-table_columns({create_table, _, Cols}) -> Cols;
-table_columns({create_table, _, Cols, _}) -> Cols.
+-spec needed_tables(kura_migration:operation()) -> [binary()].
+needed_tables({create_table, Name, Cols}) ->
+    referenced_tables(Cols) -- [Name];
+needed_tables({create_table, Name, Cols, _Constraints}) ->
+    referenced_tables(Cols) -- [Name];
+needed_tables({create_index, Table, _Cols, _Opts}) ->
+    [Table];
+needed_tables({create_index, _Name, Table, _Cols, _Opts}) ->
+    [Table];
+needed_tables({alter_table, Table, AlterOps}) ->
+    [Table | referenced_tables([Col || {add_column, Col} <- AlterOps])];
+needed_tables(_Op) ->
+    [].
 
-table_deps(Op) ->
-    Name = table_name(Op),
-    Cols = table_columns(Op),
-    lists:usort([T || #kura_column{references = {T, _}} <- Cols, T =/= Name]).
+referenced_tables(Cols) ->
+    lists:usort([Table || #kura_column{references = {Table, _}} <- Cols]).
 
--spec topo_sort_creates([kura_migration:operation()]) -> [kura_migration:operation()].
-topo_sort_creates(Creates) ->
-    ByName = #{table_name(C) => C || C <- Creates},
-    DepMap = #{table_name(C) => table_deps(C) || C <- Creates},
-    AllNames = maps:keys(ByName),
-    InDeg = build_indeg(AllNames, DepMap, ByName, #{}),
-    Queue = [N || N <- AllNames, maps:get(N, InDeg) =:= 0],
-    kahn_loop(Queue, InDeg, DepMap, ByName, []).
-
--spec build_indeg([binary()], #{binary() => [binary()]}, #{binary() => term()}, #{
-    binary() => non_neg_integer()
-}) -> #{binary() => non_neg_integer()}.
-build_indeg([], _DepMap, _ByName, Acc) ->
-    Acc;
-build_indeg([Name | Rest], DepMap, ByName, Acc) ->
-    Deps = maps:get(Name, DepMap),
-    Count = length([D || D <- Deps, maps:is_key(D, ByName)]),
-    build_indeg(Rest, DepMap, ByName, Acc#{Name => Count}).
-
--spec kahn_loop(
-    [binary()],
-    #{binary() => non_neg_integer()},
-    #{binary() => [binary()]},
+-spec in_written_order(
+    [kura_migration:operation()],
     #{binary() => kura_migration:operation()},
-    [kura_migration:operation()]
+    #{binary() => true}
 ) -> [kura_migration:operation()].
-kahn_loop([], _InDeg, _DepMap, _ByName, Acc) ->
-    reverse_ops(Acc, []);
-kahn_loop([Name | Rest], InDeg, DepMap, ByName, Acc) ->
-    Op = maps:get(Name, ByName),
-    Dependents = [
-        N
-     || N <- maps:keys(ByName),
-        lists:member(Name, maps:get(N, DepMap, []))
-    ],
-    {NewQueue, NewInDeg} = decrement_deps(Dependents, Rest, InDeg),
-    kahn_loop(NewQueue, NewInDeg, DepMap, ByName, [Op | Acc]).
-
--spec reverse_ops([kura_migration:operation()], [kura_migration:operation()]) ->
-    [kura_migration:operation()].
-reverse_ops([], Acc) -> Acc;
-reverse_ops([H | T], Acc) -> reverse_ops(T, [H | Acc]).
-
--spec decrement_deps([binary()], [binary()], #{binary() => non_neg_integer()}) ->
-    {[binary()], #{binary() => non_neg_integer()}}.
-decrement_deps([], Q, ID) ->
-    {Q, ID};
-decrement_deps([Dep | Rest], Q, ID) ->
-    NewDeg = maps:get(Dep, ID) - 1,
-    ID1 = ID#{Dep => NewDeg},
-    case NewDeg of
-        0 -> decrement_deps(Rest, Q ++ [Dep], ID1);
-        _ -> decrement_deps(Rest, Q, ID1)
+in_written_order([], _Movable, _Created) ->
+    [];
+in_written_order([Op | Rest], Movable, Created) ->
+    case created_earlier(Op, Movable, Created) of
+        true ->
+            in_written_order(Rest, Movable, Created);
+        false ->
+            {Early, Created1} = needed_first(
+                needed_tables(Op), Movable, with_created(Op, Created), []
+            ),
+            Early ++ [Op | in_written_order(Rest, Movable, Created1)]
     end.
 
-replace_creates([], _Sorted) ->
-    [];
-replace_creates([{create_table, _, _} | Rest], [Next | Sorted]) ->
-    [Next | replace_creates(Rest, Sorted)];
-replace_creates([{create_table, _, _, _} | Rest], [Next | Sorted]) ->
-    [Next | replace_creates(Rest, Sorted)];
-replace_creates([Op | Rest], Sorted) ->
-    [Op | replace_creates(Rest, Sorted)].
+created_earlier(Op, Movable, Created) ->
+    is_create_table(Op) andalso
+        is_map_key(table_name(Op), Movable) andalso
+        is_map_key(table_name(Op), Created).
+
+with_created(Op, Created) ->
+    case is_create_table(Op) of
+        true -> Created#{table_name(Op) => true};
+        false -> Created
+    end.
+
+-spec needed_first(
+    [binary()],
+    #{binary() => kura_migration:operation()},
+    #{binary() => true},
+    [kura_migration:operation()]
+) -> {[kura_migration:operation()], #{binary() => true}}.
+needed_first([], _Movable, Created, Early) ->
+    {Early, Created};
+needed_first([Table | Rest], Movable, Created, Early) ->
+    case Movable of
+        #{Table := Create} when not is_map_key(Table, Created) ->
+            {Before, Created1} = needed_first(
+                needed_tables(Create), Movable, Created#{Table => true}, []
+            ),
+            needed_first(Rest, Movable, Created1, Early ++ Before ++ [Create]);
+        _ ->
+            needed_first(Rest, Movable, Created, Early)
+    end.

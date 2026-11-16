@@ -6,6 +6,12 @@ git-cliff writes this file from the commit subjects. What a release
 changes for an application that runs on kura, and each setting with its
 default, is in [Upgrading](guides/upgrading.md).
 
+## [2.31.2] - 2026-11-16
+
+### Bug Fixes
+
+- *(migrator)* Keep the operations of a migration in the order written
+
 ## [2.31.1] - 2026-11-16
 
 ### Bug Fixes
