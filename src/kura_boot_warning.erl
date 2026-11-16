@@ -5,7 +5,7 @@
 
 -export([once/2, forget/1]).
 
--spec once(atom(), logger:report()) -> ok.
+-spec once(term(), logger:report()) -> ok.
 once(Key, Report) ->
     case persistent_term:get({?MODULE, Key}, pending) of
         logged ->
@@ -16,7 +16,7 @@ once(Key, Report) ->
     end.
 
 -doc "Let the warning for `Key` be logged again.".
--spec forget(atom()) -> ok.
+-spec forget(term()) -> ok.
 forget(Key) ->
     _ = persistent_term:erase({?MODULE, Key}),
     ok.

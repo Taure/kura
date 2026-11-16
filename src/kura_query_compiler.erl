@@ -321,4 +321,4 @@ check_bulk_write(#kura_query{} = Q) ->
 
 -spec scope(module(), #kura_query{}) -> #kura_query{}.
 scope(RepoMod, Query) ->
-    kura_tenant:scope_query(kura_tenant:tenant_for(RepoMod, Query), Query).
+    kura_tenant:scope_query(RepoMod, kura_tenant:tenant_for(RepoMod, Query), Query).

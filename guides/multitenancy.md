@@ -44,7 +44,7 @@ kura_tenant:put_tenant({prefix, ~"tenant_acme"}).
 kura_tenant:put_tenant({attribute, {org_id, 42}}).
 ```
 
-Returns the previously set tenant (or `undefined`). Anything that is not one of the two strategies raises `{invalid_tenant, Tenant}`, as does an attribute value of `is_nil`, `is_not_nil`, `undefined`, `null` or `nil`: a tenant built from a claim that was missing is refused, not run as a tenant that owns nothing. An attribute tenant's field is an atom that names a field: `and`, `or`, `not`, `exists`, `not_exists` and `fragment`, which `kura_query` reads as the head of a condition, are refused the same way, and so is a query from a schema that has no stored field of that name, where the query has no join and no CTE that could bring the column in.
+Returns the previously set tenant (or `undefined`). Anything that is not one of the two strategies raises `{invalid_tenant, Tenant}`, as does an attribute value of `is_nil`, `is_not_nil`, `undefined`, `null` or `nil`: a tenant built from a claim that was missing is refused, not run as a tenant that owns nothing. An attribute tenant's field is an atom that names a field: `and`, `or`, `not`, `exists`, `not_exists` and `fragment`, which `kura_query` reads as the head of a condition, are refused the same way. A field that a schema does not declare is a different matter; see [A schema that does not declare the tenant field](#a-schema-that-does-not-declare-the-tenant-field).
 
 `put_tenant/1` sets the tenant for the rest of the process's life. That fits a process that serves one request and ends. In a process that outlives its work (a pool worker, a job runner, a `gen_server`) use [`with_tenant/2`](#temporary-tenant-scope), or the next piece of work runs under the last one's tenant.
 
@@ -103,9 +103,23 @@ Under the attribute strategy:
 
 The tenant condition names the field unqualified. A query, CTE or union branch over a table without it fails rather than running unscoped. Inside an `in` or `exists` subquery it does not fail: the database resolves the field to the outer query's column, so the inner table is not scoped. Give every tenant table the same tenant column name.
 
+### A schema that does not declare the tenant field
+
+kura adds the tenant condition whatever the schema declares. A schema that leaves out a tenant column its table has is scoped all the same, in a query, an `update_all` and a `delete_all`. Over a table without the column the database refuses the statement. Either way kura logs one warning per boot for each such schema, naming the schema and the field:
+
+```
+kura: a query under an attribute tenant reads a schema that does not declare the tenant's field, ...
+    schema: my_report
+    field: org_id
+```
+
+On a repo with [`require_tenant => true`](#requiring-a-tenant) the query raises `{invalid_tenant, Tenant}` instead, before it is sent to the database. kura 3.0 raises on every repo, so declare the tenant field in every schema you read under a tenant.
+
+kura judges a query only where it can tell: the query, or a query combined with it, is from a schema and has no join and no CTE, either of which can bring the column in. Any other query is left to the database, without a warning.
+
 Upserts that hit another tenant's row behave like `DO NOTHING`. Under attribute tenancy, unique indexes should include the tenant column; a unique index across tenants still tells one tenant that a value exists in another.
 
-Under a tenant context, writes to a table without the tenant field differ: `update/2`, `delete/2` and an upsert fail, and a plain insert succeeds without the tenant.
+Under a tenant context, writes of a changeset to a table without the tenant field differ: `update/2`, `delete/2` and an upsert fail in the database, and a plain insert succeeds without the tenant. The same goes for a schema that does not declare the field: an insert writes the fields the schema declares, so the row is written without the tenant, with or without `require_tenant`.
 
 kura does not check that a foreign key points at a row of the same tenant. A tenant can still set `post_id` to another tenant's post: reads stay scoped, but the insert tells it the id exists, and the row it plants can block the other tenant's delete under `ON DELETE RESTRICT`. Make tenant foreign keys composite, `FOREIGN KEY (org_id, post_id) REFERENCES posts (org_id, id)` over a unique `(org_id, id)`, so the database refuses them.
 
@@ -182,6 +196,10 @@ afterwards, however the fun ends. `without_tenant/1` takes
 each is a place where tenants are not isolated.
 
 Raw SQL through `query/3` is not checked, as it is not scoped.
+
+With `require_tenant` set, a query from a schema that does not declare
+the attribute tenant's field raises `{invalid_tenant, Tenant}`; see
+[A schema that does not declare the tenant field](#a-schema-that-does-not-declare-the-tenant-field).
 
 `require_tenant` checks that a tenant is set, not which schema a query
 reads. Under the prefix strategy a query with its own `kura_query:prefix/2`

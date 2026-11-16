@@ -37,6 +37,9 @@ any value, the permissive one included, is a decision and logs nothing.
   wins over the application environment. See
   [Multitenancy](multitenancy.md#requiring-a-tenant). kura 2.x has nothing
   a repo declares a tenancy strategy with, so the 3.0 default is a plan.
+  Set to `true` it also refuses a query from a schema that does not
+  declare the attribute tenant's field, which is otherwise a warning; see
+  [Tenancy](#tenancy).
 - `max_page_size` is also an option of `kura_paginator:paginate/3` and
   `kura_paginator:cursor_paginate/3`, which wins.
 - kura does not start with a value it cannot read:
@@ -135,12 +138,16 @@ any value, the permissive one included, is a decision and logs nothing.
   `kura_query` reads as the head of a condition (`and`, `or`, `not`,
   `exists`, `not_exists`, `fragment`) raises `{invalid_tenant, Tenant}`
   where the tenant is set, as a field that is not an atom already did.
-- A query from a schema that has no stored field of the tenant's name
-  raises `{invalid_tenant, Tenant}` before it is compiled, where the
-  database used to refuse the unknown column. kura checks this only where
-  it can tell: the query, or a query combined with it, is from a schema
-  and has no join and no CTE. A schema that leaves out a tenant column its
-  table has must declare it to be read under that tenant.
+- A query, `update_all` or `delete_all` from a schema that does not
+  declare the tenant's field runs as it did in 2.30: the tenant condition
+  is added and the database decides, so the statement is scoped when the
+  table has the column and refused there when it has not. New is one
+  warning per boot for each such schema, naming the schema and the field.
+  On a repo whose `require_tenant` is `true` the query raises
+  `{invalid_tenant, Tenant}` instead, before it is compiled. kura 3.0
+  raises on every repo: declare the tenant's field in each schema read
+  under the tenant. kura judges this only where it can tell: the query, or
+  a query combined with it, is from a schema and has no join and no CTE.
 - `kura_tenant:with_tenant/2` checks the tenant before changing anything
   and restores the previous one however the function ends. Parallel
   preloads run in the caller's tenant scope.

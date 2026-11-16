@@ -47,6 +47,16 @@ once_test_() ->
                 Logged
             )
         end},
+        {"a key is any term, and a term that differs is another key", fun() ->
+            Logged = logged_by(fun() ->
+                ok = kura_boot_warning:once({?KEY, a}, #{msg => ~"a"}),
+                ok = kura_boot_warning:once({?KEY, b}, #{msg => ~"b"}),
+                ok = kura_boot_warning:once({?KEY, a}, #{msg => ~"a again"}),
+                ok = kura_boot_warning:forget({?KEY, a}),
+                ok = kura_boot_warning:forget({?KEY, b})
+            end),
+            ?assertEqual([{warning, #{msg => ~"a"}}, {warning, #{msg => ~"b"}}], Logged)
+        end},
         {"forgetting a key that was never logged is fine", fun() ->
             Logged = logged_by(fun() -> ?assertEqual(ok, kura_boot_warning:forget(?KEY)) end),
             ?assertEqual([], Logged)

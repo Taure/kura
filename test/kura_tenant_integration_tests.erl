@@ -47,6 +47,10 @@ tenant_test_() ->
             {"a many_to_many link to the tenant's own row is written",
                 fun link_to_own_row_is_written/0},
             {"a join between two tenant tables is refused", fun join_of_tenant_tables_fails/0},
+            {"a schema that leaves out the tenant column its table has is scoped",
+                fun undeclared_tenant_column_is_scoped/0},
+            {"a table without the tenant column is refused by the database",
+                fun missing_tenant_column_is_refused_by_the_database/0},
             {"preloading several associations stays in the tenant",
                 fun parallel_preload_is_scoped/0},
             {"preloading several associations stays in the prefix schema",
@@ -361,6 +365,35 @@ join_of_tenant_tables_fails() ->
         kura_query:from(?ITEMS), inner, kura_test_tenant_note_schema, {id, item_id}
     ),
     ?assertMatch({error, _}, as(?ONE, fun() -> kura_test_repo:all(Q) end)).
+
+undeclared_tenant_column_is_scoped() ->
+    Partial = kura_query:from(kura_test_tenant_partial_item_schema),
+    {ok, Rows} = as(?ONE, fun() -> kura_test_repo:all(Partial) end),
+    ?assertEqual([~"one-a", ~"one-b"], names(Rows)),
+    {ok, 2} = as(?ONE, fun() -> kura_test_repo:update_all(Partial, #{score => 7}) end),
+    ?assertEqual(
+        {ok, [#{score => 7}, #{score => 7}, #{score => 10}, #{score => 20}]},
+        raw("SELECT score FROM tenant_items ORDER BY score", [])
+    ),
+    {ok, 2} = as(?ONE, fun() -> kura_test_repo:delete_all(Partial) end),
+    ?assertEqual(
+        {ok, [#{name => ~"two-a"}, #{name => ~"two-only"}]},
+        raw("SELECT name FROM tenant_items ORDER BY name", [])
+    ).
+
+missing_tenant_column_is_refused_by_the_database() ->
+    {ok, _} = raw("INSERT INTO tenant_item_links (item_id, linked_id) VALUES (1, 2)", []),
+    Links = kura_query:from(kura_test_tenant_link_schema),
+    Runs = [
+        fun() -> kura_test_repo:all(Links) end,
+        fun() -> kura_test_repo:update_all(Links, #{linked_id => 3}) end,
+        fun() -> kura_test_repo:delete_all(Links) end
+    ],
+    [
+        ?assertMatch({error, {pgsql_error, #{code := ~"42703"}}}, as(?ONE, Run))
+     || Run <- Runs
+    ],
+    ?assertEqual({ok, [#{linked_id => 2}]}, raw("SELECT linked_id FROM tenant_item_links", [])).
 
 parallel_preload_is_scoped() ->
     Foreign = id_of(~"two-only"),

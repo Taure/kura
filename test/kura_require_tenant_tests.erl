@@ -118,18 +118,6 @@ a_tenant_that_scopes_nothing_is_no_tenant_test_() ->
      || {Name, Run} <- writes_and_reads()
     ]).
 
-a_tenant_field_that_is_no_column_is_refused_test_() ->
-    NoColumn = {attribute, {no_such_field, 7}},
-    with_setting(true, [
-        {Name, fun() ->
-            ?assertError({invalid_tenant, NoColumn}, kura_tenant:with_tenant(NoColumn, Run)),
-            ?assertError({invalid_tenant, NoColumn}, kura_tenant:with_tenant(NoColumn, Run)),
-            ?assertEqual([], statements())
-        end}
-     || {Name, Run} <- writes_and_reads(),
-        lists:member(Name, ["all", "get", "get_by", "reload", "update_all", "delete_all"])
-    ]).
-
 required_test_() ->
     with_setting(true, [
         {"a cached statement is not served to a process without a tenant", fun() ->
@@ -239,6 +227,251 @@ required_test_() ->
             )
         end}
     ]).
+
+%%----------------------------------------------------------------------
+%% A tenant field the schema does not declare
+%%----------------------------------------------------------------------
+
+undeclared() -> {attribute, {no_such_field, ~"tenant-9f3"}}.
+
+named(Names) ->
+    [Run || {Name, _} = Run <- writes_and_reads(), lists:member(Name, Names)].
+
+compiled_queries() -> named(["all", "get", "get_by", "reload", "update_all", "delete_all"]).
+keyed_writes() -> named(["update", "delete"]).
+inserts() -> named(["insert", "insert_all"]).
+
+an_undeclared_tenant_field_is_left_to_the_database_test_() ->
+    [
+        with_setting(Setting, [
+            {Name, fun() ->
+                _ = kura_tenant:with_tenant(undeclared(), Run),
+                _ = kura_tenant:with_tenant(undeclared(), Run),
+                Statements = kura_test_recording_driver:statements(),
+                ?assertMatch([_, _], Statements),
+                [
+                    begin
+                        ?assertMatch({_, _}, binary:match(SQL, ~"\"no_such_field\" = $")),
+                        ?assertEqual(~"tenant-9f3", lists:last(Params))
+                    end
+                 || {SQL, Params} <- Statements
+                ]
+            end}
+         || {Name, Run} <- compiled_queries() ++ keyed_writes()
+        ])
+     || Setting <- [unset, false]
+    ].
+
+an_undeclared_tenant_field_scopes_the_statement_test_() ->
+    Tenant = undeclared(),
+    with_setting(unset, [
+        {"all", fun() ->
+            {ok, []} = kura_tenant:with_tenant(Tenant, {kura_repo_worker, all, [?REPO, scoped()]}),
+            ?assertEqual(
+                [{~"SELECT * FROM \"edge_items\" WHERE \"no_such_field\" = $1", [~"tenant-9f3"]}],
+                kura_test_recording_driver:statements()
+            )
+        end},
+        {"update_all", fun() ->
+            {ok, 0} = kura_tenant:with_tenant(
+                Tenant, {kura_repo_worker, update_all, [?REPO, scoped(), #{name => ~"b"}]}
+            ),
+            ?assertEqual(
+                [
+                    {
+                        ~"UPDATE \"edge_items\" SET \"name\" = $1 WHERE \"no_such_field\" = $2",
+                        [~"b", ~"tenant-9f3"]
+                    }
+                ],
+                kura_test_recording_driver:statements()
+            )
+        end},
+        {"delete_all", fun() ->
+            {ok, 0} = kura_tenant:with_tenant(
+                Tenant, {kura_repo_worker, delete_all, [?REPO, scoped()]}
+            ),
+            ?assertEqual(
+                [{~"DELETE FROM \"edge_items\" WHERE \"no_such_field\" = $1", [~"tenant-9f3"]}],
+                kura_test_recording_driver:statements()
+            )
+        end}
+    ]).
+
+%% The row is written without the tenant: a field the schema does not have
+%% is not a column kura can write.
+an_insert_leaves_out_an_undeclared_tenant_field_test_() ->
+    [
+        with_setting(Setting, [
+            {Name, fun() ->
+                _ = kura_tenant:with_tenant(undeclared(), Run),
+                [SQL] = statements(),
+                ?assertEqual(nomatch, binary:match(SQL, ~"no_such_field"))
+            end}
+         || {Name, Run} <- inserts()
+        ])
+     || Setting <- [unset, false, true]
+    ].
+
+an_undeclared_tenant_field_is_refused_where_a_tenant_is_required_test_() ->
+    Tenant = undeclared(),
+    Refused = fun(Run) ->
+        ?assertError({invalid_tenant, Tenant}, kura_tenant:with_tenant(Tenant, Run)),
+        ?assertError({invalid_tenant, Tenant}, kura_tenant:with_tenant(Tenant, Run)),
+        ?assertEqual([], statements())
+    end,
+    [
+        with_setting(true, [{Name, fun() -> Refused(Run) end} || {Name, Run} <- compiled_queries()]),
+        with_repo_setting(unset, #{require_tenant => true}, [
+            {Name, fun() -> Refused(Run) end}
+         || {Name, Run} <- compiled_queries()
+        ]),
+        with_repo_setting(true, #{require_tenant => false}, [
+            {"a repo that says false is not refused", fun() ->
+                {ok, []} = kura_tenant:with_tenant(
+                    Tenant, {kura_repo_worker, all, [?REPO, scoped()]}
+                ),
+                ?assertMatch([_], statements())
+            end}
+        ]),
+        with_setting(true, [
+            {"a branch of a union", fun() ->
+                Q = kura_query:union(scoped(), shared()),
+                ?assertError(
+                    {invalid_tenant, ?TENANT},
+                    kura_tenant:with_tenant(?TENANT, {kura_repo_worker, all, [?REPO, Q]})
+                ),
+                ?assertEqual([], statements())
+            end},
+            {"a field the schema declares is not", fun() ->
+                {ok, []} = kura_tenant:with_tenant(
+                    ?TENANT, {kura_repo_worker, all, [?REPO, scoped()]}
+                ),
+                ?assertMatch([_], statements())
+            end},
+            {"a join or a CTE can bring the column in", fun() ->
+                Queries = [
+                    joined(scoped(), ?SHARED),
+                    kura_query:with_cte(scoped(), ~"rows", kura_query:from(~"other"))
+                ],
+                [
+                    ?assertMatch(
+                        {ok, []},
+                        kura_tenant:with_tenant(undeclared(), {kura_repo_worker, all, [?REPO, Q]})
+                    )
+                 || Q <- Queries
+                ],
+                ?assertMatch([_, _], statements())
+            end},
+            {"no warning is logged for what is refused", fun() ->
+                ?assertEqual(
+                    [],
+                    field_warnings_by(fun() ->
+                        ?assertError(
+                            {invalid_tenant, Tenant},
+                            kura_tenant:with_tenant(
+                                Tenant, {kura_repo_worker, all, [?REPO, scoped()]}
+                            )
+                        )
+                    end)
+                )
+            end}
+        ])
+    ].
+
+an_undeclared_tenant_field_warns_once_for_each_schema_test_() ->
+    All = fun(Tenant, Q) ->
+        kura_tenant:with_tenant(Tenant, {kura_repo_worker, all, [?REPO, Q]})
+    end,
+    [
+        with_setting(Setting, [
+            {"repeated statements warn once, naming the schema and the field", fun() ->
+                [Report] = field_warnings_by(fun() ->
+                    [
+                        _ = kura_tenant:with_tenant(undeclared(), Run)
+                     || {_, Run} <- compiled_queries()
+                    ],
+                    [
+                        _ = kura_tenant:with_tenant(undeclared(), Run)
+                     || {_, Run} <- compiled_queries()
+                    ],
+                    All({attribute, {no_such_field, 8}}, scoped()),
+                    All({attribute, {another_field, 8}}, scoped())
+                end),
+                ?assertMatch(#{schema := ?SCOPED, field := no_such_field}, Report),
+                ?assertEqual([field, fix, msg, schema], lists:sort(maps:keys(Report))),
+                Text = unicode:characters_to_binary(io_lib:format("~0p", [Report])),
+                ?assertEqual(nomatch, binary:match(Text, ~"9f3"))
+            end},
+            {"a statement compiled without the cache warns too", fun() ->
+                ?assertMatch(
+                    [#{schema := ?SCOPED, field := no_such_field}],
+                    field_warnings_by(fun() ->
+                        kura_tenant:put_tenant(undeclared()),
+                        _ = kura_query_compiler:to_sql(?REPO, scoped()),
+                        _ = kura_query_compiler:to_sql(?REPO, scoped())
+                    end)
+                )
+            end},
+            {"each schema has its own warning", fun() ->
+                ?assertMatch(
+                    [
+                        #{schema := ?SHARED, field := qty},
+                        #{schema := ?SCOPED, field := no_such_field}
+                    ],
+                    field_warnings_by(fun() ->
+                        All(?TENANT, shared()),
+                        All(?TENANT, shared()),
+                        All(undeclared(), scoped()),
+                        All(?TENANT, shared())
+                    end)
+                )
+            end},
+            {"a branch of a union is named", fun() ->
+                ?assertMatch(
+                    [#{schema := ?SHARED, field := qty}],
+                    field_warnings_by(fun() ->
+                        All(?TENANT, kura_query:union(scoped(), shared()))
+                    end)
+                )
+            end},
+            {"a field the schema declares warns of nothing", fun() ->
+                ?assertEqual([], field_warnings_by(fun() -> All(?TENANT, scoped()) end))
+            end},
+            {"a table that is no schema warns of nothing", fun() ->
+                ?assertEqual(
+                    [],
+                    field_warnings_by(fun() ->
+                        All(undeclared(), kura_query:from(~"edge_items")),
+                        All(undeclared(), kura_query:from(edge_items))
+                    end)
+                )
+            end}
+        ])
+     || Setting <- [unset, false]
+    ].
+
+forget_field_warnings() ->
+    [ok = kura_boot_warning:forget({undeclared_tenant_field, S}) || S <- [?SCOPED, ?SHARED]],
+    ok.
+
+field_warnings_by(Run) ->
+    forget_field_warnings(),
+    _ = logger:remove_handler(?MODULE),
+    ok = logger:add_handler(?MODULE, ?MODULE, #{config => self(), level => warning}),
+    try
+        _ = Run(),
+        field_warnings()
+    after
+        logger:remove_handler(?MODULE),
+        forget_field_warnings()
+    end.
+
+field_warnings() ->
+    receive
+        {logged, #{schema := _} = Report} -> [Report | field_warnings()];
+        {logged, _} -> field_warnings()
+    after 100 -> []
+    end.
 
 %%----------------------------------------------------------------------
 %% Joins

@@ -66,6 +66,26 @@ strategy; kura 2.x has no such declaration.
 
 Raw SQL through `kura_repo_worker:query/3` is never scoped and never
 checked.
+
+## A field a schema does not declare
+
+Under the attribute strategy the tenant condition is added to a query
+whatever the schema it reads declares. A schema that leaves the tenant's
+field out is scoped all the same when its table has the column, and the
+database refuses the query when it has not. `update_all` and `delete_all`
+are scoped as queries are. kura logs one warning per boot for each such
+schema, naming the schema and the field.
+
+On a repo whose `require_tenant` is `true` such a query raises
+`{invalid_tenant, Tenant}` instead, before anything is sent. From kura 3.0
+it raises on every repo, so declare the tenant's field in each schema read
+under the tenant.
+
+kura can tell only where the query, or a query combined with it, is from a
+schema and has no join and no CTE, either of which can bring the column in.
+Any other query is left to the database, without a warning. An insert
+writes the fields its schema declares, so into a schema without the
+tenant's field it writes the row without the tenant, whatever the setting.
 """.
 
 -include("kura.hrl").
@@ -79,6 +99,7 @@ checked.
     current_scope/0,
     adopt/1,
     scope_query/2,
+    scope_query/3,
     tenant_for/2,
     require/2,
     scoped_sources/1,
@@ -123,7 +144,9 @@ of the value. `with_tenant/2` and `adopt/1` refuse the same. `undefined` in
 place of the strategy is accepted and leaves the process without a tenant.
 
 Name the field in your own code. A field taken from a request is not a
-tenant: `scope_query/2` checks it against the schema only where it can.
+tenant: kura checks it against the schema only where it can, and refuses a
+field the schema does not declare only on a repo that requires a tenant
+(see `scope_query/2`).
 """.
 -spec put_tenant(undefined | strategy()) -> undefined | strategy().
 put_tenant(Tenant) ->
@@ -409,46 +432,82 @@ that is encrypted in a schema of the query raises instead of binding the
 tenant value, also when it is deterministic: writes refuse an encrypted
 tenant field, so reads do too.
 
-A `Field` that is not a stored field of the schema the query reads raises
-`{invalid_tenant, Strategy}`, where kura can tell: the query, or a query
-combined with it, is from a schema and has no join and no CTE, either of
-which can bring the column in. Any other query is left to the database, as
-is a subquery. So does a `Field` that `put_tenant/1` refuses.
+A `Field` that `put_tenant/1` refuses raises `{invalid_tenant, Strategy}`.
+
+A `Field` the schema the query reads does not declare as a stored field is
+scoped by all the same: the condition is added and the database decides, so
+the query runs when the table has the column and fails there when it has
+not. kura logs one warning for each such schema, naming the schema and the
+field, where it can tell: the query, or a query combined with it, is from a
+schema and has no join and no CTE, either of which can bring the column in.
+A query kura compiles for a repo whose `require_tenant` is `true` raises
+`{invalid_tenant, Strategy}` there instead, before anything is sent. kura
+3.0 raises for every repo.
 """.
 -spec scope_query(undefined | strategy(), #kura_query{}) -> #kura_query{}.
 scope_query({attribute, {Field, Value}} = Strategy, Query) when is_atom(Field) ->
     _ = validate_tenant(Strategy),
-    ok = check_column(Strategy, Field, Query),
+    ok = warn_undeclared(Field, undeclared(Field, Query)),
     scoped(Query, {Field, Value});
 scope_query(_Strategy, Query) ->
     Query.
 
--spec check_column(strategy(), atom(), term()) -> ok.
-check_column(
-    Strategy,
-    Field,
-    #kura_query{from = From, joins = [], ctes = [], combinations = Combinations}
-) ->
-    case names_column(From, Field) of
-        true -> check_combined(Strategy, Field, Combinations);
-        false -> error({invalid_tenant, Strategy})
-    end;
-check_column(_Strategy, _Field, _Query) ->
+%% scope_query/2 for a query compiled for `RepoMod`, whose require_tenant
+%% decides whether a tenant field a schema does not declare is refused.
+-doc false.
+-spec scope_query(module(), undefined | strategy(), #kura_query{}) -> #kura_query{}.
+scope_query(RepoMod, {attribute, {Field, Value}} = Strategy, Query) when is_atom(Field) ->
+    _ = validate_tenant(Strategy),
+    ok = permit_undeclared(RepoMod, Strategy, Field, undeclared(Field, Query)),
+    scoped(Query, {Field, Value});
+scope_query(_RepoMod, _Strategy, Query) ->
+    Query.
+
+-spec permit_undeclared(module(), strategy(), atom(), [module()]) -> ok.
+permit_undeclared(_RepoMod, _Strategy, _Field, []) ->
+    ok;
+permit_undeclared(RepoMod, Strategy, Field, Schemas) ->
+    case required(RepoMod) of
+        true -> error({invalid_tenant, Strategy});
+        _NotRequired -> warn_undeclared(Field, Schemas)
+    end.
+
+-spec warn_undeclared(atom(), [module()]) -> ok.
+warn_undeclared(Field, [Schema | Rest]) ->
+    ok = kura_boot_warning:once({undeclared_tenant_field, Schema}, #{
+        msg =>
+            ~"kura: a query under an attribute tenant reads a schema that does not declare the tenant's field, so the database decides whether it runs; kura 3.0 refuses it, as require_tenant => true does now",
+        schema => Schema,
+        field => Field,
+        fix => ~"declare the tenant's field in the schema's fields/0"
+    }),
+    warn_undeclared(Field, Rest);
+warn_undeclared(_Field, []) ->
     ok.
 
--spec check_combined(strategy(), atom(), term()) -> ok.
-check_combined(Strategy, Field, [{_Kind, Combined} | Rest]) ->
-    ok = check_column(Strategy, Field, Combined),
-    check_combined(Strategy, Field, Rest);
-check_combined(_Strategy, _Field, _Rest) ->
-    ok.
+%% The schemas `Query` and the queries combined with it are from that do not
+%% store `Field`. A join or a CTE can bring the column in, so a query with
+%% either is not judged, and neither is what is combined with it.
+-spec undeclared(atom(), term()) -> [module()].
+undeclared(Field, #kura_query{from = From, joins = [], ctes = [], combinations = Combinations}) ->
+    undeclared_by(From, Field) ++ undeclared_in(Field, Combinations);
+undeclared(_Field, _Query) ->
+    [].
 
--spec names_column(term(), atom()) -> boolean().
-names_column(From, Field) when is_atom(From), From =/= undefined ->
-    not kura_schema:is_schema(From) orelse
-        lists:member(Field, kura_schema:non_virtual_fields(From));
-names_column(_From, _Field) ->
-    true.
+-spec undeclared_in(atom(), term()) -> [module()].
+undeclared_in(Field, [{_Kind, Combined} | Rest]) ->
+    undeclared(Field, Combined) ++ undeclared_in(Field, Rest);
+undeclared_in(_Field, _Rest) ->
+    [].
+
+-spec undeclared_by(term(), atom()) -> [module()].
+undeclared_by(From, Field) when is_atom(From), From =/= undefined ->
+    Declared =
+        not kura_schema:is_schema(From) orelse
+            lists:member(Field, kura_schema:non_virtual_fields(From)),
+    [From || not Declared];
+undeclared_by(_From, _Field) ->
+    [].
 
 -spec scoped(#kura_query{}, {atom(), term()}) -> #kura_query{}.
 scoped(Query, Condition) ->
