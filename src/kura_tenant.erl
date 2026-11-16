@@ -109,6 +109,15 @@ tenant's field it writes the row without the tenant, whatever the setting.
 
 -define(UNSCOPED, kura_tenant_unscoped).
 
+%% The atoms that head a condition which is not a field's: `{'and', List}`,
+%% `{'not', Condition}`, `{exists, Subquery}`, `{fragment, SQL, Params}`.
+%% One of them as a tenant's field would scope by that condition, so a new
+%% condition head in kura_query must be added here.
+-define(IS_CONDITION_HEAD(Atom),
+    (Atom =:= 'and' orelse Atom =:= 'or' orelse Atom =:= 'not' orelse Atom =:= exists orelse
+        Atom =:= not_exists orelse Atom =:= fragment)
+).
+
 -type strategy() :: {prefix, binary()} | {attribute, {atom(), term()}}.
 
 -doc """
@@ -170,7 +179,7 @@ validate_tenant({prefix, Prefix}) when is_binary(Prefix) ->
     {prefix, Prefix};
 validate_tenant({attribute, {Field, Value}}) when
     is_atom(Field),
-    not ?KURA_IS_CONDITION_HEAD(Field),
+    not ?IS_CONDITION_HEAD(Field),
     Value =/= is_nil,
     Value =/= is_not_nil,
     Value =/= undefined,
