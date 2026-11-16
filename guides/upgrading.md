@@ -204,7 +204,9 @@ any value, the permissive one included, is a decision and logs nothing.
   `cast`, the child fields params may set, and `with` as
   `{Module, Function}`. See [Nested Changesets](cast_assoc.md).
 - Schema callbacks `redact/0` and `tenant_scoped/0`;
-  `kura_schema:redacted_fields/1` and `kura_schema:renamed_columns/1`;
+  `kura_schema:redacted_fields/1` and `kura_schema:renamed_columns/1`.
+  An embed whose schema has a `redact/0` that lists a field is redacted
+  whole with its parent;
   `kura_redact:record/2` and `kura_redact:changeset/1`. Both are for
   logging and never raise. For a schema with redacted fields or with
   associations, what they cannot read (an error that is not

@@ -13,6 +13,10 @@ Encrypted fields are always among them:
 redact() -> [password_hash, reset_token].
 ```
 
+An embedded schema names its own the same way. An embed is stored and
+logged as one value, so an embed whose schema lists a field, or embeds a
+schema that does, is replaced whole wherever its parent is redacted.
+
 `kura_schema:redacted_fields/1` returns the full list. Their values are
 replaced by `~"[redacted]"`:
 

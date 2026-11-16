@@ -1020,6 +1020,84 @@ error_reason_test_() ->
     ].
 
 %%----------------------------------------------------------------------
+%% Embeds
+%%----------------------------------------------------------------------
+
+-define(EMBEDS, kura_test_redact_embed_parent).
+
+embedded() ->
+    #{
+        id => 1,
+        name => ~"n",
+        creds => #{api_key => ~"key", api_secret => ~"emb-SECRET"},
+        thread => [#{note => ~"a", replies => [], creds => #{api_secret => ~"emb-SECRET"}}],
+        address => #{city => ~"c"}
+    }.
+
+an_embed_whose_schema_redacts_a_field_is_redacted_whole_test_() ->
+    Record = embedded(),
+    Hidden = Record#{creds := ?R, thread := ?R},
+    Changeset = kura_changeset:cast_embed(
+        kura_changeset:cast(?EMBEDS, #{}, Record, [name]), creds
+    ),
+    [
+        {"the embeds are among the schema's redacted fields", [
+            ?_assertEqual([creds, thread], kura_schema:redacted_fields(?EMBEDS)),
+            ?_assertEqual(
+                [creds, replies], kura_schema:redacted_fields(kura_test_redact_embed_middle)
+            ),
+            ?_assertEqual([], kura_schema:redacted_fields(kura_test_profile))
+        ]},
+        {"a record", ?_assertEqual(Hidden, kura_redact:record(?EMBEDS, Record))},
+        {"a changeset", fun() ->
+            Shown = kura_redact:changeset(Changeset#kura_changeset{
+                errors = [{base, ~"cannot store emb-SECRET"}, {name, ~"is short"}]
+            }),
+            ?assertEqual(?R, maps:get(creds, Shown#kura_changeset.changes)),
+            ?assertEqual(?R, maps:get(creds, Shown#kura_changeset.params)),
+            ?assertEqual([{base, ?R}, {name, ~"is short"}], Shown#kura_changeset.errors)
+        end},
+        {"the audit log",
+            ?_assertEqual(
+                {undefined, Hidden, undefined},
+                kura_audit:build_audit_data(?EMBEDS, insert, Record)
+            )},
+        {"the parameters of a write",
+            ?_assertEqual(
+                {redacted, [?R, ~"n", ?R]},
+                kura_redact:write_params(?EMBEDS, [creds, name, thread], [~"{}", ~"n", ~"[]"])
+            )},
+        {"a query that filters on the embed",
+            ?_assertEqual(
+                hidden,
+                kura_redact:mode(kura_query:where(kura_query:from(?EMBEDS), {creds, ~"{}"}))
+            )},
+        {"a query that filters on another field",
+            ?_assertEqual(
+                redacted, kura_redact:mode(kura_query:where(kura_query:from(?EMBEDS), {id, 1}))
+            )}
+    ].
+
+an_insert_with_a_redacting_embed_test_() ->
+    {setup,
+        fun() ->
+            kura_test_recording_driver:configure(?REPO),
+            kura_query_cache:init()
+        end,
+        fun(_) -> kura_test_recording_driver:unconfigure() end, fun() ->
+            Changeset = kura_changeset:cast_embed(
+                kura_changeset:cast(?EMBEDS, #{}, maps:with([name, creds], embedded()), [name]),
+                creds
+            ),
+            {[Shown], [Given]} = shown(fun() -> kura_repo_worker:insert(?REPO, Changeset) end),
+            ?assertEqual(lists:sort([~"n", ?R]), lists:sort(Shown)),
+            ?assertEqual(1, length([Param || Param <- Given, is_secret(Param)]))
+        end}.
+
+is_secret(Param) when is_binary(Param) -> binary:match(Param, ~"emb-SECRET") =/= nomatch;
+is_secret(_Param) -> false.
+
+%%----------------------------------------------------------------------
 %% Audit log
 %%----------------------------------------------------------------------
 

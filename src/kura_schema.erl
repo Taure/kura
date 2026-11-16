@@ -198,8 +198,9 @@ query that reads only such schemas gets no tenant condition. See
 -callback tenant_scoped() -> boolean().
 -doc """
 Return the fields whose values must stay out of logs and telemetry, such
-as a password hash or a token. Encrypted fields need not be listed. See
-`m:kura_redact`.
+as a password hash or a token. Encrypted fields need not be listed. In an
+embedded schema it has the embed redacted whole in every schema that
+embeds it. See `m:kura_redact`.
 """.
 -callback redact() -> [atom()].
 
@@ -506,17 +507,48 @@ timestamps_warning(Report) ->
 
 -doc """
 Return the fields of `Mod` whose values `m:kura_redact` replaces: its
-encrypted fields and those its `redact/0` callback lists. `[]` for a
-module that is not a schema.
+encrypted fields, those its `redact/0` callback lists, and each embed
+whose schema, or a schema embedded in that one at any depth, lists a
+field in its own `redact/0`. An embed is one value, so it is replaced
+whole. `[]` for a module that is not a schema.
 """.
 -spec redacted_fields(module()) -> [atom()].
 redacted_fields(Mod) ->
     schema_cache({kura_schema, redacted_fields, Mod}, [], fun() ->
-        case erlang:function_exported(Mod, redact, 0) of
-            true -> lists:usort(encrypted_fields(Mod) ++ Mod:redact());
-            false -> encrypted_fields(Mod)
-        end
+        lists:usort(encrypted_fields(Mod) ++ redacting_embeds(Mod) ++ listed_redacted(Mod))
     end).
+
+-spec listed_redacted(module()) -> [atom()].
+listed_redacted(Mod) ->
+    case erlang:function_exported(Mod, redact, 0) of
+        true -> Mod:redact();
+        false -> []
+    end.
+
+-spec redacting_embeds(module()) -> [atom()].
+redacting_embeds(Mod) ->
+    [
+        Name
+     || #kura_embed{name = Name, schema = Embedded} <- embeds(Mod),
+        lists:any(fun lists_a_redacted_field/1, embedded_in([Embedded], []))
+    ].
+
+-spec lists_a_redacted_field(module()) -> boolean().
+lists_a_redacted_field(Mod) ->
+    listed_redacted(Mod) =/= [].
+
+%% The schemas and every schema embedded in them, each once: a schema may
+%% embed itself.
+-spec embedded_in([module()], [module()]) -> [module()].
+embedded_in([], Seen) ->
+    Seen;
+embedded_in([Mod | Rest], Seen) ->
+    case lists:member(Mod, Seen) of
+        true ->
+            embedded_in(Rest, Seen);
+        false ->
+            embedded_in([E#kura_embed.schema || E <- embeds(Mod)] ++ Rest, [Mod | Seen])
+    end.
 
 -doc "Return list of non-virtual field names.".
 -spec non_virtual_fields(module()) -> [atom()].
