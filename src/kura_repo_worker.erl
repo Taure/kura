@@ -612,7 +612,7 @@ query(RepoMod, SQL, Params, Opts) ->
 %%----------------------------------------------------------------------
 
 -doc "Preload associations on one or more records (standalone, outside of queries).".
--spec preload(module(), module(), map() | [map()], [atom() | {atom(), list()}]) ->
+-spec preload(module(), module(), map() | [map()], [atom() | {atom(), list() | map()}]) ->
     map() | [map()].
 preload(RepoMod, Schema, Records, Assocs) ->
     kura_preloader:preload(RepoMod, Schema, Records, Assocs).

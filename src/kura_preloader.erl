@@ -22,7 +22,7 @@
 ]).
 -endif.
 
--spec preload(module(), module(), map() | [map()], [atom() | {atom(), list()}]) ->
+-spec preload(module(), module(), map() | [map()], [atom() | {atom(), list() | map()}]) ->
     map() | [map()].
 preload(RepoMod, Schema, Record, Assocs) when is_map(Record) ->
     [Result] = preload(RepoMod, Schema, [Record], Assocs),
