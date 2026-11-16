@@ -52,9 +52,9 @@ any value, the permissive one included, is a decision and logs nothing.
   wins over the application environment. See
   [Multitenancy](multitenancy.md#requiring-a-tenant). kura 2.x has nothing
   a repo declares a tenancy strategy with, so the 3.0 default is a plan.
-  Set to `true` it also refuses a query from a schema that does not
-  declare the attribute tenant's field, which is otherwise a warning; see
-  [Tenancy](#tenancy).
+  Set to `true` it also refuses a query from, and a write to, a schema
+  that neither declares the attribute tenant's field nor is shared, which
+  is otherwise a warning; see [Tenancy](#tenancy).
 - `max_page_size` is also an option of `kura_paginator:paginate/3` and
   `kura_paginator:cursor_paginate/3`, which wins.
 - kura does not start with a value it cannot read:
@@ -164,16 +164,29 @@ any value, the permissive one included, is a decision and logs nothing.
   `kura_query` reads as the head of a condition (`and`, `or`, `not`,
   `exists`, `not_exists`, `fragment`) raises `{invalid_tenant, Tenant}`
   where the tenant is set, as a field that is not an atom already did.
-- A query, `update_all` or `delete_all` from a schema that does not
-  declare the tenant's field runs as it did in 2.30: the tenant condition
-  is added and the database decides, so the statement is scoped when the
-  table has the column and refused there when it has not. New is one
-  warning per boot for each such schema, naming the schema and the field.
-  On a repo whose `require_tenant` is `true` the query raises
-  `{invalid_tenant, Tenant}` instead, before it is compiled. kura 3.0
-  raises on every repo: declare the tenant's field in each schema read
-  under the tenant. kura judges this only where it can tell: the query, or
-  a query combined with it, is from a schema and has no join and no CTE.
+- Under an attribute tenant a schema is scoped, shared or undeclared, for
+  its reads and its writes alike; see
+  [The three states of a schema](multitenancy.md#the-three-states-of-a-schema).
+  Scoped: it declares the tenant's field as a stored field. It is matched
+  on the field and its inserts are stamped with the tenant, also when it
+  exports `tenant_scoped() -> false`; all tenants' rows are read inside
+  `kura_tenant:without_tenant/1`. Shared: it exports
+  `tenant_scoped() -> false` and does not declare the field. Nothing of it
+  names the tenant. Undeclared: neither.
+- A statement on an undeclared schema runs as it did in 2.30: the tenant
+  condition is added to a query, `update_all`, `delete_all`, `update`,
+  `delete` and an upsert and the database decides, so the statement is
+  scoped when the table has the column and refused there when it has not,
+  and an `insert` or `insert_all` writes the row without the tenant. New
+  is one warning per boot for each such schema, naming the schema and the
+  field. On a repo whose `require_tenant` is `true` each of them, an
+  insert included, raises `{invalid_tenant, Tenant}` instead, before its
+  statement is sent. kura 3.0 raises on every repo: declare the tenant's
+  field in each schema used under the tenant, or export
+  `tenant_scoped() -> false` from a schema every tenant shares. kura
+  judges a query only where it can tell: the query, or a query combined
+  with it, is from a schema and has no join and no CTE. A write is always
+  judged.
 - `kura_tenant:with_tenant/2` checks the tenant before changing anything
   and restores the previous one however the function ends. Parallel
   preloads run in the caller's tenant scope.

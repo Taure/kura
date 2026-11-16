@@ -112,7 +112,7 @@ Under an attribute tenant `{attribute, {Field, Value}}` every schema is in one o
 | --- | --- | --- |
 | Scoped | declares `Field` as a stored field, one that is not virtual | every query and every write is matched on the field, and every insert is stamped with the tenant |
 | Shared | says `tenant_scoped() -> false` and does not declare `Field` | reads and writes run as in a process without a tenant: no condition, no stamp, no warning |
-| Undeclared | does not declare `Field` and has not said it is shared | the condition is added and the database decides, with one warning; refused where a tenant is required |
+| Undeclared | does not declare `Field` and has not said it is shared | where a tenant is required, every read and write is refused; elsewhere it runs as in 2.30, with one warning |
 
 A schema that declares the tenant's field is scoped even when it says `tenant_scoped() -> false`. It holds each tenant's rows, so they are matched on the field, and saying `false` does not open them to every tenant. To read all tenants' rows, run the query inside [`kura_tenant:without_tenant/1`](#requiring-a-tenant).
 
@@ -120,17 +120,21 @@ A table named by a binary, or by an atom that is no schema module, is matched on
 
 ### A schema that does not declare the tenant field
 
-kura adds the tenant condition to a query from an undeclared schema. A schema that leaves out a tenant column its table has is scoped all the same, in a query, an `update_all` and a `delete_all`. Over a table without the column the database refuses the statement. Either way kura logs one warning per boot for each such schema, naming the schema and the field:
+An undeclared schema neither declares the tenant field nor says it is shared. What happens to it depends on [`require_tenant`](#requiring-a-tenant).
+
+On a repo with `require_tenant => true` every operation on it raises `{invalid_tenant, Tenant}` before its statement is sent to the database: a query, `update_all`, `delete_all`, `insert`, `insert_all`, `update/2`, `delete/2` and an upsert.
+
+On any other repo it runs as it did in 2.30. kura adds the tenant condition to a query, an `update_all` and a `delete_all`, and matches `update/2`, `delete/2` and an upsert on the field. A schema that leaves out a tenant column its table has is scoped all the same, and over a table without the column the database refuses the statement. An insert writes the fields the schema declares, so the row is written without the tenant. kura logs one warning per boot for each such schema, naming the schema and the field:
 
 ```
-kura: a query under an attribute tenant reads a schema that does not declare the tenant's field, ...
+kura: a query or a write under an attribute tenant names a schema that does not declare the tenant's field, ...
     schema: my_report
     field: org_id
 ```
 
-On a repo with [`require_tenant => true`](#requiring-a-tenant) the query raises `{invalid_tenant, Tenant}` instead, before it is sent to the database. kura 3.0 raises on every repo, so declare the tenant field in every schema you read under a tenant, or say that the schema is [shared](#a-schema-every-tenant-shares).
+kura 3.0 raises on every repo, so declare the tenant field in every schema you use under a tenant, or say that the schema is [shared](#a-schema-every-tenant-shares).
 
-kura judges a query only where it can tell: the query, or a query combined with it, is from a schema and has no join and no CTE, either of which can bring the column in. Any other query is left to the database, without a warning.
+kura judges a query only where it can tell: the query, or a query combined with it, is from a schema and has no join and no CTE, either of which can bring the column in. Any other query is left to the database, without a warning. A write names one schema, so it is always judged.
 
 ### A schema every tenant shares
 
@@ -153,8 +157,6 @@ A query that joins a shared schema to anything else keeps the tenant condition, 
 Writes of one record are the same. `update/2`, `delete/2`, an upsert, `insert`, `insert_all` and the records written through an association of a shared schema run as they do in a process without a tenant: no tenant in the key, no upsert guard, no stamp. kura does not stop a process under a tenant from changing a shared row, so who may change plans is for your application to decide.
 
 Upserts that hit another tenant's row behave like `DO NOTHING`. Under attribute tenancy, unique indexes should include the tenant column; a unique index across tenants still tells one tenant that a value exists in another.
-
-Under a tenant, the writes of a changeset of a schema that neither declares the tenant field nor is shared differ: `update/2`, `delete/2` and an upsert are matched on the field and fail in the database when the table has no such column, and a plain insert writes the fields the schema declares, so the row is written without the tenant, with or without `require_tenant`.
 
 kura does not check that a foreign key points at a row of the same tenant. A tenant can still set `post_id` to another tenant's post: reads stay scoped, but the insert tells it the id exists, and the row it plants can block the other tenant's delete under `ON DELETE RESTRICT`. Make tenant foreign keys composite, `FOREIGN KEY (org_id, post_id) REFERENCES posts (org_id, id)` over a unique `(org_id, id)`, so the database refuses them.
 
@@ -227,8 +229,9 @@ each is a place where tenants are not isolated.
 
 Raw SQL through `query/3` is not checked, as it is not scoped.
 
-With `require_tenant` set, a query from a schema that does not declare
-the attribute tenant's field raises `{invalid_tenant, Tenant}`; see
+With `require_tenant` set, a query from, or a write to, a schema that
+neither declares the attribute tenant's field nor is shared raises
+`{invalid_tenant, Tenant}`; see
 [A schema that does not declare the tenant field](#a-schema-that-does-not-declare-the-tenant-field).
 
 `require_tenant` checks that a tenant is set, not which schema a query

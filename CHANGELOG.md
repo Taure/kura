@@ -53,6 +53,7 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(tenant)* Leave a schema every tenant shares out of the tenant condition
 - *(tenant)* Match a schema that declares the tenant's field on it, whatever tenant_scoped/0 returns
 - *(tenant)* Write the records of a schema every tenant shares without the tenant
+- *(tenant)* Refuse a write to a schema that does not declare the tenant's field where a tenant is required
 - *(redact)* Hide a record or changeset of a module that is no schema
 - *(redact)* Redact an embed whose schema lists redacted fields
 - *(preload)* Give preload/4 a spec that takes a conditional preload

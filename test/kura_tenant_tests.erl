@@ -463,6 +463,61 @@ a_tenant_field_the_schema_does_not_declare_test_() ->
             end}
         ]}.
 
+%% What a write is matched on and stamped with, in each state of a schema.
+write_attribute_test_() ->
+    Shared = kura_test_shared_schema,
+    Repos = [?REPO, ?STRICT_REPO],
+    Under = fun(Tenant, Repo, Source) ->
+        kura_tenant:with_tenant(Tenant, {kura_tenant, write_attribute, [Repo, Source]})
+    end,
+    Unchecked = fun(Tenant, Source) ->
+        kura_tenant:with_tenant(Tenant, {kura_tenant, attribute, [Source]})
+    end,
+    {setup,
+        fun() ->
+            application:set_env(kura, repos, #{
+                ?REPO => #{dialect => kura_dialect_pg, require_tenant => false},
+                ?STRICT_REPO => #{dialect => kura_dialect_pg, require_tenant => true}
+            })
+        end,
+        fun(_) -> cleanup() end, [
+            {"a schema that declares the field is written under the tenant", fun() ->
+                [?assertEqual(?T, Under({attribute, ?T}, Repo, ?S)) || Repo <- Repos],
+                ?assertEqual(?T, Unchecked({attribute, ?T}, ?S))
+            end},
+            {"so is one that declares it and says every tenant shares it", fun() ->
+                Named = {name, ~"acme"},
+                [?assertEqual(Named, Under({attribute, Named}, Repo, Shared)) || Repo <- Repos],
+                ?assertEqual(Named, Unchecked({attribute, Named}, Shared))
+            end},
+            {"a shared schema without the field is written without it", fun() ->
+                [?assertEqual(none, Under({attribute, ?T}, Repo, Shared)) || Repo <- Repos],
+                ?assertEqual(none, Unchecked({attribute, ?T}, Shared))
+            end},
+            {"a schema that does not declare it is refused where a tenant is required", fun() ->
+                Tenant = {attribute, {no_such_field, 7}},
+                ?assertEqual({no_such_field, 7}, Under(Tenant, ?REPO, ?S)),
+                ?assertError({invalid_tenant, Tenant}, Under(Tenant, ?STRICT_REPO, ?S)),
+                ?assertEqual({no_such_field, 7}, Unchecked(Tenant, ?S)),
+                Virtual = {attribute, {full_name, 7}},
+                ?assertError(
+                    {invalid_tenant, Virtual}, Under(Virtual, ?STRICT_REPO, kura_test_schema)
+                )
+            end},
+            {"a table that is no schema is left to the database", fun() ->
+                [
+                    ?assertEqual(?T, Under({attribute, ?T}, Repo, Table))
+                 || Repo <- Repos, Table <- [~"posts", posts]
+                ]
+            end},
+            {"no tenant and a prefix name no field", fun() ->
+                ?assertEqual(none, kura_tenant:write_attribute(?REPO, ?S)),
+                ?assertEqual(none, kura_tenant:attribute(?S)),
+                [?assertEqual(none, Under({prefix, ~"acme"}, Repo, ?S)) || Repo <- Repos],
+                ?assertEqual(none, Unchecked({prefix, ~"acme"}, ?S))
+            end}
+        ]}.
+
 compiled_sql_without_tenant_is_unchanged_test() ->
     setup(),
     try

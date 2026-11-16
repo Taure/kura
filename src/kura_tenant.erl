@@ -93,14 +93,18 @@ association run as they do in a process with no tenant: no tenant in the
 key, no upsert guard, no stamp.
 
 **Undeclared.** The schema does not declare `Field` and has not said it is
-shared. The tenant condition is added all the same, so a query,
-`update_all` or `delete_all` is scoped when the table has the column, and
-the database refuses it when it has not. kura logs one warning per boot
-for each such schema, naming the schema and the field. On a repo whose
-`require_tenant` is `true` such a query raises `{invalid_tenant, Tenant}`
-instead, before anything is sent. From kura 3.0 it raises on every repo,
-so declare the tenant's field in each schema read under the tenant, or
-say that the schema is shared.
+shared. On a repo whose `require_tenant` is `true` every operation on it
+raises `{invalid_tenant, Tenant}` before its statement is sent: a query,
+`update_all`, `delete_all`, `insert`, `insert_all`, `update`, `delete`
+and an upsert. On any other repo it behaves as it did in 2.30, and kura
+logs one warning per boot for each such schema, naming the schema and the
+field. The tenant condition is added to a query, `update_all`,
+`delete_all`, `update`, `delete` and an upsert all the same, so the
+statement is scoped when the table has the column and the database
+refuses it when it has not. An insert writes the fields its schema
+declares, so it writes the row without the tenant. From kura 3.0 an
+undeclared schema raises on every repo, so declare the tenant's field in
+each schema used under the tenant, or say that the schema is shared.
 
 A table named by a binary, or by an atom that is no schema module, is
 matched on the field: kura cannot tell what columns it has, and the
@@ -109,9 +113,7 @@ database decides.
 kura can tell an undeclared schema only where the query, or a query
 combined with it, is from a schema and has no join and no CTE, either of
 which can bring the column in. Any other query is left to the database,
-without a warning. An insert
-writes the fields its schema declares, so into a schema without the
-tenant's field it writes the row without the tenant, whatever the setting.
+without a warning. A write names one schema, so it is always judged.
 """.
 
 -include("kura.hrl").
@@ -352,11 +354,18 @@ tenant_for(RepoMod, Query) ->
 
 %% The field and value a write to `Source` on `RepoMod` is matched on and
 %% stamped with: the process's attribute tenant, or `none` when it has no
-%% such tenant or `Source` is shared. Raises as tenant_for/2 does.
+%% such tenant or `Source` is shared. Raises as tenant_for/2 does, and as
+%% scope_query/3 does for a schema that does not declare the field.
 -doc false.
 -spec write_attribute(module(), atom() | binary()) -> none | {atom(), term()}.
 write_attribute(RepoMod, Source) ->
     ok = require(RepoMod, Source),
+    case get_tenant() of
+        {attribute, {Field, _Value}} = Strategy ->
+            ok = permit_undeclared(RepoMod, Strategy, Field, undeclared_by(Source, Field));
+        _NoAttribute ->
+            ok
+    end,
     attribute(Source).
 
 %% write_attribute/2 without its checks, for a step of a write or a query
@@ -541,10 +550,11 @@ permit_undeclared(RepoMod, Strategy, Field, Schemas) ->
 warn_undeclared(Field, [Schema | Rest]) ->
     ok = kura_boot_warning:once({undeclared_tenant_field, Schema}, #{
         msg =>
-            ~"kura: a query under an attribute tenant reads a schema that does not declare the tenant's field, so the database decides whether it runs; kura 3.0 refuses it, as require_tenant => true does now",
+            ~"kura: a query or a write under an attribute tenant names a schema that does not declare the tenant's field: the database decides whether a query, an update or a delete runs, and an insert writes the row without the tenant; kura 3.0 refuses them, as require_tenant => true does now",
         schema => Schema,
         field => Field,
-        fix => ~"declare the tenant's field in the schema's fields/0"
+        fix =>
+            ~"declare the tenant's field in the schema's fields/0, or export tenant_scoped() -> false from a schema every tenant shares"
     }),
     warn_undeclared(Field, Rest);
 warn_undeclared(_Field, []) ->
