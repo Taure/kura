@@ -192,7 +192,8 @@ be introduced dialect-aware rather than added to this union.
 Return `false` for a schema every tenant shares, such as a table of plans
 or countries. With `require_tenant` set, its rows may then be read and
 written by a process that has no tenant, and under an attribute tenant a
-query that reads only such schemas gets no tenant condition.
+query that reads only such schemas gets no tenant condition and a write
+of its records is neither matched on the tenant nor stamped with it.
 
 That is for a schema without the tenant's field. A schema that declares
 the field of the attribute tenant holds each tenant's rows, so it is

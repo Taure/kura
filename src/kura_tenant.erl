@@ -73,20 +73,24 @@ checked.
 ## Scoped, shared and undeclared schemas
 
 Under an attribute tenant `{attribute, {Field, Value}}` a schema is in one
-of three states. kura decides which in one place, for whatever reads the
-schema.
+of three states. kura decides which in one place, for every read and
+every write of the schema.
 
 **Scoped.** The schema declares `Field` as a stored field, one that is not
 virtual. It is matched on the field in every query, `update_all` and
-`delete_all`, whatever its `tenant_scoped/0` returns: a schema that stores
-the tenant's field holds each tenant's rows, and saying `false` does not
-open them to every tenant. To read all tenants' rows, run the query in
-`without_tenant/1`.
+`delete_all` and in every `update`, `delete` and upsert of a record, and
+its inserts are stamped with the tenant, whatever its `tenant_scoped/0`
+returns: a schema that stores the tenant's field holds each tenant's
+rows, and saying `false` does not open them to every tenant. To read all
+tenants' rows, run the query in `without_tenant/1`.
 
 **Shared.** The schema exports `tenant_scoped() -> false` and does not
-declare `Field`. No tenant owns its rows, so a query, `update_all` or
-`delete_all` that reads only shared schemas gets no tenant condition and
-no warning.
+declare `Field`. No tenant owns its rows, so nothing of it names the
+tenant. A query, `update_all` or `delete_all` that reads only shared
+schemas gets no tenant condition and no warning. An `update`, a `delete`,
+an upsert, an `insert`, an `insert_all` and the records written through an
+association run as they do in a process with no tenant: no tenant in the
+key, no upsert guard, no stamp.
 
 **Undeclared.** The schema does not declare `Field` and has not said it is
 shared. The tenant condition is added all the same, so a query,
@@ -123,7 +127,8 @@ tenant's field it writes the row without the tenant, whatever the setting.
     scope_query/2,
     scope_query/3,
     tenant_for/2,
-    require/2,
+    write_attribute/2,
+    attribute/1,
     scoped_sources/1,
     scoped_in/1,
     permit/3
@@ -345,9 +350,30 @@ tenant_for(RepoMod, Query) ->
             Tenant
     end.
 
-%% Checks that a write to `Source` on `RepoMod` may run under the process's
-%% tenant. Raises as tenant_for/2 does.
+%% The field and value a write to `Source` on `RepoMod` is matched on and
+%% stamped with: the process's attribute tenant, or `none` when it has no
+%% such tenant or `Source` is shared. Raises as tenant_for/2 does.
 -doc false.
+-spec write_attribute(module(), atom() | binary()) -> none | {atom(), term()}.
+write_attribute(RepoMod, Source) ->
+    ok = require(RepoMod, Source),
+    attribute(Source).
+
+%% write_attribute/2 without its checks, for a step of a write or a query
+%% that is checked elsewhere.
+-doc false.
+-spec attribute(atom() | binary()) -> none | {atom(), term()}.
+attribute(Source) ->
+    case get_tenant() of
+        {attribute, {Field, Value}} ->
+            case standing(Field, Source) of
+                shared -> none;
+                _Matched -> {Field, Value}
+            end;
+        _NoAttribute ->
+            none
+    end.
+
 -spec require(module(), atom() | binary()) -> ok.
 require(RepoMod, Source) ->
     case get_tenant() of

@@ -13,6 +13,8 @@
 -define(POSTS, kura_tenant_test_schema).
 %% Says it is scoped, and points at a shared schema.
 -define(REFS, kura_test_shared_ref_schema).
+%% Shared, with records of another shared schema.
+-define(LISTS, kura_test_shared_list_schema).
 -define(TENANT, {attribute, {qty, 7}}).
 %% A tenant on a field the shared schema has too.
 -define(NAMED, {attribute, {name, ~"acme"}}).
@@ -134,7 +136,7 @@ required_test_() ->
             ?assertError(?REFUSED(?SCOPED), kura_query_compiler:to_sql_cached(?REPO, scoped()))
         end},
         {"a write that names no table is not refused", fun() ->
-            ?assertEqual(ok, kura_tenant:require(?REPO, undefined))
+            ?assertEqual(none, kura_tenant:write_attribute(?REPO, undefined))
         end},
         {"a spawned process has no tenant", fun() ->
             kura_tenant:put_tenant(?TENANT),
@@ -702,13 +704,79 @@ a_schema_that_declares_the_tenant_field_is_matched_on_it_test_() ->
      || Setting <- [unset, false, true]
     ].
 
-%% Only queries leave the tenant out. A write of one record by its key is
-%% matched on the tenant as any other; run it in without_tenant/1.
-a_changeset_write_of_a_shared_schema_is_matched_on_the_tenant_test_() ->
+%% Nothing of a write to a shared schema names the tenant: the statements
+%% are those of a process that has none.
+shared_writes() ->
+    List = #{id => 1, name => ~"l"},
+    Entry = #{id => 5, list_id => 1, name => ~"e"},
+    Inserted = fun(Row) -> #{command => insert, rows => [Row], num_rows => 1} end,
+    WithEntries = fun(Data, Params) ->
+        kura_changeset:put_assoc(
+            changeset(?LISTS, Data, Params), entries, [#{name => ~"e"}], #{cast => [name]}
+        )
+    end,
+    [
+        {"update", [], fun() ->
+            kura_repo_worker:update(
+                ?REPO, changeset(?SHARED, #{id => 1, name => ~"a"}, #{name => ~"b"})
+            )
+        end},
+        {"delete", [], fun() ->
+            kura_repo_worker:delete(?REPO, changeset(?SHARED, #{id => 1}, #{}))
+        end},
+        {"insert", [], fun() ->
+            kura_repo_worker:insert(?REPO, changeset(?SHARED, #{}, #{name => ~"a"}))
+        end},
+        {"an upsert", [], fun() ->
+            kura_repo_worker:insert(?REPO, changeset(?SHARED, #{}, #{name => ~"a"}), #{
+                on_conflict => {name, replace_all}
+            })
+        end},
+        {"insert_all", [], fun() ->
+            kura_repo_worker:insert_all(?REPO, ?SHARED, [#{name => ~"a"}, #{name => ~"b"}])
+        end},
+        {"a bulk upsert", [], fun() ->
+            kura_repo_worker:insert_all(?REPO, ?SHARED, [#{name => ~"a"}], #{
+                on_conflict => {name, {replace, [name]}}
+            })
+        end},
+        {"update_all that sets a column named as the tenant's field", [], fun() ->
+            kura_repo_worker:update_all(?REPO, shared(), #{qty => 9})
+        end},
+        {"a record inserted with its associations", [Inserted(List), Inserted(Entry)], fun() ->
+            kura_repo_worker:insert(?REPO, WithEntries(#{}, #{name => ~"l"}))
+        end},
+        {"associations written onto an unchanged record", [Inserted(Entry)], fun() ->
+            kura_repo_worker:update(?REPO, WithEntries(List, #{}))
+        end}
+    ].
+
+a_write_of_a_shared_schema_does_not_name_the_tenant_test_() ->
+    [
+        with_setting(Setting, [
+            {Name, fun() ->
+                kura_test_recording_driver:reply_with(Replies),
+                Result = Run(),
+                Statements = kura_test_recording_driver:statements(),
+                ?assertMatch([_ | _], Statements),
+                kura_test_recording_driver:reply_with(Replies),
+                Warnings = field_warnings_by(fun() ->
+                    ?assertEqual(Result, kura_tenant:with_tenant(?TENANT, Run))
+                end),
+                ?assertEqual(Statements, kura_test_recording_driver:statements()),
+                ?assertEqual([], Warnings)
+            end}
+         || {Name, Replies, Run} <- shared_writes()
+        ])
+     || Setting <- [unset, false, true]
+    ].
+
+%% Declaring the tenant's field puts the schema's writes under the tenant.
+a_write_of_a_schema_that_declares_the_tenant_field_names_it_test_() ->
     with_setting(true, [
         {"update", fun() ->
             _ = kura_tenant:with_tenant(
-                ?TENANT,
+                ?NAMED,
                 {kura_repo_worker, update, [
                     ?REPO, changeset(?SHARED, #{id => 1, name => ~"a"}, #{name => ~"b"})
                 ]}
@@ -716,9 +784,9 @@ a_changeset_write_of_a_shared_schema_is_matched_on_the_tenant_test_() ->
             ?assertMatch(
                 [
                     {
-                        <<"UPDATE \"shared_items\" SET \"name\" = $1 WHERE \"id\" = $2 AND \"qty\" = $3",
+                        <<"UPDATE \"shared_items\" SET \"name\" = $1 WHERE \"id\" = $2 AND \"name\" = $3",
                             _/binary>>,
-                        [~"b", 1, 7]
+                        [~"acme", 1, ~"acme"]
                     }
                 ],
                 kura_test_recording_driver:statements()
@@ -726,22 +794,34 @@ a_changeset_write_of_a_shared_schema_is_matched_on_the_tenant_test_() ->
         end},
         {"delete", fun() ->
             _ = kura_tenant:with_tenant(
-                ?TENANT, {kura_repo_worker, delete, [?REPO, changeset(?SHARED, #{id => 1}, #{})]}
+                ?NAMED, {kura_repo_worker, delete, [?REPO, changeset(?SHARED, #{id => 1}, #{})]}
             ),
             ?assertMatch(
                 [
                     {
-                        <<"DELETE FROM \"shared_items\" WHERE \"id\" = $1 AND \"qty\" = $2",
+                        <<"DELETE FROM \"shared_items\" WHERE \"id\" = $1 AND \"name\" = $2",
                             _/binary>>,
-                        [1, 7]
+                        [1, ~"acme"]
                     }
                 ],
                 kura_test_recording_driver:statements()
             )
         end},
+        {"insert and insert_all", fun() ->
+            _ = kura_tenant:with_tenant(
+                ?NAMED,
+                {kura_repo_worker, insert, [?REPO, changeset(?SHARED, #{}, #{name => ~"a"})]}
+            ),
+            _ = kura_tenant:with_tenant(
+                ?NAMED, {kura_repo_worker, insert_all, [?REPO, ?SHARED, [#{id => 3}]]}
+            ),
+            ?assertMatch(
+                [{_, [~"acme"]}, {_, [3, ~"acme"]}], kura_test_recording_driver:statements()
+            )
+        end},
         {"neither inside without_tenant/1", fun() ->
             Delete = {kura_repo_worker, delete, [?REPO, changeset(?SHARED, #{id => 1}, #{})]},
-            _ = kura_tenant:with_tenant(?TENANT, {kura_tenant, without_tenant, [Delete]}),
+            _ = kura_tenant:with_tenant(?NAMED, {kura_tenant, without_tenant, [Delete]}),
             ?assertMatch(
                 [{<<"DELETE FROM \"shared_items\" WHERE \"id\" = $1", Rest/binary>>, [1]}] when
                     binary_part(Rest, 0, min(4, byte_size(Rest))) =/= ~" AND",

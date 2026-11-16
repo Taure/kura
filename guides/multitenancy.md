@@ -106,12 +106,12 @@ The tenant condition names the field unqualified. A query, CTE or union branch o
 
 ### The three states of a schema
 
-Under an attribute tenant `{attribute, {Field, Value}}` every schema is in one of three states. kura decides which in one place, for whatever reads the schema.
+Under an attribute tenant `{attribute, {Field, Value}}` every schema is in one of three states. kura decides which in one place, for every read and every write of the schema.
 
 | State | The schema | Under the tenant |
 | --- | --- | --- |
-| Scoped | declares `Field` as a stored field, one that is not virtual | every query, `update_all` and `delete_all` is matched on the field |
-| Shared | says `tenant_scoped() -> false` and does not declare `Field` | no tenant condition and no warning |
+| Scoped | declares `Field` as a stored field, one that is not virtual | every query and every write is matched on the field, and every insert is stamped with the tenant |
+| Shared | says `tenant_scoped() -> false` and does not declare `Field` | reads and writes run as in a process without a tenant: no condition, no stamp, no warning |
 | Undeclared | does not declare `Field` and has not said it is shared | the condition is added and the database decides, with one warning; refused where a tenant is required |
 
 A schema that declares the tenant's field is scoped even when it says `tenant_scoped() -> false`. It holds each tenant's rows, so they are matched on the field, and saying `false` does not open them to every tenant. To read all tenants' rows, run the query inside [`kura_tenant:without_tenant/1`](#requiring-a-tenant).
@@ -150,11 +150,11 @@ The schema is shared only while it does not declare the tenant's field. A `plan`
 
 A query that joins a shared schema to anything else keeps the tenant condition, whichever of the two it is from: the condition names the tenant table's column. Only a schema module counts. A table named by a binary or an atom is scoped, and so is a CTE's name, whatever its body reads.
 
-Writes of one record are not exempt. `update/2`, `delete/2` and an upsert of a shared schema's changeset are still matched on the tenant, which its table does not have, so the database refuses them. A plain insert writes the fields the schema declares. Change shared rows where no tenant is set, or inside `kura_tenant:without_tenant/1`.
+Writes of one record are the same. `update/2`, `delete/2`, an upsert, `insert`, `insert_all` and the records written through an association of a shared schema run as they do in a process without a tenant: no tenant in the key, no upsert guard, no stamp. kura does not stop a process under a tenant from changing a shared row, so who may change plans is for your application to decide.
 
 Upserts that hit another tenant's row behave like `DO NOTHING`. Under attribute tenancy, unique indexes should include the tenant column; a unique index across tenants still tells one tenant that a value exists in another.
 
-Under a tenant context, writes of a changeset to a table without the tenant field differ: `update/2`, `delete/2` and an upsert fail in the database, and a plain insert succeeds without the tenant. The same goes for a schema that does not declare the field: an insert writes the fields the schema declares, so the row is written without the tenant, with or without `require_tenant`.
+Under a tenant, the writes of a changeset of a schema that neither declares the tenant field nor is shared differ: `update/2`, `delete/2` and an upsert are matched on the field and fail in the database when the table has no such column, and a plain insert writes the fields the schema declares, so the row is written without the tenant, with or without `require_tenant`.
 
 kura does not check that a foreign key points at a row of the same tenant. A tenant can still set `post_id` to another tenant's post: reads stay scoped, but the insert tells it the id exists, and the row it plants can block the other tenant's delete under `ON DELETE RESTRICT`. Make tenant foreign keys composite, `FOREIGN KEY (org_id, post_id) REFERENCES posts (org_id, id)` over a unique `(org_id, id)`, so the database refuses them.
 

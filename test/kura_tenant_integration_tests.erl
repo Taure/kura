@@ -58,6 +58,8 @@ tenant_test_() ->
             {"a preload of a shared schema reads its rows", fun shared_schema_is_preloaded/0},
             {"update_all and delete_all of a shared schema reach every row",
                 fun shared_schema_bulk_writes/0},
+            {"a shared schema's records are written under a tenant",
+                fun shared_schema_record_writes/0},
             {"a schema that declares the tenant field keeps to the tenant's rows",
                 fun declared_tenant_field_is_scoped_whatever_the_schema_says/0},
             {"preloading several associations stays in the tenant",
@@ -93,6 +95,14 @@ setup() ->
         []
     ),
     {ok, _} = kura_test_repo:query(
+        "CREATE TABLE IF NOT EXISTS tenant_plans ("
+        "  id BIGSERIAL PRIMARY KEY,"
+        "  name VARCHAR(255) NOT NULL UNIQUE,"
+        "  price INTEGER"
+        ")",
+        []
+    ),
+    {ok, _} = kura_test_repo:query(
         "CREATE TABLE IF NOT EXISTS tenant_notes ("
         "  id BIGSERIAL PRIMARY KEY,"
         "  org_id INTEGER NOT NULL,"
@@ -111,6 +121,7 @@ drop_tables() ->
     kura_test_repo:query("DROP SCHEMA IF EXISTS tenant_p1 CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS tenant_item_links CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS tenant_notes CASCADE", []),
+    kura_test_repo:query("DROP TABLE IF EXISTS tenant_plans CASCADE", []),
     kura_test_repo:query("DROP TABLE IF EXISTS tenant_items CASCADE", []),
     ok.
 
@@ -118,7 +129,7 @@ seed() ->
     _ = kura_tenant:clear_tenant(),
     kura_query_cache:flush(),
     {ok, _} = kura_test_repo:query(
-        "TRUNCATE tenant_items, tenant_notes, tenant_item_links RESTART IDENTITY", []
+        "TRUNCATE tenant_items, tenant_notes, tenant_item_links, tenant_plans RESTART IDENTITY", []
     ),
     {ok, _} = kura_test_repo:query(
         "INSERT INTO tenant_items (org_id, name, score) VALUES "
@@ -461,6 +472,42 @@ shared_schema_bulk_writes() ->
     ),
     ?assertEqual({ok, 3}, as(?TWO, fun() -> kura_test_repo:delete_all(Links) end)),
     ?assertEqual({ok, []}, raw("SELECT linked_id FROM tenant_item_links", [])).
+
+shared_schema_record_writes() ->
+    Plans = kura_test_tenant_plan_schema,
+    Plan = fun(Data, Params) -> kura_changeset:cast(Plans, Data, Params, [name, price]) end,
+    Stored = fun() ->
+        {ok, Rows} = raw("SELECT name, price FROM tenant_plans ORDER BY name", []),
+        [{Name, Price} || #{name := Name, price := Price} <- Rows]
+    end,
+    {ok, Free} = as(?ONE, fun() ->
+        kura_test_repo:insert(Plan(#{}, #{name => ~"free", price => 0}))
+    end),
+    ?assertEqual([{~"free", 0}], Stored()),
+    ?assertMatch(
+        {ok, #{price := 1}}, as(?TWO, fun() -> kura_test_repo:update(Plan(Free, #{price => 1})) end)
+    ),
+    ?assertMatch(
+        {ok, #{price := 2}},
+        as(?ONE, fun() ->
+            kura_test_repo:insert(Plan(#{}, #{name => ~"free", price => 2}), #{
+                on_conflict => {name, replace_all}
+            })
+        end)
+    ),
+    ?assertEqual(
+        {ok, 2},
+        as(?TWO, fun() ->
+            kura_test_repo:insert_all(
+                Plans,
+                [#{name => ~"free", price => 3}, #{name => ~"team", price => 9}],
+                #{on_conflict => {name, {replace, [price]}}}
+            )
+        end)
+    ),
+    ?assertEqual([{~"free", 3}, {~"team", 9}], Stored()),
+    ?assertMatch({ok, _}, as(?ONE, fun() -> kura_test_repo:delete(Plan(Free, #{})) end)),
+    ?assertEqual([{~"team", 9}], Stored()).
 
 declared_tenant_field_is_scoped_whatever_the_schema_says() ->
     Open = kura_query:from(kura_test_tenant_open_item_schema),

@@ -437,7 +437,8 @@ update_all(RepoMod, Query, Updates) ->
 
 do_update_all(RepoMod, Query, Updates) ->
     Q1 = scope_read(Query),
-    case dump_set_map(Q1#kura_query.from, pin_tenant(Updates)) of
+    From = Q1#kura_query.from,
+    case dump_set_map(From, pin_tenant(From, Updates)) of
         {error, _} = DumpErr ->
             DumpErr;
         {ok, Dumped} ->
@@ -715,7 +716,9 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
                     {ok, Data};
                 _ ->
                     KeyClauses = tenant_key_clauses(RepoMod, SchemaMod, key_pairs(SchemaMod, Data)),
-                    Changes1 = maybe_add_timestamps(SchemaMod, pin_tenant(Changes), update),
+                    Changes1 = maybe_add_timestamps(
+                        SchemaMod, pin_tenant(SchemaMod, Changes), update
+                    ),
                     case dump_changes(SchemaMod, Changes1) of
                         {error, DumpErr} ->
                             dump_error_changeset(CS, update, DumpErr);
@@ -735,11 +738,12 @@ update_record(RepoMod, CS0 = #kura_changeset{schema = SchemaMod, data = Data}) -
             end
     end.
 
-%% With no field to write the key never reaches the database, so under attribute
-%% tenancy the record is looked up before its associations are written.
+%% With no field to write the key never reaches the database, so a record
+%% that is matched on the attribute tenant is looked up before its
+%% associations are written.
 owned_by_tenant(RepoMod, CS = #kura_changeset{schema = SchemaMod}, Data) ->
-    case kura_tenant:get_tenant() of
-        {attribute, _} ->
+    case kura_tenant:attribute(SchemaMod) of
+        {_Field, _Value} ->
             Q0 = apply_clauses(kura_query:from(SchemaMod), key_pairs(SchemaMod, Data)),
             case all(RepoMod, kura_query:limit(Q0#kura_query{include_deleted = true}, 1)) of
                 {ok, [Row]} ->
@@ -752,7 +756,7 @@ owned_by_tenant(RepoMod, CS = #kura_changeset{schema = SchemaMod}, Data) ->
                 {error, _} = Err ->
                     Err
             end;
-        _ ->
+        none ->
             {ok, Data}
     end.
 
@@ -1387,13 +1391,15 @@ maybe_apply_tenant_prefix(Query) ->
             Query
     end.
 
+%% What a write is matched on and stamped with is kura_tenant's to say: a
+%% schema every tenant shares has no tenant column, so none of the steps
+%% below name one.
 tenant_key_clauses(RepoMod, SchemaMod, KeyClauses) ->
-    ok = kura_tenant:require(RepoMod, SchemaMod),
-    case kura_tenant:get_tenant() of
-        {attribute, {Field, Value}} ->
+    case kura_tenant:write_attribute(RepoMod, SchemaMod) of
+        {Field, Value} ->
             ok = refuse_encrypted_tenant(SchemaMod, Field),
             KeyClauses ++ [{Field, Value}];
-        _ ->
+        none ->
             KeyClauses
     end.
 
@@ -1408,18 +1414,18 @@ refuse_encrypted_tenant(SchemaMod, Field) ->
         false -> ok
     end.
 
-pin_tenant(Changes) ->
-    case kura_tenant:get_tenant() of
-        {attribute, {Field, Value}} when is_map_key(Field, Changes) -> Changes#{Field => Value};
+pin_tenant(Source, Changes) ->
+    case kura_tenant:attribute(Source) of
+        {Field, Value} when is_map_key(Field, Changes) -> Changes#{Field => Value};
         _ -> Changes
     end.
 
 guard_upsert(SchemaMod, #{on_conflict := OnConflict} = Opts) ->
     ok = refuse_encrypted_conflict_guard(SchemaMod, OnConflict),
-    case kura_tenant:get_tenant() of
-        {attribute, {Field, _Value}} ->
+    case kura_tenant:attribute(SchemaMod) of
+        {Field, _Value} ->
             Opts#{on_conflict => guarded(OnConflict, SchemaMod, Field)};
-        _ ->
+        none ->
             Opts
     end;
 guard_upsert(_SchemaMod, Opts) ->
@@ -1452,17 +1458,13 @@ guarded({Target, Action, Opts}, Field) when is_map(Opts) ->
 tenant_entries(_RepoMod, _SchemaMod, []) ->
     [];
 tenant_entries(RepoMod, SchemaMod, Entries) ->
-    ok = kura_tenant:require(RepoMod, SchemaMod),
-    case kura_tenant:get_tenant() of
-        {attribute, {Field, Value}} -> [Entry#{Field => Value} || Entry <- Entries];
-        _ -> Entries
+    case kura_tenant:write_attribute(RepoMod, SchemaMod) of
+        {Field, Value} -> [Entry#{Field => Value} || Entry <- Entries];
+        none -> Entries
     end.
 
 maybe_apply_tenant_changes(RepoMod, SchemaMod, Changes) ->
-    ok = kura_tenant:require(RepoMod, SchemaMod),
-    case kura_tenant:get_tenant() of
-        {attribute, {Field, Value}} ->
-            Changes#{Field => Value};
-        _ ->
-            Changes
+    case kura_tenant:write_attribute(RepoMod, SchemaMod) of
+        {Field, Value} -> Changes#{Field => Value};
+        none -> Changes
     end.
