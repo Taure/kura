@@ -288,7 +288,6 @@ shown_map(_Hidden, _Map) ->
 -spec shown_params(term(), hidden() | unknown, term()) -> map().
 shown_params(Schema, Hidden, Params) ->
     case read_params(Schema, Hidden, Params) of
-        shown -> Params;
         hidden -> hidden_map();
         Read -> #{Key => shown_value(params, Reading, Value) || {Key, Reading, Value} <- Read}
     end.
@@ -299,8 +298,7 @@ shown_params(Schema, Hidden, Params) ->
 %% confirmation or a mistyped name does, so its value is hidden. What is
 %% shown and what an error message may quote are both read from here, so
 %% the two cannot differ.
--spec read_params(term(), hidden() | unknown, term()) ->
-    shown | hidden | [{term(), reading(), term()}].
+-spec read_params(term(), hidden() | unknown, term()) -> hidden | [{term(), reading(), term()}].
 read_params(Schema, {Redacted, Nested} = Hidden, Params) when
     is_atom(Schema), is_map(Params), (Redacted =/= [] orelse map_size(Nested) > 0)
 ->
@@ -309,7 +307,7 @@ read_params(Schema, {Redacted, Nested} = Hidden, Params) when
         Names -> [{Key, param(Key, Names, Hidden), Value} || Key := Value <- Params]
     end;
 read_params(_Schema, {[], Nested}, Params) when is_map(Params), map_size(Nested) =:= 0 ->
-    shown;
+    [{Key, show, Value} || Key := Value <- Params];
 read_params(_Schema, _Hidden, _Params) ->
     hidden.
 
@@ -440,7 +438,6 @@ hidden_values(_Hidden, Map) ->
 -spec hidden_params(term(), hidden() | unknown, term()) -> [term()].
 hidden_params(Schema, Hidden, Params) ->
     case read_params(Schema, Hidden, Params) of
-        shown -> [];
         hidden -> [Params];
         Read -> lists:append([hidden_value(params, Reading, Value) || {_, Reading, Value} <- Read])
     end.
