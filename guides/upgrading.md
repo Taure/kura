@@ -86,11 +86,14 @@ any value, the permissive one included, is a decision and logs nothing.
   `WHERE (SQL) AND ...`, with the closing parenthesis on a line of its own.
   The SQL text of every query with a fragment condition changes. Results
   change only for a fragment with an `OR` outside any parentheses of its
-  own, which is now combined with the other conditions as a unit: the
-  conditions after it, the tenant's and the soft-delete filter included,
-  used to bind to its last branch only, so its other branches matched rows
-  those conditions should have left out. A fragment may now end in a `--`
-  comment.
+  own, one that ends in a `--` comment, or one whose text is not a single
+  condition. A fragment is combined with the other conditions, kura's own
+  included (the tenant's, the soft-delete filter), as one unit: an `OR`
+  in it stays inside the fragment, a `--` comment ends with the fragment,
+  and text that is not a single condition, such as `a = 1 ORDER BY b`, is
+  a syntax error. Check your fragments for those three. To match on a
+  fragment or on another condition, write
+  `{'or', [{fragment, SQL, Params}, Condition]}`.
 - `kura_query:lock/2` reads a lock given as text into a lock term: `FOR`
   with a strength, `OF` tables, `NOWAIT` or `SKIP LOCKED`, one clause or
   several. Text it cannot read is written into the statement as before;

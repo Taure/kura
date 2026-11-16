@@ -82,6 +82,7 @@ default, is in [Upgrading](guides/upgrading.md).
 - *(upgrading)* The lock term a dialect receives and text matches on SQLite
 - *(upgrading)* What waits for the next kura_sqlite and rebar3_kura
 - *(changelog)* Describe 2.31.0 as it ships
+- *(upgrading)* Which fragment conditions change their result, and what to check
 
 ### Features
 
