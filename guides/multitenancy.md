@@ -93,7 +93,7 @@ This is the form for any process that is reused, and for temporarily reading ano
 
 Tenant scoping is applied automatically by `kura_repo_worker` and the query compiler.
 
-Under the attribute strategy:
+Under the attribute strategy, for a schema that declares the tenant field (for any other, see [The three states of a schema](#the-three-states-of-a-schema)):
 
 - **Queries** (`all`, `one`, `get`, `exists`, aggregates, `stream`, preloads): the tenant condition is added to the query, to every CTE and union, and to every `in` and `exists` subquery, however deeply nested.
 - **Record writes** (`update`, `delete`, including optimistic locking): the record is addressed by its key and the tenant, so another tenant's row is not found rather than written.
@@ -117,7 +117,7 @@ Under an attribute tenant `{attribute, {Field, Value}}` every schema is in one o
 | --- | --- | --- |
 | Scoped | declares `Field` as a stored field, one that is not virtual | every query and every write is matched on the field, and every insert is stamped with the tenant |
 | Shared | says `tenant_scoped() -> false` and does not declare `Field` | reads and writes run as in a process without a tenant: no condition, no stamp, no warning |
-| Undeclared | does not declare `Field` and has not said it is shared | where a tenant is required, every read and write is refused; elsewhere it runs as in 2.30, with one warning |
+| Undeclared | does not declare `Field` and has not said it is shared | where a tenant is required, its reads and writes are refused; elsewhere it runs as in 2.30, with one warning |
 
 A schema that declares the tenant's field is scoped even when it says `tenant_scoped() -> false`. It holds each tenant's rows, so they are matched on the field, and saying `false` does not open them to every tenant. To read all tenants' rows, run the query inside [`kura_tenant:without_tenant/1`](#requiring-a-tenant).
 
