@@ -313,8 +313,6 @@ read_params(_Schema, {[], Nested}, Params) when is_map(Params), map_size(Nested)
 read_params(_Schema, _Hidden, _Params) ->
     hidden.
 
-%% Every name a key of a schema's params can be: its fields, virtual ones
-%% included, its embeds and its associations.
 -spec param_names(module(), hidden()) -> [atom()] | unknown.
 param_names(Schema, {Redacted, Nested}) ->
     try
@@ -360,8 +358,6 @@ named(_Key, _Names) ->
 hidden_map() ->
     #{base => ?REDACTED}.
 
-%% Whether a map holds a record's fields or a changeset's params, which
-%% decides how the maps nested in it are read.
 -type holds() :: fields | params.
 
 -type reading() :: hide | show | {nested, module()}.
