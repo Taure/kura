@@ -118,9 +118,10 @@ fragment_sql(SQL, Params) ->
         kura_query:where(kura_query:from(kura_test_schema), {id, 7}), {fragment, SQL, Params}
     ),
     {Compiled, [7 | Bound]} = kura_dialect_pg:to_sql(Q),
-    {Prefix, Bound} = {~"SELECT * FROM \"users\" WHERE \"id\" = $1 AND ", Params},
+    {Prefix, Bound} = {~"SELECT * FROM \"users\" WHERE \"id\" = $1 AND (", Params},
     Size = byte_size(Prefix),
-    <<Prefix:Size/binary, Rewritten/binary>> = Compiled,
+    Inner = byte_size(Compiled) - Size - 2,
+    <<Prefix:Size/binary, Rewritten:Inner/binary, "\n)">> = Compiled,
     Rewritten.
 
 fragment_question_mark_in_text_is_not_a_placeholder_test() ->
@@ -410,8 +411,125 @@ where_fragment_test() ->
         {fragment, <<"lower(name) = ?">>, [<<"alice">>]}
     ),
     {SQL, Params} = kura_dialect_pg:to_sql(Q),
-    ?assertEqual(<<"SELECT * FROM \"user\" WHERE lower(name) = $1">>, SQL),
+    ?assertEqual(<<"SELECT * FROM \"user\" WHERE (lower(name) = $1\n)">>, SQL),
     ?assertEqual([<<"alice">>], Params).
+
+%% Each fragment is one condition among those joined with AND, whatever
+%% operators its own text holds, and wherever it stands.
+a_fragment_is_compiled_as_one_group_test_() ->
+    Or = {fragment, ~"name = ? OR email = ?", [~"a", ~"b"]},
+    From = kura_query:from(user),
+    Grouped = ~"(name = $1 OR email = $2\n)",
+    [
+        {"before a condition",
+            ?_assertEqual(
+                {<<"SELECT * FROM \"user\" WHERE ", Grouped/binary, " AND \"age\" = $3">>, [
+                    ~"a", ~"b", 7
+                ]},
+                kura_dialect_pg:to_sql(kura_query:where(kura_query:where(From, Or), {age, 7}))
+            )},
+        {"after a condition",
+            ?_assertEqual(
+                {
+                    ~"SELECT * FROM \"user\" WHERE \"age\" = $1 AND (name = $2 OR email = $3\n)",
+                    [7, ~"a", ~"b"]
+                },
+                kura_dialect_pg:to_sql(kura_query:where(kura_query:where(From, {age, 7}), Or))
+            )},
+        {"inside and, or and not",
+            ?_assertEqual(
+                {
+                    <<
+                        "SELECT * FROM \"user\" WHERE (",
+                        Grouped/binary,
+                        " AND \"age\" = $3) AND (\"age\" = $4 OR (name = $5 OR email = $6\n))"
+                        " AND NOT ((name = $7 OR email = $8\n))"
+                    >>,
+                    [~"a", ~"b", 7, 8, ~"a", ~"b", ~"a", ~"b"]
+                },
+                kura_dialect_pg:to_sql(
+                    kura_query:where(
+                        kura_query:where(
+                            kura_query:where(From, {'and', [Or, {age, 7}]}),
+                            {'or', [{age, 8}, Or]}
+                        ),
+                        {'not', Or}
+                    )
+                )
+            )},
+        {"in having",
+            ?_assertEqual(
+                {
+                    <<
+                        "SELECT \"age\" FROM \"user\" GROUP BY \"age\" HAVING "
+                        "(count(*) > $1 OR max(score) > $2\n) AND (min(score) > $3\n)"
+                    >>,
+                    [1, 2, 3]
+                },
+                kura_dialect_pg:to_sql(
+                    kura_query:having(
+                        kura_query:having(
+                            kura_query:group_by(kura_query:select(From, [age]), [age]),
+                            {fragment, ~"count(*) > ? OR max(score) > ?", [1, 2]}
+                        ),
+                        {fragment, ~"min(score) > ?", [3]}
+                    )
+                )
+            )},
+        {"in a subquery, a CTE and a union branch", fun() ->
+            Sub = kura_query:select(kura_query:where(kura_query:where(From, Or), {age, 7}), [id]),
+            Q = kura_query:union(
+                kura_query:with_cte(
+                    kura_query:where(kura_query:from(~"picked"), {id, in, {subquery, Sub}}),
+                    ~"picked",
+                    Sub
+                ),
+                Sub
+            ),
+            ?assertEqual(
+                {
+                    <<
+                        "WITH \"picked\" AS (SELECT \"id\" FROM \"user\""
+                        " WHERE (name = $1 OR email = $2\n) AND \"age\" = $3)"
+                        " SELECT * FROM \"picked\" WHERE \"id\" IN (SELECT \"id\" FROM \"user\""
+                        " WHERE (name = $4 OR email = $5\n) AND \"age\" = $6)"
+                        " UNION SELECT \"id\" FROM \"user\""
+                        " WHERE (name = $7 OR email = $8\n) AND \"age\" = $9"
+                    >>,
+                    [~"a", ~"b", 7, ~"a", ~"b", 7, ~"a", ~"b", 7]
+                },
+                kura_dialect_pg:to_sql(Q)
+            )
+        end},
+        {"a line comment at its end does not take what follows",
+            ?_assertEqual(
+                {~"SELECT * FROM \"user\" WHERE (name = $1 -- by name\n) AND \"age\" = $2", [
+                    ~"a", 7
+                ]},
+                kura_dialect_pg:to_sql(
+                    kura_query:where(
+                        kura_query:where(From, {fragment, ~"name = ? -- by name", [~"a"]}),
+                        {age, 7}
+                    )
+                )
+            )},
+        {"in update_all and delete_all", fun() ->
+            Q = kura_query:where(kura_query:where(From, Or), {age, 7}),
+            ?assertEqual(
+                {
+                    <<"UPDATE \"user\" SET \"age\" = $1 WHERE (name = $2 OR email = $3\n) AND \"age\" = $4">>,
+                    [9, ~"a", ~"b", 7]
+                },
+                kura_dialect_pg:update_all(Q, #{age => 9})
+            ),
+            ?assertEqual(
+                {<<"DELETE FROM \"user\" WHERE ", Grouped/binary, " AND \"age\" = $3">>, [
+                    ~"a", ~"b", 7
+                ]},
+                kura_dialect_pg:delete_all(Q)
+            )
+        end}
+    ].
 
 where_matches_test() ->
     Q = kura_query:where(kura_query:from(article), {body, matches, <<"erlang database">>}),
@@ -1712,8 +1830,8 @@ distance_params_are_numbered_between_having_and_limit_test() ->
         {
             <<
                 "SELECT \"content\" AS \"content\", \"embedding\" <-> $1 AS \"dist\" "
-                "FROM \"kura_vector_items\" WHERE \"content\" LIKE $2 AND id BETWEEN $3 AND $4 "
-                "GROUP BY \"content\", \"embedding\" HAVING count(*) > $5 "
+                "FROM \"kura_vector_items\" WHERE \"content\" LIKE $2 AND (id BETWEEN $3 AND $4\n) "
+                "GROUP BY \"content\", \"embedding\" HAVING (count(*) > $5\n) "
                 "ORDER BY \"any_embedding\" <#> $6 ASC, \"embedding\" <-> $7 DESC "
                 "LIMIT $8 OFFSET $9"
             >>,

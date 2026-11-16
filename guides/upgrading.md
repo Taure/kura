@@ -67,6 +67,15 @@ any value, the permissive one included, is a decision and logs nothing.
   comment of a fragment is left alone. A fragment whose placeholders do
   not match its parameters raises
   `{kura, {fragment_placeholder_mismatch, Placeholders, Params}}`.
+- A `{fragment, SQL, Params}` condition is compiled inside parentheses:
+  `WHERE (SQL) AND ...`, with the closing parenthesis on a line of its own.
+  The SQL text of every query with a fragment condition changes. Results
+  change only for a fragment with an `OR` outside any parentheses of its
+  own, which is now combined with the other conditions as a unit: the
+  conditions after it, the tenant's and the soft-delete filter included,
+  used to bind to its last branch only, so its other branches matched rows
+  those conditions should have left out. A fragment may now end in a `--`
+  comment.
 - `kura_query:lock/2` reads a lock given as text into a lock term: `FOR`
   with a strength, `OF` tables, `NOWAIT` or `SKIP LOCKED`, one clause or
   several. Text it cannot read is written into the statement as before;

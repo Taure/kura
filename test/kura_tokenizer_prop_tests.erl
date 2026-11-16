@@ -362,8 +362,10 @@ fragment_sql(Text, Params, Before) ->
     ]),
     try kura_dialect_pg:to_sql(Query) of
         {SQL, Bound} ->
-            <<?SELECT, "WHERE ", Leading:(byte_size(Leading))/binary, Rewritten/binary>> =
+            <<?SELECT, "WHERE ", Leading:(byte_size(Leading))/binary, "(", Grouped/binary>> =
                 iolist_to_binary(SQL),
+            Inner = byte_size(Grouped) - 2,
+            <<Rewritten:Inner/binary, "\n)">> = Grouped,
             {ok, Rewritten, Bound}
     catch
         error:Reason -> {error, Reason}

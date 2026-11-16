@@ -632,9 +632,13 @@ compile_condition({'or', Conditions}, Ctx, Counter) ->
 compile_condition({'not', Condition}, Ctx, Counter) ->
     {Part, Params, NewCounter} = compile_condition(Condition, Ctx, Counter),
     {[~"NOT (", Part, ~")"], Params, NewCounter};
+%% A fragment is one condition, whatever operators its text holds: without
+%% the parentheses an OR in it would take the conditions joined after it
+%% with AND as part of its last branch. The newline ends a line comment the
+%% text may end in, which would otherwise take the closing parenthesis.
 compile_condition({fragment, SQL, Params}, _Ctx, Counter) ->
     {RewrittenSQL, NewCounter} = rewrite_fragment_placeholders(SQL, Params, Counter),
-    {RewrittenSQL, Params, NewCounter};
+    {[~"(", RewrittenSQL, ~"\n)"], Params, NewCounter};
 compile_condition({{distance, _, _, _} = Distance, Op, Threshold}, Ctx, Counter) when
     ?KURA_IS_THRESHOLD_OP(Op)
 ->

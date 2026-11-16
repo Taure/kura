@@ -97,7 +97,8 @@ Under the attribute strategy:
 
 - **Queries** (`all`, `one`, `get`, `exists`, aggregates, `stream`, preloads): the tenant condition is added to the query, to every CTE and union, and to every `in` and `exists` subquery, however deeply nested.
 - **Record writes** (`update`, `delete`, including optimistic locking): the record is addressed by its key and the tenant, so another tenant's row is not found rather than written.
-- **Bulk writes** (`update_all`, `delete_all`): scoped like queries. A change to the tenant field is pinned to the current tenant, so a row cannot be moved to another tenant.
+- **Bulk writes** (`update_all`, `delete_all`): the tenant condition is added to the statement's conditions, as for a query. A change to the tenant field is pinned to the current tenant, so a row cannot be moved to another tenant.
+- **Fragments**: a `{fragment, SQL, Params}` condition is written inside parentheses and the tenant condition is joined to it with `AND`, so an `OR` in the fragment's text does not reach past the tenant: `WHERE (title ILIKE $1 OR body ILIKE $2) AND "org_id" = $3`. That holds in a query, an `update_all` and a `delete_all`.
 - **Inserts** (`insert`, `insert_all`): the tenant field and value are set on every row.
 - **Upserts** (`on_conflict` with a `DO UPDATE` action): the update only applies when the conflicting row belongs to the same tenant. A conflict with another tenant's row leaves it untouched.
 
@@ -127,7 +128,8 @@ Under the schema prefix strategy, the dialect qualifies each table with the tena
 
 ### What is not scoped
 
-- `query/3` with raw SQL, and `{fragment, SQL, Params}` conditions. kura cannot see into SQL text; add the tenant condition yourself.
+- `query/3` with raw SQL. kura cannot see into SQL text; add the tenant condition yourself.
+- What the SQL text of a `{fragment, SQL, Params}` reads on its own: a table in a subquery written there is not scoped, and neither is one a select-expression fragment reads. Add the tenant condition in the text. The query the fragment is a condition of is scoped as any other.
 - Many-to-many join tables. The join rows are read, deleted and inserted without the tenant condition, and an insert does not stamp the tenant, so a join table with its own `NOT NULL` tenant column makes every `put_assoc` or `cast_assoc` on the association fail. The rows a join links are read and checked under the tenant; keep the tenant column on those tables, not on the join table.
 - Joins between two tenant tables. Both carry the tenant field, so the unqualified condition is ambiguous and the query fails. A join to a table without the field works, and that table is not scoped, which is right for global lookup tables. After a join kura qualifies the `from` schema's other columns, but the tenant field stays bare under a tenant, so selecting, filtering, ordering or grouping by it in a join of two tenant tables fails as ambiguous too.
 

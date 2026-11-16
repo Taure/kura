@@ -833,20 +833,20 @@ sqlite_stand_in_rewrites_only_placeholders_test_() ->
     Where = ~"SELECT * FROM \"user\" WHERE \"name\" = ?1 AND ",
     [
         ?_assertEqual(
-            <<Where/binary, "price = '$5'">>, Fragment(~"price = '$5'")
+            <<Where/binary, "(price = '$5'\n)">>, Fragment(~"price = '$5'")
         ),
         ?_assertEqual(
-            <<Where/binary, "\"cost$1\" > 0">>, Fragment(~"\"cost$1\" > 0")
+            <<Where/binary, "(\"cost$1\" > 0\n)">>, Fragment(~"\"cost$1\" > 0")
         ),
         ?_assertEqual(
-            <<Where/binary, "total$1 > 0">>, Fragment(~"total$1 > 0")
+            <<Where/binary, "(total$1 > 0\n)">>, Fragment(~"total$1 > 0")
         ),
         ?_assertEqual(
-            <<Where/binary, "note = 'it''s $2' -- $3\n AND a /* $4 */ = 1">>,
+            <<Where/binary, "(note = 'it''s $2' -- $3\n AND a /* $4 */ = 1\n)">>,
             Fragment(~"note = 'it''s $2' -- $3\n AND a /* $4 */ = 1")
         ),
         ?_assertEqual(
-            <<Where/binary, "tag = $ || 'x'">>, Fragment(~"tag = $ || 'x'")
+            <<Where/binary, "(tag = $ || 'x'\n)">>, Fragment(~"tag = $ || 'x'")
         ),
         ?_assertEqual(
             {~"SELECT * FROM \"user\" WHERE \"a\" = ?1 AND \"b\" IN (?2, ?3) LIMIT ?4", [

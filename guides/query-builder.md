@@ -174,6 +174,21 @@ otherwise compiling the query raises
 cannot use the `?` operators of PostgreSQL's `jsonb` for that reason: use
 `jsonb_exists/2`, `jsonb_exists_any/2` or `jsonb_exists_all/2`.
 
+A fragment is one condition. kura writes it inside parentheses, so an `OR`
+in its text stays within it and the conditions beside it, kura's own
+included (the tenant's, the soft-delete filter), apply to every row it
+matches:
+
+```erlang
+Q1 = kura_query:where(Q, {fragment, ~"title ILIKE ? OR body ILIKE ?", [S, S]}),
+kura_query:where(Q1, {published, true}).
+%% WHERE (title ILIKE $1 OR body ILIKE $2
+%% ) AND "published" = $3
+```
+
+The closing parenthesis is on a line of its own, so a fragment may end in a
+`--` comment.
+
 The SQL text of a fragment is trusted. Never build it from outside input;
 pass values as parameters.
 
