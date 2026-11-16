@@ -183,10 +183,12 @@ any value, the permissive one included, is a decision and logs nothing.
 
 - `where` and `having` operators `contains`, `starts_with`, `ends_with`,
   `icontains`, `istarts_with`, `iends_with`; `kura_query:escape_like/1`.
+  On SQLite they need the next kura_sqlite release.
 - Lock terms `{Strength, #{tables => Tables, wait => Wait}}` and a list of
   locks; `kura_query:lock_clause/1`, the lock a term or text is stored as.
 - `kura_query:sources/1`: every schema and table a query reads, through
-  joins, CTEs, combinations, subqueries and preloads.
+  joins, CTEs, combinations, subqueries and preloads, each with its role
+  (`from`, `join`, `cte`, `preload`). A later release may add a role.
 - `cast_assoc/3`, `cast_embed/3` and `kura_changeset:put_assoc/4` take
   `cast`, the child fields params may set, and `with` as
   `{Module, Function}`. See [Nested Changesets](cast_assoc.md).
@@ -226,3 +228,17 @@ any value, the permissive one included, is a decision and logs nothing.
 - Optional `kura_dialect` callback `placeholder/1`, and
   `kura_dialect:placeholder/2`, which calls it or writes `$N`. The
   migrator writes its version statements with it.
+- `#kura_query.lock` is a term for every lock `kura_query:lock/2` takes,
+  text included: `~"FOR UPDATE"` is stored as `for_update`, and text kura
+  cannot read as `{fragment, Text}`. 2.30 stored the binary. A dialect that
+  writes the field into the statement as it is has to render the term
+  instead: call `kura_query:lock_clause/1` on it, which also reads a binary
+  in a record built by hand, and write what comes back. See
+  [Locks](`m:kura_dialect#module-locks`).
+- The text-match operators (`contains`, `starts_with`, `ends_with`,
+  `icontains`, `istarts_with`, `iends_with`) are compiled by
+  `kura_dialect_pg` with `LIKE` and `ILIKE`. A backend whose database has
+  no `ILIKE`, or whose `LIKE` ignores case, has to compile them itself.
+  On SQLite they need the next kura_sqlite release: with kura_sqlite 1.3
+  the case-insensitive three are written as `ILIKE`, which SQLite refuses,
+  and the other three ignore the case of ASCII letters.
