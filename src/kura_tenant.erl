@@ -38,10 +38,12 @@ its config:
 
 and a query or a changeset write on that repo with no tenant in the
 process raises `{kura, {tenant_required, Source}}` instead of running
-unscoped, `Source` being the schema or table it reads or writes. A query is
-judged by everything it reads (see `kura_query:sources/1`): what it is from
-and what it joins, in the query itself and in every CTE, combination and
-subquery inside it. Two things lift the requirement:
+unscoped, `Source` being the schema or table it reads or writes. A write
+of a changeset is refused before its `prepare_changes` functions and its
+`before_*` hooks run. A query is judged by everything it reads (see
+`kura_query:sources/1`): what it is from and what it joins, in the query
+itself and in every CTE, combination and subquery inside it. Two things
+lift the requirement:
 
 - a schema shared by every tenant exports `tenant_scoped() -> false`;
 - a deliberate cross-tenant path, such as an admin report or a
@@ -93,10 +95,13 @@ association run as they do in a process with no tenant: no tenant in the
 key, no upsert guard, no stamp.
 
 **Undeclared.** The schema does not declare `Field` and has not said it is
-shared. On a repo whose `require_tenant` is `true` every operation on it
-raises `{invalid_tenant, Tenant}` before its statement is sent: a query,
-`update_all`, `delete_all`, `insert`, `insert_all`, `update`, `delete`
-and an upsert. On any other repo it behaves as it did in 2.30, and kura
+shared. On a repo whose `require_tenant` is `true` a statement on it is
+refused: a query, `update_all`, `delete_all`, `insert`, `insert_all`,
+`update`, `delete` and an upsert raise `{invalid_tenant, Tenant}` before
+anything is sent, and a write of a changeset before its `prepare_changes`
+functions and its `before_*` hooks run. What sends no statement is not
+refused: an `update` with nothing to change, a changeset that is not
+valid, and an `insert_all` of no entries. On any other repo it behaves as it did in 2.30, and kura
 logs one warning per boot for each such schema, naming the schema and the
 field. The tenant condition is added to a query, `update_all`,
 `delete_all`, `update`, `delete` and an upsert all the same, so the

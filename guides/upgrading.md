@@ -183,13 +183,16 @@ any value, the permissive one included, is a decision and logs nothing.
   and an `insert` or `insert_all` writes the row without the tenant. New
   is one warning per boot for each such schema, naming the schema and the
   field. On a repo whose `require_tenant` is `true` each of them, an
-  insert included, raises `{invalid_tenant, Tenant}` instead, before its
-  statement is sent. kura 3.0 raises on every repo: declare the tenant's
-  field in each schema used under the tenant, or export
-  `tenant_scoped() -> false` from a schema every tenant shares. kura
-  judges a query only where it can tell: the query, or a query combined
-  with it, is from a schema and has no join and no CTE. A write is always
-  judged.
+  insert included, raises `{invalid_tenant, Tenant}` instead, before
+  anything is sent and, for a write of a changeset, before its
+  `prepare_changes` functions and `before_*` hooks run. What sends no
+  statement returns as before: an `update` with nothing to change, a
+  changeset that is not valid, an `insert_all` of no entries. kura 3.0
+  raises on every repo: declare the tenant's field in each schema used
+  under the tenant, or export `tenant_scoped() -> false` from a schema
+  every tenant shares. kura judges a query only where it can tell: the
+  query, or a query combined with it, is from a schema and has no join
+  and no CTE. A write is always judged.
 - `kura_tenant:with_tenant/2` checks the tenant before changing anything
   and restores the previous one however the function ends. Parallel
   preloads run in the caller's tenant scope.

@@ -117,7 +117,7 @@ Under an attribute tenant `{attribute, {Field, Value}}` every schema is in one o
 | --- | --- | --- |
 | Scoped | declares `Field` as a stored field, one that is not virtual | every query and every write is matched on the field, and every insert is stamped with the tenant |
 | Shared | says `tenant_scoped() -> false` and does not declare `Field` | reads and writes run as in a process without a tenant: no condition, no stamp, no warning |
-| Undeclared | does not declare `Field` and has not said it is shared | where a tenant is required, its reads and writes are refused; elsewhere it runs as in 2.30, with one warning |
+| Undeclared | does not declare `Field` and has not said it is shared | where a tenant is required, a statement on it is refused; elsewhere it runs as in 2.30, with one warning |
 
 A schema that declares the tenant's field is scoped even when it says `tenant_scoped() -> false`. It holds each tenant's rows, so they are matched on the field, and saying `false` does not open them to every tenant. To read all tenants' rows, run the query inside [`kura_tenant:without_tenant/1`](#requiring-a-tenant).
 
@@ -127,7 +127,7 @@ A table named by a binary, or by an atom that is no schema module, is matched on
 
 An undeclared schema neither declares the tenant field nor says it is shared. What happens to it depends on [`require_tenant`](#requiring-a-tenant).
 
-On a repo with `require_tenant => true` every operation on it raises `{invalid_tenant, Tenant}` before its statement is sent to the database: a query, `update_all`, `delete_all`, `insert`, `insert_all`, `update/2`, `delete/2` and an upsert.
+On a repo with `require_tenant => true` a statement on it is refused: a query, `update_all`, `delete_all`, `insert`, `insert_all`, `update/2`, `delete/2` and an upsert raise `{invalid_tenant, Tenant}` before anything is sent to the database. A write of a changeset is refused before its `prepare_changes` functions and its `before_*` hooks run, and before a transaction is opened. What sends no statement is not refused: an `update/2` with nothing to change, a changeset that is not valid, and an `insert_all` of no entries.
 
 On any other repo it runs as it did in 2.30. kura adds the tenant condition to a query, an `update_all` and a `delete_all`, and matches `update/2`, `delete/2` and an upsert on the field. A schema that leaves out a tenant column its table has is scoped all the same, and over a table without the column the database refuses the statement. An insert writes the fields the schema declares, so the row is written without the tenant. kura logs one warning per boot for each such schema, naming the schema and the field:
 
@@ -217,9 +217,11 @@ such as a control plane's beside the tenants' repos, sets
 A query, or an insert, update or delete of a changeset, in a process
 without a tenant then raises `{kura, {tenant_required, Source}}`, where
 `Source` is the schema or table. The same goes for `insert_all`,
-`update_all` and `delete_all`. A query is judged by everything it reads:
-what it is from and what it joins, in the query itself and in every CTE,
-union branch and subquery inside it. `kura_query:sources/1` lists them.
+`update_all` and `delete_all`. A write of a changeset is refused before
+its `prepare_changes` functions and its `before_*` hooks run. A query is
+judged by everything it reads: what it is from and what it joins, in the
+query itself and in every CTE, union branch and subquery inside it.
+`kura_query:sources/1` lists them.
 A source that names a CTE is judged by the CTE's body, but only where the
 database sees the CTE: inside a CTE's body its own name, and the name of a
 CTE listed after it, are tables.

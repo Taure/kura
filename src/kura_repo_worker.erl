@@ -331,7 +331,11 @@ insert(RepoMod, CS, Opts) ->
 
 do_insert(_RepoMod, CS = #kura_changeset{valid = false}, _Opts) ->
     {error, CS#kura_changeset{action = insert}};
-do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}, Opts0) when
+do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod}, Opts) ->
+    ok = permit_write(RepoMod, SchemaMod),
+    insert_permitted(RepoMod, CS, Opts).
+
+insert_permitted(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC}, Opts0) when
     map_size(AC) > 0
 ->
     ok = refuse_upsert_with_assocs(Opts0),
@@ -346,7 +350,7 @@ do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod, assoc_changes = AC},
                 Err
         end
     end);
-do_insert(RepoMod, CS = #kura_changeset{schema = SchemaMod}, Opts0) ->
+insert_permitted(RepoMod, CS = #kura_changeset{schema = SchemaMod}, Opts0) ->
     Opts = guard_upsert(SchemaMod, Opts0),
     case needs_transaction(SchemaMod, insert) of
         true -> atomically(RepoMod, fun() -> inserted(insert_record(RepoMod, CS, Opts)) end);
@@ -378,7 +382,17 @@ update(RepoMod, CS) ->
 
 do_update(_RepoMod, CS = #kura_changeset{valid = false}) ->
     {error, CS#kura_changeset{action = update}};
-do_update(RepoMod, CS = #kura_changeset{assoc_changes = AC}) when map_size(AC) > 0 ->
+do_update(
+    RepoMod, CS = #kura_changeset{schema = SchemaMod, changes = Changes, assoc_changes = AC}
+) when
+    map_size(Changes) > 0; map_size(AC) > 0
+->
+    ok = permit_write(RepoMod, SchemaMod),
+    update_permitted(RepoMod, CS);
+do_update(RepoMod, CS) ->
+    update_permitted(RepoMod, CS).
+
+update_permitted(RepoMod, CS = #kura_changeset{assoc_changes = AC}) when map_size(AC) > 0 ->
     atomically(RepoMod, fun() ->
         case update_record(RepoMod, CS) of
             {ok, ParentRow} ->
@@ -387,7 +401,7 @@ do_update(RepoMod, CS = #kura_changeset{assoc_changes = AC}) when map_size(AC) >
                 Err
         end
     end);
-do_update(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
+update_permitted(RepoMod, CS = #kura_changeset{schema = SchemaMod}) ->
     case needs_transaction(SchemaMod, update) of
         true -> atomically(RepoMod, fun() -> update_record(RepoMod, CS) end);
         false -> update_record(RepoMod, CS)
@@ -399,6 +413,7 @@ delete(RepoMod, CS) ->
     guard_write(RepoMod, fun() -> do_delete(RepoMod, CS) end).
 
 do_delete(RepoMod, #kura_changeset{schema = SchemaMod, data = Data}) ->
+    ok = permit_write(RepoMod, SchemaMod),
     case needs_transaction(SchemaMod, delete) of
         true -> atomically(RepoMod, fun() -> delete_record(RepoMod, SchemaMod, Data) end);
         false -> delete_record(RepoMod, SchemaMod, Data)
@@ -1390,6 +1405,14 @@ maybe_apply_tenant_prefix(Query) ->
         _ ->
             Query
     end.
+
+%% A write kura_tenant refuses is refused here, before a prepare function
+%% or a hook of the caller's runs and before a transaction is opened. The
+%% step that builds the statement asks again: either can change the
+%% process's tenant.
+permit_write(RepoMod, SchemaMod) ->
+    _ = kura_tenant:write_attribute(RepoMod, SchemaMod),
+    ok.
 
 %% What a write is matched on and stamped with is kura_tenant's to say: a
 %% schema every tenant shares has no tenant column, so none of the steps

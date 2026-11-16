@@ -15,6 +15,8 @@
 -define(REFS, kura_test_shared_ref_schema).
 %% Shared, with records of another shared schema.
 -define(LISTS, kura_test_shared_list_schema).
+%% Scoped, without the qty field, and with every hook.
+-define(HOOKED, kura_test_hook_schema).
 -define(TENANT, {attribute, {qty, 7}}).
 %% A tenant on a field the shared schema has too.
 -define(NAMED, {attribute, {name, ~"acme"}}).
@@ -443,6 +445,101 @@ an_undeclared_tenant_field_is_refused_where_a_tenant_is_required_test_() ->
             end}
         ])
     ].
+
+%% Writes of a schema whose hooks tell the test they ran, through a
+%% changeset whose prepare function does too.
+hooked_writes() ->
+    Hooked = fun(Data, Params) ->
+        kura_changeset:prepare_changes(
+            kura_changeset:cast(?HOOKED, Data, Params, [name]),
+            fun(CS) ->
+                self() ! {hook, prepare, CS},
+                CS
+            end
+        )
+    end,
+    Row = #{id => 1, name => ~"a"},
+    [
+        {"insert", fun() -> kura_repo_worker:insert(?REPO, Hooked(#{}, #{name => ~"a"})) end},
+        {"an upsert", fun() ->
+            kura_repo_worker:insert(?REPO, Hooked(#{}, #{name => ~"a"}), #{
+                on_conflict => {name, nothing}
+            })
+        end},
+        {"update", fun() -> kura_repo_worker:update(?REPO, Hooked(Row, #{name => ~"b"})) end},
+        {"delete", fun() -> kura_repo_worker:delete(?REPO, Hooked(Row, #{})) end}
+    ].
+
+hooks_run_by(Run) ->
+    _ = erlang:put(hook_test_pid, self()),
+    try
+        _ = Run(),
+        hooks_run()
+    after
+        erlang:erase(hook_test_pid)
+    end.
+
+hooks_run() ->
+    receive
+        {hook, Hook, _} -> [Hook | hooks_run()]
+    after 0 -> []
+    end.
+
+a_refused_write_runs_nothing_of_the_callers_test_() ->
+    Tenant = undeclared(),
+    with_setting(true, [
+        [
+            {Name ++ " of a schema that does not declare the tenant's field", fun() ->
+                Hooks = hooks_run_by(fun() ->
+                    ?assertError({invalid_tenant, Tenant}, kura_tenant:with_tenant(Tenant, Run))
+                end),
+                ?assertEqual({[], []}, {Hooks, statements()})
+            end},
+            {Name ++ " without a tenant", fun() ->
+                Hooks = hooks_run_by(fun() -> ?assertError(?REFUSED(?HOOKED), Run()) end),
+                ?assertEqual({[], []}, {Hooks, statements()})
+            end},
+            {Name ++ " that is not refused runs them", fun() ->
+                Hooks = hooks_run_by(fun() -> kura_tenant:without_tenant(Run) end),
+                ?assertMatch({[_ | _], [_]}, {Hooks, statements()})
+            end}
+        ]
+     || {Name, Run} <- hooked_writes()
+    ]).
+
+%% Nothing is sent for these, so there is nothing to refuse.
+a_write_that_sends_nothing_is_not_refused_test_() ->
+    Tenant = undeclared(),
+    Quiet = [
+        {"an update with nothing to change", {ok, #{id => 1}}, fun() ->
+            kura_repo_worker:update(?REPO, changeset(?SCOPED, #{id => 1}, #{}))
+        end},
+        {"an insert_all of no entries", {ok, 0}, fun() ->
+            kura_repo_worker:insert_all(?REPO, ?SCOPED, [])
+        end}
+    ],
+    Invalid = kura_changeset:add_error(
+        changeset(?SCOPED, #{id => 1}, #{name => ~"b"}), name, ~"no"
+    ),
+    with_setting(true, [
+        [
+            {Name ++ ", under a tenant whose field the schema does not declare", fun() ->
+                ?assertEqual(Result, kura_tenant:with_tenant(Tenant, Run)),
+                ?assertEqual([], statements())
+            end}
+         || {Name, Result, Run} <- Quiet
+        ],
+        [
+            {"a changeset that is not valid: " ++ Name, fun() ->
+                ?assertMatch(
+                    {error, #kura_changeset{valid = false}},
+                    kura_tenant:with_tenant(Tenant, {kura_repo_worker, Write, [?REPO, Invalid]})
+                ),
+                ?assertEqual([], statements())
+            end}
+         || {Name, Write} <- [{"insert", insert}, {"update", update}]
+        ]
+    ]).
 
 an_undeclared_tenant_field_warns_once_for_each_schema_test_() ->
     All = fun(Tenant, Q) ->
