@@ -71,6 +71,11 @@ its last argument. Use `{primary_key, Cols}` for a composite primary key
 emits `PRIMARY KEY ("org_id", "user_id")`. The other table constraints are
 `{unique, Cols}` and `{check, SqlBinary}`.
 
+The operations of a migration run in the order they are written. The one
+exception: a `create_table` whose column `references` a table that the same
+migration creates further down has that table created just before it, so
+tables can be listed in any order. Nothing else is moved.
+
 ### Drop Table
 
 ```erlang

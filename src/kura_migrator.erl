@@ -2186,13 +2186,10 @@ check_alter_ops([AltOp | Rest], Table, SafeEntries) ->
 
 -spec topo_sort_ops([kura_migration:operation()]) -> [kura_migration:operation()].
 topo_sort_ops(Ops) ->
-    Creates = [Op || Op <- Ops, is_create_table(Op)],
-    case Creates of
-        [] ->
-            Ops;
-        _ ->
-            Sorted = topo_sort_creates(Creates),
-            replace_creates(Ops, Sorted)
+    Creates = #{table_name(Op) => Op || Op <- Ops, is_create_table(Op)},
+    case map_size(Creates) of
+        0 -> Ops;
+        _ -> in_written_order(Ops, Creates, #{}, #{})
     end.
 
 is_create_table({create_table, _, _}) -> true;
@@ -2210,66 +2207,52 @@ table_deps(Op) ->
     Cols = table_columns(Op),
     lists:usort([T || #kura_column{references = {T, _}} <- Cols, T =/= Name]).
 
--spec topo_sort_creates([kura_migration:operation()]) -> [kura_migration:operation()].
-topo_sort_creates(Creates) ->
-    ByName = #{table_name(C) => C || C <- Creates},
-    DepMap = #{table_name(C) => table_deps(C) || C <- Creates},
-    AllNames = maps:keys(ByName),
-    InDeg = build_indeg(AllNames, DepMap, ByName, #{}),
-    Queue = [N || N <- AllNames, maps:get(N, InDeg) =:= 0],
-    kahn_loop(Queue, InDeg, DepMap, ByName, []).
-
--spec build_indeg([binary()], #{binary() => [binary()]}, #{binary() => term()}, #{
-    binary() => non_neg_integer()
-}) -> #{binary() => non_neg_integer()}.
-build_indeg([], _DepMap, _ByName, Acc) ->
-    Acc;
-build_indeg([Name | Rest], DepMap, ByName, Acc) ->
-    Deps = maps:get(Name, DepMap),
-    Count = length([D || D <- Deps, maps:is_key(D, ByName)]),
-    build_indeg(Rest, DepMap, ByName, Acc#{Name => Count}).
-
--spec kahn_loop(
-    [binary()],
-    #{binary() => non_neg_integer()},
-    #{binary() => [binary()]},
+-spec in_written_order(
+    [kura_migration:operation()],
     #{binary() => kura_migration:operation()},
-    [kura_migration:operation()]
+    #{binary() => true},
+    #{binary() => kura_migration:operation()}
 ) -> [kura_migration:operation()].
-kahn_loop([], _InDeg, _DepMap, _ByName, Acc) ->
-    reverse_ops(Acc, []);
-kahn_loop([Name | Rest], InDeg, DepMap, ByName, Acc) ->
-    Op = maps:get(Name, ByName),
-    Dependents = [
-        N
-     || N <- maps:keys(ByName),
-        lists:member(Name, maps:get(N, DepMap, []))
-    ],
-    {NewQueue, NewInDeg} = decrement_deps(Dependents, Rest, InDeg),
-    kahn_loop(NewQueue, NewInDeg, DepMap, ByName, [Op | Acc]).
-
--spec reverse_ops([kura_migration:operation()], [kura_migration:operation()]) ->
-    [kura_migration:operation()].
-reverse_ops([], Acc) -> Acc;
-reverse_ops([H | T], Acc) -> reverse_ops(T, [H | Acc]).
-
--spec decrement_deps([binary()], [binary()], #{binary() => non_neg_integer()}) ->
-    {[binary()], #{binary() => non_neg_integer()}}.
-decrement_deps([], Q, ID) ->
-    {Q, ID};
-decrement_deps([Dep | Rest], Q, ID) ->
-    NewDeg = maps:get(Dep, ID) - 1,
-    ID1 = ID#{Dep => NewDeg},
-    case NewDeg of
-        0 -> decrement_deps(Rest, Q ++ [Dep], ID1);
-        _ -> decrement_deps(Rest, Q, ID1)
+in_written_order([], _Creates, _Created, _Moved) ->
+    [];
+in_written_order([Op | Rest], Creates, Created, Moved) ->
+    case is_create_table(Op) of
+        false ->
+            [Op | in_written_order(Rest, Creates, Created, Moved)];
+        true ->
+            Name = table_name(Op),
+            case Moved of
+                #{Name := Op} ->
+                    in_written_order(Rest, Creates, Created, maps:remove(Name, Moved));
+                _ ->
+                    {Early, Created1, Moved1} = referenced_first(
+                        table_deps(Op), Creates, Created#{Name => true}, Moved, []
+                    ),
+                    Early ++ [Op | in_written_order(Rest, Creates, Created1, Moved1)]
+            end
     end.
 
-replace_creates([], _Sorted) ->
-    [];
-replace_creates([{create_table, _, _} | Rest], [Next | Sorted]) ->
-    [Next | replace_creates(Rest, Sorted)];
-replace_creates([{create_table, _, _, _} | Rest], [Next | Sorted]) ->
-    [Next | replace_creates(Rest, Sorted)];
-replace_creates([Op | Rest], Sorted) ->
-    [Op | replace_creates(Rest, Sorted)].
+-spec referenced_first(
+    [binary()],
+    #{binary() => kura_migration:operation()},
+    #{binary() => true},
+    #{binary() => kura_migration:operation()},
+    [kura_migration:operation()]
+) ->
+    {
+        [kura_migration:operation()],
+        #{binary() => true},
+        #{binary() => kura_migration:operation()}
+    }.
+referenced_first([], _Creates, Created, Moved, Early) ->
+    {Early, Created, Moved};
+referenced_first([Table | Rest], Creates, Created, Moved, Early) ->
+    case Creates of
+        #{Table := Create} when not is_map_key(Table, Created) ->
+            {Before, Created1, Moved1} = referenced_first(
+                table_deps(Create), Creates, Created#{Table => true}, Moved#{Table => Create}, []
+            ),
+            referenced_first(Rest, Creates, Created1, Moved1, Early ++ Before ++ [Create]);
+        _ ->
+            referenced_first(Rest, Creates, Created, Moved, Early)
+    end.
