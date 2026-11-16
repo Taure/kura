@@ -10,7 +10,7 @@ default, is in [Upgrading](guides/upgrading.md).
 
 ### Bug Fixes
 
-- *(migrator)* Keep the operations of a migration in the order written, moving only a table that is referenced before it is created
+- *(migrator)* Keep the operations of a migration in the order written
 
 ## [2.31.1] - 2026-11-16
 

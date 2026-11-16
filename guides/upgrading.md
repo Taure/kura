@@ -6,6 +6,22 @@ a release's changes by commit subject, as git-cliff groups them; this
 guide is written by hand and says what to do about them. For the move
 from 1.x see [MIGRATION-2.0](../MIGRATION-2.0.md).
 
+## After 2.31.1
+
+### Behaviour that changes
+
+- The operations of a migration run in the order they are written. Before,
+  kura worked out an order for the `create_table` operations from their
+  references and their names and put each in the place of another, so an
+  index written between two tables could run before its table existed. A
+  table that an earlier operation needs is still created first; see
+  [Create Table](migrations.md#create-table).
+- `execute` statements are not read. A migration whose `execute` relied on
+  the tables being created in that worked-out order fails when it is run on
+  an empty database. Put its operations in the order they have to run. kura
+  records a migration by its version, so a database that has already run it
+  is not affected by the edit.
+
 ## After 2.30.0
 
 Nothing here needs a code change to keep a 2.30 application running, with

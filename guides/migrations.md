@@ -71,10 +71,18 @@ its last argument. Use `{primary_key, Cols}` for a composite primary key
 emits `PRIMARY KEY ("org_id", "user_id")`. The other table constraints are
 `{unique, Cols}` and `{check, SqlBinary}`.
 
-The operations of a migration run in the order they are written. The one
-exception: a `create_table` whose column `references` a table that the same
-migration creates further down has that table created just before it, so
-tables can be listed in any order. Nothing else is moved.
+The operations of a migration run in the order they are written, with one
+exception: a table that an earlier operation needs is created just before
+that operation. An operation needs a table when it is
+
+- a `create_table`, or an `alter_table` adding a column, whose column
+  `references` the table, or
+- a `create_index` or an `alter_table` on the table.
+
+The tables that table references in turn are created before it. Only a table
+the migration creates once and does not drop is moved, and `execute`
+statements are not read. Tables that reference each other cannot be put in
+an order that works; they are created in the order written.
 
 ### Drop Table
 

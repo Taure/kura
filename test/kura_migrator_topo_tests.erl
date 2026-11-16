@@ -120,7 +120,7 @@ only_the_referenced_table_moves_test() ->
     ).
 
 %% Two tables that reference each other cannot be ordered by creation. Both
-%% are kept, once each, as written.
+%% are kept, once each, the one the first refers to in front.
 tables_that_reference_each_other_are_all_kept_test() ->
     A =
         {create_table, ~"a", [
@@ -139,6 +139,70 @@ a_table_created_twice_is_created_twice_test() ->
     First = {create_table, ~"scratch", [#kura_column{name = id, type = id}]},
     Second = {create_table, ~"scratch", [#kura_column{name = id, type = uuid}]},
     Ops = [First, {drop_table, ~"scratch"}, Second],
+    ?assertEqual(Ops, kura_migrator:topo_sort_ops(Ops)).
+
+%% An index written before the table it is on gets the table first.
+an_index_written_before_its_table_gets_the_table_first_test() ->
+    Users = {create_table, ~"users", [#kura_column{name = id, type = id}]},
+    Idx = {create_index, ~"accounts", [email], #{unique => true}},
+    NamedIdx = {create_index, ~"accounts_name_index", ~"accounts", [name], []},
+    Accounts = {create_table, ~"accounts", [#kura_column{name = id, type = id}]},
+    ?assertEqual(
+        [Users, Accounts, Idx, NamedIdx],
+        kura_migrator:topo_sort_ops([Users, Idx, NamedIdx, Accounts])
+    ).
+
+%% So does an alter_table, for its own table and for one a new column refers to.
+an_alter_written_before_a_table_it_needs_gets_the_table_first_test() ->
+    Alter =
+        {alter_table, ~"posts", [
+            {add_column, #kura_column{name = author_id, type = id, references = {~"authors", id}}}
+        ]},
+    Posts = {create_table, ~"posts", [#kura_column{name = id, type = id}]},
+    Authors = {create_table, ~"authors", [#kura_column{name = id, type = id}]},
+    ?assertEqual([Posts, Authors, Alter], kura_migrator:topo_sort_ops([Alter, Posts, Authors])).
+
+%% The four-element create_table moves like the three-element one.
+a_table_with_constraints_moves_too_test() ->
+    Members =
+        {create_table, ~"members",
+            [#kura_column{name = org_id, type = id, references = {~"orgs", id}}], [
+                {primary_key, [org_id]}
+            ]},
+    Idx = {create_index, ~"members", [org_id], #{}},
+    Orgs = {create_table, ~"orgs", [#kura_column{name = id, type = id}], [{unique, [id]}]},
+    ?assertEqual([Orgs, Members, Idx], kura_migrator:topo_sort_ops([Members, Idx, Orgs])).
+
+%% A table created twice has no single place to move to, so nothing that
+%% names it is reordered.
+a_table_created_twice_is_never_moved_test() ->
+    Ref =
+        {create_table, ~"x", [
+            #kura_column{name = s_id, type = id, references = {~"scratch", id}}
+        ]},
+    First = {create_table, ~"scratch", [#kura_column{name = id, type = id}]},
+    Second = {create_table, ~"scratch", [#kura_column{name = id, type = uuid}], []},
+    Ops = [Ref, First, {drop_table, ~"scratch"}, Second],
+    ?assertEqual(Ops, kura_migrator:topo_sort_ops(Ops)).
+
+%% A table that is altered, dropped and created again already exists when
+%% the migration starts. Its create stays where it is written.
+a_table_dropped_and_created_again_is_never_moved_test() ->
+    Ops = [
+        {alter_table, ~"legacy", [{drop_column, old}]},
+        {create_index, ~"legacy", [name], #{}},
+        {drop_table, ~"legacy"},
+        {create_table, ~"legacy", [#kura_column{name = id, type = id}]}
+    ],
+    ?assertEqual(Ops, kura_migrator:topo_sort_ops(Ops)).
+
+%% Raw SQL is not read, so it never moves a table.
+raw_sql_moves_nothing_test() ->
+    Ops = [
+        {execute, ~"INSERT INTO b DEFAULT VALUES"},
+        {create_table, ~"b", [#kura_column{name = id, type = id}]},
+        {create_table, ~"a", [#kura_column{name = id, type = id}]}
+    ],
     ?assertEqual(Ops, kura_migrator:topo_sort_ops(Ops)).
 
 %% A reference to a table this migration does not create changes nothing.
