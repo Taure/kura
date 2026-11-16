@@ -2,7 +2,6 @@
 -moduledoc "The audit row of a write under a tenant.".
 
 -include_lib("eunit/include/eunit.hrl").
--include("kura.hrl").
 
 -define(REPO, kura_audit_tenant_test_repo).
 -define(ITEMS, kura_test_audited_tenant_schema).
