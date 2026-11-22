@@ -155,6 +155,9 @@ field type - the inverse of `to_pg_type/1`. Used by schema introspection
   any other length (`text`).
 - `serial` - an `~"int8"` column with a `nextval` default is kura's `id`
   (BIGSERIAL); a plain `~"int8"` is `bigint`.
+- `typmod` - the column's `pg_attribute.atttypmod`. A `~"vector"` (or
+  `~"_vector"`) with a positive typmod is `{vector, N}` (or
+  `{array, {vector, N}}`); without one it is a dimensionless `vector`.
 
 `float4` (REAL) widens to `float` since kura models a single float type
 (DOUBLE PRECISION). Returns `{unsupported, TypeName}` for a PG type kura
@@ -162,7 +165,8 @@ does not model (including native `CREATE TYPE ... AS ENUM` types), so the
 caller can skip the field and warn rather than guessing.
 """.
 -spec from_pg_type(
-    binary(), #{serial => boolean(), char_max_length => non_neg_integer()}
+    binary(),
+    #{serial => boolean(), char_max_length => non_neg_integer(), typmod => integer()}
 ) -> kura_type() | {unsupported, binary()}.
 from_pg_type(~"int8", #{serial := true}) ->
     id;
@@ -204,9 +208,9 @@ from_pg_type(~"json", _) ->
     jsonb;
 from_pg_type(~"jsonb", _) ->
     jsonb;
+from_pg_type(~"vector", #{typmod := N}) when is_integer(N), N > 0 ->
+    {vector, N};
 from_pg_type(~"vector", _) ->
-    %% pgvector: dimension is not in the catalog Opts, so introspection
-    %% yields a dimensionless vector (annotate {vector, N} by hand).
     vector;
 from_pg_type(<<"_", Elem/binary>>, Opts) ->
     case from_pg_type(Elem, Opts) of
