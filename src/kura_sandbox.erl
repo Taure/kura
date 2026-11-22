@@ -23,6 +23,11 @@ kura_sandbox:checkout(my_repo),
 kura_sandbox:allow(my_repo, self(), WorkerPid).
 ```
 
+Under a shared checkout `allow/3` is not needed, and an allowed process
+uses the shared connection. An allowed process whose owner has no
+checkout raises `{kura_sandbox, owner_not_checked_out}` on its first
+query instead of running outside the sandbox.
+
 **Shared** - all processes use a single sandbox connection (simplest
 for tests that spawn many processes):
 
@@ -168,7 +173,10 @@ checkin(RepoMod) ->
 -doc """
 Allow `ChildPid` to use `OwnerPid`'s sandbox connection.
 
-The child process must call this before making any database queries.
+Call it before `ChildPid` makes any database queries. When `OwnerPid`
+holds a shared checkout, `ChildPid` uses the shared connection. When
+`OwnerPid` has no checkout on the repo and no shared checkout exists,
+`ChildPid`'s queries raise `{kura_sandbox, owner_not_checked_out}`.
 """.
 -spec allow(module(), pid(), pid()) -> ok.
 allow(RepoMod, OwnerPid, ChildPid) ->
@@ -180,7 +188,10 @@ allow(RepoMod, OwnerPid, ChildPid) ->
 Look up a sandbox connection for the current process and pool.
 
 Returns `{ok, Conn}` if a sandbox connection exists (owned, allowed,
-or shared), `not_found` otherwise. Called from `kura_repo_worker`.
+or shared), `not_found` otherwise. Raises
+`{kura_sandbox, owner_not_checked_out}` for an allowed process whose owner
+has no checkout while no shared checkout exists. Called from
+`kura_repo_worker`.
 """.
 -spec get_conn(atom()) -> {ok, term()} | not_found.
 get_conn(Pool) ->
@@ -260,18 +271,19 @@ lookup_conn(Pool) ->
         [] -> allowed_conn(Pool, Self)
     end.
 
-%% An owner holding a shared checkout has no `{Pool, Owner}` entry, so its
-%% allowed processes fall through to the shared connection.
 allowed_conn(Pool, Self) ->
     case ets:lookup(?TABLE, {Pool, Self, allowed}) of
         [{_, OwnerPid}] ->
             case ets:lookup(?TABLE, {Pool, OwnerPid}) of
                 [{_, {_PoolMod, _Token, Conn}}] -> {ok, Conn};
-                [] -> shared_conn(Pool)
+                [] -> owner_conn(shared_conn(Pool))
             end;
         [] ->
             shared_conn(Pool)
     end.
+
+owner_conn(not_found) -> error({kura_sandbox, owner_not_checked_out});
+owner_conn(Found) -> Found.
 
 shared_conn(Pool) ->
     case ets:lookup(?TABLE, {Pool, shared}) of

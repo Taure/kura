@@ -42,6 +42,8 @@ tests() ->
         {"allow lets child process use sandbox", fun t_allow/0},
         {"shared mode lets any process use sandbox", fun t_shared_mode/0},
         {"allow under a shared checkout uses the shared connection", fun t_allow_under_shared/0},
+        {"an allowed process whose owner has no checkout raises",
+            fun t_allow_without_checkout_raises/0},
         {"multiple checkouts for different repos", fun t_multiple_repos/0}
     ].
 
@@ -187,13 +189,16 @@ t_shared_mode() ->
 t_allow_under_shared() ->
     Before = count_users(),
     kura_sandbox:checkout(kura_test_repo, #{shared => true}),
+    Pool = kura_db:get_pool(kura_test_repo),
+    {ok, Conn} = kura_sandbox:get_conn(Pool),
 
     Self = self(),
     Child = spawn_link(fun() ->
         receive
             go -> ok
         end,
-        {ok, _} = insert_user(<<"Allowed">>, <<"allowed@test.com">>),
+        ?assertEqual({ok, Conn}, kura_sandbox:get_conn(Pool)),
+        {ok, _} = insert_user(~"Allowed", ~"allowed@test.com"),
         Self ! {done, count_users()}
     end),
     kura_sandbox:allow(kura_test_repo, Self, Child),
@@ -204,10 +209,33 @@ t_allow_under_shared() ->
         after 5000 -> error(timeout)
         end,
     ?assertEqual(Before + 1, ChildCount),
-    ?assertEqual(Before + 1, count_users()),
 
     kura_sandbox:checkin(kura_test_repo),
     ?assertEqual(Before, count_users()).
+
+t_allow_without_checkout_raises() ->
+    Pool = kura_db:get_pool(kura_test_repo),
+    Self = self(),
+    Child = spawn_link(fun() ->
+        receive
+            go -> ok
+        end,
+        Result =
+            try kura_sandbox:get_conn(Pool) of
+                Found -> Found
+            catch
+                error:Reason -> {raised, Reason}
+            end,
+        Self ! {done, Result}
+    end),
+    kura_sandbox:allow(kura_test_repo, Self, Child),
+    Child ! go,
+    Result =
+        receive
+            {done, R} -> R
+        after 5000 -> error(timeout)
+        end,
+    ?assertEqual({raised, {kura_sandbox, owner_not_checked_out}}, Result).
 
 t_multiple_repos() ->
     %% Verifies checkout/checkin for the same repo is idempotent
