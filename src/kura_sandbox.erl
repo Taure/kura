@@ -255,25 +255,28 @@ ended(Conn) ->
 
 lookup_conn(Pool) ->
     Self = self(),
-    %% 1. Direct owner
     case ets:lookup(?TABLE, {Pool, Self}) of
-        [{_, {_PoolMod, _Token, Conn}}] ->
-            {ok, Conn};
+        [{_, {_PoolMod, _Token, Conn}}] -> {ok, Conn};
+        [] -> allowed_conn(Pool, Self)
+    end.
+
+%% An owner holding a shared checkout has no `{Pool, Owner}` entry, so its
+%% allowed processes fall through to the shared connection.
+allowed_conn(Pool, Self) ->
+    case ets:lookup(?TABLE, {Pool, Self, allowed}) of
+        [{_, OwnerPid}] ->
+            case ets:lookup(?TABLE, {Pool, OwnerPid}) of
+                [{_, {_PoolMod, _Token, Conn}}] -> {ok, Conn};
+                [] -> shared_conn(Pool)
+            end;
         [] ->
-            %% 2. Allowed by an owner
-            case ets:lookup(?TABLE, {Pool, Self, allowed}) of
-                [{_, OwnerPid}] ->
-                    case ets:lookup(?TABLE, {Pool, OwnerPid}) of
-                        [{_, {_PoolMod, _Token, Conn}}] -> {ok, Conn};
-                        [] -> not_found
-                    end;
-                [] ->
-                    %% 3. Shared mode
-                    case ets:lookup(?TABLE, {Pool, shared}) of
-                        [{_, {_PoolMod, _Token, Conn, _Owner}}] -> {ok, Conn};
-                        [] -> not_found
-                    end
-            end
+            shared_conn(Pool)
+    end.
+
+shared_conn(Pool) ->
+    case ets:lookup(?TABLE, {Pool, shared}) of
+        [{_, {_PoolMod, _Token, Conn, _Owner}}] -> {ok, Conn};
+        [] -> not_found
     end.
 
 ensure_started() ->

@@ -41,6 +41,7 @@ tests() ->
             fun t_overlapping_allowed_transactions_raise/0},
         {"allow lets child process use sandbox", fun t_allow/0},
         {"shared mode lets any process use sandbox", fun t_shared_mode/0},
+        {"allow under a shared checkout uses the shared connection", fun t_allow_under_shared/0},
         {"multiple checkouts for different repos", fun t_multiple_repos/0}
     ].
 
@@ -179,6 +180,31 @@ t_shared_mode() ->
         after 5000 -> error(timeout)
         end,
     ?assertEqual(Before + 1, ChildCount),
+
+    kura_sandbox:checkin(kura_test_repo),
+    ?assertEqual(Before, count_users()).
+
+t_allow_under_shared() ->
+    Before = count_users(),
+    kura_sandbox:checkout(kura_test_repo, #{shared => true}),
+
+    Self = self(),
+    Child = spawn_link(fun() ->
+        receive
+            go -> ok
+        end,
+        {ok, _} = insert_user(<<"Allowed">>, <<"allowed@test.com">>),
+        Self ! {done, count_users()}
+    end),
+    kura_sandbox:allow(kura_test_repo, Self, Child),
+    Child ! go,
+    ChildCount =
+        receive
+            {done, N} -> N
+        after 5000 -> error(timeout)
+        end,
+    ?assertEqual(Before + 1, ChildCount),
+    ?assertEqual(Before + 1, count_users()),
 
     kura_sandbox:checkin(kura_test_repo),
     ?assertEqual(Before, count_users()).
