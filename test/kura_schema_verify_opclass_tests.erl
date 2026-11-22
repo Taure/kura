@@ -11,7 +11,10 @@ opclass_test_() ->
             {"a declared opclass matches the live one", fun matches_declared_opclass/0},
             {"another opclass does not satisfy a declared one", fun reports_wrong_opclass/0},
             {"an index declared without opclass takes any", fun any_opclass_without_opclass/0},
-            {"an opclass over several columns is refused", fun refuses_multi_column/0}
+            {"an opclass over several columns is refused", fun refuses_multi_column/0},
+            {"a default opclass and an INCLUDE index match", fun default_and_include/0},
+            {"INCLUDE does not hide a wrong opclass", fun include_wrong_opclass/0},
+            {"a non-atom opclass is refused", fun refuses_non_atom/0}
         ]
     end}.
 
@@ -56,6 +59,26 @@ refuses_multi_column() ->
     ?assertError(
         {invalid_index_option, opclass, {columns, [code, id]}},
         kura_schema_verify:verify(kura_test_repo, [kura_test_multi_opclass_schema])
+    ).
+
+default_and_include() ->
+    create_table([
+        ~"CREATE INDEX c ON kura_index_opclass_items (code text_pattern_ops) INCLUDE (id)"
+    ]),
+    ?assertEqual(ok, kura_schema_verify:verify(kura_test_repo, [kura_test_include_opclass_schema])).
+
+include_wrong_opclass() ->
+    create_table([~"CREATE INDEX c ON kura_index_opclass_items (code) INCLUDE (id)"]),
+    ?assertEqual(
+        {drift, [{missing_index, ?TABLE, [code], #{opclass => text_pattern_ops}}]},
+        kura_schema_verify:verify(kura_test_repo, [kura_test_include_opclass_schema])
+    ).
+
+refuses_non_atom() ->
+    create_table([]),
+    ?assertError(
+        {invalid_index_option, opclass, ~"vector_cosine_ops"},
+        kura_schema_verify:verify(kura_test_repo, [kura_test_bad_opclass_schema])
     ).
 
 create_table(Indexes) ->

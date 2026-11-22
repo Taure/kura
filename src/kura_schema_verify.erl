@@ -41,15 +41,23 @@ satisfied by a unique one, and a partial declaration by a full index,
 since either serves the same lookups. When the declaration names an
 access method with `using`, the live index must be built with it
 (`pg_am.amname`), so a btree on a column does not satisfy a declared
-`hnsw` index; without `using` any method counts. Likewise a declared
-`opclass` must be the live index's operator class (`pg_opclass.opcname`),
-so an HNSW index built with `vector_l2_ops` does not satisfy one declared
-with `vector_cosine_ops`; without `opclass` any operator class counts.
-The `with` storage parameters are not compared. Expression columns
-never match a declared column, and `INCLUDE` columns are not key
-columns. A partial
-index's predicate is not compared, because PostgreSQL stores its own
-rewrite of the `WHERE` text (`status = 'active'` comes back as
+`hnsw` index; without `using` any method counts.
+
+Likewise a declared `opclass` must be the name of the live index's
+operator class (`pg_opclass.opcname`, without its schema), so an HNSW
+index built with `vector_l2_ops` does not satisfy one declared with
+`vector_cosine_ops`; without `opclass` any operator class counts. An
+index created without an operator class records its type's default, so
+a plain btree on a `varchar` column satisfies a declared `text_ops`.
+Names are compared as stored: an alias in the same family, such as
+`varchar_ops` for `text_ops`, does not match. `opclass` applies to a
+single-column index only; declaring it over several columns raises
+`{invalid_index_option, opclass, {columns, Cols}}`, as the migrator does.
+
+The `with` storage parameters are not compared. Expression columns never
+match a declared column, and `INCLUDE` columns are not key columns. A
+partial index's predicate is not compared, because PostgreSQL stores its
+own rewrite of the `WHERE` text (`status = 'active'` comes back as
 `((status)::text = 'active'::text)`). An index left invalid by a failed
 `CREATE INDEX CONCURRENTLY` does not count: PostgreSQL ignores it, for
 `ON CONFLICT` inference too.
@@ -111,7 +119,9 @@ Verify all schemas reachable from the repo's owning application.
 Returns `ok` if every declared schema's table, columns, and indexes
 exist in the live database. Returns `{drift, Issues}` listing each
 discrepancy. Returns `{error, Reason}` if the database itself can't
-be reached.
+be reached. Raises `{invalid_index_option, Option, Value}` for an index
+declaration the migrator would also refuse, such as a non-atom `using`
+or an `opclass` over several columns.
 """.
 -spec verify(module()) -> ok | {drift, [drift_issue()]} | {error, term()}.
 verify(RepoMod) ->
@@ -249,7 +259,8 @@ build_col_state([_ | Rest], Acc) ->
 load_indexes(RepoMod) ->
     %% An expression column has no attname and reads as `<<>>`, so it never
     %% matches a declared column. INCLUDE columns sit past indnkeyatts.
-    %% Catalog names are qualified so a search_path cannot shadow them.
+    %% Catalog tables and functions are qualified so a search_path cannot
+    %% shadow them.
     SQL =
         ~"""
     SELECT c.relname::text AS tablename,
@@ -266,9 +277,9 @@ load_indexes(RepoMod) ->
     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
     CROSS JOIN LATERAL ROWS FROM (
         pg_catalog.unnest(ix.indkey::int2[]), pg_catalog.unnest(ix.indclass::oid[])
-    ) WITH ORDINALITY AS k(attnum, opclass, ord)
+    ) WITH ORDINALITY AS k(attnum, opclass_oid, ord)
     LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
-    LEFT JOIN pg_catalog.pg_opclass oc ON oc.oid = k.opclass
+    LEFT JOIN pg_catalog.pg_opclass oc ON oc.oid = k.opclass_oid
     WHERE n.nspname = pg_catalog.current_schema()
       AND ix.indisvalid
       AND k.ord <= ix.indnkeyatts
