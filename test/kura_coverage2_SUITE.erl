@@ -678,15 +678,13 @@ sandbox_checkin_no_conn(_Config) ->
     kura_sandbox:start(),
     ok = kura_sandbox:checkin(kura_test_repo).
 
-%% Covers kura_sandbox line 164: allowed lookup finds owner but owner has no conn
 sandbox_allowed_lookup_miss(_Config) ->
     kura_sandbox:start(),
     Pool = maps:get(pool, kura_repo:config(kura_test_repo)),
     FakePid = spawn(fun() -> ok end),
     timer:sleep(50),
     ets:insert(kura_sandbox_registry, {{Pool, self(), allowed}, FakePid}),
-    Result = kura_sandbox:get_conn(Pool),
-    ?assertEqual(not_found, Result),
+    ?assertError({kura_sandbox, owner_not_checked_out}, kura_sandbox:get_conn(Pool)),
     ets:delete(kura_sandbox_registry, {Pool, self(), allowed}).
 
 %%======================================================================
