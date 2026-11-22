@@ -58,14 +58,14 @@ from_pg_type_test_() ->
             {unsupported, <<"citext">>}, kura_types:from_pg_type(<<"_citext">>, #{})
         ),
         ?_assertEqual(bigint, kura_types:from_pg_type(<<"int8">>, #{serial => false})),
-        ?_assertEqual(vector, kura_types:from_pg_type(<<"vector">>, #{})),
-        ?_assertEqual(vector, kura_types:from_pg_type(<<"vector">>, #{typmod => -1})),
-        ?_assertEqual({vector, 3}, kura_types:from_pg_type(<<"vector">>, #{typmod => 3})),
-        ?_assertEqual(
-            {array, {vector, 3}}, kura_types:from_pg_type(<<"_vector">>, #{typmod => 3})
-        ),
-        ?_assertEqual({array, vector}, kura_types:from_pg_type(<<"_vector">>, #{typmod => -1})),
-        ?_assertEqual(text, kura_types:from_pg_type(<<"varchar">>, #{typmod => 14}))
+        ?_assertEqual(vector, kura_types:from_pg_type(~"vector", #{typmod => -1})),
+        ?_assertEqual(vector, kura_types:from_pg_type(~"vector", #{typmod => 0})),
+        ?_assertEqual({vector, 1}, kura_types:from_pg_type(~"vector", #{typmod => 1})),
+        ?_assertEqual({vector, 3}, kura_types:from_pg_type(~"vector", #{typmod => 3})),
+        ?_assertEqual({array, {vector, 3}}, kura_types:from_pg_type(~"_vector", #{typmod => 3})),
+        ?_assertEqual({array, vector}, kura_types:from_pg_type(~"_vector", #{typmod => -1})),
+        ?_assertEqual(text, kura_types:from_pg_type(~"varchar", #{typmod => 255})),
+        ?_assertEqual(text, kura_types:from_pg_type(~"varchar", #{typmod => 259}))
     ].
 
 %%----------------------------------------------------------------------

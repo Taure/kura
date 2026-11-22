@@ -155,9 +155,10 @@ field type - the inverse of `to_pg_type/1`. Used by schema introspection
   any other length (`text`).
 - `serial` - an `~"int8"` column with a `nextval` default is kura's `id`
   (BIGSERIAL); a plain `~"int8"` is `bigint`.
-- `typmod` - the column's `pg_attribute.atttypmod`. A `~"vector"` (or
+- `typmod` - the column's raw `pg_attribute.atttypmod`. A `~"vector"` (or
   `~"_vector"`) with a positive typmod is `{vector, N}` (or
   `{array, {vector, N}}`); without one it is a dimensionless `vector`.
+  Only `vector` reads it, so a `~"varchar"` still needs `char_max_length`.
 
 `float4` (REAL) widens to `float` since kura models a single float type
 (DOUBLE PRECISION). Returns `{unsupported, TypeName}` for a PG type kura
