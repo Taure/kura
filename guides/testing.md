@@ -117,9 +117,12 @@ By default, only the process that called `checkout/1` sees the sandbox
 transaction. If your test spawns helper processes that need to share the
 same in-test view of the database, either pass `#{shared => true}` to
 `checkout/2`, or call `kura_sandbox:allow/3` to grant a specific child
-process access to the owner's connection. Processes sharing a sandbox
-connection share its savepoints, so their transactions should nest or
-run one after another rather than overlap.
+process access to the owner's connection. Under a shared checkout an
+allowed process uses the shared connection; one whose owner has no
+checkout raises `{kura_sandbox, owner_not_checked_out}` rather than
+running outside the sandbox. Processes sharing a sandbox connection share
+its savepoints, so their transactions should nest or run one after
+another rather than overlap.
 
 ## Testing Constraints
 
