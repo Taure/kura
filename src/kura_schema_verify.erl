@@ -41,12 +41,23 @@ satisfied by a unique one, and a partial declaration by a full index,
 since either serves the same lookups. When the declaration names an
 access method with `using`, the live index must be built with it
 (`pg_am.amname`), so a btree on a column does not satisfy a declared
-`hnsw` index; without `using` any method counts. The operator class
-and `with` storage parameters are not compared. Expression columns
-never match a declared column, and `INCLUDE` columns are not key
-columns. A partial
-index's predicate is not compared, because PostgreSQL stores its own
-rewrite of the `WHERE` text (`status = 'active'` comes back as
+`hnsw` index; without `using` any method counts.
+
+Likewise a declared `opclass` must be the name of the live index's
+operator class (`pg_opclass.opcname`, without its schema), so an HNSW
+index built with `vector_l2_ops` does not satisfy one declared with
+`vector_cosine_ops`; without `opclass` any operator class counts. An
+index created without an operator class records its type's default, so
+a plain btree on a `varchar` column satisfies a declared `text_ops`.
+Names are compared as stored: an alias in the same family, such as
+`varchar_ops` for `text_ops`, does not match. `opclass` applies to a
+single-column index only; declaring it over several columns raises
+`{invalid_index_option, opclass, {columns, Cols}}`, as the migrator does.
+
+The `with` storage parameters are not compared. Expression columns never
+match a declared column, and `INCLUDE` columns are not key columns. A
+partial index's predicate is not compared, because PostgreSQL stores its
+own rewrite of the `WHERE` text (`status = 'active'` comes back as
 `((status)::text = 'active'::text)`). An index left invalid by a failed
 `CREATE INDEX CONCURRENTLY` does not count: PostgreSQL ignores it, for
 `ON CONFLICT` inference too.
@@ -86,7 +97,16 @@ issue this *does* report is a real, blocking problem.
     KeyColumns :: [binary()],
     Unique :: boolean(),
     Partial :: boolean(),
-    Method :: binary() | any
+    Method :: binary() | any,
+    OpClasses :: [binary()] | any
+}.
+
+-type live_shape() :: {
+    KeyColumns :: [binary()],
+    Unique :: boolean(),
+    Partial :: boolean(),
+    Method :: binary(),
+    OpClasses :: [binary()]
 }.
 
 %%----------------------------------------------------------------------
@@ -99,7 +119,9 @@ Verify all schemas reachable from the repo's owning application.
 Returns `ok` if every declared schema's table, columns, and indexes
 exist in the live database. Returns `{drift, Issues}` listing each
 discrepancy. Returns `{error, Reason}` if the database itself can't
-be reached.
+be reached. Raises `{invalid_index_option, Option, Value}` for an index
+declaration the migrator would also refuse, such as a non-atom `using`
+or an `opclass` over several columns.
 """.
 -spec verify(module()) -> ok | {drift, [drift_issue()]} | {error, term()}.
 verify(RepoMod) ->
@@ -183,7 +205,7 @@ run_checks(RepoMod, SchemaMods) ->
 -spec collect_issues(
     [module()],
     #{binary() => sets:set(binary())},
-    #{binary() => [index_shape()]}
+    #{binary() => [live_shape()]}
 ) -> [drift_issue()].
 collect_issues([], _Cols, _Idx) ->
     [];
@@ -191,7 +213,7 @@ collect_issues([Mod | Rest], Cols, Idx) ->
     check_schema(Mod, Cols, Idx) ++ collect_issues(Rest, Cols, Idx).
 
 -spec load_existing_state(module()) ->
-    {ok, #{binary() => sets:set(binary())}, #{binary() => [index_shape()]}}
+    {ok, #{binary() => sets:set(binary())}, #{binary() => [live_shape()]}}
     | {error, term()}.
 load_existing_state(RepoMod) ->
     case load_columns(RepoMod) of
@@ -233,11 +255,12 @@ build_col_state([_ | Rest], Acc) ->
     build_col_state(Rest, Acc).
 
 -spec load_indexes(module()) ->
-    {ok, #{binary() => [index_shape()]}} | {error, term()}.
+    {ok, #{binary() => [live_shape()]}} | {error, term()}.
 load_indexes(RepoMod) ->
     %% An expression column has no attname and reads as `<<>>`, so it never
     %% matches a declared column. INCLUDE columns sit past indnkeyatts.
-    %% Catalog names are qualified so a search_path cannot shadow them.
+    %% Catalog tables and functions are qualified so a search_path cannot
+    %% shadow them.
     SQL =
         ~"""
     SELECT c.relname::text AS tablename,
@@ -245,14 +268,18 @@ load_indexes(RepoMod) ->
            ix.indisunique AS is_unique,
            ix.indpred IS NOT NULL AS is_partial,
            am.amname::text AS method,
-           COALESCE(a.attname::text, '') AS column_name
+           COALESCE(a.attname::text, '') AS column_name,
+           COALESCE(oc.opcname::text, '') AS opclass
     FROM pg_catalog.pg_index ix
     JOIN pg_catalog.pg_class i ON i.oid = ix.indexrelid
     JOIN pg_catalog.pg_am am ON am.oid = i.relam
     JOIN pg_catalog.pg_class c ON c.oid = ix.indrelid
     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-    CROSS JOIN LATERAL pg_catalog.unnest(ix.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)
+    CROSS JOIN LATERAL ROWS FROM (
+        pg_catalog.unnest(ix.indkey::int2[]), pg_catalog.unnest(ix.indclass::oid[])
+    ) WITH ORDINALITY AS k(attnum, opclass_oid, ord)
     LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+    LEFT JOIN pg_catalog.pg_opclass oc ON oc.oid = k.opclass_oid
     WHERE n.nspname = pg_catalog.current_schema()
       AND ix.indisvalid
       AND k.ord <= ix.indnkeyatts
@@ -265,8 +292,8 @@ load_indexes(RepoMod) ->
             {error, Reason}
     end.
 
--spec group_index_columns([map()], #{{binary(), binary()} => index_shape()}) ->
-    #{{binary(), binary()} => index_shape()}.
+-spec group_index_columns([map()], #{{binary(), binary()} => live_shape()}) ->
+    #{{binary(), binary()} => live_shape()}.
 group_index_columns([], Acc) ->
     Acc;
 group_index_columns(
@@ -277,7 +304,8 @@ group_index_columns(
             is_unique := Unique,
             is_partial := Partial,
             method := MethodBin,
-            column_name := ColBin
+            column_name := ColBin,
+            opclass := OpClassBin
         }
         | Rest
     ],
@@ -285,15 +313,22 @@ group_index_columns(
 ) when is_boolean(Unique), is_boolean(Partial) ->
     Key = {ensure_binary(TableBin), ensure_binary(IdxBin)},
     Method = ensure_binary(MethodBin),
-    {Cols, _, _, _} = maps:get(Key, Acc, {[], Unique, Partial, Method}),
+    {Cols, _, _, _, OpClasses} = maps:get(Key, Acc, {[], Unique, Partial, Method, []}),
     group_index_columns(Rest, Acc#{
-        Key => {Cols ++ [ensure_binary(ColBin)], Unique, Partial, Method}
+        Key =>
+            {
+                Cols ++ [ensure_binary(ColBin)],
+                Unique,
+                Partial,
+                Method,
+                OpClasses ++ [ensure_binary(OpClassBin)]
+            }
     });
 group_index_columns([_ | Rest], Acc) ->
     group_index_columns(Rest, Acc).
 
--spec add_shapes([{{binary(), binary()}, index_shape()}], #{binary() => [index_shape()]}) ->
-    #{binary() => [index_shape()]}.
+-spec add_shapes([{{binary(), binary()}, live_shape()}], #{binary() => [live_shape()]}) ->
+    #{binary() => [live_shape()]}.
 add_shapes([], Acc) ->
     Acc;
 add_shapes([{{Table, _Name}, Shape} | Rest], Acc) ->
@@ -302,7 +337,7 @@ add_shapes([{{Table, _Name}, Shape} | Rest], Acc) ->
 -spec check_schema(
     module(),
     #{binary() => sets:set(binary())},
-    #{binary() => [index_shape()]}
+    #{binary() => [live_shape()]}
 ) -> [drift_issue()].
 check_schema(Mod, ColState, IdxState) ->
     Table = Mod:table(),
@@ -342,7 +377,7 @@ column_binary(_Name, Column) when is_binary(Column) -> Column.
 -spec check_indexes(
     module(),
     binary(),
-    #{binary() => [index_shape()]}
+    #{binary() => [live_shape()]}
 ) -> [drift_issue()].
 check_indexes(Mod, Table, IdxState) ->
     case erlang:function_exported(Mod, indexes, 0) of
@@ -357,16 +392,22 @@ check_indexes(Mod, Table, IdxState) ->
             ]
     end.
 
--spec satisfied(index_shape(), [index_shape()]) -> boolean().
+-spec satisfied(index_shape(), [live_shape()]) -> boolean().
 satisfied(_Declared, []) -> false;
 satisfied(Declared, [Live | Rest]) -> satisfies(Live, Declared) orelse satisfied(Declared, Rest).
 
--spec satisfies(index_shape(), index_shape()) -> boolean().
-satisfies({_, _, _, Method}, {_, _, _, Declared}) when Declared =/= any, Declared =/= Method ->
+-spec satisfies(live_shape(), index_shape()) -> boolean().
+satisfies({_, _, _, Method, _}, {_, _, _, Declared, _}) when
+    Declared =/= any, Declared =/= Method
+->
     false;
-satisfies({Cols, true, Partial, _}, {Cols, true, Partial, _}) ->
+satisfies({_, _, _, _, OpClasses}, {_, _, _, _, Declared}) when
+    Declared =/= any, Declared =/= OpClasses
+->
+    false;
+satisfies({Cols, true, Partial, _, _}, {Cols, true, Partial, _, _}) ->
     true;
-satisfies({Cols, _Unique, LivePartial, _}, {Cols, false, Partial, _}) ->
+satisfies({Cols, _Unique, LivePartial, _, _}, {Cols, false, Partial, _, _}) ->
     Partial orelse not LivePartial;
 satisfies(_Live, _Declared) ->
     false.
@@ -377,16 +418,25 @@ declared_shape(Cols, Opts) ->
         [atom_to_binary(C, utf8) || C <- Cols],
         maps:get(unique, Opts, false) =:= true,
         is_binary(maps:get(where, Opts, undefined)),
-        declared_method(Opts)
+        declared_method(Opts),
+        declared_opclasses(Cols, Opts)
     }.
 
 -spec declared_method(kura_migration:index_opts_map()) -> binary() | any.
-declared_method(#{using := Method}) -> method_name(Method);
+declared_method(#{using := Method}) -> option_name(using, Method);
 declared_method(#{}) -> any.
 
--spec method_name(term()) -> binary().
-method_name(Method) when is_atom(Method) -> atom_to_binary(Method, utf8);
-method_name(Method) -> error({invalid_index_option, using, Method}).
+-spec declared_opclasses([atom()], kura_migration:index_opts_map()) -> [binary()] | any.
+declared_opclasses([_], #{opclass := OpClass}) ->
+    [option_name(opclass, OpClass)];
+declared_opclasses(Cols, #{opclass := _}) ->
+    error({invalid_index_option, opclass, {columns, Cols}});
+declared_opclasses(_Cols, #{}) ->
+    any.
+
+-spec option_name(using | opclass, term()) -> binary().
+option_name(_Option, Name) when is_atom(Name) -> atom_to_binary(Name, utf8);
+option_name(Option, Name) -> error({invalid_index_option, Option, Name}).
 
 -spec ensure_binary(binary() | string()) -> binary().
 ensure_binary(B) when is_binary(B) -> B;
